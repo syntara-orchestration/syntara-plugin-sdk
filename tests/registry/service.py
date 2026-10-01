@@ -32,6 +32,8 @@ class RegistryService:
         self,
         manifest: Mapping[str, Any],
         *,
+        plugin_namespace: str,
+        plugin_version: str,
         image_ref: str | None = None,
     ) -> StepType:
         """Register a raw YAML/JSON manifest from the Git or REST path."""
@@ -44,8 +46,10 @@ class RegistryService:
         # in, so neither is derived from or written over the other.
 
         name = metadata["name"]
-        namespace = metadata["namespace"]
-        version = metadata["version"]
+        namespace = plugin_namespace
+        # The legacy model calls this column ``version``; it stores the parent
+        # plugin version and is never sourced from step metadata.
+        version = plugin_version
         row = self.session.exec(
             select(StepType)
             .where(StepType.namespace == namespace)
@@ -77,6 +81,8 @@ class RegistryService:
         self,
         payload: str | bytes,
         *,
+        plugin_namespace: str,
+        plugin_version: str,
         image_ref: str | None = None,
     ) -> StepType:
         """Parse and register a raw Git or REST YAML/JSON request body."""
@@ -87,12 +93,20 @@ class RegistryService:
             raise ValueError(f"manifest payload is not valid YAML: {exc}") from exc
         if not isinstance(manifest, Mapping):
             raise TypeError("manifest payload must contain a mapping")
-        return self.register_manifest(manifest, image_ref=image_ref)
+        return self.register_manifest(
+            manifest,
+            plugin_namespace=plugin_namespace,
+            plugin_version=plugin_version,
+            image_ref=image_ref,
+        )
 
     def register_oci_manifest(
         self,
         image_ref: str,
         oci_manifest: Mapping[str, Any],
+        *,
+        plugin_namespace: str,
+        plugin_version: str,
     ) -> StepType:
         """Inspect OCI artifact metadata and register its embedded manifest."""
 
@@ -107,16 +121,29 @@ class RegistryService:
         manifest = yaml.safe_load(raw_manifest)
         if not isinstance(manifest, Mapping):
             raise TypeError("OCI step annotation does not contain a manifest mapping")
-        return self.register_manifest(manifest, image_ref=image_ref)
+        return self.register_manifest(
+            manifest,
+            plugin_namespace=plugin_namespace,
+            plugin_version=plugin_version,
+            image_ref=image_ref,
+        )
 
     def register_oci_headers(
         self,
         image_ref: str,
         headers: Mapping[str, Any],
+        *,
+        plugin_namespace: str,
+        plugin_version: str,
     ) -> StepType:
         """Compatibility entry point for callers naming OCI metadata headers."""
 
-        return self.register_oci_manifest(image_ref, headers)
+        return self.register_oci_manifest(
+            image_ref,
+            headers,
+            plugin_namespace=plugin_namespace,
+            plugin_version=plugin_version,
+        )
 
 
 def validate_oci_manifest(oci_manifest: Mapping[str, Any]) -> list[str]:

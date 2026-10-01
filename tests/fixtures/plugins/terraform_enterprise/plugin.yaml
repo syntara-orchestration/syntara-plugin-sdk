@@ -1,0 +1,20 @@
+apiVersion: syntara.io/v1alpha1
+kind: Plugin
+
+metadata:
+  name: terraform_enterprise
+  namespace: terraform
+  displayName: Terraform Enterprise
+  version: 0.1.0
+  description: Workflow steps for Terraform Enterprise.
+  authors:
+    - name: Example Organization
+      email: plugins@example.com
+      url: https://example.com
+  license: Apache-2.0
+  documentationUrl: https://example.com/docs
+
+spec:
+  targets:
+    - ./steps/create_workspace/manifest.yaml
+    - ./steps/list_workspaces/manifest.yaml

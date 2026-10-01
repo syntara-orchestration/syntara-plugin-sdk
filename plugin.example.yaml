@@ -1,0 +1,35 @@
+# Syntara Plugin SDK - Example Root Plugin Manifest
+# Copy this file to plugin.yaml at the root of a plugin source tree.
+
+apiVersion: syntara.io/v1alpha1
+kind: Plugin
+
+metadata:
+  # Publisher or organizational namespace. Steps inherit this value.
+  namespace: example
+
+  # Local plugin identifier within the namespace.
+  name: example_plugin
+
+  # Human-readable plugin name.
+  displayName: Example Plugin
+
+  # Semantic version of the plugin as a whole.
+  version: 0.1.0
+
+  description: Example multi-step plugin.
+
+  # Plugin attribution is required. Each entry requires a name.
+  authors:
+    - name: Your Name or Organization
+      email: plugins@example.com
+      url: https://example.com
+
+  license: Apache-2.0
+  documentationUrl: https://example.com/docs
+
+spec:
+  # Explicit, ordered paths relative to plugin.yaml. Targets are authoritative;
+  # tooling does not scan the source tree for additional step manifests.
+  targets:
+    - ./steps/my_http_step/manifest.yaml

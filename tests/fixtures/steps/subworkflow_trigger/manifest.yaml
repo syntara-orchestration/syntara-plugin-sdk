@@ -3,15 +3,13 @@ kind: StepType
 
 metadata:
   name: subworkflow_trigger
-  namespace: syntara
   displayName: Sub-Workflow Trigger
-  version: 1.0.0
   icon: bolt
   description: Child-side entry trigger that makes a workflow eligible for Reference-mode subworkflow invocation.
   tags:
-    - category:trigger
     - subworkflow:reference-mode
-  author: Syntara Team
+  authors:
+    - name: Syntara Team
   license: Apache-2.0
 
 spec:

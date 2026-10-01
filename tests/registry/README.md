@@ -1,6 +1,7 @@
 # Step Registry API Tests
 
-These tests verify the **platform's Step Registry REST API** (`/api/v1/step-types`).
+These tests verify a **legacy platform registry prototype** (`/api/v1/step-types`). It is test
+support only, not an SDK persistence contract.
 
 ## What They Test
 
@@ -8,13 +9,13 @@ These are **platform-level tests**, not step-specific tests. They verify:
 
 - **Manifest validation** - YAML schema validation against `schemas/common-definitions.json`
 - **Compilation pipeline** - `manifest.yaml` → `step-definition.json`
-- **PostgreSQL storage** - JSONB column, DDL CHECK constraints, GIN indexing
+- **Prototype storage** - JSONB column, DDL CHECK constraints, GIN indexing
 - **REST API contract** - `{data, meta}` envelope, pagination, filtering (`GET /api/v1/step-types`)
 - **Registration endpoint** - Publishing steps (`POST /api/v1/step-types`)
 - **Canvas integration** - `?view=palette` and `/descriptor` endpoints for UI
-- **Upsert behavior** - Re-publishing same (name, version) updates in place
+- **Legacy upsert behavior** - Prototype-only storage behavior, not plugin version semantics
 - **Name-addressable lookups** - Fetching by UUID or step name
-- **DDL constraints** - `(name, version)` is unique so step versions coexist
+- **DDL constraints** - Isolated prototype constraints; the SDK does not define storage keys
 
 ## Test Files
 
@@ -26,10 +27,10 @@ These are **platform-level tests**, not step-specific tests. They verify:
 
 These tests use **`tests/fixtures/steps/http_request/manifest.yaml`** as an example step, but they're testing the **registry/platform layer**, not the HTTP request step itself.
 
-Any valid step manifest could be used - the tests verify the platform correctly:
+Any valid step manifest could be used - the tests verify the prototype can:
 1. Validates the manifest against the schema
 2. Compiles it to a descriptor
-3. Stores it in PostgreSQL
+3. Stores it in its isolated test database
 4. Advertises it via REST API
 
 ## Run Tests

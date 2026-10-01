@@ -1,0 +1,7 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "plugin.schema.json",
+  "title": "Syntara Plugin Manifest Schema",
+  "description": "Public Draft-07 entry point for root plugin.yaml files.",
+  "$ref": "schemas/common-definitions.json#/definitions/PluginManifest"
+}

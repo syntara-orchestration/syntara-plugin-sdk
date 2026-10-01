@@ -139,11 +139,11 @@ class RegistryModel(SQLModel):
 
 
 class StepType(RegistryModel, table=True):
-    """Registry record for one compiled step definition.
+    """Isolated legacy registry-prototype record.
 
     The ``descriptor`` column stores the full compiled ``step-definition.json``
     so the canvas can render input forms without a frontend deployment.
-    ``(name, version)`` is unique so multiple versions of a step can coexist.
+    ``(name, version)`` is an internal prototype storage key, not SDK identity.
     """
 
     __tablename__ = "step_types"
@@ -215,7 +215,7 @@ def compile_manifest(manifest: dict[str, Any] | None = None) -> dict[str, Any]:
 # Advertisement helpers: descriptor / row -> API representations.
 # ---------------------------------------------------------------------------
 def _version_key(version: str) -> tuple[int, ...]:
-    """Coarse numeric sort key so the registry can pick the latest version."""
+    """Coarse numeric sort key for the isolated legacy storage model."""
     return tuple(int(n) for n in re.findall(r"\d+", version)) or (0,)
 
 
@@ -224,7 +224,7 @@ def _latest(rows: list[StepType]) -> StepType:
 
 
 def _latest_per_name(rows: list[StepType]) -> list[StepType]:
-    """Collapse multiple versions to the highest version per step name."""
+    """Collapse legacy storage rows to their highest test-only version."""
     by_name: dict[str, StepType] = {}
     for row in rows:
         current = by_name.get(row.name)
@@ -352,8 +352,11 @@ def create_app(engine) -> FastAPI:
         spec = descriptor["spec"]
 
         name = metadata["name"]
-        namespace = metadata["namespace"]
-        version = metadata.get("version", "1.0.0")
+        # This isolated registry prototype predates plugin registration. The
+        # parent plugin would supply this namespace in the real discovery path.
+        namespace = "syntara"
+        # Plugin registration supplies this value; steps have no independent version.
+        version = "1.0.0"
         # Where the plugin artifact lives. Distinct from spec.execution.image,
         # which names the runtime the step executes in.
 
@@ -410,7 +413,7 @@ def create_app(engine) -> FastAPI:
         )
 
         if view == "palette":
-            # Drawer view: one entry per step (latest version), UI camelCase shape.
+            # Drawer view: one entry per legacy row, UI camelCase shape.
             summaries = [_palette_summary(row) for row in _latest_per_name(rows)]
             return {
                 "data": summaries,

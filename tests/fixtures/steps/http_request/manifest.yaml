@@ -7,9 +7,7 @@ kind: StepType
 
 metadata:
   name: http_request
-  namespace: syntara
   displayName: HTTP Request
-  version: 1.0.0
   icon: globe  # React Flow palette glyph; see StepPaletteIcon in common-definitions.json
   description: |
     Non-blocking HTTP/HTTPS API orchestrator with credential injection, response parsing,
@@ -17,8 +15,8 @@ metadata:
   tags:
     - integration:rest-api
     - network:external
-    - category:action
-  author: Syntara Team
+  authors:
+    - name: Syntara Team
   license: Apache-2.0
 
 spec:

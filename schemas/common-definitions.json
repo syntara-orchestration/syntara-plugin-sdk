@@ -1,9 +1,73 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://syntara.io/schemas/common-definitions.json",
+  "$id": "common-definitions.json",
   "title": "Syntara Plugin SDK - Common Definitions",
   "description": "Shared reusable definitions for the Syntara Automation Orchestrator Plugin SDK. These components are referenced across all step types to ensure strict backwards compatibility and consistent runtime behavior.",
   "definitions": {
+    "Author": {
+      "type": "object",
+      "description": "An individual or organization responsible for a plugin or step.",
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "email": {"type": "string", "format": "email"},
+        "url": {"type": "string", "format": "uri"}
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "Authors": {
+      "type": "array",
+      "description": "People or organizations responsible for this resource.",
+      "items": {"$ref": "#/definitions/Author"},
+      "minItems": 1
+    },
+    "PluginMetadata": {
+      "type": "object",
+      "description": "Identity and descriptive metadata for a plugin source tree.",
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$", "minLength": 1, "maxLength": 64},
+        "namespace": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$", "minLength": 1, "maxLength": 64},
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.-]+)?$"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "authors": {"$ref": "#/definitions/Authors"},
+        "license": {"type": "string"},
+        "documentationUrl": {"type": "string", "format": "uri"}
+      },
+      "required": ["name", "namespace", "displayName", "version", "description", "authors"],
+      "additionalProperties": false
+    },
+    "PluginTarget": {
+      "type": "string",
+      "description": "A local, relative YAML path from plugin.yaml to a step manifest.",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+\\.ya?ml$"
+    },
+    "PluginManifest": {
+      "type": "object",
+      "title": "Plugin Manifest",
+      "description": "Root source manifest for a versioned plugin and its explicit in-tree step targets.",
+      "properties": {
+        "apiVersion": {"type": "string", "const": "syntara.io/v1alpha1"},
+        "kind": {"type": "string", "const": "Plugin"},
+        "metadata": {"$ref": "#/definitions/PluginMetadata"},
+        "spec": {
+          "type": "object",
+          "properties": {
+            "targets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"$ref": "#/definitions/PluginTarget"}
+            }
+          },
+          "required": ["targets"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["apiVersion", "kind", "metadata", "spec"],
+      "additionalProperties": false
+    },
     "StepTypeManifest": {
       "type": "object",
       "title": "Step Type Manifest (K8s CRD Structure)",
@@ -21,7 +85,7 @@
         },
         "metadata": {
           "type": "object",
-          "description": "Step metadata for identification, versioning, and UI discovery.",
+          "description": "Step metadata for identification and UI discovery.",
           "properties": {
             "name": {
               "type": "string",
@@ -36,18 +100,6 @@
                 "subworkflow_trigger"
               ]
             },
-            "namespace": {
-              "type": "string",
-              "description": "Namespace identifier grouping this step under its owning domain or vendor (R3/AC-2). Combined with name it forms the globally unique step identity, and the canvas uses it to group the palette.",
-              "pattern": "^[a-z][a-z0-9_]*$",
-              "minLength": 1,
-              "maxLength": 64,
-              "examples": [
-                "syntara",
-                "terraform",
-                "github"
-              ]
-            },
             "displayName": {
               "type": "string",
               "description": "Human-readable step name displayed in the UI palette and canvas.",
@@ -58,17 +110,6 @@
                 "Script Executor",
                 "Subworkflow Call",
                 "Subworkflow Trigger"
-              ]
-            },
-            "version": {
-              "type": "string",
-              "description": "Semantic version of this step type.",
-              "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9.-]+)?$",
-              "default": "1.0.0",
-              "examples": [
-                "1.0.0",
-                "2.1.3",
-                "1.0.0-beta.1"
               ]
             },
             "icon": {
@@ -91,18 +132,13 @@
               "examples": [
                 [
                   "integration:rest-api",
-                  "network:external",
-                  "category:action"
+                  "network:external"
                 ]
               ]
             },
-            "author": {
-              "type": "string",
-              "description": "Step author or organization.",
-              "examples": [
-                "Syntara Team",
-                "Community"
-              ]
+            "authors": {
+              "$ref": "#/definitions/Authors",
+              "description": "Optional people or organizations responsible for this step."
             },
             "license": {
               "type": "string",
@@ -121,9 +157,7 @@
           },
           "required": [
             "name",
-            "namespace",
             "displayName",
-            "version",
             "description"
           ],
           "additionalProperties": false
@@ -299,7 +333,7 @@
     "StandardOutputWrapper": {
       "type": "object",
       "title": "Standard Output Wrapper",
-      "description": "Mandatory, backwards-compatible output envelope for all task executions. This standardized structure enables workflow template expressions like ${fetch_data.Result.stdout} to remain stable across step versions. The backend scheduler and frontend canvas depend on this exact structure.",
+      "description": "Mandatory, backwards-compatible output envelope for all task executions. This standardized structure enables workflow template expressions like ${fetch_data.Result.stdout} to remain stable across plugin upgrades. The backend scheduler and frontend canvas depend on this exact structure.",
       "properties": {
         "Result": {
           "description": "Primary task return payload. Type varies by step implementation - may be an object (e.g., {stdout, stderr, exit_code}), string, array, or null. This is the data referenced in downstream workflow template expressions.",

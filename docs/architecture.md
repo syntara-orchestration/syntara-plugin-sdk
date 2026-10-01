@@ -38,11 +38,19 @@ graph TB
 A plugin may contain steps of different categories — a trigger and a task together, for
 example.
 
+The plugin is the versioned ownership unit. This SDK contract defines its in-tree source layout
+and discovery behavior; the packaged representation is outside this document's scope. A plugin
+contains one or more explicitly listed step manifests. A step's canonical identity is
+`<plugin-namespace>/<plugin-name>/<step-name>`; consequently, moving a step between plugins
+changes its identity. Step names are unique only within a plugin, so different plugins may use
+the same step name. The namespace comes exclusively from the parent `plugin.yaml`; a step manifest
+declares only its local name.
+
 ## Ownership Boundaries
 
 | Owner | Owns |
 |---|---|
-| **SDK** | `manifest.yaml` format, `common-definitions.json` meta-schema, compiled `step-definition.json`, declared requirements, the abstract task invocation, the `StandardOutputWrapper` result contract, step-side input validation |
+| **SDK** | `plugin.yaml` and step `manifest.yaml` source contracts, logical identity, schema validation, explicit discovery, declared requirements, the abstract task invocation, the `StandardOutputWrapper` result contract, step-side input validation |
 | **Platform registration** | Administrative controls (`sandbox_required`, `egress_policy`, `worker_pool_selector`), metadata indexing, canvas projections |
 | **Control plane (Temporal orchestrator)** | Placement decisions, dispatch, inline activity and listener registration, subworkflow lifecycle |
 | **Execution plane** | Worker lifecycle and provisioning, transport adapter, runtime credential injection, sandbox enforcement, retries, persistence, log scrubbing, completion delivery |
@@ -51,11 +59,15 @@ Everything below describes SDK-owned contracts. Where a section names a platform
 execution-plane behavior, it is stating an assumption the SDK depends on, not specifying an
 implementation.
 
+Persistence and index normalization are platform-owned. The SDK returns validated plugin metadata
+and step descriptors, but does not prescribe database tables or whether a platform embeds steps
+in plugin records or stores separate step records.
+
 ## Principles
 
-1. **YAML in, JSON out.** Authors write `manifest.yaml`. The SDK validates it against JSON
-   Schema Draft-07 and compiles `step-definition.json`, which ships inside the plugin artifact.
-   The artifact format is still open (SDP Q6).
+1. **YAML in, descriptors out.** Authors write `plugin.yaml` and step `manifest.yaml` files. The
+   SDK validates them against JSON Schema Draft-07 and returns descriptors with identities derived
+   from the plugin context. Packaging those descriptors is a separate concern.
 2. **One category per step.** Every step declares exactly one of `action`, `task`, `workflow`,
    `trigger`.
 3. **Functional contracts, not infrastructure.** Step definitions declare input/output schemas
@@ -63,15 +75,15 @@ implementation.
    they run on.
 4. **Declaration is not authorization.** `spec.declaredRequirements` states what a step needs.
    Administrators grant the corresponding controls at registration time in Syntara.
-5. **Metadata travels with the artifact.** Decoupled, independently versioned metadata is
-   rejected because it drifts from the packaged step. A descriptor change means a new artifact
-   version.
+5. **Version the plugin as a unit.** The plugin version identifies a release of the plugin and all
+   step contracts it contains. Steps have no independent version; changing any contained step
+   requires a new plugin version. Version does not change the derived canonical step identity.
 6. **Zero-trust credentials.** Authentication credentials are platform-managed references
    (UUIDs), never step inputs. Non-credential sensitive data may be an input flagged
    `redact: true`, which the platform must keep out of every observable path.
 7. **Immutable output envelope.** `StandardOutputWrapper` (`Result`, `StatusCode`,
    `StatusMessage`, `ErrorMessage`) never changes shape, so template expressions such as
-   `${task.Result}` survive step version upgrades.
+   `${task.Result}` survive plugin upgrades.
 8. **Validate at three layers.** SDK tooling validates manifests during development and
    packaging; the workflow designer validates user inputs against step schemas during workflow
    authoring; base classes validate the invocation before step logic runs. The execution plane
@@ -119,31 +131,54 @@ and result shapes; the platform owns selection, eligibility enforcement, and chi
 
 ## `manifest.yaml` — The Authoring Format
 
-One `manifest.yaml` per step type, following Kubernetes CRD conventions: `apiVersion`, `kind`,
-`metadata`, `spec`. It supports comments and multi-line strings, validates against Draft-07 via
-`$ref` into `common-definitions.json`, and compiles to `step-definition.json`.
+One `manifest.yaml` per step, following Kubernetes CRD conventions: `apiVersion`, `kind`,
+`metadata`, `spec`. It supports comments and multi-line strings and validates against Draft-07 via
+`$ref` into `common-definitions.json`.
 
-**Plugin layout.** Plugins have a root-level plugin
-manifest, so the platform can index an uploaded artifact without knowing its internal layout:
+**Plugin layout.** Plugins have a root-level source manifest so tooling can discover explicitly
+declared steps without scanning the directory tree:
 
 ```
 my-plugin/
-├── plugin.yaml                # Root plugin manifest: identity, version, step locations
+├── plugin.yaml                # Root plugin manifest: identity, version, explicit step locations
 ├── steps/
 │   ├── http_request/
 │   │   ├── manifest.yaml      # Step manifest (K8s CRD structure)
-│   │   └── main.py            # Implementation (or main.sh for Bash)
+│   │   └── main.py            # Implementation files
 │   └── github_issue/
 │       ├── manifest.yaml
 │       └── main.py
-├── requirements.txt           # Language dependencies (optional)
 ├── README.md
 └── tests/
 ```
 
-Implementations and dependencies ship inside the plugin artifact alongside the manifests.
+This is a source-tree convention only. It does not define which files or resolved descriptors a
+future packaged plugin contains.
 
-> The `plugin.yaml` shape above is intended, not yet schema-validated. See [Gaps](#gaps).
+`plugin.yaml` is a Draft-07 validated root contract. Its non-empty, unique `spec.targets` list
+is authoritative: each target is a local relative YAML path resolved from `plugin.yaml`; no URL,
+glob, recursive discovery, or implicit target is supported.
+
+```yaml
+apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  name: terraform_enterprise
+  namespace: terraform
+  displayName: Terraform Enterprise
+  version: 0.1.0
+  description: Workflow steps for Terraform Enterprise.
+  authors:
+    - name: Example Organization
+      email: plugins@example.com
+      url: https://example.com
+  license: Apache-2.0
+  documentationUrl: https://example.com/docs
+spec:
+  targets:
+    - ./steps/create_workspace/manifest.yaml
+    - ./steps/list_workspaces/manifest.yaml
+```
 
 **Example:**
 
@@ -153,9 +188,7 @@ kind: StepType
 
 metadata:
   name: http_request
-  namespace: syntara
   displayName: HTTP Request
-  version: 1.0.0
   icon: globe
   description: |
     HTTP/HTTPS API orchestrator with credential injection, response parsing,
@@ -163,7 +196,8 @@ metadata:
   tags:
     - integration:rest-api
     - network:external
-  author: Syntara Team
+  authors:
+    - name: Syntara Team
   license: Apache-2.0
 
 spec:
@@ -224,7 +258,7 @@ graph TB
 
     subgraph CRD["CRD Structure"]
         API["apiVersion + kind"]
-        META["metadata<br/>• name, displayName<br/>• version, icon<br/>• description, tags"]
+        META["metadata<br/>• name, displayName<br/>• icon, description, tags"]
         SPEC["spec"]
     end
 
@@ -321,32 +355,36 @@ graph LR
 ### Platform Metadata Assumptions
 
 The SDK prescribes no database schema, ORM, persistence technology, or REST routing. It assumes
-registration populates an indexed store that can:
+registration makes validated plugin descriptors available to platform consumers that can:
 
-- retain the compiled `step-definition.json` or an equivalent canonical descriptor;
-- expose indexed identity, namespace, category, version, and artifact-reference metadata;
+- retain a validated descriptor or equivalent canonical representation;
+- expose canonical step identity, category, and parent plugin metadata;
 - serve input and output schemas to the canvas and the execution plane;
 - keep administrative registration policy separate from developer-authored manifests; and
 - meet the `<500 ms` canvas target without remote artifact fetches during editing.
 
-Relational database, document store, search index, or cache are all acceptable. The registration
-payload the platform receives looks roughly like this:
+Whether a platform uses a relational database, document store, search index, cache, or embedded
+records is intentionally unspecified. A platform-facing representation could contain values such
+as:
 
 ```json
 {
-  "name": "script_executor",
+  "step_identity": "syntara/utility_steps/script_executor",
   "category": "task",
-  "image_ref": "registry.example.com/steps/script-executor:1.0.0",
-  "version": "1.0.0",
+  "plugin": {
+    "namespace": "syntara",
+    "name": "utility_steps",
+    "version": "1.0.0"
+  },
   "sandbox_required": true,
   "egress_policy": "restricted",
   "worker_pool_selector": {"workload": "automation", "region": "us-east-1"}
 }
 ```
 
-`name`, `category`, `image_ref`, and `version` come from the descriptor. `sandbox_required`,
-`egress_policy`, and `worker_pool_selector` are administrator-supplied and are never read from
-developer metadata.
+Canonical identity and plugin metadata come from the root plugin descriptor; category comes from
+the targeted step descriptor. `sandbox_required`, `egress_policy`, and `worker_pool_selector` are
+administrator-supplied and are never read from developer metadata.
 
 ## Dispatch and Handoff
 
@@ -605,12 +643,14 @@ Every inspection point resolves without executing the step.
 
 `common-definitions.json` is the sole platform meta-schema and the authoritative source for
 shared types. Individual steps do not ship their own `.schema.json` files: authors write
-`manifest.yaml`, the SDK compiles `step-definition.json`, the platform store persists it, and the
-orchestrator and canvas consume the compiled artifact rather than the source manifest.
+`manifest.yaml`, the SDK produces validated descriptors, and platform consumers use those
+descriptors rather than the source manifest.
 
 | Definition | Purpose | Shape |
 |---|---|---|
-| `StepTypeManifest` | K8s CRD structure validation | `{apiVersion, kind, metadata, spec}`; `metadata` requires `name`, `namespace`, `displayName`, `version`, `description` |
+| `PluginManifest` | Root plugin validation | `{apiVersion, kind, metadata, spec.targets}`; plugin metadata requires name, namespace, displayName, version, description, and non-empty authors |
+| `StepTypeManifest` | K8s CRD structure validation | `{apiVersion, kind, metadata, spec}`; step metadata requires `name`, `displayName`, and `description`; namespace and release version come exclusively from the parent plugin |
+| `Author` / `Authors` | Attribution | author name is required; email and URL are optional; plugin authors are required while step authors are optional |
 | `StepCategory` | Four-category taxonomy | `enum: ["action", "task", "workflow", "trigger"]` |
 | `StepInputs` | Draft-07 input object | `{properties, required}` |
 | `InputParameter` | One input, including sensitivity | `redact: true` |
@@ -637,7 +677,6 @@ is the natural hook for the Temporal durable-execution question (SDP Q8).
   "metadata": {
     "name": "http_request",
     "displayName": "HTTP Request",
-    "version": "1.0.0",
     "icon": "globe",
     "description": "...",
     "tags": ["integration:rest-api", "network:external"]
@@ -684,9 +723,11 @@ may ship a descriptor and contract reference with no local runner.
 SDK-side gaps that nothing yet covers. Open questions live in the SDK SDP and
 are not mirrored here.
 
-- **No plugin manifest schema (R8).** R8 requires a root-level plugin manifest so the platform
-  can index an uploaded artifact. `common-definitions.json` defines only `StepTypeManifest`.
-  The plugin manifest needs its own definition: identity, version, and step metadata locations.
+- **Workflow step-reference resolution.** The canonical identity is derived as
+  `namespace/plugin/step`, but workflows should not reconstruct it from fields copied into the
+  step manifest. The workflow contract must decide whether it stores an opaque installed-step ID
+  or a structured plugin reference plus local step name. It must also decide whether plugin
+  version, immutable artifact identity, or both are pinned.
 - **Control-plane code loading and isolation.** Nothing defines how a control-plane-placed
   step's code enters the orchestrator process, what sandboxing applies, or whether it is
   restricted to first-party or pre-vetted code. Arbitrary author-supplied code in the control

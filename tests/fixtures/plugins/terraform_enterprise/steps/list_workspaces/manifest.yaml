@@ -1,0 +1,16 @@
+apiVersion: syntara.io/v1alpha1
+kind: StepType
+metadata:
+  name: list_workspaces
+  displayName: List Workspaces
+  description: Lists workspaces.
+spec:
+  category: workflow
+  execution:
+    image: null
+    entrypoint: null
+  inputs:
+    type: object
+    properties: {}
+    required: []
+  outputs: {}

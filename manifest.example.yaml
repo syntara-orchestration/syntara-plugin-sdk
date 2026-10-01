@@ -1,5 +1,5 @@
-# Syntara Step SDK - Canonical Manifest Template
-# This is the root template showing all available fields following Kubernetes CRD conventions.
+# Syntara Step SDK - Example Step Manifest
+# This template shows the available fields following Kubernetes CRD conventions.
 # Copy this template when creating new steps.
 
 apiVersion: syntara.io/v1alpha1
@@ -9,15 +9,8 @@ metadata:
   # Internal step identifier (snake_case) - used as primary key
   name: example_step
 
-  # Namespace grouping this step under its owning domain or vendor.
-  # namespace + name is the globally unique step identity.
-  namespace: syntara
-
   # Human-readable name displayed in UI palette and canvas
   displayName: Example Step
-
-  # Semantic version (MAJOR.MINOR.PATCH)
-  version: 1.0.0
 
   # Icon identifier for React Flow palette (see StepPaletteIcon in common-definitions.json)
   # Options: globe, database, script, webhook, loop, condition, git, cloud, mail, etc.
@@ -30,12 +23,12 @@ metadata:
 
   # Searchable tags for filtering in the step palette
   tags:
-    - category:action
     - integration:rest-api
     - network:external
 
-  # Author and licensing information
-  author: Your Name or Organization
+  # Optional author attribution
+  authors:
+    - name: Your Name or Organization
   license: Apache-2.0
 
   # Optional: Link to detailed documentation

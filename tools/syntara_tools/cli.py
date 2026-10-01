@@ -13,16 +13,21 @@ from typing import Any
 import httpx
 import yaml
 
-from syntara_tools.compiler import compile_manifest
+from syntara_tools.compiler import (
+    PluginDiscoveryError,
+    compile_manifest,
+    discover_plugin,
+    load_manifest,
+    validate_manifest,
+)
 from syntara_tools.oci_client import OCI_ARTIFACT_TYPE, OCI_MANIFEST_ANNOTATION, OCIRegistryClient
 
 SHARED_SCRIPT_IMAGE = "quay.io/syntara/script-python-executor:latest"
 SHARED_HTTP_IMAGE = "quay.io/syntara/http-request-executor:latest"
 _STEP_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-DEFAULT_NAMESPACE = "syntara"
 
 
-def _manifest(name: str, tier: int, image: str, namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
+def _manifest(name: str, tier: int, image: str) -> dict[str, Any]:
     # Every image-backed step declares a handle, single-step plugin or not, so
     # the runtime loads it the same way in all cases.
     step_class = _step_class_name(name)
@@ -34,13 +39,10 @@ def _manifest(name: str, tier: int, image: str, namespace: str = DEFAULT_NAMESPA
         "kind": "StepType",
         "metadata": {
             "name": name,
-            "namespace": namespace,
             "displayName": name.replace("_", " ").title(),
-            "version": "0.1.0",
             "icon": "terminal",
             "description": f"Custom tier {tier} step.",
-            "tags": ["category:task"],
-            "author": "",
+            "tags": [],
             "license": "Apache-2.0",
         },
         "spec": {
@@ -115,15 +117,12 @@ def init_step(
     name: str,
     tier: int,
     image: str | None,
-    namespace: str = DEFAULT_NAMESPACE,
     base_dir: Path | None = None,
 ) -> None:
     """Create a Tier 2 script package or Tier 3 image package."""
 
     if not _STEP_NAME.fullmatch(name):
         raise ValueError("name must be lowercase snake_case")
-    if not _STEP_NAME.fullmatch(namespace):
-        raise ValueError("namespace must be lowercase snake_case")
     if tier not in {2, 3}:
         raise ValueError("--tier must be 2 or 3")
     path = _resolve_within(path, base_dir if base_dir is not None else Path.cwd())
@@ -132,7 +131,7 @@ def init_step(
     path.mkdir(parents=True, exist_ok=True)
 
     resolved_image = image or f"quay.io/example/{name}:0.1.0"
-    manifest = _manifest(name, tier, resolved_image, namespace)
+    manifest = _manifest(name, tier, resolved_image)
     (path / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
 
     # Every step is built the same way: a BaseStep subclass whose name matches
@@ -177,7 +176,6 @@ def _oci_manifest(manifest: dict[str, Any], image_ref: str) -> dict[str, Any]:
         "annotations": {
             OCI_MANIFEST_ANNOTATION: raw_yaml,
             "org.opencontainers.image.title": manifest["metadata"]["name"],
-            "org.opencontainers.image.version": manifest["metadata"]["version"],
             "org.opencontainers.image.ref.name": image_ref,
         },
     }
@@ -298,7 +296,11 @@ def main(argv: list[str] | None = None) -> int:
     init_parser.add_argument("--tier", type=int, choices=[2, 3], required=True)
     init_parser.add_argument("--path", type=Path, default=None)
     init_parser.add_argument("--image")
-    init_parser.add_argument("--namespace", default=DEFAULT_NAMESPACE)
+
+    validate_parser = subparsers.add_parser(
+        "validate", help="validate a standalone manifest.yaml or root plugin.yaml"
+    )
+    validate_parser.add_argument("manifest", type=Path)
 
     build_parser = subparsers.add_parser("build", help="package a Tier 3 step as an OCI artifact")
     build_parser.add_argument("manifest", type=Path)
@@ -331,8 +333,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.name,
                 args.tier,
                 args.image,
-                args.namespace,
             )
+            return 0
+        if args.command == "validate":
+            document = load_manifest(args.manifest)
+            if document.get("kind") == "Plugin":
+                descriptor = discover_plugin(args.manifest)
+                print(f"validated plugin with {len(descriptor.steps)} step(s)")
+                return 0
+            errors = validate_manifest(document)
+            if errors:
+                raise ValueError("Manifest validation failed:\n" + "\n".join(errors))
+            print("validated step manifest")
             return 0
         if args.command == "build":
             output = _resolve_within(args.output, Path.cwd())
@@ -353,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
         FileExistsError,
         FileNotFoundError,
         ValueError,
+        PluginDiscoveryError,
         SyntaraRegistrationError,
         yaml.YAMLError,
     ) as exc:

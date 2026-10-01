@@ -53,12 +53,14 @@ different Syntara instance.
 
 ### Create Your First Step
 
-**1. Copy the manifest template:**
+**1. Copy the plugin and step manifest examples:**
 
 ```bash
-# Use the canonical template as a starting point
-cp manifest.yaml steps/my-http-step/manifest.yaml
-cd steps/my-http-step
+# Examples are labeled so they are not mistaken for manifests belonging to this repository.
+cp plugin.example.yaml plugin.yaml
+mkdir -p steps/my_http_step
+cp manifest.example.yaml steps/my_http_step/manifest.yaml
+cd steps/my_http_step
 ```
 
 **2. Edit `manifest.yaml` (K8s CRD structure):**
@@ -69,9 +71,7 @@ kind: StepType
 
 metadata:
   name: my_http_step
-  namespace: syntara
   displayName: My HTTP Step
-  version: 1.0.0
   icon: globe
   description: Custom HTTP request step with retry logic
   tags:
@@ -138,7 +138,7 @@ errors = validate_manifest(manifest)
 if errors:
     print("Validation errors:", errors)
 
-# Compile (validates + prepares for database)
+# Compile (validates + prepares a descriptor)
 descriptor = compile_manifest("steps/my-http-step/manifest.yaml")
 print(f"✓ Compiled: {descriptor['metadata']['name']}")
 ```
@@ -319,6 +319,10 @@ uv run pytest tests/registry/test_postgres_registry.py
 
 ```
 syntara-step-sdk/
+├── plugin.example.yaml                # Root plugin manifest example
+├── manifest.example.yaml              # Step manifest example
+├── plugin.schema.json                 # Root plugin schema entry point
+├── manifest.schema.json               # Step schema entry point
 ├── schemas/
 │   └── common-definitions.json        # Platform meta-schema
 ├── steps/

@@ -35,7 +35,7 @@ class StandardOutputWrapper(BaseModel):
     """Immutable output envelope for all step executions.
 
     This standardized structure ensures backwards compatibility and enables
-    stable template expressions like ${task.Result.stdout} across step versions.
+    stable template expressions like ${task.Result.stdout} across plugin upgrades.
     """
 
     Result: Any = Field(

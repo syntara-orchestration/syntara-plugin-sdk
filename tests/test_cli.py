@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from syntara_tools.cli import build_step, init_step
+from syntara_tools.cli import build_step, init_step, main
 from syntara_tools.oci_client import OCI_ARTIFACT_TYPE, OCI_MANIFEST_ANNOTATION
 
 
@@ -12,6 +12,10 @@ def test_init_tier_two_creates_script_package(tmp_path: Path) -> None:
     init_step(target, "normalize_payload", 2, None, base_dir=tmp_path)
     assert (target / "main.py").exists()
     assert (target / "manifest.yaml").exists()
+    manifest = yaml.safe_load((target / "manifest.yaml").read_text())
+    assert "version" not in manifest["metadata"]
+    assert "namespace" not in manifest["metadata"]
+    assert manifest["metadata"]["tags"] == []
 
 
 def test_init_tier_three_creates_dedicated_package(tmp_path: Path) -> None:
@@ -93,3 +97,27 @@ def test_init_still_allows_a_nested_in_tree_path(tmp_path: Path) -> None:
     init_step(Path("plugins/custom_step"), "custom_step", 3, RUNTIME_IMAGE, base_dir=tmp_path)
 
     assert (tmp_path / "plugins" / "custom_step" / "manifest.yaml").exists()
+
+
+def test_validate_detects_step_and_plugin_resources(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    step_path = tmp_path / "step"
+    init_step(step_path, "step", 3, RUNTIME_IMAGE, base_dir=tmp_path)
+    assert main(["validate", str(step_path / "manifest.yaml")]) == 0
+    assert "validated step manifest" in capsys.readouterr().out
+
+    plugin = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Plugin",
+        "metadata": {
+            "name": "sample",
+            "namespace": "syntara",
+            "displayName": "Sample",
+            "version": "0.1.0",
+            "description": "Sample plugin.",
+            "authors": [{"name": "Example"}],
+        },
+        "spec": {"targets": ["step/manifest.yaml"]},
+    }
+    (tmp_path / "plugin.yaml").write_text(yaml.safe_dump(plugin), encoding="utf-8")
+    assert main(["validate", str(tmp_path / "plugin.yaml")]) == 0
+    assert "validated plugin with 1 step" in capsys.readouterr().out

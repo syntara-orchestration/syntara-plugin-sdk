@@ -27,12 +27,11 @@ class RegistryBase(SQLModel):
 
 
 class StepType(RegistryBase, table=True):
-    """A versioned, compiled step definition advertised to the canvas."""
+    """An isolated legacy storage model, not an SDK persistence contract."""
 
     __tablename__ = "step_types"
     __table_args__ = (
-        # namespace + name is the globally unique step identity (R3/AC-2), so two
-        # vendors can each ship an "http_request" without colliding.
+        # This test-only legacy key predates plugin-scoped canonical identity.
         UniqueConstraint(
             "namespace", "name", "version", name="uq_step_types_namespace_name_version"
         ),

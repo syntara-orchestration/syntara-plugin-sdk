@@ -1,0 +1,18 @@
+apiVersion: syntara.io/v1alpha1
+kind: StepType
+metadata:
+  name: create_workspace
+  displayName: Create Workspace
+  description: Creates a workspace.
+  authors:
+    - name: Example Organization
+spec:
+  category: action
+  execution:
+    image: null
+    entrypoint: null
+  inputs:
+    type: object
+    properties: {}
+    required: []
+  outputs: {}
