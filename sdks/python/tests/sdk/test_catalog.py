@@ -16,6 +16,7 @@ from syntara_plugin.sdk import (
     CatalogIndexUpdateError,
     build_catalog_index_artifact,
     merge_catalog_entry,
+    recover_catalog_entry,
 )
 
 
@@ -220,3 +221,52 @@ def test_merge_catalog_entry_is_idempotent_but_rejects_conflicting_release() -> 
             issued_at=now + timedelta(hours=1),
             expires_at=now + timedelta(days=7, hours=1),
         )
+
+
+def test_recover_catalog_entry_continues_the_accepted_chain_and_preserves_entries() -> None:
+    """Recovery ignores a lost mutable tag and advances from the accepted revision."""
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
+    previous = _index()
+    local_echo = {
+        "namespace": "syntara",
+        "name": "local-echo",
+        "version": "0.1.0",
+        "artifactRepository": "syntara/plugins/local-echo",
+        "artifactDigest": "sha256:" + "c" * 64,
+        "documentationDigest": "sha256:" + "d" * 64,
+        "runtimeOwnerships": ["custom-workload", "platform-runner"],
+    }
+
+    recovered = recover_catalog_entry(
+        previous=previous,
+        previous_manifest_digest="sha256:" + "e" * 64,
+        entry=local_echo,
+        source_id="local-quay",
+        issued_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+
+    assert recovered["metadata"]["generation"] == 43
+    assert recovered["metadata"]["previousIndexDigest"] == "sha256:" + "e" * 64
+    assert [entry["name"] for entry in recovered["spec"]["entries"]] == [
+        "aap",
+        "github",
+        "local-echo",
+    ]
+
+
+def test_recover_catalog_entry_writes_a_successor_when_the_release_is_already_present() -> None:
+    """Restoring a deleted tag must progress the chain even without a new entry."""
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
+    previous = _index()
+    recovered = recover_catalog_entry(
+        previous=previous,
+        previous_manifest_digest="sha256:" + "e" * 64,
+        entry=previous["spec"]["entries"][0],
+        source_id="local-quay",
+        issued_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+
+    assert recovered["metadata"]["generation"] == 43
+    assert [entry["name"] for entry in recovered["spec"]["entries"]] == ["aap", "github"]

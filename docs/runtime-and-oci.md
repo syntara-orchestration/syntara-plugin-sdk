@@ -70,5 +70,8 @@ does not hard-code a deployment mirror in the manifest.
 
 Catalogs are discovery indexes, not the source of truth for an artifact. Use
 `syntara-plugin catalog update` to explicitly create or update one after an
-artifact is published. See the [user guide](user-guide.md) for the operational
-commands and [build settings reference](build-settings.md) for catalog defaults.
+artifact is published. If its mutable tag is lost, use
+`syntara-plugin catalog recover` with Syntara's last accepted immutable index
+digest; this continues the trusted chain instead of replaying generation one.
+See the [user guide](user-guide.md) for the operational commands and [build
+settings reference](build-settings.md) for catalog defaults.

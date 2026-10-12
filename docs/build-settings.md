@@ -47,7 +47,7 @@ catalog:
 | Key | Meaning |
 | --- | --- |
 | `verbose` | Optional default for verbose progress on commands that support `--verbose`. |
-| `json` | Optional default for machine-readable JSON output on `validate`, `inspect`, `build`, `publish`, and `catalog update`. |
+| `json` | Optional default for machine-readable JSON output on `validate`, `inspect`, `build`, `publish`, `catalog update`, and `catalog recover`. |
 
 ## `registry`
 

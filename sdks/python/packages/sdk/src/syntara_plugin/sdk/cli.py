@@ -30,6 +30,7 @@ from .catalog import (
     CatalogIndexUpdateError,
     build_catalog_index_artifact,
     merge_catalog_entry,
+    recover_catalog_entry,
 )
 from .authoring import BuildRequest, CompilationError, CompilationResult, compile_workspace
 from .registry import (
@@ -54,6 +55,7 @@ from .workload import WorkloadBuildError, WorkloadBuildRequest, build_and_push_w
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MACHINE_READABLE_OUTPUT_HELP = "Print machine-readable output."
 
 
@@ -82,6 +84,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _publish_artifact(arguments)
     if arguments.command == "catalog" and arguments.catalog_command == "update":
         return _update_catalog(arguments)
+    if arguments.command == "catalog" and arguments.catalog_command == "recover":
+        return _recover_catalog(arguments)
     parser.error("a command is required")
     return 2
 
@@ -238,6 +242,49 @@ def _parser() -> argparse.ArgumentParser:
     update.add_argument(
         "--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP
     )
+    recover = catalog_commands.add_parser(
+        "recover",
+        help="Restore a lost catalog channel from Syntara's last accepted immutable index.",
+    )
+    recover.add_argument(
+        "artifact", type=Path, nargs="?", help="Published OCI-layout .oci.tar plugin artifact."
+    )
+    _add_settings_argument(recover)
+    recover.add_argument(
+        "--previous-index-digest",
+        required=True,
+        help="Immutable digest of the catalog index last accepted by Syntara.",
+    )
+    recover.add_argument(
+        "--catalog-source-id", help="Catalog source ID; overrides catalog.sourceId."
+    )
+    recover.add_argument(
+        "--catalog-repository",
+        help="Catalog OCI repository path; overrides registry.catalogRepository.",
+    )
+    recover.add_argument("--catalog-channel", help="Catalog OCI tag; overrides catalog.channel.")
+    recover.add_argument(
+        "--expires-in-hours",
+        type=int,
+        help="Catalog validity period; overrides catalog.expiresInHours.",
+    )
+    recover.add_argument(
+        "--registry-origin", help="Registry origin, including scheme; overrides registry.origin."
+    )
+    recover.add_argument("--username", help="Registry username; overrides registry.username.")
+    _add_registry_authentication_arguments(recover, operation="catalog recovery")
+    recover.add_argument(
+        "--allow-insecure-loopback-http",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow HTTP only for localhost or 127.0.0.1 developer registries; overrides registry.allowInsecureLoopbackHttp.",
+    )
+    recover.add_argument(
+        "--verbose", action="store_true", default=None, help="Show concise catalog phases."
+    )
+    recover.add_argument(
+        "--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP
+    )
     return parser
 
 
@@ -308,7 +355,7 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
 
     if arguments.command in {"build", "publish"}:
         _resolve_publication_arguments(arguments, settings)
-    if arguments.command == "catalog" and arguments.catalog_command == "update":
+    if arguments.command == "catalog" and arguments.catalog_command in {"update", "recover"}:
         _resolve_catalog_arguments(arguments, settings)
     if arguments.command == "build":
         arguments.output = _required_path(
@@ -766,6 +813,34 @@ def _update_catalog(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _recover_catalog(arguments: argparse.Namespace) -> int:
+    """Restore a catalog channel by continuing an accepted immutable chain."""
+
+    try:
+        payload = _run_catalog_recovery(arguments)
+    except SettingsError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    except (
+        ArtifactArchiveError,
+        CatalogIndexArtifactBuildError,
+        CatalogIndexPublicationError,
+        CatalogIndexUpdateError,
+        ValueError,
+    ) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    if arguments.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"Recovered catalog index: {payload['immutableReference']}")
+        print(f"Channel: {payload['repository']}:{payload['channel']}")
+        print(f"Generation: {payload['generation']}")
+        print(f"Previous accepted index: {payload['previousIndexDigest']}")
+    return 0
+
+
 def _run_catalog_update(arguments: argparse.Namespace) -> dict[str, object]:
     credentials = _publication_credentials(arguments, operation="catalog update")
     _require_catalog_configuration(arguments)
@@ -780,6 +855,42 @@ def _run_catalog_update(arguments: argparse.Namespace) -> dict[str, object]:
     return _catalog_update_payload(
         arguments, publisher, current, entry, metadata, document, idempotent
     )
+
+
+def _run_catalog_recovery(arguments: argparse.Namespace) -> dict[str, object]:
+    if _SHA256_DIGEST.fullmatch(arguments.previous_index_digest) is None:
+        raise SettingsError("--previous-index-digest must be a sha256 digest")
+    credentials = _publication_credentials(arguments, operation="catalog recovery")
+    _require_catalog_configuration(arguments)
+    artifact = read_plugin_artifact_archive(arguments.artifact)
+    entry = _catalog_entry(artifact, _required_catalog_artifact_repository(arguments))
+    publisher = _catalog_publisher(arguments, credentials)
+    _phase(arguments, "Reading Syntara's last accepted immutable catalog index")
+    previous = publisher.read_immutable(arguments.previous_index_digest)
+    now = datetime.now(UTC)
+    document = recover_catalog_entry(
+        previous=previous.document,
+        previous_manifest_digest=previous.manifest_digest,
+        entry=entry,
+        source_id=arguments.catalog_source_id,
+        issued_at=now,
+        expires_at=now + timedelta(hours=arguments.expires_in_hours),
+    )
+    metadata = _mapping(document["metadata"], "catalog metadata")
+    index_artifact = build_catalog_index_artifact(document)
+    _phase(arguments, "Publishing the recovered catalog index")
+    publication = publisher.publish(index_artifact)
+    return {
+        "catalogIndexDigest": publication.manifest_digest,
+        "channel": publication.channel,
+        "entry": entry,
+        "generation": metadata["generation"],
+        "immutableReference": publication.immutable_reference,
+        "ok": True,
+        "previousIndexDigest": previous.manifest_digest,
+        "recovered": True,
+        "repository": publication.repository,
+    }
 
 
 def _require_catalog_configuration(arguments: argparse.Namespace) -> None:

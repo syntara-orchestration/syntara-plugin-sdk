@@ -73,4 +73,17 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update \
 
 The command reads the configured catalog channel, verifies it, and either creates generation `1` or appends one new immutable plugin entry. It preserves existing entries and links the new index through `previousIndexDigest`.
 
-An exact retry is a no-op. Catalog expiration renewal and full catalog recovery are not automated yet; they must be owned by the catalog publisher rather than individual plugin authors.
+An exact retry is a no-op. Catalog expiry does not remove plugin artifacts; publish a normal catalog update before its expiry to renew the index.
+
+### Recover a lost catalog channel
+
+If the mutable catalog tag was deleted or replaced, do not recreate generation `1`: Syntara will correctly reject that replay because it records the digest and generation it last accepted. A catalog publisher must recover from that trusted immutable revision:
+
+```sh
+printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog recover \
+  ./dist/my-plugin.oci.tar \
+  --previous-index-digest sha256:LAST_ACCEPTED_CATALOG_DIGEST \
+  --password-stdin --json
+```
+
+`catalog recover` fetches that digest directly (not the mutable tag), preserves its entries, adds the supplied release when needed, and publishes a successor generation. The digest must come from Syntara's catalog-source reconciliation record or another durable release record. If the registry has garbage-collected that immutable revision, restore it from the catalog publisher's archived OCI artifact before recovering; the SDK never bypasses the trusted chain.

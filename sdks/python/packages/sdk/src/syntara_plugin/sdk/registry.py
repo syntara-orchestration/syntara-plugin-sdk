@@ -276,12 +276,37 @@ class CatalogIndexPublisher:
         A missing channel is a normal first-publication state.
         """
 
+        return self._read_catalog(self._target.channel, allow_missing=True)
+
+    def read_immutable(self, manifest_digest: str) -> CatalogIndexSnapshot:
+        """Read one known immutable catalog revision for explicit recovery.
+
+        The caller supplies the Control Plane's last accepted digest.  Reading
+        by digest rather than the mutable channel prevents a deleted or
+        replayed tag from becoming the recovery base.
+        """
+
+        if not _is_sha256_digest(manifest_digest):
+            raise CatalogIndexPublicationError("CATALOG_INDEX_DIGEST_INVALID")
+        snapshot = self._read_catalog(manifest_digest, allow_missing=False)
+        assert snapshot is not None
+        if snapshot.manifest_digest != manifest_digest:
+            raise CatalogIndexPublicationError("CATALOG_INDEX_MANIFEST_DIGEST_INVALID")
+        return snapshot
+
+    def _read_catalog(
+        self, reference: str, *, allow_missing: bool
+    ) -> CatalogIndexSnapshot | None:
+        """Read and verify one channel or immutable catalog reference."""
+
         manifest_response = self._request(
             "GET",
-            f"{self._repository_base_url()}/manifests/{quote(self._target.channel, safe='')}",
+            f"{self._repository_base_url()}/manifests/{quote(reference, safe=':')}",
         )
         if manifest_response.status_code == 404:
-            return None
+            if allow_missing:
+                return None
+            raise CatalogIndexPublicationError("CATALOG_INDEX_NOT_FOUND")
         if manifest_response.status_code != 200:
             raise CatalogIndexPublicationError("CATALOG_INDEX_FETCH_FAILED")
         manifest_digest = manifest_response.header("Docker-Content-Digest")

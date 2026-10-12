@@ -26,6 +26,7 @@ from .catalog import (
     CatalogIndexUpdateError,
     build_catalog_index_artifact,
     merge_catalog_entry,
+    recover_catalog_entry,
 )
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, OciDescriptor
 from .registry import (
@@ -99,6 +100,7 @@ __all__ = [
     "build_plugin_artifact",
     "build_catalog_index_artifact",
     "merge_catalog_entry",
+    "recover_catalog_entry",
     "compile_model",
     "compile_workspace",
     "load_bundle",

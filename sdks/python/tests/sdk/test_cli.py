@@ -739,6 +739,110 @@ catalog:
     assert published["credentials"].password == "not-printed"
 
 
+def test_catalog_recover_continues_from_the_explicit_accepted_index(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A lost mutable tag is restored from a verified immutable predecessor."""
+    workspace = tmp_path / "status-tools"
+    archive = tmp_path / "dist/status-tools.oci.tar"
+    assert main(["init", str(workspace)]) == 0
+    capsys.readouterr()
+    assert main(["build", str(workspace / "plugin.yaml"), "--output", str(archive)]) == 0
+    capsys.readouterr()
+    settings = tmp_path / SETTINGS_FILENAME
+    settings.write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: PluginBuildSettings
+registry:
+  origin: https://registry.example.test
+  artifactRepository: acme/plugins/status-tools
+  catalogRepository: acme/catalog-index
+  username: publisher
+publish:
+  artifact: {archive}
+catalog:
+  sourceId: public-catalog
+  channel: stable
+  expiresInHours: 168
+""",
+        encoding="utf-8",
+    )
+    previous_digest = "sha256:" + "f" * 64
+    previous_document = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "CatalogIndex",
+        "metadata": {
+            "sourceId": "public-catalog",
+            "generation": 2,
+            "issuedAt": "2026-10-01T12:00:00Z",
+            "expiresAt": "2026-10-08T12:00:00Z",
+            "previousIndexDigest": "sha256:" + "e" * 64,
+        },
+        "spec": {
+            "contractVersion": "syntara.io/v1alpha1",
+            "entries": [
+                {
+                    "namespace": "example",
+                    "name": "existing",
+                    "version": "0.1.0",
+                    "artifactRepository": "acme/plugins/existing",
+                    "artifactDigest": "sha256:" + "a" * 64,
+                    "documentationDigest": "sha256:" + "b" * 64,
+                    "runtimeOwnerships": ["platform-runner"],
+                }
+            ],
+        },
+    }
+    published: dict[str, object] = {}
+
+    class Publisher:
+        def __init__(self, target, *, credentials) -> None:
+            published["target"] = target
+            published["credentials"] = credentials
+
+        def read_immutable(self, digest):
+            assert digest == previous_digest
+            return SimpleNamespace(manifest_digest=digest, document=previous_document)
+
+        def publish(self, artifact):
+            published["artifact"] = artifact
+            return SimpleNamespace(
+                channel="stable",
+                immutable_reference=f"acme/catalog-index@{artifact.digest}",
+                manifest_digest=artifact.digest,
+                repository="acme/catalog-index",
+            )
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli.CatalogIndexPublisher", Publisher)
+    monkeypatch.setattr("sys.stdin.read", lambda: "not-printed\n")
+
+    assert (
+        main(
+            [
+                "catalog",
+                "recover",
+                "--settings",
+                str(settings),
+                "--previous-index-digest",
+                previous_digest,
+                "--password-stdin",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    recovered = json.loads(published["artifact"].catalog_index.content)
+    assert payload["recovered"] is True
+    assert payload["generation"] == 3
+    assert payload["previousIndexDigest"] == previous_digest
+    assert recovered["metadata"]["previousIndexDigest"] == previous_digest
+    assert [entry["name"] for entry in recovered["spec"]["entries"]] == [
+        "existing",
+        "status-tools",
+    ]
+
+
 def test_catalog_entry_records_all_runtime_ownerships() -> None:
     """One plugin can contain both platform-runner and custom-workload actions."""
     descriptor = {

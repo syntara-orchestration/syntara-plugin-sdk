@@ -222,6 +222,26 @@ def test_publisher_reads_and_verifies_the_current_catalog_channel() -> None:
     )
 
 
+def test_publisher_reads_one_immutable_catalog_revision_for_recovery() -> None:
+    artifact = _artifact()
+    transport = _Transport(
+        [
+            OciRegistryResponse(
+                200,
+                {"Docker-Content-Digest": artifact.digest},
+                artifact.manifest.content,
+            ),
+            OciRegistryResponse(200, {}, artifact.config.content),
+            OciRegistryResponse(200, {}, artifact.catalog_index.content),
+        ]
+    )
+
+    snapshot = CatalogIndexPublisher(_target(), transport=transport).read_immutable(artifact.digest)
+
+    assert snapshot.manifest_digest == artifact.digest
+    assert transport.requests[0][1].endswith(f"/manifests/{artifact.digest}")
+
+
 def test_publisher_rejects_current_catalog_with_unverified_manifest_digest() -> None:
     artifact = _artifact()
     transport = _Transport(

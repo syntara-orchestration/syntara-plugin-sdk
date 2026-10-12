@@ -73,8 +73,12 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update \
 
 `publish` uploads only the immutable plugin artifact. `catalog update` is a
 separate, serialized release operation that makes that artifact discoverable
-to a Syntara catalog source. For an action using an author-owned container,
-use `syntara-plugin build --with-workload --publish` after configuring the
+to a Syntara catalog source. If a mutable catalog tag is deleted or replaced,
+the catalog publisher must recover it from the exact digest that Syntara last
+accepted; use `syntara-plugin catalog recover --previous-index-digest ...`.
+This preserves rollback protection rather than restarting at generation one.
+For an action using an author-owned container, use
+`syntara-plugin build --with-workload --publish` after configuring the
 `build.workload` settings; see the [user guide](docs/user-guide.md).
 
 For local development, `registry.authFile` can point to a local Docker- or
@@ -128,8 +132,8 @@ facing workflow changes.
 ## Current scope
 
 The SDK supports offline plugin packaging, bounded OCI publication, explicit
-catalog updates, and a developer-preview Podman workload build. Artifact
-signing, catalog refresh/recovery automation, and end-to-end Execution Plane
+catalog updates and recovery, and a developer-preview Podman workload build.
+Artifact signing, catalog refresh automation, and end-to-end Execution Plane
 delivery of credentials to custom workloads remain follow-on work. See
 [ADR 0006](.sdlc/adrs/0006-deferred-custom-workload-build-ux.md) for the
 custom-workload preview boundary.

@@ -191,6 +191,68 @@ def merge_catalog_entry(
     return document, False
 
 
+def recover_catalog_entry(
+    *,
+    previous: Mapping[str, Any],
+    previous_manifest_digest: str,
+    entry: Mapping[str, Any],
+    source_id: str,
+    issued_at: datetime,
+    expires_at: datetime,
+) -> dict[str, Any]:
+    """Create a successor for a lost mutable catalog channel.
+
+    Recovery starts from a caller-supplied, immutable catalog that was
+    previously accepted by Syntara.  It deliberately never reads or trusts
+    the mutable channel: that tag may have been deleted, expired, or replaced
+    with an older index.  Even when ``entry`` already exists, recovery writes a
+    new generation so the channel can be restored without weakening rollback
+    protection.
+    """
+
+    if issued_at.tzinfo is None or expires_at.tzinfo is None or expires_at <= issued_at:
+        raise CatalogIndexUpdateError("catalog timestamps must be timezone-aware and increasing")
+    if not source_id:
+        raise CatalogIndexUpdateError("catalog source_id must be non-empty")
+    if not previous_manifest_digest:
+        raise CatalogIndexUpdateError("catalog recovery requires a previous manifest digest")
+
+    metadata = _mapping(previous.get("metadata"), "previous metadata")
+    specification = _mapping(previous.get("spec"), "previous spec")
+    if metadata.get("sourceId") != source_id:
+        raise CatalogIndexUpdateError(
+            "previous catalog sourceId does not match the requested source"
+        )
+    generation = _catalog_generation(metadata)
+    candidate = dict(entry)
+    identity = _entry_identity(candidate)
+    entries = _entries_with_candidate(specification, candidate, identity)
+    if entries is None:
+        raw_entries = specification.get("entries")
+        assert isinstance(raw_entries, list)
+        entries = [
+            dict(_mapping(existing, f"previous spec.entries[{index}]"))
+            for index, existing in enumerate(raw_entries)
+        ]
+
+    document: dict[str, Any] = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "CatalogIndex",
+        "metadata": {
+            "sourceId": source_id,
+            "generation": generation + 1,
+            "issuedAt": _rfc3339(issued_at),
+            "expiresAt": _rfc3339(expires_at),
+            "previousIndexDigest": previous_manifest_digest,
+        },
+        "spec": {
+            "contractVersion": "syntara.io/v1alpha1",
+            "entries": sorted(entries, key=_entry_identity),
+        },
+    }
+    return document
+
+
 def _new_catalog_state(
     candidate: dict[str, Any], current_manifest_digest: str | None
 ) -> _CatalogMergeState:
