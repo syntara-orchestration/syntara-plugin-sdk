@@ -961,10 +961,11 @@ def _credentials_from_auth_file(path: Path, registry_origin: str | None) -> Regi
     if not host:
         raise SettingsError("registry origin must include a host for --registry-auth-file")
     auths = document["auths"]
+    candidates = (host, registry_origin.rstrip("/"), f"https://{host}")
     record = next(
         (
             auths[candidate]
-            for candidate in (host, registry_origin.rstrip("/"), f"https://{host}", f"http://{host}")
+            for candidate in candidates
             if isinstance(auths.get(candidate), Mapping)
         ),
         None,

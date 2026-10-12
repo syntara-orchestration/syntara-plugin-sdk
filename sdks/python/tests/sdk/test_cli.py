@@ -29,6 +29,21 @@ def test_registry_auth_file_loads_only_the_selected_registry_credential(tmp_path
     assert credentials.password == "local-password"
 
 
+def test_registry_auth_file_supports_configured_loopback_http_origin(tmp_path: Path) -> None:
+    """The configured HTTP origin is itself a valid Podman auth-file key."""
+    auth_file = tmp_path / "auth.json"
+    token = base64.b64encode(b"publisher:local-password").decode("ascii")
+    auth_file.write_text(
+        json.dumps({"auths": {"http://localhost:8443": {"auth": token}}}),
+        encoding="utf-8",
+    )
+
+    credentials = _credentials_from_auth_file(auth_file, "http://localhost:8443")
+
+    assert credentials.username == "publisher"
+    assert credentials.password == "local-password"
+
+
 def test_init_creates_a_compilable_workspace_and_validate_reports_its_digest(
     tmp_path: Path,
     capsys,
