@@ -16,6 +16,7 @@ build:
 
 publish:
   channel: 0.1.0
+  updateCatalog: true
 
 catalog:
   sourceId: example-catalog

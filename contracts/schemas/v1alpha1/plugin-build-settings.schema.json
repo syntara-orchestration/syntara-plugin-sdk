@@ -147,6 +147,11 @@
           "type": "string",
           "minLength": 1,
           "description": "OCI tag channel for the published plugin metadata artifact."
+        },
+        "updateCatalog": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, publish also creates or advances the configured catalog index. Set false only for a staged release that must not yet be discoverable."
         }
       }
     },

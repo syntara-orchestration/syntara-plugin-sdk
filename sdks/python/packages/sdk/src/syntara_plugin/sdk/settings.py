@@ -74,6 +74,7 @@ class PublishSettings:
 
     artifact: Path | None = None
     channel: str | None = None
+    update_catalog: bool = True
 
 
 @dataclass(frozen=True)
@@ -272,12 +273,14 @@ def _parse_publish(value: object, source: Path) -> PublishSettings:
     document = _mapping(value, "publish")
     _reject_unknown_keys(
         document,
-        {"artifact", "channel"},
+        {"artifact", "channel", "updateCatalog"},
         "publish",
     )
+    update_catalog = _boolean(document.get("updateCatalog"), "publish.updateCatalog")
     return PublishSettings(
         artifact=_path(document.get("artifact"), source, "publish.artifact"),
         channel=_string(document.get("channel"), "publish.channel"),
+        update_catalog=True if update_catalog is None else update_catalog,
     )
 
 

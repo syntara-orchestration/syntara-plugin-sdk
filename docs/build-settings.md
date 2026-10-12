@@ -28,6 +28,7 @@ build:
     imageId: example-workload
 publish:
   channel: 0.1.0
+  updateCatalog: true
 catalog:
   sourceId: production-catalog
   channel: stable
@@ -86,6 +87,7 @@ catalog:
 | --- | --- |
 | `publish.artifact` | Optional existing archive path for `publish` or `catalog update`. |
 | `publish.channel` | OCI tag used when publishing the plugin metadata artifact. |
+| `publish.updateCatalog` | Defaults to `true`. Publish creates or advances the configured catalog index after the artifact is published. Set `false` only to stage a release without making it discoverable. |
 | `catalog.sourceId` | Stable Syntara catalog-source identity. |
 | `catalog.channel` | OCI tag of the catalog index, commonly `stable`. |
 | `catalog.expiresInHours` | Lifetime assigned to a newly published catalog index. It does not delete plugin artifacts when it expires. |

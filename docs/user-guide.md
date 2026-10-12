@@ -43,7 +43,7 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish \
   --password-stdin
 ```
 
-The command verifies the local archive first, uploads its immutable blobs, and reports an immutable `repository@sha256:...` reference. It does not recompile the source. Production registries require HTTPS; HTTP is allowed only for an explicit loopback development registry.
+The command verifies the local archive first, uploads its immutable blobs, advances the configured catalog index, and reports immutable references for both. It does not recompile the source. Production registries require HTTPS; HTTP is allowed only for an explicit loopback development registry. Set `publish.updateCatalog: false` (or pass `--no-update-catalog`) only when staging a release that must not yet be discoverable.
 
 ## Optional custom-workload image build
 
@@ -54,16 +54,17 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin build \
   --with-workload --publish --password-stdin --verbose
 ```
 
-This performs two distinct OCI publications:
+This performs three OCI publications:
 
 1. Podman pushes the workload image to `registry.workloadRepository` and returns its immutable digest.
 2. The SDK publishes the plugin metadata archive to `registry.artifactRepository`.
+3. The SDK creates or advances the configured catalog index so Syntara can discover the release.
 
 The feature does not yet prove custom-workload execution in the Execution Plane, secret delivery, signing, or production egress policy. See [ADR 0006](../.sdlc/adrs/0006-deferred-custom-workload-build-ux.md).
 
-## Update a catalog
+## Administer or recover a catalog
 
-Catalog mutation is a separate, shared release operation. It should normally run in a serialized platform release pipeline after review and signing:
+Normal publication updates the configured catalog automatically. Use the explicit catalog command only for a serialized administrative update, such as promoting an already-published artifact after review and signing:
 
 ```sh
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update \
@@ -73,7 +74,7 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update \
 
 The command reads the configured catalog channel, verifies it, and either creates generation `1` or appends one new immutable plugin entry. It preserves existing entries and links the new index through `previousIndexDigest`.
 
-An exact retry is a no-op. Catalog expiry does not remove plugin artifacts; publish a normal catalog update before its expiry to renew the index.
+An exact retry is a no-op. Catalog expiry does not remove plugin artifacts; publish a normal release (or run this administrative update) before expiry to renew the index.
 
 ### Recover a lost catalog channel
 

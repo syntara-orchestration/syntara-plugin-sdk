@@ -380,6 +380,7 @@ def test_publish_reports_immutable_reference(tmp_path: Path, capsys, monkeypatch
                 "--username",
                 "publisher",
                 "--password-stdin",
+                "--no-update-catalog",
                 "--json",
             ]
         )
@@ -451,6 +452,7 @@ def test_build_reads_local_auth_and_output_preferences_from_settings(
                 "  artifactOutput: dist/status-tools.oci.tar",
                 "publish:",
                 "  channel: 0.1.0",
+                "  updateCatalog: false",
                 "",
             )
         ),
@@ -469,6 +471,63 @@ def test_build_reads_local_auth_and_output_preferences_from_settings(
     assert json.loads(capsys.readouterr().out)["ok"] is True
     assert received["auth_file"] == auth_file
     assert received["verbose"] is True
+
+
+def test_publish_updates_the_configured_catalog_by_default(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A normal plugin release publishes its discoverability record without another command."""
+    workspace = tmp_path / "status-tools"
+    assert main(["init", str(workspace)]) == 0
+    capsys.readouterr()
+    settings = workspace / SETTINGS_FILENAME
+    settings.write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: PluginBuildSettings
+manifest: plugin.yaml
+registry:
+  origin: https://registry.example.test
+  artifactRepository: acme/plugins/status-tools
+  catalogRepository: acme/catalog-index
+  username: publisher
+build:
+  artifactOutput: dist/status-tools.oci.tar
+publish:
+  channel: 0.1.0
+catalog:
+  sourceId: public-catalog
+  channel: stable
+  expiresInHours: 168
+""",
+        encoding="utf-8",
+    )
+    published: dict[str, object] = {}
+
+    def publish(arguments, archive):
+        published["archive"] = archive
+        return {
+            "immutableReference": "acme/plugins/status-tools@sha256:" + "a" * 64,
+            "repository": "acme/plugins/status-tools",
+            "channel": "0.1.0",
+        }
+
+    def update_catalog(arguments, *, artifact_path):
+        published["catalog_archive"] = artifact_path
+        assert arguments.catalog_repository == "acme/catalog-index"
+        assert arguments.catalog_source_id == "public-catalog"
+        return {
+            "immutableReference": "acme/catalog-index@sha256:" + "b" * 64,
+            "generation": 1,
+        }
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli._publish_archive", publish)
+    monkeypatch.setattr("syntara_plugin.sdk.cli._run_catalog_update", update_catalog)
+
+    assert main(["build", "--settings", str(settings), "--publish", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["catalog"]["generation"] == 1
+    assert published["catalog_archive"] == workspace / "dist/status-tools.oci.tar"
 
 
 def test_settings_rejects_registry_secrets(tmp_path: Path, capsys) -> None:
@@ -594,6 +653,7 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
                 "    imageId: custom-workload",
                 "publish:",
                 "  channel: 0.1.0",
+                "  updateCatalog: false",
                 "",
             )
         ),

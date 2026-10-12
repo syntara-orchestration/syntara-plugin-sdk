@@ -68,9 +68,10 @@ plugin's immutable artifact identity and the deployment-resolved pull
 reference. The registry administrator controls mirroring; the plugin author
 does not hard-code a deployment mirror in the manifest.
 
-Catalogs are discovery indexes, not the source of truth for an artifact. Use
-`syntara-plugin catalog update` to explicitly create or update one after an
-artifact is published. If its mutable tag is lost, use
+Catalogs are discovery indexes, not the source of truth for an artifact.
+`syntara-plugin publish` creates or updates the configured index by default;
+set `publish.updateCatalog: false` only for a staged release. Use
+`syntara-plugin catalog update` for release administration. If its mutable tag is lost, use
 `syntara-plugin catalog recover` with Syntara's last accepted immutable index
 digest; this continues the trusted chain instead of replaying generation one.
 See the [user guide](user-guide.md) for the operational commands and [build

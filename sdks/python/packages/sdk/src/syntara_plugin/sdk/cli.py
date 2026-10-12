@@ -141,7 +141,7 @@ def _parser() -> argparse.ArgumentParser:
             compile_command.add_argument(
                 "--publish",
                 action="store_true",
-                help="Publish the newly written metadata archive after building it.",
+                help="Publish the newly written metadata archive and, by default, update its catalog.",
             )
             compile_command.add_argument(
                 "--workload-engine", help="Container engine for --with-workload (Podman only)."
@@ -169,6 +169,7 @@ def _parser() -> argparse.ArgumentParser:
                 help="Logical manifest workload ID to bind to the pushed image digest.",
             )
             _add_publication_arguments(compile_command)
+            _add_catalog_publication_arguments(compile_command)
             compile_command.add_argument(
                 "--verbose",
                 action="store_true",
@@ -185,6 +186,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     _add_settings_argument(publish)
     _add_publication_arguments(publish)
+    _add_catalog_publication_arguments(publish)
     publish.add_argument(
         "--verbose",
         action="store_true",
@@ -336,6 +338,41 @@ def _add_publication_arguments(command: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_catalog_publication_arguments(command: argparse.ArgumentParser) -> None:
+    """Add the catalog controls shared by ordinary publish commands.
+
+    A release normally becomes discoverable immediately.  The explicit opt-out
+    preserves staged-release and catalog-administration workflows without
+    making them the default authoring experience.
+    """
+
+    command.add_argument(
+        "--update-catalog",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Create or advance the configured catalog index after publication (default: true).",
+    )
+    command.add_argument(
+        "--catalog-source-id", help="Catalog source ID; overrides catalog.sourceId."
+    )
+    command.add_argument(
+        "--catalog-repository",
+        help="Catalog OCI repository path; overrides registry.catalogRepository.",
+    )
+    command.add_argument(
+        "--catalog-channel", help="Catalog OCI tag; overrides catalog.channel."
+    )
+    command.add_argument(
+        "--expires-in-hours",
+        type=int,
+        help="Catalog validity period; overrides catalog.expiresInHours.",
+    )
+    command.add_argument(
+        "--expected-index-digest",
+        help="Reject publication unless the current catalog manifest has this digest.",
+    )
+
+
 def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
     """Apply the documented command-line-over-settings precedence once."""
 
@@ -355,6 +392,7 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
 
     if arguments.command in {"build", "publish"}:
         _resolve_publication_arguments(arguments, settings)
+        _resolve_catalog_publication_arguments(arguments, settings)
     if arguments.command == "catalog" and arguments.catalog_command in {"update", "recover"}:
         _resolve_catalog_arguments(arguments, settings)
     if arguments.command == "build":
@@ -399,6 +437,25 @@ def _resolve_publication_arguments(
         registry.allow_insecure_loopback_http,
         default=False,
     )
+
+
+def _resolve_catalog_publication_arguments(
+    arguments: argparse.Namespace, settings: PluginBuildSettings
+) -> None:
+    """Resolve catalog release controls for a build or publish invocation."""
+
+    catalog = settings.catalog
+    arguments.update_catalog = _boolean_option(
+        arguments.update_catalog, settings.publish.update_catalog, default=True
+    )
+    if not arguments.update_catalog:
+        return
+    arguments.catalog_repository = arguments.catalog_repository or settings.registry.catalog_repository
+    arguments.catalog_channel = arguments.catalog_channel or catalog.channel
+    arguments.catalog_source_id = arguments.catalog_source_id or catalog.source_id
+    arguments.expires_in_hours = arguments.expires_in_hours or catalog.expires_in_hours
+    if arguments.expires_in_hours is not None and arguments.expires_in_hours <= 0:
+        raise SettingsError("--expires-in-hours must be a positive integer")
 
 
 def _resolve_catalog_arguments(
@@ -710,10 +767,19 @@ def _publish_built_archive(
     try:
         _phase(arguments, "Publishing the metadata artifact")
         payload["publication"] = _publish_archive(arguments, output)
+        if arguments.update_catalog:
+            _phase(arguments, "Updating the catalog index")
+            payload["catalog"] = _run_catalog_update(arguments, artifact_path=output)
     except SettingsError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    except (ArtifactArchiveError, CatalogIndexPublicationError, ValueError) as error:
+    except (
+        ArtifactArchiveError,
+        CatalogIndexArtifactBuildError,
+        CatalogIndexPublicationError,
+        CatalogIndexUpdateError,
+        ValueError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     payload["ok"] = True
@@ -750,19 +816,29 @@ def _print_build_result(
         assert isinstance(publication, Mapping)
         print(f"Published: {publication['immutableReference']}")
         print(f"Channel: {publication['repository']}:{publication['channel']}")
+        catalog = payload.get("catalog")
+        if isinstance(catalog, Mapping):
+            print(f"Catalog index: {catalog['immutableReference']}")
 
 
 def _publish_artifact(arguments: argparse.Namespace) -> int:
-    """Publish exactly one verified portable archive to an explicit destination."""
+    """Publish one verified archive and normally advance its configured catalog."""
     try:
         _phase(arguments, "Publishing the metadata artifact")
         payload = _publish_archive(arguments, arguments.artifact)
+        if arguments.update_catalog:
+            _phase(arguments, "Updating the catalog index")
+            payload["catalog"] = _run_catalog_update(
+                arguments, artifact_path=arguments.artifact
+            )
     except SettingsError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     except (
         ArtifactArchiveError,
+        CatalogIndexArtifactBuildError,
         CatalogIndexPublicationError,
+        CatalogIndexUpdateError,
         ValueError,
     ) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -777,12 +853,7 @@ def _publish_artifact(arguments: argparse.Namespace) -> int:
 
 
 def _update_catalog(arguments: argparse.Namespace) -> int:
-    """Advance one catalog channel from an already-published plugin archive.
-
-    This is deliberately a separate release operation from plugin publication:
-    the catalog is a shared channel and may have its own review, signature, and
-    single-writer CI policy.
-    """
+    """Advance one catalog channel during recovery or release administration."""
 
     try:
         payload = _run_catalog_update(arguments)
@@ -841,10 +912,12 @@ def _recover_catalog(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _run_catalog_update(arguments: argparse.Namespace) -> dict[str, object]:
+def _run_catalog_update(
+    arguments: argparse.Namespace, *, artifact_path: Path | None = None
+) -> dict[str, object]:
     credentials = _publication_credentials(arguments, operation="catalog update")
     _require_catalog_configuration(arguments)
-    artifact = read_plugin_artifact_archive(arguments.artifact)
+    artifact = read_plugin_artifact_archive(artifact_path or arguments.artifact)
     entry = _catalog_entry(artifact, _required_catalog_artifact_repository(arguments))
     publisher = _catalog_publisher(arguments, credentials)
     _phase(arguments, "Reading the current catalog index")

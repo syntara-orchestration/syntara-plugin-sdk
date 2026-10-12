@@ -62,21 +62,13 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish \
   --password-stdin
 ```
 
-Then explicitly create or update the shared catalog index:
-
-```sh
-printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update \
-  ./dist/my-plugin.oci.tar \
-  --settings syntara-plugin.yaml \
-  --password-stdin
-```
-
-`publish` uploads only the immutable plugin artifact. `catalog update` is a
-separate, serialized release operation that makes that artifact discoverable
-to a Syntara catalog source. If a mutable catalog tag is deleted or replaced,
-the catalog publisher must recover it from the exact digest that Syntara last
-accepted; use `syntara-plugin catalog recover --previous-index-digest ...`.
-This preserves rollback protection rather than restarting at generation one.
+By default, `publish` uploads the immutable plugin artifact and then creates
+or advances the configured catalog index, making the release discoverable.
+Set `publish.updateCatalog: false` only for a staged release that must not yet
+be advertised. `catalog update` remains available for release administration
+and `catalog recover --previous-index-digest ...` repairs a deleted or replaced
+mutable catalog tag from the exact digest Syntara last accepted. This preserves
+rollback protection rather than restarting at generation one.
 For an action using an author-owned container, use
 `syntara-plugin build --with-workload --publish` after configuring the
 `build.workload` settings; see the [user guide](docs/user-guide.md).
@@ -131,8 +123,8 @@ facing workflow changes.
 
 ## Current scope
 
-The SDK supports offline plugin packaging, bounded OCI publication, explicit
-catalog updates and recovery, and a developer-preview Podman workload build.
+The SDK supports offline plugin packaging, bounded OCI publication with
+default catalog publication, catalog recovery, and a developer-preview Podman workload build.
 Artifact signing, catalog refresh automation, and end-to-end Execution Plane
 delivery of credentials to custom workloads remain follow-on work. See
 [ADR 0006](.sdlc/adrs/0006-deferred-custom-workload-build-ux.md) for the
