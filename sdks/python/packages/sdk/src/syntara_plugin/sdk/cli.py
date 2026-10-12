@@ -1006,6 +1006,8 @@ def _catalog_entry(artifact: PluginArtifact, artifact_repository: str) -> dict[s
     ownerships: set[str] = set()
     for index, target in enumerate(targets):
         target_mapping = _mapping(target, f"plugin artifact target {index}")
+        if target_mapping.get("kind") != "Action":
+            continue
         runtime = _mapping(target_mapping.get("runtime"), f"plugin artifact target {index} runtime")
         kind = _required_string(runtime.get("kind"), f"plugin artifact target {index} runtime.kind")
         if kind not in {"platform-runner", "custom-workload"}:

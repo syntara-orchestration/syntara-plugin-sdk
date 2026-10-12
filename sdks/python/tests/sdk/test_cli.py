@@ -844,14 +844,16 @@ catalog:
 
 
 def test_catalog_entry_records_all_runtime_ownerships() -> None:
-    """One plugin can contain both platform-runner and custom-workload actions."""
+    """Only action targets contribute runtime ownership to a catalog entry."""
     descriptor = {
         "metadata": {"namespace": "example", "name": "mixed", "version": "0.1.0"},
         "spec": {
             "documentation": {"digest": "sha256:" + "d" * 64},
             "targets": [
-                {"runtime": {"kind": "custom-workload"}},
-                {"runtime": {"kind": "platform-runner"}},
+                {"kind": "IntegrationType", "identity": "example.connection"},
+                {"kind": "CredentialType", "identity": "example.token"},
+                {"kind": "Action", "runtime": {"kind": "custom-workload"}},
+                {"kind": "Action", "runtime": {"kind": "platform-runner"}},
             ],
         },
     }
