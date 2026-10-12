@@ -11,7 +11,6 @@ from syntara_plugin.runtime import (
     RuntimeOwnership,
 )
 
-
 DIGEST = "quay.io/acme/runtime@sha256:" + "a" * 64
 HASH = "sha256:" + "b" * 64
 

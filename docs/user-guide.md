@@ -74,7 +74,14 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update \
 
 The command reads the configured catalog channel, verifies it, and either creates generation `1` or appends one new immutable plugin entry. It preserves existing entries and links the new index through `previousIndexDigest`.
 
-An exact retry is a no-op. Catalog expiry does not remove plugin artifacts; publish a normal release (or run this administrative update) before expiry to renew the index.
+An exact retry is a no-op. Catalog expiry does not remove plugin artifacts. To renew an unchanged catalog before expiry, publish an explicit successor generation:
+
+```sh
+printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update \
+  ./dist/my-plugin.oci.tar --renew --password-stdin --json
+```
+
+This preserves every entry and advances the generation and expiry window without requiring a new plugin release.
 
 ### Recover a lost catalog channel
 

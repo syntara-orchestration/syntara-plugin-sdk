@@ -8,13 +8,13 @@ model.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 from syntara_plugin.contracts import load_bundle, validate_document
-
 
 SETTINGS_API_VERSION = "syntara.io/v1alpha1"
 SETTINGS_KIND = "PluginBuildSettings"

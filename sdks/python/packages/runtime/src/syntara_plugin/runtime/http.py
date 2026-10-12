@@ -9,14 +9,13 @@ data into a relative request path, optional JSON body, or declared output.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-import re
 from typing import Any
 from urllib.parse import quote
 
 from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
-
 
 _HTTP_METHODS = frozenset({"DELETE", "GET", "PATCH", "POST", "PUT"})
 _HTTP_OPERATION_KEYS = frozenset({"method", "path", "requestMap", "responseMap"})

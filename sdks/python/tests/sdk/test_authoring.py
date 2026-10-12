@@ -4,7 +4,6 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-
 from syntara_plugin.sdk import (
     BuildRequest,
     CompilationError,
@@ -13,7 +12,6 @@ from syntara_plugin.sdk import (
     compile_model,
     compile_workspace,
 )
-
 
 DIGEST = "quay.io/acme/issue-tools@sha256:" + "a" * 64
 
@@ -29,7 +27,11 @@ def _plugin(target: str = "steps/create-issue/manifest.yaml") -> dict[str, objec
             "displayName": "Issue tools",
             "description": "Creates GitHub issues.",
         },
-        "spec": {"workload": {"image": "plugin-workload"}, "targets": [target]},
+        "spec": {
+            "documentation": {"path": "docs/README.md"},
+            "workload": {"image": "plugin-workload"},
+            "targets": [target],
+        },
     }
 
 
@@ -43,12 +45,19 @@ def _action(source: dict[str, object]) -> dict[str, object]:
             "description": "Creates one issue.",
         },
         "spec": {
-            "runtime": {"kind": "custom-workload"},
+            "runtime": {
+                "kind": "custom-workload",
+                "entryPoint": "issue_tools.actions:CreateIssue",
+            },
             "input": source,
             "output": {"kind": "inline", "value": {"type": "object"}},
             "error": {"kind": "inline", "value": {"type": "object"}},
         },
     }
+
+
+def _typed_plugin(document: dict[str, object]) -> Plugin:
+    return Plugin(document, assets={"docs/README.md": b"# Issue tools\n"})
 
 
 def _integration() -> dict[str, object]:
@@ -110,6 +119,9 @@ def _workspace(tmp_path: Path, *, action: dict[str, object]) -> Path:
     target.parent.mkdir(parents=True)
     root.write_text(_yaml(_plugin()))
     target.write_text(_yaml(action))
+    documentation = tmp_path / "docs/README.md"
+    documentation.parent.mkdir(exist_ok=True)
+    documentation.write_text("# Issue tools\n", encoding="utf-8")
     return root
 
 
@@ -146,7 +158,7 @@ def test_yaml_and_typed_authoring_compile_to_identical_canonical_output(tmp_path
 
     yaml_result = _compile(root)
     typed_result = compile_model(
-        Plugin(_plugin()),
+        _typed_plugin(_plugin()),
         [Target("steps/create-issue/manifest.yaml", action)],
         image_bindings={"plugin-workload": DIGEST},
     )
@@ -154,6 +166,7 @@ def test_yaml_and_typed_authoring_compile_to_identical_canonical_output(tmp_path
     assert yaml_result.canonical_json() == typed_result.canonical_json()
     assert yaml_result.descriptor["spec"]["targets"][0]["runtime"] == {
         "abi": "syntara.container/v1alpha1",
+        "entryPoint": "issue_tools.actions:CreateIssue",
         "kind": "custom-workload",
         "workload": "plugin-workload",
     }
@@ -161,7 +174,10 @@ def test_yaml_and_typed_authoring_compile_to_identical_canonical_output(tmp_path
 
 def test_platform_runner_action_requires_and_preserves_its_versioned_driver() -> None:
     plugin = _plugin()
-    plugin["spec"] = {"targets": ["steps/create-issue/manifest.yaml"]}
+    plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
+        "targets": ["steps/create-issue/manifest.yaml"],
+    }
     action = _action({"kind": "inline", "value": {"type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
@@ -172,7 +188,7 @@ def test_platform_runner_action_requires_and_preserves_its_versioned_driver() ->
     }
 
     result = compile_model(
-        Plugin(plugin),
+        _typed_plugin(plugin),
         [Target("steps/create-issue/manifest.yaml", action)],
     )
 
@@ -192,6 +208,7 @@ def test_platform_runner_action_requires_and_preserves_its_versioned_driver() ->
 def test_compiler_canonicalizes_connection_types_and_binds_an_action_to_them() -> None:
     plugin = _plugin()
     plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
         "targets": [
             "integrations/github.yaml",
             "credentials/github-token.yaml",
@@ -209,7 +226,7 @@ def test_compiler_canonicalizes_connection_types_and_binds_an_action_to_them() -
     action_spec["integrationType"] = "acme.issue-tools.github-connection"
 
     result = compile_model(
-        Plugin(plugin),
+        _typed_plugin(plugin),
         [
             Target("integrations/github.yaml", _integration()),
             Target("credentials/github-token.yaml", _credential_recipe()),
@@ -229,6 +246,7 @@ def test_compiler_canonicalizes_connection_types_and_binds_an_action_to_them() -
 def test_compiler_rejects_a_connection_type_link_to_another_plugin_or_missing_type() -> None:
     plugin = _plugin()
     plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
         "targets": ["credentials/github-token.yaml", "steps/create-issue/manifest.yaml"]
     }
     action = _action({"kind": "inline", "value": {"type": "object"}})
@@ -238,7 +256,7 @@ def test_compiler_rejects_a_connection_type_link_to_another_plugin_or_missing_ty
 
     with pytest.raises(CompilationError) as error:
         compile_model(
-            Plugin(plugin),
+            _typed_plugin(plugin),
             [
                 Target("credentials/github-token.yaml", _credential_recipe()),
                 Target("steps/create-issue/manifest.yaml", action),
@@ -254,7 +272,10 @@ def test_compiler_rejects_a_connection_type_link_to_another_plugin_or_missing_ty
 
 def test_platform_runner_action_without_a_versioned_driver_is_rejected() -> None:
     plugin = _plugin()
-    plugin["spec"] = {"targets": ["steps/create-issue/manifest.yaml"]}
+    plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
+        "targets": ["steps/create-issue/manifest.yaml"],
+    }
     action = _action({"kind": "inline", "value": {"type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
@@ -262,7 +283,7 @@ def test_platform_runner_action_without_a_versioned_driver_is_rejected() -> None
 
     with pytest.raises(CompilationError) as error:
         compile_model(
-            Plugin(plugin),
+            _typed_plugin(plugin),
             [Target("steps/create-issue/manifest.yaml", action)],
         )
 
@@ -273,7 +294,10 @@ def test_http_operation_assets_are_typed_and_bound_to_the_nested_operation_field
     tmp_path: Path,
 ) -> None:
     plugin = _plugin()
-    plugin["spec"] = {"targets": ["steps/create-issue/manifest.yaml"]}
+    plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
+        "targets": ["steps/create-issue/manifest.yaml"],
+    }
     action = _action({"kind": "inline", "value": {"type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
@@ -322,7 +346,7 @@ def test_http_operation_rejects_an_invalid_mapping_source() -> None:
     }
 
     with pytest.raises(CompilationError) as error:
-        compile_model(Plugin(plugin), [Target("steps/create-issue/manifest.yaml", action)])
+        compile_model(_typed_plugin(plugin), [Target("steps/create-issue/manifest.yaml", action)])
 
     assert "HTTP_MAPPING_INVALID" in {item.code for item in error.value.diagnostics}
 
@@ -359,8 +383,8 @@ def test_inline_and_asset_documents_preserve_identical_schema_semantics(tmp_path
         inline.descriptor["spec"]["targets"][0]["input"]
         == asset.descriptor["spec"]["targets"][0]["input"]
     )
-    assert inline.asset_index == {}
-    assert set(asset.asset_index) == {"schemas/input.json"}
+    assert set(inline.asset_index) == {"docs/README.md"}
+    assert set(asset.asset_index) == {"docs/README.md", "schemas/input.json"}
     assert asset.asset_index["schemas/input.json"]["mediaType"] == "application/schema+json"
     assert b'"description":"Inputs used to create an issue."' in asset.assets[
         "schemas/input.json"
@@ -371,7 +395,7 @@ def test_workspace_documentation_is_a_signed_markdown_asset(tmp_path: Path) -> N
     root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
     document = b"# Issue tools\n\nCreate and label GitHub issues.\n"
     documentation = root.parent / "docs/README.md"
-    documentation.parent.mkdir()
+    documentation.parent.mkdir(exist_ok=True)
     documentation.write_bytes(document)
     plugin = _plugin()
     specification = plugin["spec"]
@@ -401,7 +425,7 @@ def test_workspace_documentation_rejects_binary_or_non_utf8_content(
 ) -> None:
     root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
     documentation = root.parent / "docs/README.md"
-    documentation.parent.mkdir()
+    documentation.parent.mkdir(exist_ok=True)
     documentation.write_bytes(content)
     plugin = _plugin()
     specification = plugin["spec"]
@@ -419,7 +443,7 @@ def test_provider_binding_materializes_the_provider_abi() -> None:
     plugin = _plugin()
     plugin["spec"]["providers"] = [{"id": "resource-provider", "image": "provider-image"}]
     result = compile_model(
-        Plugin(plugin),
+        _typed_plugin(plugin),
         [
             Target(
                 "steps/create-issue/manifest.yaml",
@@ -510,7 +534,7 @@ def test_rejects_case_collisions_archives_and_oversized_assets(tmp_path: Path) -
     ]
     with pytest.raises(CompilationError) as collision:
         compile_model(
-            Plugin(model),
+            _typed_plugin(model),
             [
                 Target("steps/create-issue/manifest.yaml", first),
                 Target("steps/CREATE-issue/manifest.yaml", second),

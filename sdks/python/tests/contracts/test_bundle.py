@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-
 from syntara_plugin.contracts import (
     CatalogCheckpoint,
     bundle_digest,
@@ -91,7 +90,10 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Plugin",
         "metadata": _metadata(),
-        "spec": {"targets": ["actions/create-issue.yaml", "triggers/pull-request.yaml"]},
+        "spec": {
+            "documentation": {"path": "docs/README.md"},
+            "targets": ["actions/create-issue.yaml", "triggers/pull-request.yaml"],
+        },
     }
     action = {
         "apiVersion": "syntara.io/v1alpha1",
@@ -138,6 +140,29 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
 
     action["spec"]["runtime"]["operation"]["path"] = "/repos/%2Fissues"
     assert validate_document(bundle, "action", action)
+
+
+def test_custom_workload_action_requires_a_stable_python_entry_point() -> None:
+    bundle = load_bundle()
+    action = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Action",
+        "metadata": {
+            "name": "create-issue",
+            "displayName": "Create issue",
+            "description": "Creates GitHub issues.",
+        },
+        "spec": {
+            "runtime": {"kind": "custom-workload"},
+            "input": {"kind": "inline", "value": {"type": "object"}},
+            "output": {"kind": "inline", "value": {"type": "object"}},
+            "error": {"kind": "inline", "value": {"type": "object"}},
+        },
+    }
+
+    assert "entryPoint" in " ".join(validate_document(bundle, "action", action))
+    action["spec"]["runtime"]["entryPoint"] = "github.actions:CreateIssue"
+    assert validate_document(bundle, "action", action) == []
 
 
 def test_http_mapping_contract_accepts_only_bounded_pointer_or_literal_values() -> None:

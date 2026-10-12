@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
-
+from dataclasses import dataclass
+from pathlib import Path
 
 _SHA256_DIGEST_PREFIX = "sha256:"
 

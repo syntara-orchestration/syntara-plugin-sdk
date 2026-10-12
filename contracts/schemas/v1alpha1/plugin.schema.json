@@ -11,7 +11,7 @@
         "spec": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["targets"],
+            "required": ["documentation", "targets"],
             "properties": {
                 "workload": {
                     "type": "object",

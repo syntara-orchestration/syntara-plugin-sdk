@@ -6,7 +6,6 @@ from typing import Any
 
 import grpc
 import pytest
-
 from syntara_plugin.runtime import (
     ANY_STEP_REVISION,
     ActionRegistry,
@@ -18,7 +17,6 @@ from syntara_plugin.runtime import (
     add_container_runtime_service,
 )
 from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
-
 
 OUTPUT_SCHEMA_DIGEST = "sha256:" + "a" * 64
 
@@ -218,3 +216,42 @@ def test_cancellation_reaches_the_selected_action() -> None:
         server.stop(grace=0).wait()
 
     assert raised.value.code is FailureCode.CANCELLED
+
+
+def test_invocation_timeout_sets_the_action_cancellation_signal() -> None:
+    """The required invocation timeout is the default gRPC deadline."""
+    started = Event()
+    cancelled = Event()
+
+    def waiting_action(invocation: ContainerInvocation) -> ContainerResult:
+        started.set()
+        invocation.cancellation.wait(timeout=2)
+        if invocation.cancelled:
+            cancelled.set()
+        return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"ignored": True})
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    add_container_runtime_service(server, ActionRegistry({"github.wait.v1": waiting_action}))
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    client = ContainerClient(channel)
+    invocation = _invocation("github.wait.v1")
+    invocation = ContainerInvocation(
+        invocation_id=invocation.invocation_id,
+        step_revision_id=invocation.step_revision_id,
+        inputs=invocation.inputs,
+        credential_file_paths=invocation.credential_file_paths,
+        timeout_seconds=1,
+        runtime_context=invocation.runtime_context,
+    )
+    try:
+        with pytest.raises(ContainerRemoteError) as raised:
+            client.execute(invocation)
+        assert cancelled.wait(timeout=1)
+    finally:
+        channel.close()
+        server.stop(grace=0).wait()
+
+    assert started.is_set()
+    assert raised.value.code is FailureCode.TIMEOUT

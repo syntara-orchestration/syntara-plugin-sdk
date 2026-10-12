@@ -22,7 +22,6 @@ import grpc
 from .abi import CONTAINER_ABI, FailureCode
 from .protocol import container_pb2, container_pb2_grpc
 
-
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 _CREDENTIAL_PATH = re.compile(r"^/var/run/syntara/secrets/[A-Za-z0-9._-]+$")
@@ -208,6 +207,10 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             invocation, cancellation = _invocation_from_request(request)
             action = self._actions.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
+            # Deadline expiry and a disconnected Execution Plane both become a
+            # cooperative cancellation signal visible to the action.
+            if not context.add_callback(cancellation.set):
+                cancellation.set()
             result = action(invocation)
             if invocation.cancelled:
                 raise ContainerInvocationError(
@@ -331,9 +334,10 @@ class ContainerClient:
         """Invoke an action and yield progress followed by exactly one result."""
 
         request = _request_from_invocation(invocation)
+        deadline = _execution_deadline(invocation, timeout_seconds)
         saw_terminal = False
         try:
-            for event in self._stub.Execute(request, timeout=timeout_seconds):
+            for event in self._stub.Execute(request, timeout=deadline):
                 if event.invocation_id != invocation.invocation_id:
                     raise _protocol_error()
                 event_kind = event.WhichOneof("event")
@@ -425,6 +429,19 @@ def _request_from_invocation(invocation: ContainerInvocation) -> container_pb2.E
         timeout_seconds=invocation.timeout_seconds,
         runtime_context_json=_encode_json_object(invocation.runtime_context, "runtime context"),
     )
+
+
+def _execution_deadline(invocation: ContainerInvocation, timeout_seconds: float | None) -> float:
+    """Constrain transport lifetime to the invocation contract's timeout."""
+
+    deadline = float(invocation.timeout_seconds)
+    if timeout_seconds is None:
+        return deadline
+    if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool):
+        raise ValueError("timeout_seconds must be a positive number")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be a positive number")
+    return min(deadline, float(timeout_seconds))
 
 
 def _decode_json_object(value: bytes, field_name: str) -> dict[str, Any]:

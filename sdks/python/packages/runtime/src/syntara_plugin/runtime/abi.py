@@ -6,12 +6,12 @@ credential file, contact a broker, or make a network request.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Any
 
 from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
-
 
 CONTAINER_ABI = "syntara.container/v1alpha1"
 PROVIDER_ABI = "syntara.provider/v1alpha1"

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
-import json
-from typing import Mapping
-
 
 OCI_IMAGE_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 

@@ -17,6 +17,18 @@ from .artifact_archive import (
     read_plugin_artifact_archive,
     write_plugin_artifact_archive,
 )
+from .authoring import (
+    BuildRequest,
+    CompilationError,
+    CompilationResult,
+    CompiledAsset,
+    Diagnostic,
+    Plugin,
+    SourceLocation,
+    Target,
+    compile_model,
+    compile_workspace,
+)
 from .catalog import (
     OCI_CATALOG_INDEX_ARTIFACT_TYPE,
     OCI_CATALOG_INDEX_CONFIG_MEDIA_TYPE,
@@ -43,18 +55,6 @@ from .registry import (
     PluginArtifactPublisher,
     RegistryCredentials,
     UrllibOciRegistryTransport,
-)
-from .authoring import (
-    BuildRequest,
-    CompiledAsset,
-    CompilationError,
-    CompilationResult,
-    Diagnostic,
-    Plugin,
-    SourceLocation,
-    Target,
-    compile_model,
-    compile_workspace,
 )
 
 __all__ = [

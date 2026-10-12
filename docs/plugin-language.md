@@ -24,7 +24,7 @@ Schema: [`plugin.schema.json`](../contracts/schemas/v1alpha1/plugin.schema.json)
 | Key | Meaning |
 | --- | --- |
 | `spec.targets` | Required list of contained YAML target paths. These are the actions, triggers, integration types, and credential recipes included in the release. |
-| `spec.documentation.path` | Optional contained UTF-8 Markdown file published with the plugin. |
+| `spec.documentation.path` | Required contained UTF-8 Markdown file published with the plugin. |
 | `spec.workload.image` | Optional logical image ID shared by `custom-workload` actions. It is bound to an immutable container digest during build. |
 | `spec.providers` | Optional declarative form-provider image definitions. Each item has an `id` and a logical `image` ID. |
 
@@ -37,6 +37,7 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.runtime.kind` | Required execution owner: `platform-runner` or `custom-workload`. |
 | `spec.runtime.driver` | Required for `platform-runner`; names an approved versioned driver, such as `http.v1`. Forbidden for `custom-workload`. |
 | `spec.runtime.operation` | Required for `http.v1`; declares an inert HTTP method, relative path, and optional mappings. Forbidden for `custom-workload`. |
+| `spec.runtime.entryPoint` | Required for `custom-workload`; a `module:Class` handle for the action implementation inside the digest-pinned workload image. It is an implementation identity, not a placement decision: Syntara policy may execute it in process or delegate it to the Execution Plane. |
 | `spec.integrationType` | Optional qualified integration type required by the action. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |
 | `spec.output` | Required output JSON Schema source. |

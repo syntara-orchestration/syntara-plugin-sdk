@@ -8,18 +8,17 @@ adapters owned by later increments.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import gzip
+import tarfile
+import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
 from pathlib import PurePosixPath
-import tarfile
-from typing import Mapping
-import unicodedata
 
 from .authoring import CompilationResult, CompiledAsset
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, canonical_json_bytes
-
 
 OCI_ARTIFACT_TYPE = "application/vnd.syntara.plugin.v1"
 OCI_CONFIG_MEDIA_TYPE = "application/vnd.syntara.plugin.config.v1+json"

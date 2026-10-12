@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from syntara_plugin.sdk.cli import _catalog_entry, _credentials_from_auth_file, main
 from syntara_plugin.sdk.settings import SETTINGS_FILENAME
 
-
 _WORKLOAD_DIGEST = "sha256:" + "a" * 64
 
 
@@ -208,6 +207,8 @@ metadata:
   displayName: Custom workload
   description: A custom workload plugin.
 spec:
+  documentation:
+    path: docs/README.md
   workload:
     image: custom-workload-image
   targets:
@@ -228,6 +229,7 @@ metadata:
 spec:
   runtime:
     kind: custom-workload
+    entryPoint: custom_workload.actions:Request
   input:
     kind: inline
     value:
@@ -243,6 +245,9 @@ spec:
 """,
         encoding="utf-8",
     )
+    documentation = workspace / "docs/README.md"
+    documentation.parent.mkdir()
+    documentation.write_text("# Custom workload\n", encoding="utf-8")
 
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -716,6 +721,44 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     )
 
 
+def test_build_with_workload_validates_before_pushing_an_image(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Invalid plugin source never leaves an orphan image in a registry."""
+    workspace = _custom_workload_workspace(tmp_path)
+    settings = workspace / SETTINGS_FILENAME
+    settings.write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: PluginBuildSettings
+manifest: plugin.yaml
+registry:
+  origin: https://registry.example.test
+  workloadRepository: acme/custom-workload
+build:
+  artifactOutput: dist/custom.oci.tar
+  workload:
+    engine: podman
+    context: .
+    containerfile: Containerfile
+    tag: 0.1.0
+    platform: linux/amd64
+    imageId: custom-workload
+""",
+        encoding="utf-8",
+    )
+    action = workspace / "steps/create/manifest.yaml"
+    action.write_text(action.read_text(encoding="utf-8").replace("  output:\n", "  missingOutput:\n"), encoding="utf-8")
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.build_and_push_workload",
+        lambda request, *, verbose: calls.append(request),
+    )
+
+    assert main(["build", "--settings", str(settings), "--with-workload"]) == 1
+    assert calls == []
+    assert "SCHEMA_INVALID" in capsys.readouterr().err
+
+
 def test_catalog_update_derives_and_publishes_a_catalog_entry_from_a_verified_archive(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
@@ -962,6 +1005,7 @@ metadata:
 spec:
   runtime:
     kind: custom-workload
+    entryPoint: custom_workload.actions:Create
   input:
     kind: inline
     value:

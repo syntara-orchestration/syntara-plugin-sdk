@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import json
+import tarfile
 from io import BytesIO
 from pathlib import Path
-import tarfile
 
 import pytest
-
 from syntara_plugin.sdk import (
     ArtifactArchiveError,
     BuildRequest,
@@ -15,6 +15,7 @@ from syntara_plugin.sdk import (
     write_plugin_artifact_archive,
 )
 from syntara_plugin.sdk.cli import main
+from syntara_plugin.sdk.oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, canonical_json_bytes
 
 
 def _artifact(tmp_path: Path):
@@ -74,3 +75,35 @@ def test_archive_writer_refuses_to_replace_a_previous_build(tmp_path: Path) -> N
 
     with pytest.raises(ArtifactArchiveError, match="refusing to overwrite"):
         write_plugin_artifact_archive(artifact, output)
+
+
+def test_archive_reader_rejects_a_self_consistent_archive_with_unbound_config(
+    tmp_path: Path,
+) -> None:
+    """OCI hashes alone cannot prove config-to-descriptor semantic bindings."""
+    artifact = _artifact(tmp_path)
+    config = OciBlob.create(
+        canonical_json_bytes(
+            {
+                "apiVersion": "syntara.plugin.config/v1alpha1",
+                "kind": "PluginArtifactConfig",
+                "pluginDescriptorDigest": "sha256:" + "0" * 64,
+                "assetIndex": json.loads(artifact.config.content)["assetIndex"],
+            }
+        ),
+        artifact.config.descriptor.media_type,
+    )
+    manifest_document = json.loads(artifact.manifest.content)
+    manifest_document["config"] = config.descriptor.as_dict()
+    manifest = OciBlob.create(canonical_json_bytes(manifest_document), OCI_IMAGE_MANIFEST_MEDIA_TYPE)
+    malformed = type(artifact)(
+        config=config,
+        plugin_manifest=artifact.plugin_manifest,
+        content_bundle=artifact.content_bundle,
+        manifest=manifest,
+    )
+    archive = tmp_path / "malformed.oci.tar"
+    write_plugin_artifact_archive(malformed, archive)
+
+    with pytest.raises(ArtifactArchiveError, match="does not bind its plugin descriptor"):
+        read_plugin_artifact_archive(archive)

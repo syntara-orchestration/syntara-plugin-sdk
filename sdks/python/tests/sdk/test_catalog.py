@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-import json
 
 import pytest
-
 from syntara_plugin.sdk import (
     OCI_CATALOG_INDEX_ARTIFACT_TYPE,
     OCI_CATALOG_INDEX_CONFIG_MEDIA_TYPE,
@@ -221,6 +220,43 @@ def test_merge_catalog_entry_is_idempotent_but_rejects_conflicting_release() -> 
             issued_at=now + timedelta(hours=1),
             expires_at=now + timedelta(days=7, hours=1),
         )
+
+
+def test_merge_catalog_entry_can_explicitly_renew_an_unchanged_release() -> None:
+    """Renewal advances the trusted chain without changing a released artifact."""
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
+    entry = {
+        "namespace": "syntara",
+        "name": "github",
+        "version": "0.1.0",
+        "artifactRepository": "syntara/plugins/github",
+        "artifactDigest": "sha256:" + "a" * 64,
+        "documentationDigest": "sha256:" + "b" * 64,
+        "runtimeOwnerships": ["platform-runner"],
+    }
+    current, _ = merge_catalog_entry(
+        current=None,
+        current_manifest_digest=None,
+        entry=entry,
+        source_id="local-quay",
+        issued_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+
+    renewed, idempotent = merge_catalog_entry(
+        current=current,
+        current_manifest_digest="sha256:" + "c" * 64,
+        entry=entry,
+        source_id="local-quay",
+        issued_at=now + timedelta(days=6),
+        expires_at=now + timedelta(days=13),
+        renew=True,
+    )
+
+    assert idempotent is False
+    assert renewed["metadata"]["generation"] == 2
+    assert renewed["metadata"]["previousIndexDigest"] == "sha256:" + "c" * 64
+    assert renewed["spec"]["entries"] == current["spec"]["entries"]
 
 
 def test_recover_catalog_entry_continues_the_accepted_chain_and_preserves_entries() -> None:

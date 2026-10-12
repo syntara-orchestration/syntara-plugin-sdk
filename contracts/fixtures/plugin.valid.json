@@ -9,6 +9,7 @@
     "description": "Creates GitHub issues."
   },
   "spec": {
+    "documentation": {"path": "docs/README.md"},
     "targets": ["actions/create-issue.yaml", "triggers/pull-request.yaml"]
   }
 }

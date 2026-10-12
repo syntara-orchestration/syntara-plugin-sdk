@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping
-
+from typing import Any
 
 _FIXTURE_BUNDLE_VERSION = "syntara.catalog-fixtures/v1alpha1"
 _MANIFEST_PATH = "catalog-fixture-bundle.json"

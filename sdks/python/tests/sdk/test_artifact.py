@@ -1,28 +1,26 @@
 from __future__ import annotations
 
 import gzip
+import json
+import tarfile
 from hashlib import sha256
 from io import BytesIO
-import json
 from pathlib import Path
-import tarfile
 
 import pytest
-
 from syntara_plugin.sdk import (
-    ArtifactBuildError,
-    BuildRequest,
-    CompilationResult,
     OCI_ARTIFACT_TYPE,
     OCI_CONFIG_MEDIA_TYPE,
     OCI_CONTENT_BUNDLE_MEDIA_TYPE,
     OCI_IMAGE_MANIFEST_MEDIA_TYPE,
     OCI_PLUGIN_MANIFEST_MEDIA_TYPE,
+    ArtifactBuildError,
+    BuildRequest,
+    CompilationResult,
     build_plugin_artifact,
     compile_workspace,
 )
 from syntara_plugin.sdk.artifact import _reference_media_type
-
 
 DIGEST = "quay.io/acme/issue-tools@sha256:" + "a" * 64
 
@@ -61,6 +59,7 @@ metadata:
 spec:
   runtime:
     kind: custom-workload
+    entryPoint: issue_tools.actions:CreateIssue
   input:
     kind: asset
     path: schemas/input.json

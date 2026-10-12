@@ -2,23 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
-from hashlib import sha256
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import stat
-from typing import Any, Literal, Mapping, Sequence, cast
 import unicodedata
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field, replace
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, cast
 
 import yaml
+from jsonschema import Draft202012Validator, SchemaError
+from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
 from yaml.constructor import ConstructorError
 from yaml.tokens import AliasToken, AnchorToken
-from jsonschema import Draft202012Validator, SchemaError
-
-from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
-
 
 DEFAULT_CONTAINER_ABI = "syntara.container/v1alpha1"
 DEFAULT_PROVIDER_ABI = "syntara.provider/v1alpha1"
@@ -85,10 +84,16 @@ class BuildRequest:
 
 @dataclass(frozen=True)
 class Plugin:
-    """Typed in-process authoring input, equivalent to a root YAML manifest."""
+    """Typed in-process authoring input, equivalent to a root YAML manifest.
+
+    ``assets`` supplies the exact bytes of externally declared source files.
+    In particular, a typed plugin declaring ``spec.documentation.path`` must
+    provide that Markdown file under the same normalized path.
+    """
 
     document: Mapping[str, Any]
     locations: Mapping[str, SourceLocation] = field(default_factory=dict)
+    assets: Mapping[str, bytes] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -180,6 +185,7 @@ def compile_workspace(request: BuildRequest) -> CompilationResult:
         image_bindings=request.image_bindings or {},
         require_image_bindings=request.require_image_bindings,
         root_directory=root.parent,
+        typed_assets=None,
         max_document_bytes=request.max_document_bytes,
     )
 
@@ -195,6 +201,7 @@ def compile_model(
         image_bindings=image_bindings or {},
         require_image_bindings=True,
         root_directory=None,
+        typed_assets=plugin.assets,
         max_document_bytes=_MAX_DOCUMENT_BYTES,
     )
 
@@ -213,6 +220,7 @@ def _compile(
     image_bindings: Mapping[str, str],
     require_image_bindings: bool,
     root_directory: Path | None,
+    typed_assets: Mapping[str, bytes] | None,
     max_document_bytes: int,
 ) -> CompilationResult:
     diagnostics: list[Diagnostic] = []
@@ -286,6 +294,7 @@ def _compile(
     documentation = _documentation_source(
         plugin.document,
         root_directory,
+        typed_assets,
         max_document_bytes,
         assets,
         diagnostics,
@@ -587,15 +596,14 @@ def _document_source(
 def _documentation_source(
     plugin: Mapping[str, Any],
     root_directory: Path | None,
+    typed_assets: Mapping[str, bytes] | None,
     max_bytes: int,
     assets: dict[str, CompiledAsset],
     diagnostics: list[Diagnostic],
 ) -> dict[str, str] | None:
-    """Load optional bounded Markdown documentation into the deterministic asset bundle."""
+    """Load required Markdown documentation into the deterministic asset bundle."""
     specification = plugin.get("spec")
     source = specification.get("documentation") if isinstance(specification, Mapping) else None
-    if source is None:
-        return None
     if not isinstance(source, Mapping) or not isinstance(source.get("path"), str):
         return None
     try:
@@ -612,7 +620,7 @@ def _documentation_source(
             )
         )
         return None
-    if root_directory is None:
+    if root_directory is None and typed_assets is None:
         diagnostics.append(
             _diagnostic(
                 "DOCUMENTATION_UNAVAILABLE",
@@ -623,15 +631,33 @@ def _documentation_source(
         )
         return None
     try:
-        resolved = _resolve_path(
-            root_directory,
-            asset_path,
-            SourceLocation(PLUGIN_MANIFEST_FILENAME),
-            "DOCUMENTATION_PATH_INVALID",
-        )
-        raw = _read_regular_file(resolved, max_bytes, root=root_directory)
+        if root_directory is None:
+            assert typed_assets is not None
+            raw = typed_assets[asset_path]
+            if not isinstance(raw, bytes):
+                raise ValueError("Typed documentation must be bytes.")
+            if len(raw) > max_bytes:
+                raise ValueError("Typed documentation exceeds the maximum document size.")
+        else:
+            resolved = _resolve_path(
+                root_directory,
+                asset_path,
+                SourceLocation(PLUGIN_MANIFEST_FILENAME),
+                "DOCUMENTATION_PATH_INVALID",
+            )
+            raw = _read_regular_file(resolved, max_bytes, root=root_directory)
         _validate_markdown(raw)
-    except CompilationError as error:
+    except (CompilationError, KeyError) as error:
+        if isinstance(error, KeyError):
+            diagnostics.append(
+                _diagnostic(
+                    "DOCUMENTATION_UNAVAILABLE",
+                    f"Typed input did not provide documentation {asset_path!r}.",
+                    PLUGIN_MANIFEST_FILENAME,
+                    "Provide the declared Markdown file through Plugin.assets.",
+                )
+            )
+            return None
         diagnostics.extend(error.diagnostics)
         return None
     except (OSError, UnicodeDecodeError, ValueError) as error:

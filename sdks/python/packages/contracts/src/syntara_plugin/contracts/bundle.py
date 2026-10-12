@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
@@ -166,7 +167,7 @@ def validate_catalog_index(
     *,
     source_id: str,
     now: datetime,
-    checkpoint: CatalogCheckpoint = CatalogCheckpoint(),
+    checkpoint: CatalogCheckpoint | None = None,
 ) -> tuple[CatalogDiagnostic, ...]:
     """Validate a catalog index against one source's replay checkpoint.
 
@@ -175,6 +176,7 @@ def validate_catalog_index(
     by the catalog service that calls it.
     """
 
+    checkpoint = checkpoint or CatalogCheckpoint()
     schema_errors = validate_document(bundle, "catalog_index", document)
     if schema_errors:
         return tuple(

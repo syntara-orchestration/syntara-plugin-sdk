@@ -1,4 +1,6 @@
 [project]
+# This non-package workspace must remain distinct from the distributable SDK
+# member below; uv rejects two workspace members with the same package name.
 name = "syntara-plugin-sdk-workspace"
 version = "0.1.0"
 description = "Development workspace for the Syntara Plugin SDK distributions"
@@ -33,7 +35,7 @@ target-version = "py312"
 extend-exclude = ["sdks/python/packages/runtime/src/syntara_plugin/runtime/protocol/*_pb2*.py"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "sdks/python/packages/runtime/src/syntara_plugin/runtime/protocol/*_pb2*.py" = ["F401"]

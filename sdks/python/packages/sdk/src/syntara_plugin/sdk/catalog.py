@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Mapping, cast
+from typing import Any, cast
 
 from syntara_plugin.contracts import (
     CatalogCheckpoint,
@@ -14,7 +15,6 @@ from syntara_plugin.contracts import (
 )
 
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, canonical_json_bytes
-
 
 OCI_CATALOG_INDEX_ARTIFACT_TYPE = "application/vnd.syntara.catalog-index.v1"
 OCI_CATALOG_INDEX_CONFIG_MEDIA_TYPE = "application/vnd.syntara.catalog-index.config.v1+json"
@@ -143,6 +143,7 @@ def merge_catalog_entry(
     source_id: str,
     issued_at: datetime,
     expires_at: datetime,
+    renew: bool = False,
 ) -> tuple[dict[str, Any], bool]:
     """Create the next immutable index document for one new plugin release.
 
@@ -150,7 +151,8 @@ def merge_catalog_entry(
     ``namespace``, ``name``, and ``version`` already exists must be identical
     to be considered an idempotent retry.  A conflicting re-publication is
     rejected rather than silently redirecting an already released version to
-    different artifact bytes.
+    different artifact bytes. Set ``renew`` only to publish a successor for
+    an otherwise identical entry and extend the catalog's validity window.
     """
 
     if issued_at.tzinfo is None or expires_at.tzinfo is None or expires_at <= issued_at:
@@ -168,6 +170,7 @@ def merge_catalog_entry(
             candidate,
             identity,
             source_id,
+            renew,
         )
         if state is None:
             return dict(current), True
@@ -267,6 +270,7 @@ def _extend_catalog_state(
     candidate: dict[str, Any],
     identity: tuple[str, str, str],
     source_id: str,
+    renew: bool,
 ) -> _CatalogMergeState | None:
     if current_manifest_digest is None:
         raise CatalogIndexUpdateError("an existing catalog requires its immutable manifest digest")
@@ -279,7 +283,14 @@ def _extend_catalog_state(
     generation = _catalog_generation(metadata)
     entries = _entries_with_candidate(specification, candidate, identity)
     if entries is None:
-        return None
+        if not renew:
+            return None
+        raw_entries = specification.get("entries")
+        assert isinstance(raw_entries, list)
+        entries = [
+            dict(_mapping(existing, f"current spec.entries[{index}]"))
+            for index, existing in enumerate(raw_entries)
+        ]
     return _CatalogMergeState(
         entries=entries,
         generation=generation + 1,

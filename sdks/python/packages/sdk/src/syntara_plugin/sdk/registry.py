@@ -11,11 +11,12 @@ Quay proof.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
-from hashlib import sha256
 import json
 import re
-from typing import Any, Mapping, Protocol, cast
+from collections.abc import Mapping
+from dataclasses import dataclass
+from hashlib import sha256
+from typing import Any, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -145,7 +146,7 @@ class RegistryCredentials:
             raise CatalogIndexPublicationError("REGISTRY_CREDENTIALS_INVALID")
         if "\r" in self.password or "\n" in self.password:
             raise CatalogIndexPublicationError("REGISTRY_CREDENTIALS_INVALID")
-        token = base64.b64encode(f"{self.username}:{self.password}".encode("utf-8")).decode("ascii")
+        token = base64.b64encode(f"{self.username}:{self.password}".encode()).decode("ascii")
         return f"Basic {token}"
 
 

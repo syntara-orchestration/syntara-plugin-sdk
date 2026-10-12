@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Mapping
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-
 from syntara_plugin.sdk import (
+    BuildRequest,
     CatalogIndexPublicationError,
     CatalogIndexPublicationTarget,
     CatalogIndexPublisher,
-    BuildRequest,
     OciRegistryResponse,
     PluginArtifactPublicationTarget,
     PluginArtifactPublisher,
@@ -97,10 +96,15 @@ metadata:
   displayName: GitHub
   description: GitHub workflow actions.
 spec:
+  documentation:
+    path: docs/README.md
   targets:
     - steps/create-issue/manifest.yaml
 """
     )
+    documentation = tmp_path / "docs/README.md"
+    documentation.parent.mkdir()
+    documentation.write_text("# GitHub\n", encoding="utf-8")
     action.write_text(
         """apiVersion: syntara.io/v1alpha1
 kind: Action

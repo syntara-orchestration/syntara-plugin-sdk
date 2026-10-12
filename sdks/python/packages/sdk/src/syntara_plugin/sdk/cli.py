@@ -11,12 +11,13 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
-from datetime import UTC, datetime, timedelta
 import json
-from pathlib import Path
 import re
 import sys
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from .artifact import ArtifactBuildError, PluginArtifact, build_plugin_artifact
@@ -25,6 +26,7 @@ from .artifact_archive import (
     read_plugin_artifact_archive,
     write_plugin_artifact_archive,
 )
+from .authoring import BuildRequest, CompilationError, CompilationResult, compile_workspace
 from .catalog import (
     CatalogIndexArtifactBuildError,
     CatalogIndexUpdateError,
@@ -32,7 +34,6 @@ from .catalog import (
     merge_catalog_entry,
     recover_catalog_entry,
 )
-from .authoring import BuildRequest, CompilationError, CompilationResult, compile_workspace
 from .registry import (
     CatalogIndexPublicationError,
     CatalogIndexPublicationTarget,
@@ -42,16 +43,15 @@ from .registry import (
     RegistryCredentials,
 )
 from .settings import (
+    SETTINGS_FILENAME,
     BuildSettings,
     PluginBuildSettings,
     RegistrySettings,
-    SETTINGS_FILENAME,
     SettingsError,
     WorkloadBuildSettings,
     load_settings,
 )
 from .workload import WorkloadBuildError, WorkloadBuildRequest, build_and_push_workload
-
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
@@ -226,6 +226,11 @@ def _parser() -> argparse.ArgumentParser:
     update.add_argument(
         "--expected-index-digest",
         help="Optional current stable manifest digest to reject a stale release coordinator.",
+    )
+    update.add_argument(
+        "--renew",
+        action="store_true",
+        help="Publish a successor generation for an unchanged entry to renew catalog expiry.",
     )
     update.add_argument(
         "--registry-origin", help="Registry origin, including scheme; overrides registry.origin."
@@ -723,6 +728,17 @@ def _build_archive(
     arguments: argparse.Namespace,
 ) -> tuple[CompilationResult, PluginArtifact, Path, str | None, WorkloadBuildRequest | None]:
     image_bindings = dict(arguments.image_bindings)
+    # Validate the complete authoring workspace before any remote side effect.
+    # A custom workload binding is intentionally deferred until Podman returns
+    # its registry digest, so preflight checks every other source contract.
+    if arguments.with_workload:
+        compile_workspace(
+            BuildRequest(
+                arguments.manifest,
+                image_bindings=image_bindings,
+                require_image_bindings=False,
+            )
+        )
     workload_image, workload_request = _build_workload(arguments, image_bindings)
     result = compile_workspace(BuildRequest(arguments.manifest, image_bindings=image_bindings))
     artifact = build_plugin_artifact(result)
@@ -1016,6 +1032,7 @@ def _next_catalog_document(
         source_id=arguments.catalog_source_id,
         issued_at=now,
         expires_at=now + timedelta(hours=arguments.expires_in_hours),
+        renew=getattr(arguments, "renew", False),
     )
 
 

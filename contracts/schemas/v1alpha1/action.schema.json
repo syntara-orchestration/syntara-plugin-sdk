@@ -19,6 +19,11 @@
           "required": ["kind"],
           "properties": {
             "kind": {"enum": ["platform-runner", "custom-workload"]},
+            "entryPoint": {
+              "type": "string",
+              "description": "Python module:Class implementation identifier, resolved only from the immutable installed workload image and step revision.",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$"
+            },
             "driver": {"type": "string", "pattern": "^[a-z][a-z0-9-]*\\.v[1-9][0-9]*$"},
             "operation": {"$ref": "http-operation.schema.json#/$defs/operation"}
           },
@@ -30,6 +35,7 @@
             {
               "if": {"properties": {"kind": {"const": "custom-workload"}}},
               "then": {
+                "required": ["entryPoint"],
                 "not": {
                   "anyOf": [
                     {"required": ["driver"]},

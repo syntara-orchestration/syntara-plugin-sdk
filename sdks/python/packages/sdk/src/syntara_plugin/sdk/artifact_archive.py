@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import gzip
+import json
+import tarfile
+from collections.abc import Mapping
 from hashlib import sha256
 from io import BytesIO
-import json
-from pathlib import Path
-import tarfile
-from typing import Any, Mapping, cast
+from pathlib import Path, PurePosixPath
+from typing import Any, cast
+
+from syntara_plugin.contracts import load_bundle
 
 from .artifact import (
     OCI_ARTIFACT_TYPE,
@@ -17,7 +21,6 @@ from .artifact import (
     PluginArtifact,
 )
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, OciDescriptor, canonical_json_bytes
-
 
 OCI_LAYOUT_VERSION = "1.0.0"
 _MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -80,6 +83,7 @@ def read_plugin_artifact_archive(source: Path) -> PluginArtifact:
     }
     if set(entries) != expected_paths:
         raise ArtifactArchiveError("artifact archive contains unexpected or missing OCI members")
+    _verify_plugin_contents(config, descriptor, bundle)
     # OCI index annotations describe how the archive is presented; they are not
     # part of the artifact manifest blob itself. Recreate the artifact's own
     # descriptor so reading and writing is a lossless PluginArtifact round trip.
@@ -87,6 +91,97 @@ def read_plugin_artifact_archive(source: Path) -> PluginArtifact:
     return PluginArtifact(
         config=config, plugin_manifest=descriptor, content_bundle=bundle, manifest=manifest
     )
+
+
+def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlob) -> None:
+    """Verify the semantic links that OCI content hashing cannot express."""
+
+    config_document = _json_mapping(config.content, "plugin config")
+    if config_document.get("apiVersion") != "syntara.plugin.config/v1alpha1":
+        raise ArtifactArchiveError("plugin artifact config has an unsupported apiVersion")
+    if config_document.get("kind") != "PluginArtifactConfig":
+        raise ArtifactArchiveError("plugin artifact config has an unsupported kind")
+    if config_document.get("pluginDescriptorDigest") != descriptor.descriptor.digest:
+        raise ArtifactArchiveError("plugin artifact config does not bind its plugin descriptor")
+
+    descriptor_document = _json_mapping(descriptor.content, "plugin descriptor")
+    if (
+        descriptor_document.get("apiVersion") != "syntara.io/v1alpha1"
+        or descriptor_document.get("kind") != "PluginDescriptor"
+    ):
+        raise ArtifactArchiveError("plugin descriptor does not satisfy the supported contract")
+    metadata = descriptor_document.get("metadata")
+    specification = descriptor_document.get("spec")
+    if not isinstance(metadata, Mapping) or not isinstance(specification, Mapping):
+        raise ArtifactArchiveError("plugin descriptor must contain metadata and spec objects")
+    if not all(isinstance(metadata.get(key), str) and metadata[key] for key in ("namespace", "name", "version")):
+        raise ArtifactArchiveError("plugin descriptor metadata is incomplete")
+    if specification.get("contractBundleDigest") != load_bundle().digest:
+        raise ArtifactArchiveError("plugin descriptor was compiled against an unsupported contract bundle")
+    asset_index = specification.get("assets")
+    if not isinstance(asset_index, Mapping):
+        raise ArtifactArchiveError("plugin descriptor asset inventory is invalid")
+    targets = specification.get("targets")
+    workloads = specification.get("workloads")
+    if not isinstance(targets, list) or not targets or not isinstance(workloads, Mapping):
+        raise ArtifactArchiveError("plugin descriptor does not satisfy the supported contract")
+    if config_document.get("assetIndex") != asset_index:
+        raise ArtifactArchiveError("plugin artifact config asset index does not match its descriptor")
+    documentation = specification.get("documentation")
+    if not isinstance(documentation, Mapping) or not isinstance(documentation.get("path"), str):
+        raise ArtifactArchiveError("plugin descriptor requires a documentation asset")
+    documentation_asset = asset_index.get(documentation["path"])
+    if (
+        not isinstance(documentation_asset, Mapping)
+        or documentation_asset.get("digest") != documentation.get("digest")
+    ):
+        raise ArtifactArchiveError("plugin descriptor documentation does not match its asset inventory")
+    _verify_content_bundle(bundle.content, asset_index)
+
+
+def _verify_content_bundle(content: bytes, asset_index: Mapping[str, Any]) -> None:
+    """Verify source-byte inventory records against the compressed asset bundle."""
+
+    expected_paths = set(asset_index)
+    members: dict[str, bytes] = {}
+    total_size = 0
+    try:
+        with gzip.GzipFile(fileobj=BytesIO(content), mode="rb") as compressed:
+            with tarfile.open(fileobj=compressed, mode="r:") as archive:
+                for member in archive.getmembers():
+                    if not member.isfile() or not _safe_bundle_path(member.name):
+                        raise ArtifactArchiveError("plugin content bundle contains an unsafe member")
+                    total_size += member.size
+                    if total_size > _MAX_ARCHIVE_BYTES:
+                        raise ArtifactArchiveError("plugin content bundle exceeds the 64 MiB safety limit")
+                    payload_handle = archive.extractfile(member)
+                    if payload_handle is None:
+                        raise ArtifactArchiveError("plugin content bundle member cannot be read")
+                    if member.name in members:
+                        raise ArtifactArchiveError("plugin content bundle contains duplicate member names")
+                    members[member.name] = payload_handle.read()
+    except (OSError, tarfile.TarError, EOFError) as error:
+        raise ArtifactArchiveError("plugin content bundle is not a readable gzip tar file") from error
+    if set(members) != expected_paths:
+        raise ArtifactArchiveError("plugin content bundle does not match its asset inventory")
+    for path, payload in members.items():
+        entry = asset_index[path]
+        if not isinstance(entry, Mapping):
+            raise ArtifactArchiveError(f"plugin asset inventory entry {path!r} is invalid")
+        digest = f"sha256:{sha256(payload).hexdigest()}"
+        if entry.get("digest") != digest or entry.get("size") != len(payload):
+            raise ArtifactArchiveError(f"plugin content bundle asset {path!r} does not match its inventory")
+        if not isinstance(entry.get("mediaType"), str):
+            raise ArtifactArchiveError(f"plugin content bundle asset {path!r} has no media type")
+        if not isinstance(entry.get("canonicalDigest"), str) or not isinstance(
+            entry.get("references"), list
+        ):
+            raise ArtifactArchiveError(f"plugin content bundle asset {path!r} has an invalid inventory")
+
+
+def _safe_bundle_path(path: str) -> bool:
+    parts = PurePosixPath(path).parts
+    return bool(path) and not path.startswith("/") and all(part not in {"", ".", ".."} for part in parts)
 
 
 def _read_archive_entries(source: Path) -> dict[str, bytes]:

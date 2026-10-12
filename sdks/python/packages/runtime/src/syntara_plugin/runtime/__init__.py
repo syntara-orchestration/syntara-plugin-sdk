@@ -1,6 +1,7 @@
 """Runtime package boundary for Syntara plugins."""
 
 from syntara_plugin.contracts import ContractBundle
+
 from .abi import (
     CONTAINER_ABI,
     PROVIDER_ABI,
