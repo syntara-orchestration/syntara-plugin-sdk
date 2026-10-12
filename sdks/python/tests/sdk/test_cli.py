@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from syntara_plugin.sdk.cli import _credentials_from_auth_file, main
+from syntara_plugin.sdk.cli import _catalog_entry, _credentials_from_auth_file, main
 from syntara_plugin.sdk.settings import SETTINGS_FILENAME
 
 
@@ -728,7 +728,7 @@ catalog:
         "artifactRepository": "acme/plugins/status-tools",
         "artifactDigest": payload["entry"]["artifactDigest"],
         "documentationDigest": payload["entry"]["documentationDigest"],
-        "runtimeOwnership": "platform-runner",
+        "runtimeOwnerships": ["platform-runner"],
     }
     assert payload["entry"]["artifactDigest"].startswith("sha256:")
     assert payload["entry"]["documentationDigest"].startswith("sha256:")
@@ -737,6 +737,28 @@ catalog:
     ]
     assert published["target"].repository == "acme/catalog-index"
     assert published["credentials"].password == "not-printed"
+
+
+def test_catalog_entry_records_all_runtime_ownerships() -> None:
+    """One plugin can contain both platform-runner and custom-workload actions."""
+    descriptor = {
+        "metadata": {"namespace": "example", "name": "mixed", "version": "0.1.0"},
+        "spec": {
+            "documentation": {"digest": "sha256:" + "d" * 64},
+            "targets": [
+                {"runtime": {"kind": "custom-workload"}},
+                {"runtime": {"kind": "platform-runner"}},
+            ],
+        },
+    }
+    artifact = SimpleNamespace(
+        digest="sha256:" + "a" * 64,
+        plugin_manifest=SimpleNamespace(content=json.dumps(descriptor).encode("utf-8")),
+    )
+
+    entry = _catalog_entry(artifact, "acme/plugins/mixed")
+
+    assert entry["runtimeOwnerships"] == ["custom-workload", "platform-runner"]
 
 
 def _custom_workload_workspace(tmp_path: Path) -> Path:

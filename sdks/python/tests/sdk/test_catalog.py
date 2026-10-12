@@ -40,7 +40,7 @@ def _index() -> dict[str, object]:
                     "artifactRepository": "syntara/plugins/github",
                     "artifactDigest": "sha256:" + "1" * 64,
                     "documentationDigest": "sha256:" + "2" * 64,
-                    "runtimeOwnership": "platform-runner",
+                    "runtimeOwnerships": ["platform-runner"],
                 },
                 {
                     "namespace": "syntara",
@@ -49,7 +49,7 @@ def _index() -> dict[str, object]:
                     "artifactRepository": "syntara/plugins/aap",
                     "artifactDigest": "sha256:" + "3" * 64,
                     "documentationDigest": "sha256:" + "4" * 64,
-                    "runtimeOwnership": "custom-workload",
+                    "runtimeOwnerships": ["custom-workload"],
                 },
             ],
         },
@@ -116,6 +116,16 @@ def test_catalog_index_artifact_is_deterministic_and_has_a_complete_oci_envelope
             ),
             "CATALOG_INDEX_TIME_WINDOW_INVALID",
         ),
+        (
+            lambda document: document["spec"]["entries"][0].update(
+                {
+                    "runtimeOwnership": document["spec"]["entries"][0].pop(
+                        "runtimeOwnerships"
+                    )
+                }
+            ),
+            "runtimeOwnerships",
+        ),
     ],
 )
 def test_catalog_index_artifact_rejects_invalid_catalogs(mutate, message: str) -> None:
@@ -135,7 +145,7 @@ def test_merge_catalog_entry_creates_then_extends_an_append_only_index() -> None
         "artifactRepository": "syntara/plugins/github",
         "artifactDigest": "sha256:" + "a" * 64,
         "documentationDigest": "sha256:" + "b" * 64,
-        "runtimeOwnership": "platform-runner",
+        "runtimeOwnerships": ["platform-runner"],
     }
     initial, idempotent = merge_catalog_entry(
         current=None,
@@ -154,7 +164,7 @@ def test_merge_catalog_entry_creates_then_extends_an_append_only_index() -> None
         "expiresAt": "2026-10-15T12:00:00Z",
     }
 
-    echo = {**github, "name": "local-echo", "runtimeOwnership": "custom-workload"}
+    echo = {**github, "name": "local-echo", "runtimeOwnerships": ["custom-workload"]}
     extended, idempotent = merge_catalog_entry(
         current=initial,
         current_manifest_digest="sha256:" + "c" * 64,
@@ -179,7 +189,7 @@ def test_merge_catalog_entry_is_idempotent_but_rejects_conflicting_release() -> 
         "artifactRepository": "syntara/plugins/github",
         "artifactDigest": "sha256:" + "a" * 64,
         "documentationDigest": "sha256:" + "b" * 64,
-        "runtimeOwnership": "platform-runner",
+        "runtimeOwnerships": ["platform-runner"],
     }
     current, _ = merge_catalog_entry(
         current=None,

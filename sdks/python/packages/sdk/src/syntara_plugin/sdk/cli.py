@@ -872,7 +872,7 @@ def _catalog_update_payload(
     }
 
 
-def _catalog_entry(artifact: PluginArtifact, artifact_repository: str) -> dict[str, str]:
+def _catalog_entry(artifact: PluginArtifact, artifact_repository: str) -> dict[str, object]:
     """Derive one catalog entry only from the verified signed plugin descriptor."""
 
     try:
@@ -900,10 +900,8 @@ def _catalog_entry(artifact: PluginArtifact, artifact_repository: str) -> dict[s
         if kind not in {"platform-runner", "custom-workload"}:
             raise ValueError(f"unsupported plugin runtime kind for catalog: {kind!r}")
         ownerships.add(kind)
-    if len(ownerships) != 1:
-        raise ValueError(
-            "a catalog entry requires one runtime ownership; split mixed-runtime actions into separate plugins"
-        )
+    if not ownerships:
+        raise ValueError("a catalog entry requires at least one action runtime ownership")
     return {
         "namespace": namespace,
         "name": name,
@@ -911,7 +909,7 @@ def _catalog_entry(artifact: PluginArtifact, artifact_repository: str) -> dict[s
         "artifactRepository": artifact_repository,
         "artifactDigest": artifact.digest,
         "documentationDigest": documentation_digest,
-        "runtimeOwnership": ownerships.pop(),
+        "runtimeOwnerships": sorted(ownerships),
     }
 
 
