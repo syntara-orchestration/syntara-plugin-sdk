@@ -18,14 +18,17 @@ spec:
     kind: inline
     value:
       type: object
+      description: Successful greeting returned by the platform runner.
       additionalProperties: false
       required:
         - message
       properties:
         message:
           type: string
+          description: Greeting text returned for the supplied name.
   error:
     kind: inline
     value:
       type: object
+      description: Error response returned when the greeting request cannot complete.
       additionalProperties: false

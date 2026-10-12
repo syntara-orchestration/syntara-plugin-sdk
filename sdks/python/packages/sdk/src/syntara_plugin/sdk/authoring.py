@@ -70,13 +70,16 @@ class CompilationError(Exception):
 class BuildRequest:
     """All explicit inputs needed to compile one plugin workspace.
 
-    ``image_bindings`` must already contain immutable image references. Network
-    resolution belongs to a later OCI adapter, which records its resolution in
-    this request before invoking this pure compiler.
+    ``image_bindings`` must already contain immutable image references when
+    compiling a releasable descriptor. Structural validation may defer those
+    release-only bindings until the workload image exists. Network resolution
+    belongs to a later OCI adapter, which records its resolution in this
+    request before invoking this pure compiler.
     """
 
     root_manifest: Path
     image_bindings: Mapping[str, str] | None = None
+    require_image_bindings: bool = True
     max_document_bytes: int = _MAX_DOCUMENT_BYTES
 
 
@@ -175,6 +178,7 @@ def compile_workspace(request: BuildRequest) -> CompilationResult:
         plugin=Plugin(root_document.value, root_document.locations),
         targets=documents,
         image_bindings=request.image_bindings or {},
+        require_image_bindings=request.require_image_bindings,
         root_directory=root.parent,
         max_document_bytes=request.max_document_bytes,
     )
@@ -189,6 +193,7 @@ def compile_model(
         plugin=plugin,
         targets=targets,
         image_bindings=image_bindings or {},
+        require_image_bindings=True,
         root_directory=None,
         max_document_bytes=_MAX_DOCUMENT_BYTES,
     )
@@ -206,6 +211,7 @@ def _compile(
     targets: Sequence[Target],
     *,
     image_bindings: Mapping[str, str],
+    require_image_bindings: bool,
     root_directory: Path | None,
     max_document_bytes: int,
 ) -> CompilationResult:
@@ -285,7 +291,13 @@ def _compile(
         diagnostics,
     )
     _validate_asset_paths(assets, diagnostics)
-    _validate_bindings(plugin.document, canonical_targets, image_bindings, diagnostics)
+    _validate_bindings(
+        plugin.document,
+        canonical_targets,
+        image_bindings,
+        diagnostics,
+        require_image_bindings=require_image_bindings,
+    )
     _validate_connection_contracts(canonical_targets, diagnostics)
     if diagnostics:
         raise CompilationError(diagnostics)
@@ -679,6 +691,8 @@ def _validate_bindings(
     targets: Sequence[Mapping[str, Any]],
     bindings: Mapping[str, str],
     diagnostics: list[Diagnostic],
+    *,
+    require_image_bindings: bool,
 ) -> None:
     required: set[str] = set()
     if any(
@@ -703,7 +717,7 @@ def _validate_bindings(
             required.add(str(provider.get("image")))
     for identifier in sorted(required):
         image = bindings.get(identifier)
-        if image is None:
+        if image is None and require_image_bindings:
             diagnostics.append(
                 _diagnostic(
                     "IMAGE_BINDING_MISSING",
@@ -712,7 +726,7 @@ def _validate_bindings(
                     "Supply an image binding for this logical image ID.",
                 )
             )
-        elif not _DIGEST_REFERENCE.fullmatch(image):
+        elif image is not None and not _DIGEST_REFERENCE.fullmatch(image):
             diagnostics.append(
                 _diagnostic(
                     "IMAGE_REFERENCE_MUTABLE",

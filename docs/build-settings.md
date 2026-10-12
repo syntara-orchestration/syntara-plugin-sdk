@@ -6,6 +6,9 @@
 apiVersion: syntara.io/v1alpha1
 kind: PluginBuildSettings
 manifest: plugin.yaml
+output:
+  verbose: false
+  json: false
 registry:
   origin: https://registry.example.test
   artifactRepository: acme/plugins/example
@@ -39,6 +42,13 @@ catalog:
 | `kind` | Required document discriminator. Current value: `PluginBuildSettings`. |
 | `manifest` | Optional path to `plugin.yaml`. It lets commands run from the plugin root without repeating a manifest argument. |
 
+## `output`
+
+| Key | Meaning |
+| --- | --- |
+| `verbose` | Optional default for verbose progress on commands that support `--verbose`. |
+| `json` | Optional default for machine-readable JSON output on `validate`, `inspect`, `build`, `publish`, and `catalog update`. |
+
 ## `registry`
 
 | Key | Meaning |
@@ -48,6 +58,7 @@ catalog:
 | `workloadRepository` | Repository for an author-owned custom-workload image. |
 | `catalogRepository` | Repository for the catalog-index OCI artifact. |
 | `username` | Registry username. Passwords never belong in this file. |
+| `authFile` | Local path to a Docker- or Podman-compatible `auth.json` file with an inline Basic credential. The path may be relative to the settings file; the credential is read only at publication time. |
 | `allowInsecureLoopbackHttp` | Allows HTTP only for `localhost` or `127.0.0.1` development registries. |
 
 ## `build`

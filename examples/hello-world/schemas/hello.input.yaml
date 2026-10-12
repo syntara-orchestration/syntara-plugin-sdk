@@ -1,4 +1,5 @@
 type: object
+description: Inputs accepted by the greeting action.
 additionalProperties: false
 required:
   - name

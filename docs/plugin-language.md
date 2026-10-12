@@ -102,6 +102,27 @@ Schema: [`credential-recipe.schema.json`](../contracts/schemas/v1alpha1/credenti
 
 Use `asset` for reusable or substantial schemas. Both forms are immutable parts of the compiled plugin artifact.
 
+### Form and result descriptions
+
+Every schema source is a JSON Schema 2020-12 document. Use its standard
+`description` annotation on the root object and on every user-facing property.
+Syntara preserves those annotations in inline schemas and bundled schema
+assets, so a form can show field guidance and an inspector can explain output
+and error fields without a separate UI-specific metadata format.
+
+```yaml
+type: object
+description: Inputs needed to create the requested resource.
+properties:
+  name:
+    type: string
+    description: Human-readable name for the new resource.
+```
+
+Descriptions are documentation only: they do not change validation or expose
+credentials. Apply the same pattern to action `input`, `output`, and `error`,
+as well as integration `configuration` and credential schemas.
+
 ## More contracts
 
 The catalog index, runtime work items, provider protocol, and container ABI are platform-facing contracts rather than normal plugin authoring YAML. Read [runtime and OCI model](runtime-and-oci.md) and the relevant schema files when working on those boundaries.

@@ -2,15 +2,31 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from syntara_plugin.sdk.cli import main
+from syntara_plugin.sdk.cli import _credentials_from_auth_file, main
 from syntara_plugin.sdk.settings import SETTINGS_FILENAME
 
 
 _WORKLOAD_DIGEST = "sha256:" + "a" * 64
+
+
+def test_registry_auth_file_loads_only_the_selected_registry_credential(tmp_path: Path) -> None:
+    """A local Docker/Podman auth file supplies ephemeral publication credentials."""
+    auth_file = tmp_path / "auth.json"
+    token = base64.b64encode(b"publisher:local-password").decode("ascii")
+    auth_file.write_text(
+        json.dumps({"auths": {"registry.example.test": {"auth": token}}}),
+        encoding="utf-8",
+    )
+
+    credentials = _credentials_from_auth_file(auth_file, "https://registry.example.test")
+
+    assert credentials.username == "publisher"
+    assert credentials.password == "local-password"
 
 
 def test_init_creates_a_compilable_workspace_and_validate_reports_its_digest(
@@ -158,6 +174,79 @@ def test_validate_reports_compiler_diagnostics_without_a_traceback(tmp_path: Pat
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["diagnostics"][0]["code"] == "DOCUMENT_UNREADABLE"
+
+
+def test_validate_defers_a_custom_workload_image_binding_until_build(
+    tmp_path: Path, capsys
+) -> None:
+    """Source validation does not need an image that has not been built yet."""
+    workspace = tmp_path / "custom-workload"
+    workspace.mkdir()
+    (workspace / "plugin.yaml").write_text(
+        """\
+apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: acme
+  name: custom-workload
+  version: 0.1.0
+  displayName: Custom workload
+  description: A custom workload plugin.
+spec:
+  workload:
+    image: custom-workload-image
+  targets:
+    - steps/request/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    action = workspace / "steps/request/manifest.yaml"
+    action.parent.mkdir(parents=True)
+    action.write_text(
+        """\
+apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: request
+  displayName: Request
+  description: A custom workload action.
+spec:
+  runtime:
+    kind: custom-workload
+  input:
+    kind: inline
+    value:
+      type: object
+  output:
+    kind: inline
+    value:
+      type: object
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["deferredImageBindings"] == ["custom-workload-image"]
+
+    assert (
+        main(
+            [
+                "build",
+                str(workspace / "plugin.yaml"),
+                "--output",
+                str(workspace / "custom-workload.oci.tar"),
+                "--json",
+            ]
+        )
+        == 1
+    )
+    assert "IMAGE_BINDING_MISSING" in capsys.readouterr().err
 
 
 def test_validate_rejects_malformed_or_repeated_image_binding(tmp_path: Path, capsys) -> None:
@@ -318,6 +407,53 @@ def test_build_discovers_cwd_settings_and_command_line_overrides_its_output(
     assert main(["build", "--output", str(explicit_output), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["archive"] == str(explicit_output)
     assert explicit_output.is_file()
+
+
+def test_build_reads_local_auth_and_output_preferences_from_settings(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Local release defaults remove repetitive developer command options."""
+    workspace = tmp_path / "status-tools"
+    assert main(["init", str(workspace)]) == 0
+    capsys.readouterr()
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text('{"auths": {}}', encoding="utf-8")
+    settings = workspace / SETTINGS_FILENAME
+    settings.write_text(
+        "\n".join(
+            (
+                "apiVersion: syntara.io/v1alpha1",
+                "kind: PluginBuildSettings",
+                "manifest: plugin.yaml",
+                "output:",
+                "  verbose: true",
+                "  json: true",
+                "registry:",
+                "  origin: https://registry.example.test",
+                "  artifactRepository: acme/plugins/status-tools",
+                "  authFile: ../auth.json",
+                "build:",
+                "  artifactOutput: dist/status-tools.oci.tar",
+                "publish:",
+                "  channel: 0.1.0",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    received: dict[str, object] = {}
+
+    def publish(arguments, archive):
+        received["auth_file"] = arguments.registry_auth_file
+        received["verbose"] = arguments.verbose
+        return {"immutableReference": "acme/plugins/status-tools@sha256:" + "a" * 64}
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli._publish_archive", publish)
+
+    assert main(["build", "--settings", str(settings), "--publish"]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert received["auth_file"] == auth_file
+    assert received["verbose"] is True
 
 
 def test_settings_rejects_registry_secrets(tmp_path: Path, capsys) -> None:

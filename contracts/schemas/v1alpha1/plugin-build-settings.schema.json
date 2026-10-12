@@ -20,6 +20,21 @@
       "minLength": 1,
       "description": "Path to the plugin.yaml bundle inventory. Relative paths are resolved from this settings file."
     },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional JSON-output defaults for every command that supports JSON, plus verbose-output defaults for commands that support verbose progress.",
+      "properties": {
+        "verbose": {
+          "type": "boolean",
+          "description": "Default verbose output. An explicit --verbose command-line option takes precedence."
+        },
+        "json": {
+          "type": "boolean",
+          "description": "Default machine-readable JSON output. An explicit --json command-line option takes precedence."
+        }
+      }
+    },
     "registry": {
       "type": "object",
       "additionalProperties": false,
@@ -49,6 +64,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Registry username. Supply its password only through the command's standard-input option."
+        },
+        "authFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to a local Docker- or Podman-compatible auth.json file with an inline Basic credential. Relative paths are resolved from this settings file; the file itself is never bundled into an artifact."
         },
         "allowInsecureLoopbackHttp": {
           "type": "boolean",

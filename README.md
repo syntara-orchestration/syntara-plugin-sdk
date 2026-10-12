@@ -34,9 +34,9 @@ without contacting a registry:
 ```sh
 syntara-plugin init ./my-plugin --namespace acme
 cd ./my-plugin
-syntara-plugin validate --settings syntara-plugin.yaml
-syntara-plugin inspect --settings syntara-plugin.yaml
-syntara-plugin build --settings syntara-plugin.yaml
+syntara-plugin validate
+syntara-plugin inspect
+syntara-plugin build
 syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
 
@@ -53,13 +53,12 @@ After inspecting a successful archive, configure the non-secret `registry`,
 complete template; replace its `registry.example.test` and `example/...`
 values for your registry. Do not store a password or token in the file.
 
-Publish the archive you already verified. Pass the registry password only over
-standard input:
+Publish the archive you already verified. For CI, pass the registry password
+only over standard input:
 
 ```sh
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish \
   ./dist/my-plugin.oci.tar \
-  --settings syntara-plugin.yaml \
   --password-stdin
 ```
 
@@ -77,6 +76,11 @@ separate, serialized release operation that makes that artifact discoverable
 to a Syntara catalog source. For an action using an author-owned container,
 use `syntara-plugin build --with-workload --publish` after configuring the
 `build.workload` settings; see the [user guide](docs/user-guide.md).
+
+For local development, `registry.authFile` can point to a local Docker- or
+Podman-compatible `auth.json` file. It reads one matching inline Basic
+credential for that invocation; the credential itself never appears in
+`syntara-plugin.yaml`.
 
 For a ready-to-read workspace, see [Hello World](examples/hello-world/).
 Run it directly from a source checkout:

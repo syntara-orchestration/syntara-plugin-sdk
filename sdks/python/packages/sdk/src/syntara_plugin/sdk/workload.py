@@ -27,6 +27,7 @@ class WorkloadBuildRequest:
     tag: str
     platform: str
     allow_insecure_loopback_http: bool = False
+    auth_file: Path | None = None
 
     @property
     def tagged_reference(self) -> str:
@@ -80,6 +81,8 @@ def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = Fa
     digest_file.close()
     try:
         push_command = [request.engine, "push", "--digestfile", str(digest_path)]
+        if request.auth_file is not None:
+            push_command.extend(("--authfile", str(request.auth_file)))
         if request.allow_insecure_loopback_http:
             push_command.append("--tls-verify=false")
         push_command.append(request.tagged_reference)

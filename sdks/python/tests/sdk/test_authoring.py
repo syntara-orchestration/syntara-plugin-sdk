@@ -328,7 +328,16 @@ def test_http_operation_rejects_an_invalid_mapping_source() -> None:
 
 
 def test_inline_and_asset_documents_preserve_identical_schema_semantics(tmp_path: Path) -> None:
-    schema = {"type": "object", "properties": {"title": {"type": "string"}}}
+    schema = {
+        "type": "object",
+        "description": "Inputs used to create an issue.",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Title shown to repository collaborators.",
+            }
+        },
+    }
     inline_root = _workspace(
         tmp_path / "inline", action=_action({"kind": "inline", "value": schema})
     )
@@ -337,7 +346,11 @@ def test_inline_and_asset_documents_preserve_identical_schema_semantics(tmp_path
     )
     asset_path = asset_root.parent / "schemas/input.json"
     asset_path.parent.mkdir()
-    asset_path.write_text('{"properties":{"title":{"type":"string"}},"type":"object"}')
+    asset_path.write_text(
+        '{"description":"Inputs used to create an issue.",'
+        '"properties":{"title":{"description":"Title shown to repository collaborators.",'
+        '"type":"string"}},"type":"object"}'
+    )
 
     inline = _compile(inline_root)
     asset = _compile(asset_root)
@@ -349,6 +362,9 @@ def test_inline_and_asset_documents_preserve_identical_schema_semantics(tmp_path
     assert inline.asset_index == {}
     assert set(asset.asset_index) == {"schemas/input.json"}
     assert asset.asset_index["schemas/input.json"]["mediaType"] == "application/schema+json"
+    assert b'"description":"Inputs used to create an issue."' in asset.assets[
+        "schemas/input.json"
+    ].content
 
 
 def test_workspace_documentation_is_a_signed_markdown_asset(tmp_path: Path) -> None:

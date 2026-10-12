@@ -47,6 +47,7 @@ class RegistrySettings:
     workload_repository: str | None = None
     catalog_repository: str | None = None
     username: str | None = None
+    auth_file: Path | None = None
     allow_insecure_loopback_http: bool | None = None
 
 
@@ -57,6 +58,14 @@ class BuildSettings:
     artifact_output: Path | None = None
     image_bindings: Mapping[str, str] = field(default_factory=dict)
     workload: WorkloadBuildSettings | None = None
+
+
+@dataclass(frozen=True)
+class OutputSettings:
+    """Presentation defaults shared by every command that produces output."""
+
+    verbose: bool | None = None
+    json: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +91,7 @@ class PluginBuildSettings:
 
     source: Path | None = None
     manifest: Path | None = None
+    output: OutputSettings = field(default_factory=OutputSettings)
     registry: RegistrySettings = field(default_factory=RegistrySettings)
     build: BuildSettings = field(default_factory=BuildSettings)
     publish: PublishSettings = field(default_factory=PublishSettings)
@@ -132,7 +142,16 @@ def _parse_settings(source: Path) -> PluginBuildSettings:
     _reject_secrets(document)
     _reject_unknown_keys(
         document,
-        {"apiVersion", "kind", "manifest", "registry", "build", "publish", "catalog"},
+        {
+            "apiVersion",
+            "kind",
+            "manifest",
+            "output",
+            "registry",
+            "build",
+            "publish",
+            "catalog",
+        },
         "settings document",
     )
     if document.get("apiVersion") != SETTINGS_API_VERSION:
@@ -143,7 +162,8 @@ def _parse_settings(source: Path) -> PluginBuildSettings:
     parsed = PluginBuildSettings(
         source=source,
         manifest=_path(document.get("manifest"), source, "manifest"),
-        registry=_parse_registry(document.get("registry")),
+        output=_parse_output(document.get("output")),
+        registry=_parse_registry(document.get("registry"), source),
         build=_parse_build(document.get("build"), source),
         publish=_parse_publish(document.get("publish"), source),
         catalog=_parse_catalog(document.get("catalog")),
@@ -154,7 +174,7 @@ def _parse_settings(source: Path) -> PluginBuildSettings:
     return parsed
 
 
-def _parse_registry(value: object) -> RegistrySettings:
+def _parse_registry(value: object, source: Path) -> RegistrySettings:
     if value is None:
         return RegistrySettings()
     document = _mapping(value, "registry")
@@ -166,6 +186,7 @@ def _parse_registry(value: object) -> RegistrySettings:
             "workloadRepository",
             "catalogRepository",
             "username",
+            "authFile",
             "allowInsecureLoopbackHttp",
         },
         "registry",
@@ -185,7 +206,19 @@ def _parse_registry(value: object) -> RegistrySettings:
             document.get("catalogRepository"), "registry.catalogRepository"
         ),
         username=_string(document.get("username"), "registry.username"),
+        auth_file=_path(document.get("authFile"), source, "registry.authFile"),
         allow_insecure_loopback_http=allow_insecure,
+    )
+
+
+def _parse_output(value: object) -> OutputSettings:
+    if value is None:
+        return OutputSettings()
+    document = _mapping(value, "output")
+    _reject_unknown_keys(document, {"verbose", "json"}, "output")
+    return OutputSettings(
+        verbose=_boolean(document.get("verbose"), "output.verbose"),
+        json=_boolean(document.get("json"), "output.json"),
     )
 
 
@@ -193,7 +226,11 @@ def _parse_build(value: object, source: Path) -> BuildSettings:
     if value is None:
         return BuildSettings()
     document = _mapping(value, "build")
-    _reject_unknown_keys(document, {"artifactOutput", "imageBindings", "workload"}, "build")
+    _reject_unknown_keys(
+        document,
+        {"artifactOutput", "imageBindings", "workload"},
+        "build",
+    )
     raw_bindings = document.get("imageBindings", {})
     bindings = _mapping(raw_bindings, "build.imageBindings")
     parsed_bindings: dict[str, str] = {}
@@ -288,8 +325,6 @@ def _reject_secrets(value: object, path: str = "$") -> None:
                 "token",
                 "secret",
                 "privatekey",
-                "registryauthfile",
-                "authfile",
             }:
                 raise SettingsError(f"settings must not contain secret value {path}.{key}")
             _reject_secrets(nested, f"{path}.{key}")
@@ -311,4 +346,12 @@ def _string(value: object, label: str) -> str | None:
         return None
     if not isinstance(value, str) or not value:
         raise SettingsError(f"{label} must be a non-empty string")
+    return value
+
+
+def _boolean(value: object, label: str) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise SettingsError(f"{label} must be a boolean")
     return value

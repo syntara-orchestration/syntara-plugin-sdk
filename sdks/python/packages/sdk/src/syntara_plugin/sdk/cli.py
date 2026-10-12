@@ -9,6 +9,8 @@ the registry-returned immutable digest into the normal metadata artifact.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
@@ -121,7 +123,7 @@ def _parser() -> argparse.ArgumentParser:
             help="Immutable custom-workload image binding; repeat for each logical image ID.",
         )
         compile_command.add_argument(
-            "--json", action="store_true", help=_MACHINE_READABLE_OUTPUT_HELP
+            "--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP
         )
         if command == "build":
             compile_command.add_argument(
@@ -166,6 +168,7 @@ def _parser() -> argparse.ArgumentParser:
             compile_command.add_argument(
                 "--verbose",
                 action="store_true",
+                default=None,
                 help="Show Podman command lines and delegated build output.",
             )
 
@@ -181,9 +184,12 @@ def _parser() -> argparse.ArgumentParser:
     publish.add_argument(
         "--verbose",
         action="store_true",
+        default=None,
         help="Show concise publication phase information.",
     )
-    publish.add_argument("--json", action="store_true", help=_MACHINE_READABLE_OUTPUT_HELP)
+    publish.add_argument(
+        "--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP
+    )
 
     catalog = commands.add_parser(
         "catalog",
@@ -219,19 +225,19 @@ def _parser() -> argparse.ArgumentParser:
         "--registry-origin", help="Registry origin, including scheme; overrides registry.origin."
     )
     update.add_argument("--username", help="Registry username; overrides registry.username.")
-    update.add_argument(
-        "--password-stdin",
-        action="store_true",
-        help="Read the registry password from standard input; required for catalog update.",
-    )
+    _add_registry_authentication_arguments(update, operation="catalog update")
     update.add_argument(
         "--allow-insecure-loopback-http",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Allow HTTP only for localhost or 127.0.0.1 developer registries; overrides registry.allowInsecureLoopbackHttp.",
     )
-    update.add_argument("--verbose", action="store_true", help="Show concise catalog phases.")
-    update.add_argument("--json", action="store_true", help=_MACHINE_READABLE_OUTPUT_HELP)
+    update.add_argument(
+        "--verbose", action="store_true", default=None, help="Show concise catalog phases."
+    )
+    update.add_argument(
+        "--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP
+    )
     return parser
 
 
@@ -240,6 +246,27 @@ def _add_settings_argument(command: argparse.ArgumentParser) -> None:
         "--settings",
         type=Path,
         help=(f"Versioned non-secret settings file; otherwise discover {SETTINGS_FILENAME}."),
+    )
+
+
+def _add_registry_authentication_arguments(
+    command: argparse.ArgumentParser, *, operation: str
+) -> None:
+    """Add one explicit, ephemeral source of registry credentials."""
+
+    authentication = command.add_mutually_exclusive_group()
+    authentication.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help=(
+            f"Read the registry password from standard input; required for {operation} "
+            "unless --registry-auth-file is supplied."
+        ),
+    )
+    authentication.add_argument(
+        "--registry-auth-file",
+        type=Path,
+        help="Docker- or Podman-compatible auth.json with an inline Basic auth entry; overrides registry.authFile.",
     )
 
 
@@ -253,11 +280,7 @@ def _add_publication_arguments(command: argparse.ArgumentParser) -> None:
     )
     command.add_argument("--channel", help="Destination OCI tag.")
     command.add_argument("--username", help="Registry username; overrides registry.username.")
-    command.add_argument(
-        "--password-stdin",
-        action="store_true",
-        help="Read the registry password from standard input; required for publication.",
-    )
+    _add_registry_authentication_arguments(command, operation="publication")
     command.add_argument(
         "--allow-insecure-loopback-http",
         action=argparse.BooleanOptionalAction,
@@ -268,6 +291,13 @@ def _add_publication_arguments(command: argparse.ArgumentParser) -> None:
 
 def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
     """Apply the documented command-line-over-settings precedence once."""
+
+    if hasattr(arguments, "verbose"):
+        arguments.verbose = _boolean_option(
+            arguments.verbose, settings.output.verbose, default=False
+        )
+    if hasattr(arguments, "json"):
+        arguments.json = _boolean_option(arguments.json, settings.output.json, default=False)
 
     if arguments.command in {"validate", "inspect", "build"}:
         _resolve_compile_arguments(arguments, settings)
@@ -313,6 +343,10 @@ def _resolve_publication_arguments(
     arguments.repository = arguments.repository or registry.artifact_repository
     arguments.channel = arguments.channel or publish.channel
     arguments.username = arguments.username or registry.username
+    if arguments.password_stdin:
+        arguments.registry_auth_file = None
+    else:
+        arguments.registry_auth_file = arguments.registry_auth_file or registry.auth_file
     arguments.allow_insecure_loopback_http = _boolean_option(
         arguments.allow_insecure_loopback_http,
         registry.allow_insecure_loopback_http,
@@ -336,6 +370,10 @@ def _resolve_catalog_arguments(
     arguments.catalog_source_id = arguments.catalog_source_id or catalog.source_id
     arguments.expires_in_hours = arguments.expires_in_hours or catalog.expires_in_hours
     arguments.username = arguments.username or registry.username
+    if arguments.password_stdin:
+        arguments.registry_auth_file = None
+    else:
+        arguments.registry_auth_file = arguments.registry_auth_file or registry.auth_file
     arguments.allow_insecure_loopback_http = _boolean_option(
         arguments.allow_insecure_loopback_http,
         registry.allow_insecure_loopback_http,
@@ -506,6 +544,7 @@ def _compile_workspace(arguments: argparse.Namespace) -> int:
             BuildRequest(
                 arguments.manifest,
                 image_bindings=arguments.image_bindings,
+                require_image_bindings=arguments.command != "validate",
             )
         )
     except CompilationError as error:
@@ -532,6 +571,15 @@ def _compile_workspace(arguments: argparse.Namespace) -> int:
         print(result.canonical_json().decode("utf-8"))
         return 0
     payload = {"ok": True, "digest": result.digest, "assetCount": len(result.assets)}
+    workloads = result.descriptor.get("spec", {}).get("workloads", {})
+    if arguments.command == "validate" and isinstance(workloads, Mapping):
+        deferred_bindings = sorted(
+            identifier
+            for identifier, workload in workloads.items()
+            if isinstance(workload, Mapping) and workload.get("image") is None
+        )
+        if deferred_bindings:
+            payload["deferredImageBindings"] = deferred_bindings
     if arguments.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     else:
@@ -586,6 +634,7 @@ def _build_workload(
     request, image_id = _workload_request(
         arguments.workload_settings,
         allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
+        auth_file=arguments.registry_auth_file,
     )
     _phase(arguments, "Building and pushing the custom workload image")
     image = build_and_push_workload(request, verbose=arguments.verbose)
@@ -718,11 +767,11 @@ def _update_catalog(arguments: argparse.Namespace) -> int:
 
 
 def _run_catalog_update(arguments: argparse.Namespace) -> dict[str, object]:
-    password = _publication_password(arguments, operation="catalog update")
+    credentials = _publication_credentials(arguments, operation="catalog update")
     _require_catalog_configuration(arguments)
     artifact = read_plugin_artifact_archive(arguments.artifact)
     entry = _catalog_entry(artifact, _required_catalog_artifact_repository(arguments))
-    publisher = _catalog_publisher(arguments, password)
+    publisher = _catalog_publisher(arguments, credentials)
     _phase(arguments, "Reading the current catalog index")
     current = publisher.read_current()
     _verify_expected_catalog_digest(arguments, current)
@@ -750,7 +799,9 @@ def _require_catalog_configuration(arguments: argparse.Namespace) -> None:
         raise SettingsError("catalog update requires: " + ", ".join(missing))
 
 
-def _catalog_publisher(arguments: argparse.Namespace, password: str) -> CatalogIndexPublisher:
+def _catalog_publisher(
+    arguments: argparse.Namespace, credentials: RegistryCredentials
+) -> CatalogIndexPublisher:
     return CatalogIndexPublisher(
         CatalogIndexPublicationTarget(
             registry_origin=arguments.registry_origin,
@@ -758,7 +809,7 @@ def _catalog_publisher(arguments: argparse.Namespace, password: str) -> CatalogI
             channel=arguments.catalog_channel,
             allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         ),
-        credentials=RegistryCredentials(arguments.username, password),
+        credentials=credentials,
     )
 
 
@@ -874,15 +925,60 @@ def _required_catalog_artifact_repository(arguments: argparse.Namespace) -> str:
     return repository
 
 
-def _publication_password(arguments: argparse.Namespace, *, operation: str) -> str:
-    """Read one short-lived registry credential without persisting it."""
+def _publication_credentials(
+    arguments: argparse.Namespace, *, operation: str
+) -> RegistryCredentials:
+    """Read registry credentials only for this publication invocation."""
 
+    if arguments.registry_auth_file is not None:
+        credentials = _credentials_from_auth_file(
+            arguments.registry_auth_file, arguments.registry_origin
+        )
+        arguments.username = credentials.username
+        return credentials
     if not arguments.password_stdin:
-        raise SettingsError(f"{operation} requires --password-stdin")
+        raise SettingsError(f"{operation} requires --password-stdin or --registry-auth-file")
     password = sys.stdin.read().rstrip("\r\n")
     if not password:
         raise SettingsError("--password-stdin received no password")
-    return password
+    return RegistryCredentials(arguments.username, password)
+
+
+def _credentials_from_auth_file(path: Path, registry_origin: str | None) -> RegistryCredentials:
+    """Load one same-registry Basic credential from Docker/Podman auth JSON."""
+
+    if registry_origin is None:
+        raise SettingsError("registry origin is required with --registry-auth-file")
+    try:
+        document = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SettingsError(f"could not read registry auth file {path}: {error}") from error
+    if not isinstance(document, Mapping) or not isinstance(document.get("auths"), Mapping):
+        raise SettingsError("registry auth file must contain an auths object")
+
+    parsed = urlparse(registry_origin)
+    host = parsed.netloc
+    if not host:
+        raise SettingsError("registry origin must include a host for --registry-auth-file")
+    auths = document["auths"]
+    record = next(
+        (
+            auths[candidate]
+            for candidate in (host, registry_origin.rstrip("/"), f"https://{host}", f"http://{host}")
+            if isinstance(auths.get(candidate), Mapping)
+        ),
+        None,
+    )
+    if not isinstance(record, Mapping) or not isinstance(record.get("auth"), str):
+        raise SettingsError(f"registry auth file has no Basic credential for {host}")
+    try:
+        decoded = base64.b64decode(record["auth"], validate=True).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except (UnicodeDecodeError, ValueError, binascii.Error) as error:
+        raise SettingsError(f"registry auth file has an invalid Basic credential for {host}") from error
+    if not username or not password:
+        raise SettingsError(f"registry auth file has an empty Basic credential for {host}")
+    return RegistryCredentials(username, password)
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
@@ -898,7 +994,10 @@ def _required_string(value: object, label: str) -> str:
 
 
 def _workload_request(
-    settings: WorkloadBuildSettings | None, *, allow_insecure_loopback_http: bool
+    settings: WorkloadBuildSettings | None,
+    *,
+    allow_insecure_loopback_http: bool,
+    auth_file: Path | None,
 ) -> tuple[WorkloadBuildRequest, str]:
     """Turn selected non-secret CLI settings into one complete Podman request."""
 
@@ -935,6 +1034,7 @@ def _workload_request(
             tag=settings.tag,
             platform=settings.platform,
             allow_insecure_loopback_http=allow_insecure_loopback_http,
+            auth_file=auth_file,
         ),
         settings.image_id,
     )
@@ -943,7 +1043,7 @@ def _workload_request(
 def _publish_archive(arguments: argparse.Namespace, archive: Path) -> dict[str, object]:
     """Verify and publish a portable archive using already-resolved coordinates."""
 
-    password = _publication_password(arguments, operation="publish")
+    credentials = _publication_credentials(arguments, operation="publish")
     missing = [
         label
         for label, value in (
@@ -964,7 +1064,7 @@ def _publish_archive(arguments: argparse.Namespace, archive: Path) -> dict[str, 
             channel=arguments.channel,
             allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         ),
-        credentials=RegistryCredentials(arguments.username, password),
+        credentials=credentials,
     ).publish(artifact)
     return {
         **_artifact_payload(artifact.plugin_manifest.descriptor.digest, artifact),
@@ -1092,10 +1192,12 @@ def _action_template(action: str, input_path: Path) -> str:
         "    kind: inline\n"
         "    value:\n"
         "      type: object\n"
+        "      description: Successful response returned by the provider.\n"
         "  error:\n"
         "    kind: inline\n"
         "    value:\n"
         "      type: object\n"
+        "      description: Error response returned when the operation cannot complete.\n"
     )
 
 
@@ -1103,6 +1205,7 @@ def _input_template() -> str:
     """Return one bounded input schema for the generated action."""
     return (
         "type: object\n"
+        "description: Inputs accepted by this action.\n"
         "additionalProperties: false\n"
         "required:\n"
         "  - resource\n"

@@ -9,9 +9,9 @@ edit plugin source → validate → inspect → build archive → inspect archiv
 ```
 
 ```sh
-syntara-plugin validate --settings syntara-plugin.yaml
-syntara-plugin inspect --settings syntara-plugin.yaml
-syntara-plugin build --settings syntara-plugin.yaml
+syntara-plugin validate
+syntara-plugin inspect
+syntara-plugin build
 syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
 
@@ -27,7 +27,7 @@ Keep stable, non-secret defaults in `syntara-plugin.yaml`. The lookup order is:
 
 Only the first file found is used; files are never merged. A command-line value overrides the selected setting. Relative paths are relative to the settings file. See the complete [build settings reference](build-settings.md).
 
-Never place passwords, tokens, private keys, or registry auth-file paths in settings. Pass a registry password only through `--password-stdin`.
+Never place passwords, tokens, or private keys in settings. For local development, `registry.authFile` may point to a Docker- or Podman-compatible `auth.json` file with an inline Basic credential. The SDK reads that credential only in memory; it never writes it into the settings file, artifact, catalog, or command output. For CI, use `--password-stdin`, which overrides `registry.authFile` for that invocation. Use top-level `output.verbose` and `output.json` for local command-output defaults.
 
 ## Publish a verified archive
 
@@ -51,7 +51,6 @@ For a plugin containing an action with `runtime.kind: custom-workload`, the deve
 
 ```sh
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin build \
-  --settings syntara-plugin.yaml \
   --with-workload --publish --password-stdin --verbose
 ```
 
@@ -69,7 +68,6 @@ Catalog mutation is a separate, shared release operation. It should normally run
 ```sh
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update \
   ./dist/my-plugin.oci.tar \
-  --settings syntara-plugin.yaml \
   --password-stdin --json
 ```
 
