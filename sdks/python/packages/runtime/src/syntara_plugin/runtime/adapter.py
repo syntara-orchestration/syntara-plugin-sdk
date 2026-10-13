@@ -88,7 +88,10 @@ def _validation_details(error: ValidationError) -> str:
 def _format_location(location: object) -> str:
     """Render one bounded error location without raw input values."""
 
-    parts = [str(part) for part in location] if isinstance(location, tuple) else [str(location)]
+    if isinstance(location, tuple):
+        parts = [str(part) for part in location]
+    else:
+        parts = [str(location)]
     path = ".".join(parts) or "<root>"
     if len(path) > _MAX_LOCATION_LENGTH:
         path = path[: _MAX_LOCATION_LENGTH - 3] + "..."

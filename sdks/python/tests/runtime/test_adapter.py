@@ -125,8 +125,10 @@ def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
 
 
 def test_container_action_rejects_a_non_step_implementation() -> None:
+    not_a_step = _expected_digest()
+
     with pytest.raises(TypeError, match="BaseStep"):
-        container_action_for_step(_expected_digest)  # type: ignore[arg-type]
+        container_action_for_step(not_a_step)  # type: ignore[arg-type]
 
 
 def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
@@ -174,9 +176,10 @@ def test_small_validation_failures_report_every_stable_code() -> None:
 
 def test_undeclared_output_model_is_an_abi_violation() -> None:
     action = container_action_for_step(LeakyStep())
+    invocation = _invocation()
 
     with pytest.raises(ContainerInvocationError) as raised:
-        action(_invocation())
+        action(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -208,9 +211,11 @@ def test_bindings_action_reports_unknown_identities_as_not_found() -> None:
     bindings = StepBindings()
     step = TaskEchoStep()
     bindings.bind(StepDescriptor.for_step("acme.plugin.echo", step), step)
+    action = container_action_for_bindings(bindings)
+    invocation = _invocation("acme.plugin.missing")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        container_action_for_bindings(bindings)(_invocation("acme.plugin.missing"))
+        action(invocation)
 
     assert raised.value.code is FailureCode.NOT_FOUND
 
@@ -226,8 +231,10 @@ def test_action_registry_from_steps_advertises_exact_identities() -> None:
 
 
 def test_action_registry_from_steps_rejects_an_empty_registry() -> None:
+    bindings = StepBindings()
+
     with pytest.raises(ValueError, match="at least one typed step"):
-        action_registry_from_steps(StepBindings())
+        action_registry_from_steps(bindings)
 
 
 def test_typed_steps_dispatch_end_to_end_over_the_container_abi() -> None:

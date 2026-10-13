@@ -102,12 +102,15 @@ def test_duplicate_identity_is_rejected() -> None:
 
 
 def test_malformed_identity_is_rejected() -> None:
+    input_schema = EchoInput.model_json_schema()
+    output_schema = EchoOutput.model_json_schema()
+
     with pytest.raises(StepBindingError, match="step_identity"):
         StepDescriptor(
             step_identity="not a valid identity",
             taxonomy=StepTaxonomy.ACTION,
-            input_schema=EchoInput.model_json_schema(),
-            output_schema=EchoOutput.model_json_schema(),
+            input_schema=input_schema,
+            output_schema=output_schema,
         )
 
 
@@ -137,12 +140,15 @@ def test_taxonomy_strings_are_normalized() -> None:
 
 
 def test_invalid_taxonomy_is_rejected() -> None:
+    input_schema = EchoInput.model_json_schema()
+    output_schema = EchoOutput.model_json_schema()
+
     with pytest.raises(StepBindingError, match="valid step taxonomy"):
         StepDescriptor(
             step_identity="acme.plugin.echo",
             taxonomy="not-a-taxonomy",
-            input_schema=EchoInput.model_json_schema(),
-            output_schema=EchoOutput.model_json_schema(),
+            input_schema=input_schema,
+            output_schema=output_schema,
         )
 
 
@@ -163,5 +169,7 @@ def test_platform_managed_driver_is_rejected_as_a_python_implementation() -> Non
 
 
 def test_resolve_unknown_identity_is_rejected() -> None:
+    bindings = StepBindings()
+
     with pytest.raises(StepBindingError, match="not bound"):
-        StepBindings().resolve("acme.plugin.missing")
+        bindings.resolve("acme.plugin.missing")
