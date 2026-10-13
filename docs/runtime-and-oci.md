@@ -60,6 +60,124 @@ that mount read-only in the workload container, and send only the file path to
 the plugin. The plugin never receives broker credentials or a Kubernetes API
 identity.
 
+## Typed Python steps
+
+Custom-workload authors implement steps with the typed Python API in
+[`syntara_plugin.runtime`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/).
+`BaseNode[TInput, TOutput]` is bound to Pydantic v2 models and exposes one
+stable author-facing entrypoint, `execute(inputs, context)`. Subclasses
+implement `run()`; later SDK stories add raw-input validation and the common
+output envelope at the dispatch boundary without changing that hook.
+
+The four executable taxonomy classes share the same lifecycle:
+
+| Class | Category |
+| --- | --- |
+| `ActionStep` | `action` |
+| `TaskStep` | `task` |
+| `WorkflowStep` | `workflow` |
+| `TriggerStep` | `trigger` |
+
+`ExecutionContext` carries the invocation ID, an optional workflow run ID,
+bounded non-secret runtime data, and a cooperative cancellation signal. It
+intentionally exposes no protobuf, gRPC, container, worker, or Execution Plane
+types, and no raw credential values; typed credential access is tracked
+separately.
+
+### Minimal direct execution
+
+Direct SDK execution exercises the typed implementation only. It does not
+demonstrate Automation Orchestrator registry integration or end-to-end
+Execution Plane execution.
+
+```python
+from pydantic import BaseModel
+from syntara_plugin.runtime import (
+    ActionStep,
+    ExecutionContext,
+    TaskStep,
+    TriggerStep,
+    WorkflowStep,
+)
+
+class EchoInput(BaseModel):
+    message: str
+
+class EchoOutput(BaseModel):
+    message: str
+    invocation_id: str
+
+class ActionEcho(ActionStep[EchoInput, EchoOutput]):
+    def run(self, inputs, context):
+        return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
+
+class TaskEcho(TaskStep[EchoInput, EchoOutput]):
+    def run(self, inputs, context):
+        return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
+
+class WorkflowEcho(WorkflowStep[EchoInput, EchoOutput]):
+    def run(self, inputs, context):
+        return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
+
+class TriggerEcho(TriggerStep[EchoInput, EchoOutput]):
+    def run(self, inputs, context):
+        return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
+
+context = ExecutionContext(invocation_id="demo-1")
+for step in (ActionEcho(), TaskEcho(), WorkflowEcho(), TriggerEcho()):
+    print(step.execute(EchoInput(message="hello"), context))
+```
+
+### Registration and descriptors
+
+`StepDescriptor` associates a declared step identity with a taxonomy and the
+input/output JSON schemas derived from the node's Pydantic models.
+`StepDescriptor.for_node()` derives everything from the class itself, and
+`StepRegistry` resolves implementations by identity:
+
+```python
+from syntara_plugin.runtime import StepDescriptor, StepRegistry
+
+registry = StepRegistry()
+node = ActionEcho()
+registry.register(StepDescriptor.for_node("acme.plugin.echo", node), node)
+step = registry.resolve("acme.plugin.echo")
+```
+
+Registration rejects malformed or duplicate identities, taxonomy mismatches
+between the descriptor and the Python class, and attempts to register a
+platform-managed driver (such as `http.v1`) as a Python implementation.
+Pydantic models are implementation types, not replacement manifests: the
+canonical schema bundle remains the source of truth for manifest kinds such as
+Action and Trigger, and comparing implementation schemas with source manifests
+is owned by the schema-drift validation story.
+
+### Container adapter
+
+`action_registry_from_steps(registry)` builds a container `ActionRegistry`
+with one transport action per registered step. The adapter converts each
+`ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
+cancellation event), validates the raw JSON inputs against the node's input
+model, calls `BaseNode.execute()`, and returns a `ContainerResult` whose
+output schema digest is derived from the node's output model. Authors never
+import `ContainerInvocation` to write or test a step.
+
+### Installed revision mapping
+
+An immutable installed step revision maps a declared step to its Python
+implementation:
+
+- The step identity comes from the installed descriptor. It is never inferred
+  from a source filename.
+- Authors do not hard-code build-generated revision IDs.
+- The required per-step `module:Class` entry point and its digest binding are
+  owned by the separate SDK registry-binding story. In source manifests,
+  `spec.runtime.entryPoint` names that implementation identity inside the
+  digest-pinned workload image.
+
+See the [plugin language reference](plugin-language.md) for the manifest
+fields.
+
 ## Registry and catalog model
 
 The artifact and workload repositories may be mirrored for disconnected or

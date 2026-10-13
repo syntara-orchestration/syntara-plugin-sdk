@@ -43,6 +43,9 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.output` | Required output JSON Schema source. |
 | `spec.error` | Required error JSON Schema source. |
 
+Custom-workload actions implement `spec.runtime.entryPoint` with the typed
+Python API; see [Typed Python steps](runtime-and-oci.md#typed-python-steps).
+
 ### `http.v1` operation
 
 Schema: [`http-operation.schema.json`](../contracts/schemas/v1alpha1/http-operation.schema.json).
