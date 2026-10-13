@@ -13,6 +13,11 @@ from .abi import (
     validate_provider,
     validate_runtime,
 )
+from .adapter import (
+    action_registry_from_steps,
+    container_action_for_node,
+    container_action_for_registry,
+)
 from .container import (
     ANY_STEP_REVISION,
     ActionRegistry,
@@ -38,6 +43,7 @@ from .http import (
     map_http_response,
 )
 from .node import ActionStep, BaseNode, TaskStep, TriggerStep, WorkflowStep
+from .registry import StepDescriptor, StepRegistrationError, StepRegistry, StepTaxonomy
 
 __all__ = [
     "CONTAINER_ABI",
@@ -66,11 +72,18 @@ __all__ = [
     "HttpRunnerContextError",
     "RuntimeBinding",
     "RuntimeOwnership",
+    "StepDescriptor",
+    "StepRegistrationError",
+    "StepRegistry",
+    "StepTaxonomy",
     "TaskStep",
     "TriggerStep",
     "WorkflowStep",
+    "action_registry_from_steps",
     "add_container_runtime_service",
     "build_http_request",
+    "container_action_for_node",
+    "container_action_for_registry",
     "load_http_runner_context",
     "map_http_response",
     "validate_provider",
