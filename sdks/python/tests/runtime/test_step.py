@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
-    BaseNode,
+    BaseStep,
     ExecutionContext,
     TaskStep,
     TriggerStep,
@@ -62,10 +62,10 @@ class TriggerEchoStep(TriggerStep[EchoInput, EchoOutput]):
 
 
 def test_public_api_exports_the_typed_step_classes() -> None:
-    assert issubclass(ActionStep, BaseNode)
-    assert issubclass(TaskStep, BaseNode)
-    assert issubclass(WorkflowStep, BaseNode)
-    assert issubclass(TriggerStep, BaseNode)
+    assert issubclass(ActionStep, BaseStep)
+    assert issubclass(TaskStep, BaseStep)
+    assert issubclass(WorkflowStep, BaseStep)
+    assert issubclass(TriggerStep, BaseStep)
 
 
 def test_execution_context_rejects_an_empty_invocation_id() -> None:
@@ -89,6 +89,24 @@ def test_all_taxonomy_classes_resolve_their_pydantic_models() -> None:
     for step_type in (ActionEchoStep, TaskEchoStep, WorkflowEchoStep, TriggerEchoStep):
         assert step_type.input_model() is EchoInput
         assert step_type.output_model() is EchoOutput
+
+
+def test_generic_intermediate_base_class_resolves_models_transitively() -> None:
+    """A shared generic base must not leave the models as unresolved TypeVars."""
+
+    class GenericBase[I: BaseModel, O: BaseModel](ActionStep[I, O]):
+        """Shared helpers for a family of steps."""
+
+    class ConcreteStep(GenericBase[EchoInput, EchoOutput]):
+        def run(self, inputs: EchoInput, context: Any) -> EchoOutput:
+            return EchoOutput(
+                message=inputs.message,
+                invocation_id=context.invocation_id,
+                cancelled=context.cancelled,
+            )
+
+    assert ConcreteStep.input_model() is EchoInput
+    assert ConcreteStep.output_model() is EchoOutput
 
 
 def test_direct_execution_delegates_and_propagates_context() -> None:

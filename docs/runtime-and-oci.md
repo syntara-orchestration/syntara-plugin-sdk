@@ -64,7 +64,7 @@ identity.
 
 Custom-workload authors implement steps with the typed Python API in
 [`syntara_plugin.runtime`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/).
-`BaseNode[TInput, TOutput]` is bound to Pydantic v2 models and exposes one
+`BaseStep[TInput, TOutput]` is bound to Pydantic v2 models and exposes one
 stable author-facing entrypoint, `execute(inputs, context)`. Subclasses
 implement `run()`; later SDK stories add raw-input validation and the common
 output envelope at the dispatch boundary without changing that hook.
@@ -131,22 +131,25 @@ for step in (ActionEcho(), TaskEcho(), WorkflowEcho(), TriggerEcho()):
 ### Registration and descriptors
 
 `StepDescriptor` associates a declared step identity with a taxonomy and the
-input/output JSON schemas derived from the node's Pydantic models.
-`StepDescriptor.for_node()` derives everything from the class itself, and
-`StepRegistry` resolves implementations by identity:
+input/output JSON schemas derived from the step's Pydantic models.
+`StepDescriptor.for_step()` derives everything from the class itself, and
+`StepBindings` resolves implementations by identity:
 
 ```python
-from syntara_plugin.runtime import StepDescriptor, StepRegistry
+from syntara_plugin.runtime import StepDescriptor, StepBindings
 
-registry = StepRegistry()
-node = ActionEcho()
-registry.register(StepDescriptor.for_node("acme.plugin.echo", node), node)
-step = registry.resolve("acme.plugin.echo")
+bindings = StepBindings()
+step = ActionEcho()
+bindings.bind(StepDescriptor.for_step("acme.plugin.echo", step), step)
+resolved = bindings.resolve("acme.plugin.echo")
 ```
 
-Registration rejects malformed or duplicate identities, taxonomy mismatches
-between the descriptor and the Python class, and attempts to register a
-platform-managed driver (such as `http.v1`) as a Python implementation.
+Binding rejects malformed or duplicate identities, taxonomy mismatches between
+the descriptor and the Python class, and attempts to bind a platform-managed
+driver (such as `http.v1`) as a Python implementation. `StepBindings` is an
+in-process lookup table, not the Automation Orchestrator's registration
+database; mapping an installed step revision to a declared identity belongs to
+the registry-binding story.
 Pydantic models are implementation types, not replacement manifests: the
 canonical schema bundle remains the source of truth for manifest kinds such as
 Action and Trigger, and comparing implementation schemas with source manifests
@@ -157,10 +160,14 @@ is owned by the schema-drift validation story.
 `action_registry_from_steps(registry)` builds a container `ActionRegistry`
 with one transport action per registered step. The adapter converts each
 `ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
-cancellation event), validates the raw JSON inputs against the node's input
-model, calls `BaseNode.execute()`, and returns a `ContainerResult` whose
-output schema digest is derived from the node's output model. Authors never
-import `ContainerInvocation` to write or test a step.
+cancellation event), validates the raw JSON inputs against the step's input
+model, checks the returned object against the step's output model, and returns
+a `ContainerResult`. The output schema digest echoes the installed
+`outputSchemaDigest` supplied in the runtime context, matching the platform
+contract used by the HTTP runner; when no installed digest is supplied, a
+provisional canonical digest of the implementation's Pydantic output model is
+used until the registry-binding story binds the installed manifest schema.
+Authors never import `ContainerInvocation` to write or test a step.
 
 ### Installed revision mapping
 

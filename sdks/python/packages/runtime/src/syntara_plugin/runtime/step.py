@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from functools import cache
 from typing import Any, TypeVar, get_args, get_origin
 
 from pydantic import BaseModel
@@ -11,19 +12,25 @@ from .context import ExecutionContext
 
 
 def _resolve_type_argument(argument: Any, substitutions: dict[TypeVar, Any]) -> Any:
+    """Resolve one type argument by chasing substitution chains transitively."""
+
     if not isinstance(argument, TypeVar):
         return argument
-    return substitutions.get(argument, argument)
+    seen: set[TypeVar] = set()
+    while isinstance(argument, TypeVar) and argument in substitutions and argument not in seen:
+        seen.add(argument)
+        argument = substitutions[argument]
+    return argument
 
 
 def _record_base_specialization(
     base: Any,
     substitutions: dict[TypeVar, Any],
 ) -> tuple[Any, ...] | None:
-    """Record one generic base and return arguments when it is ``BaseNode`` itself."""
+    """Record one generic base and return arguments when it is ``BaseStep`` itself."""
 
     origin = get_origin(base)
-    if not isinstance(origin, type) or not issubclass(origin, BaseNode):
+    if not isinstance(origin, type) or not issubclass(origin, BaseStep):
         return None
 
     parameters = origin.__parameters__
@@ -35,7 +42,7 @@ def _record_base_specialization(
         _resolve_type_argument(argument, substitutions) for argument in arguments
     )
     substitutions.update(zip(parameters, resolved_arguments, strict=True))
-    if origin is not BaseNode:
+    if origin is not BaseStep:
         return None
     return arguments
 
@@ -48,7 +55,8 @@ def _is_concrete_model(model: Any) -> bool:
     )
 
 
-def _resolve_models(cls: type[BaseNode[Any, Any]]) -> tuple[type[BaseModel], type[BaseModel]]:
+@cache
+def _resolve_models(cls: type[BaseStep[Any, Any]]) -> tuple[type[BaseModel], type[BaseModel]]:
     """Resolve the concrete Pydantic models from a class's generic substitutions.
 
     Supported authoring pattern::
@@ -57,36 +65,36 @@ def _resolve_models(cls: type[BaseNode[Any, Any]]) -> tuple[type[BaseModel], typ
             ...
 
     The helper walks the MRO from base to derived class while tracking how each
-    generic level specializes ``BaseNode``'s type variables, so taxonomy
+    generic level specializes ``BaseStep``'s type variables, so taxonomy
     subclasses can stay generic without forcing constructor boilerplate.
     """
 
     substitutions: dict[TypeVar, Any] = {}
-    node_arguments: tuple[Any, ...] | None = None
+    step_arguments: tuple[Any, ...] | None = None
 
     for klass in reversed(cls.__mro__):
         for base in getattr(klass, "__orig_bases__", ()):
             arguments = _record_base_specialization(base, substitutions)
             if arguments is not None:
-                node_arguments = arguments
+                step_arguments = arguments
 
-    if node_arguments is None:
-        message = f"{cls.__qualname__} does not specialize BaseNode[TInput, TOutput]"
+    if step_arguments is None:
+        message = f"{cls.__qualname__} does not specialize BaseStep[TInput, TOutput]"
         raise TypeError(message)
 
     resolved_models = tuple(
-        _resolve_type_argument(argument, substitutions) for argument in node_arguments
+        _resolve_type_argument(argument, substitutions) for argument in step_arguments
     )
     for model in resolved_models:
         if not _is_concrete_model(model):
-            message = f"{cls.__qualname__} must specialize BaseNode with concrete Pydantic v2 models"
+            message = f"{cls.__qualname__} must specialize BaseStep with concrete Pydantic v2 models"
             raise TypeError(message)
 
     input_model, output_model = resolved_models
     return input_model, output_model
 
 
-class BaseNode[TInput: BaseModel, TOutput: BaseModel](ABC):
+class BaseStep[TInput: BaseModel, TOutput: BaseModel](ABC):
     """Abstract typed base class shared by every executable plugin step.
 
     ``execute()`` is the stable author-facing entrypoint. It accepts an
@@ -134,7 +142,7 @@ class BaseNode[TInput: BaseModel, TOutput: BaseModel](ABC):
         return self.run(inputs, context)
 
 
-class ActionStep[TInput: BaseModel, TOutput: BaseModel](BaseNode[TInput, TOutput]):
+class ActionStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
     """Executable base for Action steps (domain and external integrations).
 
     Actions are workflow step types that integrate with external systems or
@@ -143,7 +151,7 @@ class ActionStep[TInput: BaseModel, TOutput: BaseModel](BaseNode[TInput, TOutput
     """
 
 
-class TaskStep[TInput: BaseModel, TOutput: BaseModel](BaseNode[TInput, TOutput]):
+class TaskStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
     """Executable base for Task steps (atomic compute operations).
 
     Tasks perform self-contained computation, scripting, or data
@@ -152,7 +160,7 @@ class TaskStep[TInput: BaseModel, TOutput: BaseModel](BaseNode[TInput, TOutput])
     """
 
 
-class WorkflowStep[TInput: BaseModel, TOutput: BaseModel](BaseNode[TInput, TOutput]):
+class WorkflowStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
     """Executable base for Workflow steps (control-flow logic).
 
     Workflow steps implement control flow or composition. They share the same
@@ -161,7 +169,7 @@ class WorkflowStep[TInput: BaseModel, TOutput: BaseModel](BaseNode[TInput, TOutp
     """
 
 
-class TriggerStep[TInput: BaseModel, TOutput: BaseModel](BaseNode[TInput, TOutput]):
+class TriggerStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
     """Executable base for Trigger steps (event entry points).
 
     Triggers start workflows in response to events. Direct SDK execution

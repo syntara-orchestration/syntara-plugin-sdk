@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
+import re
 from typing import Any
 
 from pydantic import ValidationError
+from syntara_plugin.contracts import canonical_json_digest
 
+from .bindings import StepBindingError, StepBindings
 from .container import (
     ActionRegistry,
     ContainerAction,
@@ -17,8 +18,12 @@ from .container import (
     FailureCode,
 )
 from .context import ExecutionContext
-from .node import BaseNode
-from .registry import StepRegistrationError, StepRegistry
+from .step import BaseStep
+
+_MAX_VALIDATION_ERRORS = 10
+_MAX_VALIDATION_DETAILS_LENGTH = 2_000
+_MAX_LOCATION_LENGTH = 128
+_SHA256 = re.compile(r"^sha256:[a-f0-9]{64}$")
 
 
 def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
@@ -31,43 +36,89 @@ def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
     )
 
 
-def _output_schema_digest(node: BaseNode[Any, Any]) -> str:
-    """Hash the node's Pydantic output schema into the container ABI digest."""
+def _output_schema_digest(step: BaseStep[Any, Any]) -> str:
+    """Return the provisional digest of the implementation's output schema.
 
-    schema = node.output_model().model_json_schema()
-    canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    The value uses the SDK's normative canonical JSON form so equivalent
+    schemas hash identically across language SDKs. It remains provisional until
+    the registry-binding story associates the implementation with the digest of
+    its installed manifest schema.
+    """
+
+    return canonical_json_digest(step.output_model().model_json_schema())
+
+
+def _installed_output_schema_digest(invocation: ContainerInvocation) -> str | None:
+    """Return the installed output schema digest carried by the runtime context."""
+
+    digest = invocation.runtime_context.get("outputSchemaDigest")
+    if digest is None:
+        return None
+    if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
+        raise ContainerInvocationError(
+            FailureCode.ABI_VIOLATION,
+            "The runtime context carries an invalid output schema digest.",
+            outcome="not_started",
+        )
+    return digest
 
 
 def _validation_details(error: ValidationError) -> str:
-    """Return field paths and messages without echoing raw input values."""
+    """Return bounded field paths and stable validation codes.
 
-    return "; ".join(
-        f"{'.'.join(str(part) for part in item['loc']) or '<root>'}: {item['msg']}"
-        for item in error.errors()
-    )
-
-
-def container_action_for_node(node: BaseNode[Any, Any]) -> ContainerAction:
-    """Wrap one typed step as a container action.
-
-    The action validates the invocation's raw JSON inputs against the node's
-    Pydantic input model, executes the node through ``BaseNode.execute()``, and
-    converts the typed output into a ``ContainerResult``. The output schema
-    digest is derived from the implementation's own Pydantic output model;
-    comparing it with an installed manifest schema is owned by the schema-drift
-    validation story.
+    Pydantic messages and location keys can be author- or caller-controlled and
+    may quote rejected values, so this reports only bounded paths plus the
+    stable Pydantic error ``type`` codes. The result is capped so a guaranteed
+    input failure can never exceed the transport failure-message limit and
+    degrade into an unknown outcome.
     """
 
-    if not isinstance(node, BaseNode):
-        message = "node must be a BaseNode implementation"
+    errors = error.errors()
+    reported = errors[:_MAX_VALIDATION_ERRORS]
+    parts = [f"{_format_location(item['loc'])}: {item['type']}" for item in reported]
+    remaining = len(errors) - len(reported)
+    if remaining > 0:
+        parts.append(f"and {remaining} more")
+    details = "; ".join(parts)
+    if len(details) > _MAX_VALIDATION_DETAILS_LENGTH:
+        details = details[: _MAX_VALIDATION_DETAILS_LENGTH - 3].rstrip() + "..."
+    return details
+
+
+def _format_location(location: object) -> str:
+    """Render one bounded error location without raw input values."""
+
+    parts = [str(part) for part in location] if isinstance(location, tuple) else [str(location)]
+    path = ".".join(parts) or "<root>"
+    if len(path) > _MAX_LOCATION_LENGTH:
+        path = path[: _MAX_LOCATION_LENGTH - 3] + "..."
+    return path
+
+
+def container_action_for_step(step: BaseStep[Any, Any]) -> ContainerAction:
+    """Wrap one typed step as a container action.
+
+    The action validates the invocation's raw JSON inputs against the step's
+    Pydantic input model, executes the step through ``BaseStep.execute()``, and
+    converts the typed output into a ``ContainerResult``. The output schema
+    digest echoes the installed digest supplied in the invocation's runtime
+    context, matching the platform contract used by the HTTP runner. When no
+    installed digest is supplied, a provisional canonical digest of the
+    implementation's Pydantic output model is used until the registry-binding
+    story binds the installed manifest schema.
+    """
+
+    if not isinstance(step, BaseStep):
+        message = "step must be a BaseStep implementation"
         raise TypeError(message)
-    output_schema_digest = _output_schema_digest(node)
+    output_schema_digest = _output_schema_digest(step)
+    output_model = step.output_model()
 
     def action(invocation: ContainerInvocation) -> ContainerResult:
         context = _execution_context(invocation)
+        schema_digest = _installed_output_schema_digest(invocation) or output_schema_digest
         try:
-            inputs = node.input_model().model_validate(invocation.inputs)
+            inputs = step.input_model().model_validate(invocation.inputs)
         except ValidationError as error:
             message = (
                 "The plugin action input failed schema validation: "
@@ -78,36 +129,54 @@ def container_action_for_node(node: BaseNode[Any, Any]) -> ContainerAction:
                 message,
                 outcome="not_started",
             ) from error
-        output = node.execute(inputs, context)
-        return ContainerResult(output_schema_digest, output=output.model_dump(mode="json"))
+        output = step.execute(inputs, context)
+        if not isinstance(output, output_model):
+            raise ContainerInvocationError(
+                FailureCode.ABI_VIOLATION,
+                "The plugin action returned an invalid response.",
+                outcome="unknown",
+            )
+        return ContainerResult(schema_digest, output=output.model_dump(mode="json"))
 
     return action
 
 
-def container_action_for_registry(registry: StepRegistry) -> ContainerAction:
-    """Wrap a typed step registry as an action resolving by step identity."""
+def container_action_for_bindings(bindings: StepBindings) -> ContainerAction:
+    """Wrap typed step bindings as an action resolving by step identity.
+
+    The invocation's ``step_revision_id`` is matched against the declared step
+    identity. This serves direct local dispatch and testing; production
+    dispatch requires the registry-binding loader that maps an installed step
+    revision to its declared identity.
+    """
 
     def action(invocation: ContainerInvocation) -> ContainerResult:
         try:
-            node = registry.resolve(invocation.step_revision_id)
-        except StepRegistrationError as error:
+            step = bindings.resolve(invocation.step_revision_id)
+        except StepBindingError as error:
             message = "The requested plugin action is not available in this container image."
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
                 message,
                 outcome="not_started",
             ) from error
-        return container_action_for_node(node)(invocation)
+        return container_action_for_step(step)(invocation)
 
     return action
 
 
-def action_registry_from_steps(registry: StepRegistry) -> ActionRegistry:
-    """Build a container action registry with one action per typed step."""
+def action_registry_from_steps(bindings: StepBindings) -> ActionRegistry:
+    """Build a container action registry with one action per typed step.
+
+    Actions are keyed by declared step identity and matched exactly against the
+    invocation's ``step_revision_id``. This supports local execution and tests;
+    production dispatch requires the registry-binding loader that maps installed
+    step revisions to declared identities.
+    """
 
     actions = {
-        step_revision_id: container_action_for_node(registry.resolve(step_revision_id))
-        for step_revision_id in registry.step_revision_ids
+        step_identity: container_action_for_step(bindings.resolve(step_identity))
+        for step_identity in bindings.step_identities
     }
     if not actions:
         message = "at least one typed step must be registered"
