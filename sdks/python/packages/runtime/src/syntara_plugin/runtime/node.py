@@ -10,6 +10,44 @@ from pydantic import BaseModel
 from .context import ExecutionContext
 
 
+def _resolve_type_argument(argument: Any, substitutions: dict[TypeVar, Any]) -> Any:
+    if not isinstance(argument, TypeVar):
+        return argument
+    return substitutions.get(argument, argument)
+
+
+def _record_base_specialization(
+    base: Any,
+    substitutions: dict[TypeVar, Any],
+) -> tuple[Any, ...] | None:
+    """Record one generic base and return arguments when it is ``BaseNode`` itself."""
+
+    origin = get_origin(base)
+    if not isinstance(origin, type) or not issubclass(origin, BaseNode):
+        return None
+
+    parameters = origin.__parameters__
+    arguments = get_args(base)
+    if len(parameters) != len(arguments):
+        return None
+
+    resolved_arguments = tuple(
+        _resolve_type_argument(argument, substitutions) for argument in arguments
+    )
+    substitutions.update(zip(parameters, resolved_arguments, strict=True))
+    if origin is not BaseNode:
+        return None
+    return arguments
+
+
+def _is_concrete_model(model: Any) -> bool:
+    return (
+        not isinstance(model, TypeVar)
+        and isinstance(model, type)
+        and issubclass(model, BaseModel)
+    )
+
+
 def _resolve_models(cls: type[BaseNode[Any, Any]]) -> tuple[type[BaseModel], type[BaseModel]]:
     """Resolve the concrete Pydantic models from a class's generic substitutions.
 
@@ -26,30 +64,21 @@ def _resolve_models(cls: type[BaseNode[Any, Any]]) -> tuple[type[BaseModel], typ
     substitutions: dict[TypeVar, Any] = {}
     node_arguments: tuple[Any, ...] | None = None
 
-    def resolve(argument: Any) -> Any:
-        return substitutions.get(argument, argument) if isinstance(argument, TypeVar) else argument
-
     for klass in reversed(cls.__mro__):
         for base in getattr(klass, "__orig_bases__", ()):
-            origin = get_origin(base)
-            if not isinstance(origin, type) or not issubclass(origin, BaseNode):
-                continue
-            parameters = origin.__parameters__
-            arguments = get_args(base)
-            if len(parameters) != len(arguments):
-                continue
-            resolved_arguments = tuple(resolve(argument) for argument in arguments)
-            substitutions.update(zip(parameters, resolved_arguments, strict=True))
-            if origin is BaseNode:
+            arguments = _record_base_specialization(base, substitutions)
+            if arguments is not None:
                 node_arguments = arguments
 
     if node_arguments is None:
         message = f"{cls.__qualname__} does not specialize BaseNode[TInput, TOutput]"
         raise TypeError(message)
 
-    resolved_models = tuple(resolve(argument) for argument in node_arguments)
+    resolved_models = tuple(
+        _resolve_type_argument(argument, substitutions) for argument in node_arguments
+    )
     for model in resolved_models:
-        if isinstance(model, TypeVar) or not isinstance(model, type) or not issubclass(model, BaseModel):
+        if not _is_concrete_model(model):
             message = f"{cls.__qualname__} must specialize BaseNode with concrete Pydantic v2 models"
             raise TypeError(message)
 
