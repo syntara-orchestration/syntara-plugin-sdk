@@ -92,6 +92,14 @@ class StepDescriptor:
         )
 
 
+@dataclass(frozen=True)
+class StepBinding:
+    """One immutable association between a descriptor and its implementation."""
+
+    descriptor: StepDescriptor
+    step: BaseStep[Any, Any]
+
+
 class StepBindings:
     """Maps declared step identities to typed Python implementations.
 
@@ -103,13 +111,13 @@ class StepBindings:
     """
 
     def __init__(self) -> None:
-        self._steps: dict[str, BaseStep[Any, Any]] = {}
+        self._bindings: dict[str, StepBinding] = {}
 
     @property
     def step_identities(self) -> tuple[str, ...]:
         """Return the bound identities in stable sorted order."""
 
-        return tuple(sorted(self._steps))
+        return tuple(sorted(self._bindings))
 
     def bind(self, descriptor: StepDescriptor, step: BaseStep[Any, Any]) -> None:
         """Bind a descriptor to a typed step implementation.
@@ -134,16 +142,21 @@ class StepBindings:
                 f"{type(step).__qualname__} taxonomy {step_taxonomy.value!r}"
             )
             raise StepBindingError(message)
-        if descriptor.step_identity in self._steps:
+        if descriptor.step_identity in self._bindings:
             message = f"step identity {descriptor.step_identity!r} is already bound"
             raise StepBindingError(message)
-        self._steps[descriptor.step_identity] = step
+        self._bindings[descriptor.step_identity] = StepBinding(descriptor, step)
 
     def resolve(self, step_identity: str) -> BaseStep[Any, Any]:
         """Return the bound implementation for one step identity."""
 
+        return self.binding(step_identity).step
+
+    def binding(self, step_identity: str) -> StepBinding:
+        """Return the bound descriptor and implementation for one identity."""
+
         try:
-            return self._steps[step_identity]
+            return self._bindings[step_identity]
         except KeyError:
             message = f"step identity {step_identity!r} is not bound"
             raise StepBindingError(message) from None

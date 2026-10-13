@@ -18,7 +18,7 @@ from .adapter import (
     container_action_for_bindings,
     container_action_for_step,
 )
-from .bindings import StepBindingError, StepBindings, StepDescriptor, StepTaxonomy
+from .bindings import StepBinding, StepBindingError, StepBindings, StepDescriptor, StepTaxonomy
 from .container import (
     ANY_STEP_REVISION,
     ActionRegistry,
@@ -72,6 +72,7 @@ __all__ = [
     "HttpRunnerContextError",
     "RuntimeBinding",
     "RuntimeOwnership",
+    "StepBinding",
     "StepBindingError",
     "StepBindings",
     "StepDescriptor",

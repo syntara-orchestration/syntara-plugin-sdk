@@ -133,7 +133,7 @@ for step in (ActionEcho(), TaskEcho(), WorkflowEcho(), TriggerEcho()):
 `StepDescriptor` associates a declared step identity with a taxonomy and the
 input/output JSON schemas derived from the step's Pydantic models.
 `StepDescriptor.for_step()` derives everything from the class itself, and
-`StepBindings` resolves implementations by identity:
+`StepBindings` retains each descriptor-and-implementation pair:
 
 ```python
 from syntara_plugin.runtime import StepDescriptor, StepBindings
@@ -141,7 +141,8 @@ from syntara_plugin.runtime import StepDescriptor, StepBindings
 bindings = StepBindings()
 step = ActionEcho()
 bindings.bind(StepDescriptor.for_step("acme.plugin.echo", step), step)
-resolved = bindings.resolve("acme.plugin.echo")
+binding = bindings.binding("acme.plugin.echo")
+resolved = binding.step
 ```
 
 Binding rejects malformed or duplicate identities, taxonomy mismatches between

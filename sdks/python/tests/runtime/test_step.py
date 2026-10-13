@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
@@ -109,14 +110,23 @@ def test_generic_intermediate_base_class_resolves_models_transitively() -> None:
     assert ConcreteStep.output_model() is EchoOutput
 
 
-def test_direct_execution_delegates_and_propagates_context() -> None:
+@pytest.mark.parametrize(
+    "step_type",
+    [ActionEchoStep, TaskEchoStep, WorkflowEchoStep, TriggerEchoStep],
+)
+def test_direct_execution_delegates_and_propagates_context(
+    step_type: type[ActionEchoStep]
+    | type[TaskEchoStep]
+    | type[WorkflowEchoStep]
+    | type[TriggerEchoStep],
+) -> None:
     context = ExecutionContext(
         invocation_id="invoke-1",
         workflow_run_id="run-1",
         runtime_context={"environment": "test"},
     )
 
-    output = ActionEchoStep().execute(EchoInput(message="hello"), context)
+    output = step_type().execute(EchoInput(message="hello"), context)
 
     assert output == EchoOutput(
         message="hello",

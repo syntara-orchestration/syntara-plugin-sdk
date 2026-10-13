@@ -59,6 +59,19 @@ def test_bind_and_resolve_all_four_taxonomies(
     assert bindings.step_identities == ("acme.plugin.echo",)
 
 
+def test_binding_retains_the_descriptor_and_implementation() -> None:
+    bindings = StepBindings()
+    step = _make_step(ActionStep)
+    descriptor = StepDescriptor.for_step("acme.plugin.echo", step)
+    bindings.bind(descriptor, step)
+
+    binding = bindings.binding("acme.plugin.echo")
+
+    assert binding.descriptor is descriptor
+    assert binding.step is step
+    assert bindings.resolve("acme.plugin.echo") is step
+
+
 def test_descriptor_for_step_derives_pydantic_schemas() -> None:
     step = _make_step(ActionStep)
     descriptor = StepDescriptor.for_step("acme.plugin.echo", step)
