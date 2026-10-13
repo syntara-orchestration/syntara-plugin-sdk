@@ -5,6 +5,7 @@ description = "Minimal runtime interfaces for Syntara plugin contracts"
 requires-python = ">=3.12"
 dependencies = [
   "grpcio>=1.78.0",
+  "pydantic>=2.0",
   "protobuf>=6.31.1",
   "syntara-plugin-contracts>=0.1.0",
 ]

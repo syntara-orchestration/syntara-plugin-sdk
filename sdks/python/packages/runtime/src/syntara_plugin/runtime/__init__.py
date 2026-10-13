@@ -26,6 +26,7 @@ from .container import (
     ContainerRuntimeService,
     add_container_runtime_service,
 )
+from .context import ExecutionContext
 from .http import (
     HttpOperationError,
     HttpOperationMapper,
@@ -36,12 +37,15 @@ from .http import (
     load_http_runner_context,
     map_http_response,
 )
+from .node import ActionStep, BaseNode, TaskStep, TriggerStep, WorkflowStep
 
 __all__ = [
     "CONTAINER_ABI",
     "PROVIDER_ABI",
     "ANY_STEP_REVISION",
     "ActionRegistry",
+    "ActionStep",
+    "BaseNode",
     "ContainerAction",
     "ContractBundle",
     "ContainerClient",
@@ -53,6 +57,7 @@ __all__ = [
     "ContainerRemoteError",
     "ContainerResult",
     "ContainerRuntimeService",
+    "ExecutionContext",
     "FailureCode",
     "HttpOperationError",
     "HttpOperationMapper",
@@ -61,6 +66,9 @@ __all__ = [
     "HttpRunnerContextError",
     "RuntimeBinding",
     "RuntimeOwnership",
+    "TaskStep",
+    "TriggerStep",
+    "WorkflowStep",
     "add_container_runtime_service",
     "build_http_request",
     "load_http_runner_context",
