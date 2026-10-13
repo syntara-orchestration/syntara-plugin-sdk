@@ -48,9 +48,9 @@ The Python helper implementation is in
 [`container.py`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/container.py).
 
 The ABI is the boundary between an Execution Plane launcher and an author
-workload. It carries action inputs, output/error contracts, and approved file
-paths. It does not carry raw credentials in workflow JSON, environment
-variables, or command-line arguments.
+workload. It carries invocation and workflow-run identities, action inputs,
+output/error contracts, and approved file paths. It does not carry raw
+credentials in workflow JSON, environment variables, or command-line arguments.
 
 Credential-bearing custom workload execution is intentionally deferred in the
 current local proof of concept. The ABI reserves a map of credential-file paths:

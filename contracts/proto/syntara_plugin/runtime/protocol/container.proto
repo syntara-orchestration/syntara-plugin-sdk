@@ -13,6 +13,7 @@ service ContainerService {
 
 message ExecuteRequest {
   string invocation_id = 1;
+  string workflow_run_id = 8;
   string step_revision_id = 2;
   string runtime_abi = 3;
   bytes inputs_json = 4;

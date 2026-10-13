@@ -35,6 +35,7 @@ class EchoInput(BaseModel):
 class EchoOutput(BaseModel):
     message: str
     invocation_id: str
+    workflow_run_id: str
     cancelled: bool
 
 
@@ -43,6 +44,7 @@ class TaskEchoStep(TaskStep[EchoInput, EchoOutput]):
         return EchoOutput(
             message=inputs.message,
             invocation_id=context.invocation_id,
+            workflow_run_id=context.workflow_run_id,
             cancelled=context.cancelled,
         )
 
@@ -76,6 +78,7 @@ def _expected_digest() -> str:
 def _invocation(step_revision_id: str = "acme.plugin.echo") -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
+        workflow_run_id="workflow-run-1",
         step_revision_id=step_revision_id,
         inputs={"message": "hello"},
         credential_file_paths={},
@@ -94,6 +97,7 @@ def test_container_action_executes_a_typed_step() -> None:
     assert result.output == {
         "message": "hello",
         "invocation_id": "invocation-1",
+        "workflow_run_id": "workflow-run-1",
         "cancelled": False,
     }
 
@@ -261,6 +265,7 @@ def test_typed_steps_dispatch_end_to_end_over_the_container_abi() -> None:
     assert result.output == {
         "message": "hello",
         "invocation_id": "invocation-1",
+        "workflow_run_id": "workflow-run-1",
         "cancelled": False,
     }
 
@@ -281,6 +286,7 @@ def test_large_invalid_payloads_remain_invalid_input_over_grpc() -> None:
         client = ContainerClient(channel)
         invocation = ContainerInvocation(
             invocation_id="invocation-2",
+            workflow_run_id="workflow-run-2",
             step_revision_id="acme.plugin.bulk",
             inputs={"items": ["leaked-secret-value"] * 200},
             credential_file_paths={},

@@ -60,6 +60,7 @@ def runtime() -> tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub,
 def _invocation(step_revision_id: str) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
+        workflow_run_id="workflow-run-1",
         step_revision_id=step_revision_id,
         inputs={"repository": "syntara-orchestration/syntara"},
         credential_file_paths={"github-token": "/var/run/syntara/secrets/github-token"},
@@ -87,6 +88,7 @@ def test_one_image_dispatches_the_selected_step_revision(
     assert result.output == {"issue": 42}
     assert set(calls) == {"create"}
     invocation = calls["create"]
+    assert invocation.workflow_run_id == "workflow-run-1"
     assert invocation.inputs == {"repository": "syntara-orchestration/syntara"}
     assert invocation.credential_file_paths == {
         "github-token": "/var/run/syntara/secrets/github-token"
@@ -154,6 +156,7 @@ def test_invalid_abi_is_returned_as_a_terminal_failure(
     _client, stub, _calls = runtime
     request = container_pb2.ExecuteRequest(
         invocation_id="invocation-1",
+        workflow_run_id="workflow-run-1",
         step_revision_id="github.create-issue.v1",
         runtime_abi="syntara.container/v999",
         inputs_json=b"{}",
@@ -168,12 +171,33 @@ def test_invalid_abi_is_returned_as_a_terminal_failure(
     assert "v999" not in events[0].failure.message
 
 
+def test_missing_workflow_run_id_is_invalid_input(
+    runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
+) -> None:
+    _client, stub, calls = runtime
+    request = container_pb2.ExecuteRequest(
+        invocation_id="invocation-1",
+        step_revision_id="github.create-issue.v1",
+        runtime_abi="syntara.container/v1alpha1",
+        inputs_json=b"{}",
+        credential_file_paths_json=b"{}",
+        timeout_seconds=30,
+    )
+
+    events = list(stub.Execute(request))
+
+    assert len(events) == 1
+    assert events[0].failure.code == FailureCode.INVALID_INPUT.value
+    assert calls == {}
+
+
 def test_credential_file_paths_must_use_the_approved_secret_mount(
     runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
 ) -> None:
     _client, stub, _calls = runtime
     request = container_pb2.ExecuteRequest(
         invocation_id="invocation-1",
+        workflow_run_id="workflow-run-1",
         step_revision_id="github.create-issue.v1",
         runtime_abi="syntara.container/v1alpha1",
         inputs_json=b"{}",
@@ -239,6 +263,7 @@ def test_invocation_timeout_sets_the_action_cancellation_signal() -> None:
     invocation = _invocation("github.wait.v1")
     invocation = ContainerInvocation(
         invocation_id=invocation.invocation_id,
+        workflow_run_id=invocation.workflow_run_id,
         step_revision_id=invocation.step_revision_id,
         inputs=invocation.inputs,
         credential_file_paths=invocation.credential_file_paths,
