@@ -233,6 +233,7 @@ def test_executor_rejects_an_implementation_schema_binding() -> None:
     bindings = StepBindings()
     step = ExampleStep()
     bindings.bind(StepDescriptor.for_step("acme.plugin.example", step), step)
+    binding = bindings.binding("acme.plugin.example")
 
     with pytest.raises(StepBindingError, match="for_installed_action"):
-        StepExecutor(bindings.binding("acme.plugin.example"))
+        StepExecutor(binding)

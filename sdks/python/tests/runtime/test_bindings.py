@@ -99,11 +99,10 @@ def test_installed_action_descriptor_uses_the_manifest_schema() -> None:
 
 def test_installed_action_descriptor_rejects_a_non_action_step() -> None:
     step = _make_step(TaskStep)
+    input_schema = EchoInput.model_json_schema()
 
     with pytest.raises(StepBindingError, match="ActionStep"):
-        StepDescriptor.for_installed_action(
-            "acme.plugin.echo", step, EchoInput.model_json_schema()
-        )
+        StepDescriptor.for_installed_action("acme.plugin.echo", step, input_schema)
 
 
 def test_installed_action_descriptor_rejects_an_invalid_manifest_schema() -> None:

@@ -168,12 +168,13 @@ def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
 
 def test_container_action_rejects_a_non_step_implementation() -> None:
     not_a_step = _expected_digest()
+    input_schema = _echo_input_schema()
 
     with pytest.raises(TypeError, match="BaseStep"):
         container_action_for_step(
             not_a_step,  # type: ignore[arg-type]
             step_identity="acme.plugin.echo",
-            input_schema=_echo_input_schema(),
+            input_schema=input_schema,
         )
 
 
