@@ -156,14 +156,47 @@ canonical schema bundle remains the source of truth for manifest kinds such as
 Action and Trigger, and comparing implementation schemas with source manifests
 is owned by the schema-drift validation story.
 
+For an installed Action, use `StepDescriptor.for_installed_action()` with the
+canonical `spec.input` schema resolved from the installed manifest. The
+resulting `StepBinding` can be passed to `StepExecutor`, which validates the
+raw JSON mapping against that trusted schema, constructs the registered
+Pydantic model in strict mode, and invokes the implementation hook once:
+
+```python
+from syntara_plugin.runtime import ExecutionContext, StepBindings, StepDescriptor, StepExecutor
+
+bindings = StepBindings()
+step = EchoStep()
+descriptor = StepDescriptor.for_installed_action("acme.plugin.echo", step, manifest_input_schema)
+bindings.bind(descriptor, step)
+executor = StepExecutor(bindings.binding("acme.plugin.echo"))
+result = executor.execute(
+    {"message": "hello"}, ExecutionContext(invocation_id="demo-1")
+)
+```
+
+Invalid input returns a `StandardOutputWrapper` with a nonzero status and a
+safe `ErrorMessage`; the implementation hook is not called. JSON Schema
+`default` values are annotations, so the registered Pydantic model supplies the
+actual default. Enums must match exactly, and unknown fields are rejected only
+when the manifest schema forbids them. Pydantic runs in strict mode after JSON
+Schema validation so coercion cannot accept a value that the published Action
+contract rejects.
+
+The container adapter serializes that same wrapper into its terminal result for
+invalid input, using the canonical digest of the wrapper schema. Direct Python
+execution and container execution therefore expose equivalent status and error
+outcomes without exposing the rejected input document.
+
 ### Container adapter
 
 `action_registry_from_steps(registry)` builds a container `ActionRegistry`
 with one transport action per registered step. The adapter converts each
 `ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
-cancellation event), validates the raw JSON inputs against the step's input
-model, checks the returned object against the step's output model, and returns
-a `ContainerResult`. The output schema digest echoes the installed
+cancellation event), runs the same `StepExecutor` raw-input validation boundary
+used by direct Python execution, checks the returned object against the step's
+output model, and returns a `ContainerResult`. Invalid input returns the shared
+wrapper result; valid input returns the step output and echoes the installed
 `outputSchemaDigest` supplied in the runtime context, matching the platform
 contract used by the HTTP runner; when no installed digest is supplied, a
 provisional canonical digest of the implementation's Pydantic output model is

@@ -80,6 +80,39 @@ def test_descriptor_for_step_derives_pydantic_schemas() -> None:
     assert descriptor.output_schema == EchoOutput.model_json_schema()
 
 
+def test_installed_action_descriptor_uses_the_manifest_schema() -> None:
+    step = _make_step(ActionStep)
+    manifest_schema = {
+        "type": "object",
+        "required": ["message"],
+        "properties": {"message": {"type": "string"}},
+        "additionalProperties": False,
+    }
+
+    descriptor = StepDescriptor.for_installed_action(
+        "acme.plugin.echo", step, manifest_schema
+    )
+
+    assert descriptor.input_schema == manifest_schema
+    assert descriptor.input_schema_source == "manifest"
+
+
+def test_installed_action_descriptor_rejects_a_non_action_step() -> None:
+    step = _make_step(TaskStep)
+
+    with pytest.raises(StepBindingError, match="ActionStep"):
+        StepDescriptor.for_installed_action(
+            "acme.plugin.echo", step, EchoInput.model_json_schema()
+        )
+
+
+def test_installed_action_descriptor_rejects_an_invalid_manifest_schema() -> None:
+    step = _make_step(ActionStep)
+
+    with pytest.raises(StepBindingError, match="valid JSON Schema"):
+        StepDescriptor.for_installed_action("acme.plugin.echo", step, {"type": "invalid"})
+
+
 def test_resolved_step_executes_directly_without_container_invocation() -> None:
     bindings = StepBindings()
     step = _make_step(TaskStep)

@@ -6,7 +6,10 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 from .step import ActionStep, BaseStep, TaskStep, TriggerStep, WorkflowStep
 
@@ -60,6 +63,7 @@ class StepDescriptor:
     taxonomy: StepTaxonomy
     input_schema: Mapping[str, Any]
     output_schema: Mapping[str, Any]
+    input_schema_source: Literal["implementation", "manifest"] = "implementation"
 
     def __post_init__(self) -> None:
         """Validate and normalize the descriptor's identity, taxonomy, and schemas."""
@@ -79,6 +83,15 @@ class StepDescriptor:
         if not isinstance(self.output_schema, Mapping):
             message = "output_schema must be a JSON Schema mapping"
             raise StepBindingError(message)
+        if self.input_schema_source not in {"implementation", "manifest"}:
+            message = "input_schema_source must be 'implementation' or 'manifest'"
+            raise StepBindingError(message)
+        if self.input_schema_source == "manifest":
+            try:
+                Draft202012Validator.check_schema(self.input_schema)
+            except SchemaError as error:
+                message = "manifest input_schema must be a valid JSON Schema"
+                raise StepBindingError(message) from error
 
     @classmethod
     def for_step(cls, step_identity: str, step: BaseStep[Any, Any]) -> StepDescriptor:
@@ -89,6 +102,34 @@ class StepDescriptor:
             taxonomy=_step_taxonomy(type(step)),
             input_schema=step.input_model().model_json_schema(),
             output_schema=step.output_model().model_json_schema(),
+        )
+
+    @classmethod
+    def for_installed_action(
+        cls,
+        step_identity: str,
+        step: BaseStep[Any, Any],
+        input_schema: Mapping[str, Any],
+    ) -> StepDescriptor:
+        """Build the trusted descriptor for one installed Action revision.
+
+        ``input_schema`` must be the canonical schema resolved from the
+        installed Action manifest. It is intentionally never derived from the
+        implementation's Pydantic model.
+        """
+
+        if not isinstance(step, BaseStep):
+            message = "installed Action bindings require a BaseStep implementation"
+            raise TypeError(message)
+        if _step_taxonomy(type(step)) is not StepTaxonomy.ACTION:
+            message = "installed Action bindings require an ActionStep implementation"
+            raise StepBindingError(message)
+        return cls(
+            step_identity=step_identity,
+            taxonomy=StepTaxonomy.ACTION,
+            input_schema=input_schema,
+            output_schema=step.output_model().model_json_schema(),
+            input_schema_source="manifest",
         )
 
 

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
-from pydantic import ValidationError
 from syntara_plugin.contracts import canonical_json_digest
 
-from .bindings import StepBindingError, StepBindings
+from .bindings import StepBinding, StepBindingError, StepBindings, StepDescriptor
 from .container import (
     ActionRegistry,
     ContainerAction,
@@ -18,12 +18,11 @@ from .container import (
     FailureCode,
 )
 from .context import ExecutionContext
+from .execution import StandardOutputWrapper, StepExecutionError, StepExecutor
 from .step import BaseStep
 
-_MAX_VALIDATION_ERRORS = 10
-_MAX_VALIDATION_DETAILS_LENGTH = 2_000
-_MAX_LOCATION_LENGTH = 128
 _SHA256 = re.compile(r"^sha256:[a-f0-9]{64}$")
+_WRAPPER_SCHEMA_DIGEST = canonical_json_digest(StandardOutputWrapper.model_json_schema())
 
 
 def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
@@ -64,47 +63,13 @@ def _installed_output_schema_digest(invocation: ContainerInvocation) -> str | No
     return digest
 
 
-def _validation_details(error: ValidationError) -> str:
-    """Return bounded field paths and stable validation codes.
-
-    Pydantic messages and location keys can be author- or caller-controlled and
-    may quote rejected values, so this reports only bounded paths plus the
-    stable Pydantic error ``type`` codes. The result is capped so a guaranteed
-    input failure can never exceed the transport failure-message limit and
-    degrade into an unknown outcome.
-    """
-
-    errors = error.errors()
-    reported = errors[:_MAX_VALIDATION_ERRORS]
-    parts = [f"{_format_location(item['loc'])}: {item['type']}" for item in reported]
-    remaining = len(errors) - len(reported)
-    if remaining > 0:
-        parts.append(f"and {remaining} more")
-    details = "; ".join(parts)
-    if len(details) > _MAX_VALIDATION_DETAILS_LENGTH:
-        details = details[: _MAX_VALIDATION_DETAILS_LENGTH - 3].rstrip() + "..."
-    return details
-
-
-def _format_location(location: object) -> str:
-    """Render one bounded error location without raw input values."""
-
-    if isinstance(location, tuple):
-        parts = [str(part) for part in location]
-    else:
-        parts = [str(location)]
-    path = ".".join(parts) or "<root>"
-    if len(path) > _MAX_LOCATION_LENGTH:
-        path = path[: _MAX_LOCATION_LENGTH - 3] + "..."
-    return path
-
-
-def container_action_for_step(step: BaseStep[Any, Any]) -> ContainerAction:
+def container_action_for_binding(binding: StepBinding) -> ContainerAction:
     """Wrap one typed step as a container action.
 
-    The action validates the invocation's raw JSON inputs against the step's
-    Pydantic input model, executes the step through ``BaseStep.execute()``, and
-    converts the typed output into a ``ContainerResult``. The output schema
+    The action validates the invocation's raw JSON inputs against the installed
+    Action manifest schema, constructs the registered Pydantic model, executes
+    the step through the shared executor, and converts the typed output into a
+    ``ContainerResult``. The output schema
     digest echoes the installed digest supplied in the invocation's runtime
     context, matching the platform contract used by the HTTP runner. When no
     installed digest is supplied, a provisional canonical digest of the
@@ -112,37 +77,57 @@ def container_action_for_step(step: BaseStep[Any, Any]) -> ContainerAction:
     story binds the installed manifest schema.
     """
 
+    step = binding.step
     if not isinstance(step, BaseStep):
         message = "step must be a BaseStep implementation"
         raise TypeError(message)
+    executor = StepExecutor(binding)
     output_schema_digest = _output_schema_digest(step)
-    output_model = step.output_model()
 
     def action(invocation: ContainerInvocation) -> ContainerResult:
+        if invocation.step_revision_id != binding.descriptor.step_identity:
+            raise ContainerInvocationError(
+                FailureCode.NOT_FOUND,
+                "The requested plugin action is not available in this container image.",
+                outcome="not_started",
+            )
         context = _execution_context(invocation)
         schema_digest = _installed_output_schema_digest(invocation) or output_schema_digest
         try:
-            inputs = step.input_model().model_validate(invocation.inputs)
-        except ValidationError as error:
-            message = (
-                "The plugin action input failed schema validation: "
-                f"{_validation_details(error)}"
-            )
+            wrapper = executor.execute(invocation.inputs, context)
+        except StepExecutionError as error:
             raise ContainerInvocationError(
-                FailureCode.INVALID_INPUT,
-                message,
-                outcome="not_started",
+                FailureCode.ABI_VIOLATION,
+                "The plugin action returned an invalid response.",
+                outcome="unknown",
             ) from error
-        output = step.execute(inputs, context)
-        if not isinstance(output, output_model):
+        if wrapper.status != 0:
+            return ContainerResult(
+                _WRAPPER_SCHEMA_DIGEST,
+                output=wrapper.model_dump(mode="json"),
+            )
+        output = wrapper.output
+        if output is None:
             raise ContainerInvocationError(
                 FailureCode.ABI_VIOLATION,
                 "The plugin action returned an invalid response.",
                 outcome="unknown",
             )
-        return ContainerResult(schema_digest, output=output.model_dump(mode="json"))
+        return ContainerResult(schema_digest, output=output)
 
     return action
+
+
+def container_action_for_step(
+    step: BaseStep[Any, Any],
+    *,
+    step_identity: str,
+    input_schema: Mapping[str, Any],
+) -> ContainerAction:
+    """Wrap one Action step with its trusted installed identity and schema."""
+
+    descriptor = StepDescriptor.for_installed_action(step_identity, step, input_schema)
+    return container_action_for_binding(StepBinding(descriptor, step))
 
 
 def container_action_for_bindings(bindings: StepBindings) -> ContainerAction:
@@ -156,7 +141,8 @@ def container_action_for_bindings(bindings: StepBindings) -> ContainerAction:
 
     def action(invocation: ContainerInvocation) -> ContainerResult:
         try:
-            step = bindings.resolve(invocation.step_revision_id)
+            binding = bindings.binding(invocation.step_revision_id)
+            return container_action_for_binding(binding)(invocation)
         except StepBindingError as error:
             message = "The requested plugin action is not available in this container image."
             raise ContainerInvocationError(
@@ -164,7 +150,6 @@ def container_action_for_bindings(bindings: StepBindings) -> ContainerAction:
                 message,
                 outcome="not_started",
             ) from error
-        return container_action_for_step(step)(invocation)
 
     return action
 
@@ -179,7 +164,7 @@ def action_registry_from_steps(bindings: StepBindings) -> ActionRegistry:
     """
 
     actions = {
-        step_identity: container_action_for_step(bindings.resolve(step_identity))
+        step_identity: container_action_for_binding(bindings.binding(step_identity))
         for step_identity in bindings.step_identities
     }
     if not actions:
