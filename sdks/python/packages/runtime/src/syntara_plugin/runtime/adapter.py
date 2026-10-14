@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
 from typing import Any
 
 from syntara_plugin.contracts import canonical_json_digest
 
-from .bindings import StepBinding, StepBindingError, StepBindings, StepDescriptor
+from .bindings import (
+    InstalledActionManifest,
+    StepBinding,
+    StepBindingError,
+    StepBindings,
+    StepDescriptor,
+)
 from .container import (
     ActionRegistry,
     ContainerAction,
@@ -18,7 +23,8 @@ from .container import (
     FailureCode,
 )
 from .context import ExecutionContext
-from .execution import StandardOutputWrapper, StepExecutionError, StepExecutor
+from .execution import StepExecutionError, StepExecutor
+from .outcome import StandardOutputWrapper
 from .step import BaseStep
 
 _SHA256 = re.compile(r"^sha256:[a-f0-9]{64}$")
@@ -67,10 +73,11 @@ def container_action_for_binding(binding: StepBinding) -> ContainerAction:
     """Wrap one typed step as a container action.
 
     The action validates the invocation's raw JSON inputs against the installed
-    Action manifest schema, constructs the registered Pydantic model, executes
-    the step through the shared executor, and converts the typed output into a
-    ``ContainerResult``. The output schema
-    digest echoes the installed digest supplied in the invocation's runtime
+    Action manifest schema for Actions or the implementation-derived schema for
+    other taxonomies, constructs the registered Pydantic model, executes the
+    step through the shared executor, and converts the typed output into a
+    ``ContainerResult``. The output schema digest echoes the installed digest
+    supplied in the invocation's runtime
     context, matching the platform contract used by the HTTP runner. When no
     installed digest is supplied, a provisional canonical digest of the
     implementation's Pydantic output model is used until the registry-binding
@@ -121,12 +128,11 @@ def container_action_for_binding(binding: StepBinding) -> ContainerAction:
 def container_action_for_step(
     step: BaseStep[Any, Any],
     *,
-    step_identity: str,
-    input_schema: Mapping[str, Any],
+    installed_action: InstalledActionManifest,
 ) -> ContainerAction:
     """Wrap one Action step with its trusted installed identity and schema."""
 
-    descriptor = StepDescriptor.for_installed_action(step_identity, step, input_schema)
+    descriptor = StepDescriptor.for_installed_action(step, installed_action)
     return container_action_for_binding(StepBinding(descriptor, step))
 
 

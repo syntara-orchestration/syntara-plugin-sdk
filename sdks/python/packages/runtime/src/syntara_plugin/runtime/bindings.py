@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -14,6 +14,53 @@ from jsonschema.exceptions import SchemaError
 from .step import ActionStep, BaseStep, TaskStep, TriggerStep, WorkflowStep
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+
+
+class _ImmutableJSONMapping(dict[str, Any]):
+    """A JSON object that rejects mutation through its public API."""
+
+    def _reject_mutation(self, *_args: Any, **_kwargs: Any) -> Any:
+        message = "installed schema documents are immutable"
+        raise TypeError(message)
+
+    __setitem__ = _reject_mutation  # type: ignore[method-assign]
+    __delitem__ = _reject_mutation  # type: ignore[method-assign]
+    clear = _reject_mutation  # type: ignore[method-assign]
+    pop = _reject_mutation  # type: ignore[method-assign]
+    popitem = _reject_mutation  # type: ignore[method-assign]
+    setdefault = _reject_mutation  # type: ignore[method-assign]
+    update = _reject_mutation  # type: ignore[method-assign]
+
+
+class _ImmutableJSONList(list[Any]):
+    """A JSON array that rejects mutation through its public API."""
+
+    def _reject_mutation(self, *_args: Any, **_kwargs: Any) -> None:
+        message = "installed schema documents are immutable"
+        raise TypeError(message)
+
+    __setitem__ = _reject_mutation  # type: ignore[method-assign]
+    __delitem__ = _reject_mutation  # type: ignore[method-assign]
+    append = _reject_mutation  # type: ignore[method-assign]
+    extend = _reject_mutation  # type: ignore[method-assign]
+    insert = _reject_mutation  # type: ignore[method-assign]
+    pop = _reject_mutation  # type: ignore[method-assign]
+    remove = _reject_mutation  # type: ignore[method-assign]
+    sort = _reject_mutation  # type: ignore[method-assign]
+    reverse = _reject_mutation  # type: ignore[method-assign]
+
+
+def _freeze_json_document(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        frozen = _ImmutableJSONMapping()
+        dict.update(
+            frozen,
+            ((key, _freeze_json_document(item)) for key, item in value.items()),
+        )
+        return frozen
+    if isinstance(value, list):
+        return _ImmutableJSONList(_freeze_json_document(item) for item in value)
+    return value
 
 
 class StepTaxonomy(StrEnum):
@@ -45,6 +92,65 @@ def _step_taxonomy(cls: type[BaseStep[Any, Any]]) -> StepTaxonomy:
             return taxonomy
     message = f"{cls.__qualname__} does not belong to a step taxonomy class"
     raise StepBindingError(message)
+
+
+@dataclass(frozen=True)
+class InstalledActionManifest:
+    """A trusted installed Action manifest and its resolved input schema."""
+
+    step_identity: str = field(init=False)
+    document: Mapping[str, Any] = field(init=False)
+    input_schema: Mapping[str, Any] = field(init=False)
+
+    @classmethod
+    def from_manifest(
+        cls,
+        step_identity: str,
+        manifest: Mapping[str, Any],
+        assets: Mapping[str, Mapping[str, Any]],
+    ) -> InstalledActionManifest:
+        """Resolve the canonical schema declared by ``spec.input``."""
+
+        if not _IDENTITY.fullmatch(step_identity):
+            message = "step_identity must be a Syntara identity"
+            raise StepBindingError(message)
+        if not isinstance(manifest, Mapping):
+            message = "manifest must be a JSON object"
+            raise StepBindingError(message)
+        if (
+            manifest.get("apiVersion") != "syntara.io/v1alpha1"
+            or manifest.get("kind") != "Action"
+        ):
+            message = "manifest must be a syntara.io/v1alpha1 Action document"
+            raise StepBindingError(message)
+        specification = manifest.get("spec")
+        if not isinstance(specification, Mapping):
+            message = "Action manifest must contain a spec object"
+            raise StepBindingError(message)
+        input_source = specification.get("input")
+        if not isinstance(input_source, Mapping):
+            message = "Action manifest must contain an input document source"
+            raise StepBindingError(message)
+        source_kind = input_source.get("kind")
+        if source_kind == "inline":
+            input_schema = input_source.get("value")
+        elif source_kind == "asset":
+            path = input_source.get("path")
+            if not isinstance(path, str) or path not in assets:
+                message = "Action input asset must be supplied by the installed binding"
+                raise StepBindingError(message)
+            input_schema = assets[path]
+        else:
+            message = "Action input must use an inline or asset document source"
+            raise StepBindingError(message)
+        if not isinstance(input_schema, Mapping):
+            message = "resolved Action input schema must be a JSON object"
+            raise StepBindingError(message)
+        installed_action = cls()
+        object.__setattr__(installed_action, "step_identity", step_identity)
+        object.__setattr__(installed_action, "document", _freeze_json_document(manifest))
+        object.__setattr__(installed_action, "input_schema", _freeze_json_document(input_schema))
+        return installed_action
 
 
 @dataclass(frozen=True)
@@ -87,6 +193,7 @@ class StepDescriptor:
             message = "input_schema_source must be 'implementation' or 'manifest'"
             raise StepBindingError(message)
         if self.input_schema_source == "manifest":
+            object.__setattr__(self, "input_schema", _freeze_json_document(self.input_schema))
             try:
                 Draft202012Validator.check_schema(self.input_schema)
             except SchemaError as error:
@@ -107,9 +214,8 @@ class StepDescriptor:
     @classmethod
     def for_installed_action(
         cls,
-        step_identity: str,
         step: BaseStep[Any, Any],
-        input_schema: Mapping[str, Any],
+        installed_action: InstalledActionManifest,
     ) -> StepDescriptor:
         """Build the trusted descriptor for one installed Action revision.
 
@@ -125,9 +231,9 @@ class StepDescriptor:
             message = "installed Action bindings require an ActionStep implementation"
             raise StepBindingError(message)
         return cls(
-            step_identity=step_identity,
+            step_identity=installed_action.step_identity,
             taxonomy=StepTaxonomy.ACTION,
-            input_schema=input_schema,
+            input_schema=installed_action.input_schema,
             output_schema=step.output_model().model_json_schema(),
             input_schema_source="manifest",
         )

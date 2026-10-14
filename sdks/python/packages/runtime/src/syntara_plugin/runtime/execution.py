@@ -5,28 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, Field
-
 from .abi import FailureCode
 from .bindings import StepBinding, StepBindingError, StepTaxonomy
 from .context import ExecutionContext
+from .outcome import ErrorMessage, StandardOutputWrapper
 from .validation import ActionInputValidationError, validate_action_inputs
-
-
-class ErrorMessage(BaseModel):
-    """A safe, actionable error carried by the standard output wrapper."""
-
-    code: str
-    message: str = Field(max_length=4_096)
-    retryable: bool = False
-
-
-class StandardOutputWrapper(BaseModel):
-    """The SDK-owned result envelope returned by the raw Action executor."""
-
-    status: int = Field(ge=0)
-    output: Mapping[str, Any] | None = None
-    error: ErrorMessage | None = None
 
 
 class StepExecutionError(RuntimeError):
@@ -34,13 +17,17 @@ class StepExecutionError(RuntimeError):
 
 
 class StepExecutor:
-    """Execute one trusted installed Action binding from raw JSON input."""
+    """Execute a typed step from raw JSON input.
+
+    Installed Actions use their manifest schema. Other taxologies retain the
+    implementation-derived Pydantic schema for backward compatibility.
+    """
 
     def __init__(self, binding: StepBinding) -> None:
-        if binding.descriptor.taxonomy is not StepTaxonomy.ACTION:
-            message = "StepExecutor requires an installed Action binding"
-            raise StepBindingError(message)
-        if binding.descriptor.input_schema_source != "manifest":
+        if (
+            binding.descriptor.taxonomy is StepTaxonomy.ACTION
+            and binding.descriptor.input_schema_source != "manifest"
+        ):
             message = (
                 "StepExecutor requires a descriptor created with "
                 "StepDescriptor.for_installed_action"

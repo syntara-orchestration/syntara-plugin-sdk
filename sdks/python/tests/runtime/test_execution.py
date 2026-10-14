@@ -12,11 +12,13 @@ from syntara_plugin.runtime import (
     ContainerInvocationError,
     ExecutionContext,
     FailureCode,
+    InstalledActionManifest,
     StandardOutputWrapper,
     StepBindingError,
     StepBindings,
     StepDescriptor,
     StepExecutor,
+    TaskStep,
     container_action_for_step,
 )
 
@@ -61,6 +63,16 @@ class FailingModelStep(ExampleStep):
         raise AssertionError("run must not be called")
 
 
+class TaskExampleOutput(BaseModel):
+    message: str
+    invocation_id: str
+
+
+class TaskExampleStep(TaskStep[ExampleInput, TaskExampleOutput]):
+    def run(self, inputs: ExampleInput, context: Any) -> TaskExampleOutput:
+        return TaskExampleOutput(message=inputs.message, invocation_id=context.invocation_id)
+
+
 def _input_schema() -> dict[str, object]:
     return {
         "type": "object",
@@ -74,10 +86,34 @@ def _input_schema() -> dict[str, object]:
     }
 
 
+def _installed_action(input_schema: dict[str, object]) -> InstalledActionManifest:
+    manifest = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Action",
+        "metadata": {
+            "name": "example",
+            "displayName": "Example",
+            "description": "Example action",
+        },
+        "spec": {
+            "runtime": {
+                "kind": "custom-workload",
+                "entryPoint": "example_module:ExampleStep",
+            },
+            "input": {"kind": "inline", "value": input_schema},
+            "output": {"kind": "inline", "value": {}},
+            "error": {"kind": "inline", "value": {}},
+        },
+    }
+    return InstalledActionManifest.from_manifest(
+        "acme.plugin.example", manifest, {}
+    )
+
+
 def _bind(step: ExampleStep) -> StepBindings:
     bindings = StepBindings()
     descriptor = StepDescriptor.for_installed_action(
-        "acme.plugin.example", step, _input_schema()
+        step, _installed_action(_input_schema())
     )
     bindings.bind(descriptor, step)
     return bindings
@@ -142,6 +178,7 @@ def test_invalid_manifest_input_never_calls_run(inputs: dict[str, object]) -> No
     assert wrapper.status != 0
     assert wrapper.error is not None
     assert wrapper.error.code == FailureCode.INVALID_INPUT.value
+    assert "credential" not in wrapper.error.message
     assert "secret-value" not in wrapper.error.message
     assert step.run_calls == 0
 
@@ -176,7 +213,10 @@ def test_model_construction_error_is_a_safe_invalid_input() -> None:
     schema["properties"]["mode"] = {"type": "string"}
     bindings = StepBindings()
     bindings.bind(
-        StepDescriptor.for_installed_action("acme.plugin.example", step, schema), step
+        StepDescriptor.for_installed_action(
+            step, _installed_action(schema)
+        ),
+        step,
     )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
@@ -190,6 +230,37 @@ def test_model_construction_error_is_a_safe_invalid_input() -> None:
     assert step.run_calls == 0
 
 
+def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    direct_step = ExampleStep()
+    container_step = ExampleStep()
+
+    def fail_construction(*_args: object, **_kwargs: object) -> ExampleInput:
+        raise TypeError("sensitive construction failure")
+
+    monkeypatch.setattr(
+        ExampleInput, "model_validate", classmethod(fail_construction)
+    )
+
+    direct_wrapper = _executor(direct_step).execute({"message": "hello"}, _context())
+    container_action = container_action_for_step(
+        container_step,
+        installed_action=_installed_action(_input_schema()),
+    )
+    container_result = container_action(_container_invocation({"message": "hello"}))
+
+    assert direct_wrapper.status != 0
+    assert direct_wrapper.error is not None
+    assert direct_wrapper.error.message == (
+        "The plugin action input failed model construction."
+    )
+    assert "sensitive construction failure" not in direct_wrapper.error.message
+    assert container_result.output == direct_wrapper.model_dump(mode="json")
+    assert direct_step.run_calls == 0
+    assert container_step.run_calls == 0
+
+
 def test_direct_and_container_paths_have_equivalent_outcomes() -> None:
     direct_step = ExampleStep()
     container_step = ExampleStep()
@@ -198,8 +269,7 @@ def test_direct_and_container_paths_have_equivalent_outcomes() -> None:
     direct_wrapper = _executor(direct_step).execute(invalid_input, _context())
     container_action = container_action_for_step(
         container_step,
-        step_identity="acme.plugin.example",
-        input_schema=_input_schema(),
+        installed_action=_installed_action(_input_schema()),
     )
     container_result = container_action(_container_invocation(invalid_input))
 
@@ -211,12 +281,29 @@ def test_direct_and_container_paths_have_equivalent_outcomes() -> None:
     assert container_step.run_calls == 0
 
 
+def test_direct_and_container_paths_have_equivalent_successes() -> None:
+    direct_step = ExampleStep()
+    container_step = ExampleStep()
+    valid_input = {"message": "hello", "count": 3, "mode": "slow"}
+
+    direct_wrapper = _executor(direct_step).execute(valid_input, _context())
+    container_action = container_action_for_step(
+        container_step,
+        installed_action=_installed_action(_input_schema()),
+    )
+    container_result = container_action(_container_invocation(valid_input))
+
+    assert direct_wrapper.status == 0
+    assert container_result.output == direct_wrapper.output
+    assert direct_step.run_calls == 1
+    assert container_step.run_calls == 1
+
+
 def test_container_action_rejects_a_mismatched_installed_identity() -> None:
     step = ExampleStep()
     action = container_action_for_step(
         step,
-        step_identity="acme.plugin.example",
-        input_schema=_input_schema(),
+        installed_action=_installed_action(_input_schema()),
     )
     invocation = _container_invocation({"message": "hello"})
     object.__setattr__(invocation, "step_revision_id", "acme.plugin.other")
@@ -237,3 +324,19 @@ def test_executor_rejects_an_implementation_schema_binding() -> None:
 
     with pytest.raises(StepBindingError, match="for_installed_action"):
         StepExecutor(binding)
+
+
+def test_non_action_taxonomy_retains_implementation_schema_compatibility() -> None:
+    step = TaskExampleStep()
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_step("acme.plugin.example", step), step)
+
+    wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
+        {"message": "hello", "count": 3, "mode": "slow"}, _context()
+    )
+
+    assert wrapper.status == 0
+    assert wrapper.output == {
+        "message": "hello",
+        "invocation_id": "invoke-1",
+    }

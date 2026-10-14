@@ -18,6 +18,7 @@ from syntara_plugin.runtime import (
     ContainerInvocationError,
     ContainerResult,
     FailureCode,
+    InstalledActionManifest,
     StepBindings,
     StepDescriptor,
     action_registry_from_steps,
@@ -92,13 +93,34 @@ def _bulk_input_schema() -> dict[str, object]:
     }
 
 
+def _installed_action(
+    step_identity: str,
+    input_schema: dict[str, object],
+) -> InstalledActionManifest:
+    return InstalledActionManifest.from_manifest(
+        step_identity,
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "Action",
+            "spec": {"input": {"kind": "inline", "value": input_schema}},
+        },
+        {},
+    )
+
+
 def _bind_step(
     bindings: StepBindings,
     step_identity: str,
     step: ActionEchoStep | BulkStep | LeakyStep,
     input_schema: dict[str, object],
 ) -> None:
-    bindings.bind(StepDescriptor.for_installed_action(step_identity, step, input_schema), step)
+    bindings.bind(
+        StepDescriptor.for_installed_action(
+            step,
+            _installed_action(step_identity, input_schema),
+        ),
+        step,
+    )
 
 
 def _invocation(step_revision_id: str = "acme.plugin.echo") -> ContainerInvocation:
@@ -116,8 +138,9 @@ def _invocation(step_revision_id: str = "acme.plugin.echo") -> ContainerInvocati
 def test_container_action_executes_a_typed_step() -> None:
     action = container_action_for_step(
         ActionEchoStep(),
-        step_identity="acme.plugin.echo",
-        input_schema=_echo_input_schema(),
+        installed_action=_installed_action(
+            "acme.plugin.echo", _echo_input_schema()
+        ),
     )
 
     result = action(_invocation())
@@ -135,8 +158,9 @@ def test_container_action_executes_a_typed_step() -> None:
 def test_container_action_echoes_the_installed_output_schema_digest() -> None:
     action = container_action_for_step(
         ActionEchoStep(),
-        step_identity="acme.plugin.echo",
-        input_schema=_echo_input_schema(),
+        installed_action=_installed_action(
+            "acme.plugin.echo", _echo_input_schema()
+        ),
     )
     invocation = _invocation()
     object.__setattr__(
@@ -153,8 +177,9 @@ def test_container_action_echoes_the_installed_output_schema_digest() -> None:
 def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
     action = container_action_for_step(
         ActionEchoStep(),
-        step_identity="acme.plugin.echo",
-        input_schema=_echo_input_schema(),
+        installed_action=_installed_action(
+            "acme.plugin.echo", _echo_input_schema()
+        ),
     )
     invocation = _invocation()
     object.__setattr__(invocation, "runtime_context", {"outputSchemaDigest": "not-a-digest"})
@@ -168,21 +193,23 @@ def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
 
 def test_container_action_rejects_a_non_step_implementation() -> None:
     not_a_step = _expected_digest()
-    input_schema = _echo_input_schema()
+    installed_action = _installed_action(
+        "acme.plugin.echo", _echo_input_schema()
+    )
 
     with pytest.raises(TypeError, match="BaseStep"):
         container_action_for_step(
             not_a_step,  # type: ignore[arg-type]
-            step_identity="acme.plugin.echo",
-            input_schema=input_schema,
+            installed_action=installed_action,
         )
 
 
 def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
     action = container_action_for_step(
         ActionEchoStep(),
-        step_identity="acme.plugin.echo",
-        input_schema=_echo_input_schema(),
+        installed_action=_installed_action(
+            "acme.plugin.echo", _echo_input_schema()
+        ),
     )
     invocation = _invocation()
     object.__setattr__(invocation, "inputs", {"message": 42})
@@ -198,8 +225,9 @@ def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
 def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
     action = container_action_for_step(
         BulkStep(),
-        step_identity="acme.plugin.bulk",
-        input_schema=_bulk_input_schema(),
+        installed_action=_installed_action(
+            "acme.plugin.bulk", _bulk_input_schema()
+        ),
     )
     invocation = _invocation("acme.plugin.bulk")
     object.__setattr__(
@@ -219,8 +247,9 @@ def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
 def test_small_validation_failures_report_every_stable_code() -> None:
     action = container_action_for_step(
         ActionEchoStep(),
-        step_identity="acme.plugin.echo",
-        input_schema=_echo_input_schema(),
+        installed_action=_installed_action(
+            "acme.plugin.echo", _echo_input_schema()
+        ),
     )
     invocation = _invocation()
     object.__setattr__(invocation, "inputs", {"message": 42})
@@ -228,15 +257,16 @@ def test_small_validation_failures_report_every_stable_code() -> None:
     result = action(invocation)
 
     assert result.output is not None
-    assert "$.message: type" in result.output["error"]["message"]
+    assert "properties.message.type: type" in result.output["error"]["message"]
     assert "and " not in result.output["error"]["message"]
 
 
 def test_undeclared_output_model_is_an_abi_violation() -> None:
     action = container_action_for_step(
         LeakyStep(),
-        step_identity="acme.plugin.echo",
-        input_schema=_echo_input_schema(),
+        installed_action=_installed_action(
+            "acme.plugin.echo", _echo_input_schema()
+        ),
     )
     invocation = _invocation()
 
@@ -250,8 +280,9 @@ def test_undeclared_output_model_is_an_abi_violation() -> None:
 def test_cancellation_flows_from_the_invocation_to_the_step_context() -> None:
     action = container_action_for_step(
         ActionEchoStep(),
-        step_identity="acme.plugin.echo",
-        input_schema=_echo_input_schema(),
+        installed_action=_installed_action(
+            "acme.plugin.echo", _echo_input_schema()
+        ),
     )
     invocation = _invocation()
     invocation.cancellation.set()

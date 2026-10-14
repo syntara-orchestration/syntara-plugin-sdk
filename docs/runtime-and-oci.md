@@ -156,18 +156,31 @@ canonical schema bundle remains the source of truth for manifest kinds such as
 Action and Trigger, and comparing implementation schemas with source manifests
 is owned by the schema-drift validation story.
 
-For an installed Action, use `StepDescriptor.for_installed_action()` with the
-canonical `spec.input` schema resolved from the installed manifest. The
+For an installed Action, first resolve its trusted manifest with
+`InstalledActionManifest.from_manifest()`. Inline and asset-backed `spec.input`
+document sources are supported, and the manifest and resolved schema are stored
+recursively as immutable JSON documents. Pass that object to
+`StepDescriptor.for_installed_action()`; the descriptor's input schema is
+manifest-sourced and cannot be replaced by a caller-supplied schema. The
 resulting `StepBinding` can be passed to `StepExecutor`, which validates the
 raw JSON mapping against that trusted schema, constructs the registered
 Pydantic model in strict mode, and invokes the implementation hook once:
 
 ```python
-from syntara_plugin.runtime import ExecutionContext, StepBindings, StepDescriptor, StepExecutor
+from syntara_plugin.runtime import (
+    ExecutionContext,
+    InstalledActionManifest,
+    StepBindings,
+    StepDescriptor,
+    StepExecutor,
+)
 
 bindings = StepBindings()
 step = EchoStep()
-descriptor = StepDescriptor.for_installed_action("acme.plugin.echo", step, manifest_input_schema)
+installed_action = InstalledActionManifest.from_manifest(
+    "acme.plugin.echo", installed_manifest, installed_assets
+)
+descriptor = StepDescriptor.for_installed_action(step, installed_action)
 bindings.bind(descriptor, step)
 executor = StepExecutor(bindings.binding("acme.plugin.echo"))
 result = executor.execute(
@@ -175,8 +188,9 @@ result = executor.execute(
 )
 ```
 
-Invalid input returns a `StandardOutputWrapper` with a nonzero status and a
-safe `ErrorMessage`; the implementation hook is not called. JSON Schema
+`StepExecutor` is the owner of the runtime-local `StandardOutputWrapper` and
+`ErrorMessage` result types. Invalid input returns that wrapper with a nonzero
+status and a safe `ErrorMessage`; the implementation hook is not called. JSON Schema
 `default` values are annotations, so the registered Pydantic model supplies the
 actual default. Enums must match exactly, and unknown fields are rejected only
 when the manifest schema forbids them. Pydantic runs in strict mode after JSON
@@ -186,7 +200,10 @@ contract rejects.
 The container adapter serializes that same wrapper into its terminal result for
 invalid input, using the canonical digest of the wrapper schema. Direct Python
 execution and container execution therefore expose equivalent status and error
-outcomes without exposing the rejected input document.
+and success outcomes without exposing the rejected input document. Actions are
+the only taxonomy that requires manifest-sourced input schemas; Task, Workflow,
+and Trigger bindings retain their existing implementation-derived schemas for
+backward compatibility.
 
 ### Container adapter
 

@@ -10,6 +10,7 @@ from syntara_plugin.runtime import (
     ActionStep,
     BaseStep,
     ExecutionContext,
+    InstalledActionManifest,
     StepBindingError,
     StepBindings,
     StepDescriptor,
@@ -35,6 +36,24 @@ def _make_step(base: type[BaseStep[Any, Any]]) -> BaseStep[EchoInput, EchoOutput
             return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
 
     return Step()
+
+
+def _manifest(input_schema: dict[str, object]) -> dict[str, object]:
+    return {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Action",
+        "spec": {"input": {"kind": "inline", "value": input_schema}},
+    }
+
+
+def _installed_action(
+    input_schema: dict[str, object],
+) -> InstalledActionManifest:
+    return InstalledActionManifest.from_manifest(
+        "acme.plugin.echo",
+        _manifest(input_schema),
+        {},
+    )
 
 
 @pytest.mark.parametrize(
@@ -89,27 +108,82 @@ def test_installed_action_descriptor_uses_the_manifest_schema() -> None:
         "additionalProperties": False,
     }
 
-    descriptor = StepDescriptor.for_installed_action(
-        "acme.plugin.echo", step, manifest_schema
-    )
+    installed_action = _installed_action(manifest_schema)
+    descriptor = StepDescriptor.for_installed_action(step, installed_action)
 
     assert descriptor.input_schema == manifest_schema
     assert descriptor.input_schema_source == "manifest"
 
 
-def test_installed_action_descriptor_rejects_a_non_action_step() -> None:
-    step = _make_step(TaskStep)
+def test_installed_action_manifest_resolves_an_asset_backed_schema() -> None:
+    input_schema = {
+        "type": "object",
+        "required": ["message"],
+        "properties": {"message": {"type": "string"}},
+    }
+    manifest = _manifest({})
+    manifest["spec"]["input"] = {"kind": "asset", "path": "schemas/input.json"}
+
+    installed_action = InstalledActionManifest.from_manifest(
+        "acme.plugin.echo",
+        manifest,
+        {"schemas/input.json": input_schema},
+    )
+
+    assert installed_action.input_schema == input_schema
+    assert (
+        StepDescriptor.for_installed_action(_make_step(ActionStep), installed_action).input_schema
+        == input_schema
+    )
+
+
+def test_installed_action_manifests_are_created_by_the_manifest_factory() -> None:
     input_schema = EchoInput.model_json_schema()
 
+    with pytest.raises(TypeError):
+        InstalledActionManifest(  # type: ignore[call-arg]
+            "acme.plugin.echo",
+            _manifest(input_schema),
+            input_schema,
+        )
+
+
+def test_installed_action_documents_and_schemas_are_immutable() -> None:
+    installed_action = _installed_action(
+        {
+            "type": "object",
+            "required": ["message"],
+            "properties": {"message": {"type": "string"}},
+        }
+    )
+    descriptor = StepDescriptor.for_installed_action(
+        _make_step(ActionStep), installed_action
+    )
+
+    with pytest.raises(TypeError):
+        installed_action.input_schema["type"] = "array"
+    with pytest.raises(TypeError):
+        installed_action.input_schema["required"][0] = "changed"
+    with pytest.raises(TypeError):
+        descriptor.input_schema["required"].append("changed")
+    with pytest.raises(TypeError):
+        installed_action.document["spec"]["input"]["value"] = {}
+
+
+def test_installed_action_descriptor_rejects_a_non_action_step() -> None:
+    step = _make_step(TaskStep)
+    installed_action = _installed_action(EchoInput.model_json_schema())
+
     with pytest.raises(StepBindingError, match="ActionStep"):
-        StepDescriptor.for_installed_action("acme.plugin.echo", step, input_schema)
+        StepDescriptor.for_installed_action(step, installed_action)
 
 
 def test_installed_action_descriptor_rejects_an_invalid_manifest_schema() -> None:
     step = _make_step(ActionStep)
+    installed_action = _installed_action({"type": "invalid"})
 
     with pytest.raises(StepBindingError, match="valid JSON Schema"):
-        StepDescriptor.for_installed_action("acme.plugin.echo", step, {"type": "invalid"})
+        StepDescriptor.for_installed_action(step, installed_action)
 
 
 def test_resolved_step_executes_directly_without_container_invocation() -> None:

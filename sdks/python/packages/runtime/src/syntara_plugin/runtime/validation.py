@@ -48,7 +48,7 @@ def validate_action_inputs(
     schema_validator = Draft202012Validator(input_schema, format_checker=FormatChecker())
     schema_errors = sorted(
         schema_validator.iter_errors(payload),
-        key=lambda error: (error.json_path, str(error.validator)),
+        key=lambda error: (tuple(error.schema_path), str(error.validator)),
     )
     if schema_errors:
         raise ActionInputValidationError(
@@ -68,6 +68,10 @@ def validate_action_inputs(
             "The plugin action input failed model validation: "
             + _pydantic_details(error)
         ) from error
+    except Exception as error:
+        raise ActionInputValidationError(
+            "The plugin action input failed model construction."
+        ) from error
 
 
 def _pydantic_details(error: ValidationError) -> str:
@@ -78,7 +82,7 @@ def _pydantic_details(error: ValidationError) -> str:
 
 
 def _schema_error_detail(error: JsonSchemaValidationError) -> str:
-    location = _bounded_location(error.json_path)
+    location = _bounded_location(tuple(error.schema_path))
     if error.validator == "required" and isinstance(error.validator_value, list):
         if isinstance(error.instance, dict):
             missing_keys = [k for k in error.validator_value if k not in error.instance]
