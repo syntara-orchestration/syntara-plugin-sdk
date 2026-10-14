@@ -46,10 +46,15 @@ def validate_action_inputs(
         raise ActionInputValidationError("input: must contain only JSON-compatible values")
 
     schema_validator = Draft202012Validator(input_schema, format_checker=FormatChecker())
-    schema_errors = sorted(
-        schema_validator.iter_errors(payload),
-        key=lambda error: (tuple(error.schema_path), str(error.validator)),
-    )
+    try:
+        schema_errors = sorted(
+            schema_validator.iter_errors(payload),
+            key=lambda error: (tuple(error.schema_path), str(error.validator)),
+        )
+    except Exception as error:
+        raise ActionInputValidationError(
+            "The plugin action input schema could not be evaluated."
+        ) from error
     if schema_errors:
         raise ActionInputValidationError(
             "The plugin action input failed schema validation: "

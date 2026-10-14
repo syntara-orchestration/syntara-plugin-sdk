@@ -654,6 +654,7 @@ dependencies = [
     { name = "jsonschema" },
     { name = "protobuf" },
     { name = "pydantic" },
+    { name = "referencing" },
     { name = "syntara-plugin-contracts" },
 ]
 
@@ -663,6 +664,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "protobuf", specifier = ">=6.31.1" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "referencing", specifier = ">=0.37" },
     { name = "syntara-plugin-contracts", editable = "sdks/python/packages/contracts" },
 ]
 

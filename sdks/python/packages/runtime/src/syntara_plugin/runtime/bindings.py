@@ -10,6 +10,9 @@ from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
+from referencing import Registry, Resource
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 
 from .step import ActionStep, BaseStep, TaskStep, TriggerStep, WorkflowStep
 
@@ -61,6 +64,51 @@ def _freeze_json_document(value: Any) -> Any:
     if isinstance(value, list):
         return _ImmutableJSONList(_freeze_json_document(item) for item in value)
     return value
+
+
+def _validate_schema_references(schema: Mapping[str, Any]) -> None:
+    resource = Resource.from_contents(schema, default_specification=DRAFT202012)
+    _validate_resource_references(
+        resource,
+        Registry().resolver_with_root(resource),
+    )
+
+
+def _validate_resource_references(resource: Resource[Any], resolver: Any) -> None:
+    contents = resource.contents
+    if not isinstance(contents, Mapping):
+        return
+    for keyword in ("$ref", "$dynamicRef"):
+        reference = contents.get(keyword)
+        if not isinstance(reference, str):
+            continue
+        try:
+            resolver.lookup(reference)
+        except Unresolvable as error:
+            message = (
+                f"manifest input_schema contains an unresolvable {keyword}: "
+                f"{reference}"
+            )
+            raise StepBindingError(message) from error
+    for subresource in resource.subresources():
+        _validate_resource_references(
+            subresource,
+            resolver.in_subresource(subresource),
+        )
+    definitions = contents.get("$defs")
+    if not isinstance(definitions, Mapping):
+        return
+    for definition in definitions.values():
+        if not isinstance(definition, Mapping | bool):
+            continue
+        definition_resource = Resource.from_contents(
+            definition,
+            default_specification=DRAFT202012,
+        )
+        _validate_resource_references(
+            definition_resource,
+            resolver.in_subresource(definition_resource),
+        )
 
 
 class StepTaxonomy(StrEnum):
@@ -196,6 +244,7 @@ class StepDescriptor:
             object.__setattr__(self, "input_schema", _freeze_json_document(self.input_schema))
             try:
                 Draft202012Validator.check_schema(self.input_schema)
+                _validate_schema_references(self.input_schema)
             except SchemaError as error:
                 message = "manifest input_schema must be a valid JSON Schema"
                 raise StepBindingError(message) from error

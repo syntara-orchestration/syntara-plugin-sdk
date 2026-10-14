@@ -162,6 +162,9 @@ document sources are supported, and the manifest and resolved schema are stored
 recursively as immutable JSON documents. Pass that object to
 `StepDescriptor.for_installed_action()`; the descriptor's input schema is
 manifest-sourced and cannot be replaced by a caller-supplied schema. The
+schema must be self-contained; local JSON Schema references are resolved when
+the descriptor is created, so a dangling reference fails installation instead of
+breaking every invocation. The
 resulting `StepBinding` can be passed to `StepExecutor`, which validates the
 raw JSON mapping against that trusted schema, constructs the registered
 Pydantic model in strict mode, and invokes the implementation hook once:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel, model_validator
 from syntara_plugin.runtime import (
     ActionStep,
@@ -256,6 +257,40 @@ def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
         "The plugin action input failed model construction."
     )
     assert "sensitive construction failure" not in direct_wrapper.error.message
+    assert container_result.output == direct_wrapper.model_dump(mode="json")
+    assert direct_step.run_calls == 0
+    assert container_step.run_calls == 0
+
+
+def test_schema_evaluation_failure_is_a_safe_invalid_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    direct_step = ExampleStep()
+    container_step = ExampleStep()
+    executor = _executor(direct_step)
+    container_action = container_action_for_step(
+        container_step,
+        installed_action=_installed_action(_input_schema()),
+    )
+
+    def fail_schema_evaluation(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("sensitive schema failure")
+
+    monkeypatch.setattr(
+        Draft202012Validator,
+        "iter_errors",
+        fail_schema_evaluation,
+    )
+
+    direct_wrapper = executor.execute({"message": "hello"}, _context())
+    container_result = container_action(_container_invocation({"message": "hello"}))
+
+    assert direct_wrapper.status != 0
+    assert direct_wrapper.error is not None
+    assert direct_wrapper.error.message == (
+        "The plugin action input schema could not be evaluated."
+    )
+    assert "sensitive schema failure" not in direct_wrapper.error.message
     assert container_result.output == direct_wrapper.model_dump(mode="json")
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0

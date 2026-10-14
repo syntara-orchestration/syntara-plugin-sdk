@@ -186,6 +186,56 @@ def test_installed_action_descriptor_rejects_an_invalid_manifest_schema() -> Non
         StepDescriptor.for_installed_action(step, installed_action)
 
 
+def test_installed_action_descriptor_accepts_resolvable_schema_references() -> None:
+    step = _make_step(ActionStep)
+    input_schema = {
+        "type": "object",
+        "properties": {"message": {"$ref": "#/$defs/message"}},
+        "$defs": {"message": {"type": "string"}},
+    }
+
+    descriptor = StepDescriptor.for_installed_action(
+        step,
+        _installed_action(input_schema),
+    )
+
+    assert descriptor.input_schema == input_schema
+
+
+def test_installed_action_descriptor_rejects_a_dangling_schema_reference() -> None:
+    step = _make_step(ActionStep)
+    input_schema = {
+        "type": "object",
+        "properties": {"message": {"$ref": "#/$defs/missing"}},
+    }
+
+    with pytest.raises(StepBindingError, match=r"unresolvable \$ref: #/\$defs/missing"):
+        StepDescriptor.for_installed_action(
+            step,
+            _installed_action(input_schema),
+        )
+
+
+def test_installed_action_descriptor_rejects_nested_dangling_references() -> None:
+    step = _make_step(ActionStep)
+    input_schema = {
+        "type": "object",
+        "properties": {"message": {"$ref": "#/$defs/message"}},
+        "$defs": {
+            "message": {
+                "type": "object",
+                "properties": {"value": {"$ref": "#/$defs/missing"}},
+            }
+        },
+    }
+
+    with pytest.raises(StepBindingError, match=r"unresolvable \$ref: #/\$defs/missing"):
+        StepDescriptor.for_installed_action(
+            step,
+            _installed_action(input_schema),
+        )
+
+
 def test_resolved_step_executes_directly_without_container_invocation() -> None:
     bindings = StepBindings()
     step = _make_step(TaskStep)
