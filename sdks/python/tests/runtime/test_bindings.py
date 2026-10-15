@@ -221,9 +221,10 @@ def test_mutation_through_base_mapping_methods_fails_closed_at_execution() -> No
     descriptor = StepDescriptor.for_installed_action(step, installed_action)
 
     dict.__setitem__(descriptor.input_schema, "required", [])
+    binding = StepBinding(descriptor, step)
 
     with pytest.raises(StepBindingError, match="unchanged installed contract"):
-        StepExecutor(StepBinding(descriptor, step))
+        StepExecutor(binding)
 
 
 def test_mutated_installed_schema_cannot_be_rebound() -> None:
@@ -429,12 +430,15 @@ def test_invalid_taxonomy_is_rejected() -> None:
 
 
 def test_callers_cannot_mark_a_plain_action_descriptor_as_manifest_trusted() -> None:
+    input_schema = EchoInput.model_json_schema()
+    output_schema = EchoOutput.model_json_schema()
+
     with pytest.raises(StepBindingError, match="for_installed_action"):
         StepDescriptor(
             step_identity="acme.plugin.echo",
             taxonomy=StepTaxonomy.ACTION,
-            input_schema=EchoInput.model_json_schema(),
-            output_schema=EchoOutput.model_json_schema(),
+            input_schema=input_schema,
+            output_schema=output_schema,
             input_schema_source="manifest",
         )
 
@@ -446,9 +450,10 @@ def test_implementation_derived_action_descriptor_supports_authoring_validation(
 
     bindings.bind(descriptor, step)
 
-    assert bindings.binding("acme.plugin.echo") == StepBinding(descriptor, step)
+    binding = bindings.binding("acme.plugin.echo")
+    assert binding == StepBinding(descriptor, step)
     with pytest.raises(StepBindingError, match="installed contract"):
-        StepExecutor(bindings.binding("acme.plugin.echo"))
+        StepExecutor(binding)
 
 
 def test_binding_and_execution_reject_a_duck_typed_action_descriptor() -> None:
@@ -461,12 +466,13 @@ def test_binding_and_execution_reject_a_duck_typed_action_descriptor() -> None:
         require_executable_contract=lambda: None,
     )
     bindings = StepBindings()
+    binding = StepBinding(fake_descriptor, step)  # type: ignore[arg-type]
 
     with pytest.raises(StepBindingError, match="StepDescriptor"):
         bindings.bind(fake_descriptor, step)  # type: ignore[arg-type]
 
     with pytest.raises(StepBindingError, match="StepDescriptor"):
-        StepExecutor(StepBinding(fake_descriptor, step))  # type: ignore[arg-type]
+        StepExecutor(binding)
 
 
 def test_binding_and_execution_reject_an_action_descriptor_subclass() -> None:
@@ -482,12 +488,13 @@ def test_binding_and_execution_reject_an_action_descriptor_subclass() -> None:
         output_schema=EchoOutput.model_json_schema(),
     )
     bindings = StepBindings()
+    binding = StepBinding(forged_descriptor, step)
 
     with pytest.raises(StepBindingError, match="StepDescriptor"):
         bindings.bind(forged_descriptor, step)
 
     with pytest.raises(StepBindingError, match="StepDescriptor"):
-        StepExecutor(StepBinding(forged_descriptor, step))
+        StepExecutor(binding)
 
 
 def test_installed_action_execution_requires_factory_provenance() -> None:
@@ -513,8 +520,9 @@ def test_installed_action_execution_requires_factory_provenance() -> None:
     class ForgedManifest(InstalledActionManifest):
         pass
 
+    forged_manifest_subclass = ForgedManifest()
     with pytest.raises(TypeError, match="InstalledActionManifest"):
-        StepDescriptor.for_installed_action(step, ForgedManifest())
+        StepDescriptor.for_installed_action(step, forged_manifest_subclass)
 
     forged_descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
@@ -525,9 +533,10 @@ def test_installed_action_execution_requires_factory_provenance() -> None:
     bindings = StepBindings()
 
     bindings.bind(forged_descriptor, step)
+    binding = StepBinding(forged_descriptor, step)
 
     with pytest.raises(StepBindingError, match="installed contract"):
-        StepExecutor(StepBinding(forged_descriptor, step))
+        StepExecutor(binding)
 
 
 def test_platform_managed_driver_is_rejected_as_a_python_implementation() -> None:

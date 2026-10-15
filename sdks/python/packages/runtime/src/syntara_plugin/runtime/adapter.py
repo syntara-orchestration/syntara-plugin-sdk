@@ -87,9 +87,6 @@ def container_step_for_binding(binding: StepBinding) -> ContainerStepHandler:
 
     validate_executable_step_binding(binding.descriptor, binding.step)
     step = binding.step
-    if not isinstance(step, BaseStep):
-        message = "step must be a BaseStep implementation"
-        raise TypeError(message)
     executor = StepExecutor(binding)
     output_schema_digest = _output_schema_digest(step)
 

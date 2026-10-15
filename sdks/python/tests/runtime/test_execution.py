@@ -533,17 +533,19 @@ def test_executor_rejects_an_implementation_derived_action_binding() -> None:
     step = ExampleStep()
     bindings = StepBindings()
     bindings.bind(StepDescriptor.for_step("acme.plugin.example", step), step)
+    binding = bindings.binding("acme.plugin.example")
 
     with pytest.raises(StepBindingError, match="installed contract"):
-        StepExecutor(bindings.binding("acme.plugin.example"))
+        StepExecutor(binding)
 
 
 def test_container_execution_rejects_an_implementation_derived_action_binding() -> None:
     step = ExampleStep()
     descriptor = StepDescriptor.for_step("acme.plugin.example", step)
+    binding = StepBinding(descriptor, step)
 
     with pytest.raises(StepBindingError, match="installed contract"):
-        container_step_for_binding(StepBinding(descriptor, step))
+        container_step_for_binding(binding)
 
 
 def test_direct_mismatched_binding_is_rejected_before_any_typed_hook_runs() -> None:
@@ -734,11 +736,12 @@ def test_non_action_output_validation_uses_generic_step_wording() -> None:
     step = InvalidOutputTaskStep()
     bindings = StepBindings()
     bindings.bind(StepDescriptor.for_step("acme.plugin.task", step), step)
+    binding = bindings.binding("acme.plugin.task")
+    executor = StepExecutor(binding)
+    context = _context()
 
     with pytest.raises(StepExecutionError, match="plugin step") as raised:
-        StepExecutor(bindings.binding("acme.plugin.task")).execute(
-            {"message": "hello"}, _context()
-        )
+        executor.execute({"message": "hello"}, context)
 
     assert "action" not in str(raised.value).lower()
 

@@ -461,7 +461,7 @@ def _decode_json_object(value: bytes, field_name: str) -> dict[str, Any]:
             value or b"{}",
             parse_constant=_reject_nonstandard_json_constant,
         )
-    except (UnicodeDecodeError, ValueError) as error:
+    except ValueError as error:
         raise ContainerInvocationError(
             FailureCode.INVALID_INPUT,
             f"The {field_name} payload must be a JSON object.",
