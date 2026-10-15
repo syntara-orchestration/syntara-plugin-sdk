@@ -98,10 +98,10 @@ class BaseStep[TInput: BaseModel, TOutput: BaseModel](ABC):
     """Abstract typed base class shared by every executable plugin step.
 
     ``execute()`` is the stable author-facing entrypoint. It accepts an
-    already-constructed ``TInput`` and returns the step's ``TOutput`` directly;
-    raw-input validation and the common output envelope are added at the
-    dispatch boundary by their own stories. Subclasses implement ``run()`` and
-    that hook must remain stable across those additions.
+    already-constructed ``TInput`` and returns the step's ``TOutput`` directly.
+    The shared ``StepExecutor`` performs raw-input validation and wraps results
+    at the dispatch boundary. Subclasses implement ``run()``; that hook remains
+    independent of transport and wrapper details.
     """
 
     @classmethod

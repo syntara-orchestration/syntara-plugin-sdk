@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
     ANY_STEP_REVISION,
-    ActionRegistry,
     ActionStep,
     ContainerClient,
     ContainerInvocation,
@@ -21,10 +20,11 @@ from syntara_plugin.runtime import (
     InstalledActionManifest,
     StepBindings,
     StepDescriptor,
-    action_registry_from_steps,
+    StepRegistry,
     add_container_runtime_service,
-    container_action_for_bindings,
     container_action_for_step,
+    container_step_for_bindings,
+    step_registry_from_bindings,
 )
 
 
@@ -123,27 +123,32 @@ def _bind_step(
     )
 
 
-def _invocation(step_revision_id: str = "acme.plugin.echo") -> ContainerInvocation:
+def _invocation(
+    step_revision_id: str = "acme.plugin.echo",
+    *,
+    inputs: dict[str, object] | None = None,
+    runtime_context: dict[str, object] | None = None,
+) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
         workflow_run_id="workflow-run-1",
         step_revision_id=step_revision_id,
-        inputs={"message": "hello"},
+        inputs=inputs or {"message": "hello"},
         credential_file_paths={},
         timeout_seconds=30,
-        runtime_context={"environment": "test"},
+        runtime_context=runtime_context or {"environment": "test"},
     )
 
 
-def test_container_action_executes_a_typed_step() -> None:
-    action = container_action_for_step(
+def test_container_handler_executes_a_typed_step() -> None:
+    handler = container_action_for_step(
         ActionEchoStep(),
         installed_action=_installed_action(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
 
-    result = action(_invocation())
+    result = handler(_invocation())
 
     assert isinstance(result, ContainerResult)
     assert result.output_schema_digest == _expected_digest()
@@ -155,37 +160,33 @@ def test_container_action_executes_a_typed_step() -> None:
     }
 
 
-def test_container_action_echoes_the_installed_output_schema_digest() -> None:
-    action = container_action_for_step(
+def test_container_handler_echoes_the_installed_output_schema_digest() -> None:
+    handler = container_action_for_step(
         ActionEchoStep(),
         installed_action=_installed_action(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
-    invocation = _invocation()
-    object.__setattr__(
-        invocation,
-        "runtime_context",
-        {"outputSchemaDigest": "sha256:" + "a" * 64},
+    invocation = _invocation(
+        runtime_context={"outputSchemaDigest": "sha256:" + "a" * 64}
     )
 
-    result = action(invocation)
+    result = handler(invocation)
 
     assert result.output_schema_digest == "sha256:" + "a" * 64
 
 
 def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
-    action = container_action_for_step(
+    handler = container_action_for_step(
         ActionEchoStep(),
         installed_action=_installed_action(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
-    invocation = _invocation()
-    object.__setattr__(invocation, "runtime_context", {"outputSchemaDigest": "not-a-digest"})
+    invocation = _invocation(runtime_context={"outputSchemaDigest": "not-a-digest"})
 
     with pytest.raises(ContainerInvocationError) as raised:
-        action(invocation)
+        handler(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "not_started"
@@ -205,16 +206,15 @@ def test_container_action_rejects_a_non_step_implementation() -> None:
 
 
 def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
-    action = container_action_for_step(
+    handler = container_action_for_step(
         ActionEchoStep(),
         installed_action=_installed_action(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
-    invocation = _invocation()
-    object.__setattr__(invocation, "inputs", {"message": 42})
+    invocation = _invocation(inputs={"message": 42})
 
-    result = action(invocation)
+    result = handler(invocation)
 
     assert result.output is not None
     assert result.output["status"] != 0
@@ -223,18 +223,17 @@ def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
 
 
 def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
-    action = container_action_for_step(
+    handler = container_action_for_step(
         BulkStep(),
         installed_action=_installed_action(
             "acme.plugin.bulk", _bulk_input_schema()
         ),
     )
-    invocation = _invocation("acme.plugin.bulk")
-    object.__setattr__(
-        invocation, "inputs", {"items": ["leaked-secret-value"] * 200}
+    invocation = _invocation(
+        "acme.plugin.bulk", inputs={"items": ["leaked-secret-value"] * 200}
     )
 
-    result = action(invocation)
+    result = handler(invocation)
 
     assert result.output is not None
     error = result.output["error"]
@@ -245,16 +244,15 @@ def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
 
 
 def test_small_validation_failures_report_every_stable_code() -> None:
-    action = container_action_for_step(
+    handler = container_action_for_step(
         ActionEchoStep(),
         installed_action=_installed_action(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
-    invocation = _invocation()
-    object.__setattr__(invocation, "inputs", {"message": 42})
+    invocation = _invocation(inputs={"message": 42})
 
-    result = action(invocation)
+    result = handler(invocation)
 
     assert result.output is not None
     assert "properties.message.type: type" in result.output["error"]["message"]
@@ -262,7 +260,7 @@ def test_small_validation_failures_report_every_stable_code() -> None:
 
 
 def test_undeclared_output_model_is_an_abi_violation() -> None:
-    action = container_action_for_step(
+    handler = container_action_for_step(
         LeakyStep(),
         installed_action=_installed_action(
             "acme.plugin.echo", _echo_input_schema()
@@ -271,14 +269,14 @@ def test_undeclared_output_model_is_an_abi_violation() -> None:
     invocation = _invocation()
 
     with pytest.raises(ContainerInvocationError) as raised:
-        action(invocation)
+        handler(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
 
 
 def test_cancellation_flows_from_the_invocation_to_the_step_context() -> None:
-    action = container_action_for_step(
+    handler = container_action_for_step(
         ActionEchoStep(),
         installed_action=_installed_action(
             "acme.plugin.echo", _echo_input_schema()
@@ -287,51 +285,51 @@ def test_cancellation_flows_from_the_invocation_to_the_step_context() -> None:
     invocation = _invocation()
     invocation.cancellation.set()
 
-    result = action(invocation)
+    result = handler(invocation)
 
     assert result.output is not None
     assert result.output["cancelled"] is True
 
 
-def test_bindings_action_resolves_by_invocation_identity() -> None:
+def test_bindings_step_handler_resolves_by_invocation_identity() -> None:
     bindings = StepBindings()
     step = ActionEchoStep()
     _bind_step(bindings, "acme.plugin.echo", step, _echo_input_schema())
 
-    result = container_action_for_bindings(bindings)(_invocation())
+    result = container_step_for_bindings(bindings)(_invocation())
 
     assert result.output is not None
     assert result.output["message"] == "hello"
 
 
-def test_bindings_action_reports_unknown_identities_as_not_found() -> None:
+def test_bindings_step_handler_reports_unknown_identities_as_not_found() -> None:
     bindings = StepBindings()
     step = ActionEchoStep()
     _bind_step(bindings, "acme.plugin.echo", step, _echo_input_schema())
-    action = container_action_for_bindings(bindings)
+    handler = container_step_for_bindings(bindings)
     invocation = _invocation("acme.plugin.missing")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        action(invocation)
+        handler(invocation)
 
     assert raised.value.code is FailureCode.NOT_FOUND
 
 
-def test_action_registry_from_steps_advertises_exact_identities() -> None:
+def test_step_registry_from_bindings_advertises_exact_identities() -> None:
     bindings = StepBindings()
     step = ActionEchoStep()
     _bind_step(bindings, "acme.plugin.echo", step, _echo_input_schema())
 
-    actions = action_registry_from_steps(bindings)
+    steps = step_registry_from_bindings(bindings)
 
-    assert actions.step_revision_ids == ("acme.plugin.echo",)
+    assert steps.step_revision_ids == ("acme.plugin.echo",)
 
 
-def test_action_registry_from_steps_rejects_an_empty_registry() -> None:
+def test_step_registry_from_bindings_rejects_an_empty_registry() -> None:
     bindings = StepBindings()
 
     with pytest.raises(ValueError, match="at least one typed step"):
-        action_registry_from_steps(bindings)
+        step_registry_from_bindings(bindings)
 
 
 def test_typed_steps_dispatch_end_to_end_over_the_container_abi() -> None:
@@ -342,7 +340,7 @@ def test_typed_steps_dispatch_end_to_end_over_the_container_abi() -> None:
     _bind_step(bindings, "acme.plugin.echo", step, _echo_input_schema())
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, action_registry_from_steps(bindings))
+    add_container_runtime_service(server, step_registry_from_bindings(bindings))
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
@@ -371,7 +369,7 @@ def test_large_invalid_payloads_remain_invalid_input_over_grpc() -> None:
     _bind_step(bindings, "acme.plugin.bulk", step, _bulk_input_schema())
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, action_registry_from_steps(bindings))
+    add_container_runtime_service(server, step_registry_from_bindings(bindings))
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
@@ -395,14 +393,14 @@ def test_large_invalid_payloads_remain_invalid_input_over_grpc() -> None:
     assert result.output["error"]["code"] == FailureCode.INVALID_INPUT.value
 
 
-def test_generic_runner_can_dispatch_a_bindings_fallback_action() -> None:
+def test_generic_runner_can_dispatch_a_bindings_fallback_step() -> None:
     bindings = StepBindings()
     step = ActionEchoStep()
     _bind_step(bindings, "acme.plugin.echo", step, _echo_input_schema())
 
-    actions = ActionRegistry({}, fallback_action=container_action_for_bindings(bindings))
+    steps = StepRegistry({}, fallback_step=container_step_for_bindings(bindings))
 
-    assert actions.step_revision_ids == (ANY_STEP_REVISION,)
-    result = actions.resolve("acme.plugin.echo")(_invocation())
+    assert steps.step_revision_ids == (ANY_STEP_REVISION,)
+    result = steps.resolve("acme.plugin.echo")(_invocation())
     assert result.output is not None
     assert result.output["message"] == "hello"

@@ -1,118 +1,68 @@
-"""Strict pre-execution validation for installed Action inputs."""
+"""Taxonomy-neutral pre-execution input validation dispatch."""
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 from typing import Any
 
-from jsonschema import Draft202012Validator, FormatChecker
-from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ValidationError
+
+from .bindings import StepTaxonomy
 
 _MAX_VALIDATION_ERRORS = 10
 _MAX_VALIDATION_DETAILS_LENGTH = 2_000
 _MAX_LOCATION_LENGTH = 128
 
 
-class ActionInputValidationError(ValueError):
-    """An invalid Action input with a caller-safe diagnostic message."""
+class StepInputValidationError(ValueError):
+    """An invalid step input with a caller-safe diagnostic message."""
 
     def __init__(self, safe_message: str) -> None:
         super().__init__(safe_message)
         self.safe_message = safe_message
 
 
-def validate_action_inputs(
-    inputs: Mapping[str, Any],
+def validate_step_inputs(
+    taxonomy: StepTaxonomy,
+    inputs: object,
     input_schema: Mapping[str, Any],
     input_model: type[BaseModel],
 ) -> BaseModel:
-    """Validate raw Action input and construct its registered Pydantic model.
+    """Select the taxonomy's input-contract validator."""
 
-    The installed manifest schema is authoritative. Pydantic is constructed in
-    strict mode only after JSON Schema validation succeeds, preventing lax
-    coercion from accepting a value that the published Action contract rejects.
-    JSON Schema ``default`` values are annotations; the registered Pydantic model
-    supplies the actual default used by the implementation.
-    Unknown fields follow the manifest schema: they are rejected when the schema
-    forbids them and otherwise ignored by the implementation model.
-    """
+    if taxonomy is StepTaxonomy.ACTION:
+        # Delayed to keep the Action-specific dependency outside generic execution.
+        from .action_validation import validate_action_inputs
 
-    if not isinstance(inputs, Mapping):
-        raise ActionInputValidationError("input: must be a JSON object")
-    payload = dict(inputs)
-    if not _is_json_compatible(payload):
-        raise ActionInputValidationError("input: must contain only JSON-compatible values")
+        return validate_action_inputs(inputs, input_schema, input_model)
+    return _validate_model_inputs(inputs, input_model)
 
-    schema_validator = Draft202012Validator(input_schema, format_checker=FormatChecker())
-    try:
-        schema_errors = sorted(
-            schema_validator.iter_errors(payload),
-            key=lambda error: (tuple(error.schema_path), str(error.validator)),
-        )
-    except Exception as error:
-        raise ActionInputValidationError(
-            "The plugin action input schema could not be evaluated."
-        ) from error
-    if schema_errors:
-        raise ActionInputValidationError(
-            "The plugin action input failed schema validation: "
-            + _bounded_details(
-                [
-                    _schema_error_detail(error)
-                    for error in schema_errors
-                ]
-            )
-        )
+
+def _validate_model_inputs(inputs: object, input_model: type[BaseModel]) -> BaseModel:
+    """Retain registered Pydantic validation semantics for non-Action steps."""
 
     try:
-        return input_model.model_validate(payload, strict=True)
+        return input_model.model_validate(inputs)
     except ValidationError as error:
-        raise ActionInputValidationError(
-            "The plugin action input failed model validation: "
-            + _pydantic_details(error)
+        raise StepInputValidationError(
+            "The input failed model validation: " + _pydantic_details(error)
         ) from error
     except Exception as error:
-        raise ActionInputValidationError(
-            "The plugin action input failed model construction."
-        ) from error
+        raise StepInputValidationError("The input failed model construction.") from error
 
 
 def _pydantic_details(error: ValidationError) -> str:
-    errors = error.errors()
-    return _bounded_details(
-        [f"{_bounded_location(item['loc'])}: {item['type']}" for item in errors]
+    return format_validation_details(
+        [
+            f"{format_validation_location(item['loc'])}: {item['type']}"
+            for item in error.errors()
+        ]
     )
 
 
-def _schema_error_detail(error: JsonSchemaValidationError) -> str:
-    location = _bounded_location(tuple(error.schema_path))
-    if error.validator == "required" and isinstance(error.validator_value, list):
-        if isinstance(error.instance, dict):
-            missing_keys = [k for k in error.validator_value if k not in error.instance]
-        else:
-            missing_keys = list(error.validator_value)
-        missing = ", ".join(str(k) for k in missing_keys)
-        return f"{location}: required ({_bounded_location(missing)})"
-    return f"{location}: {error.validator}"
+def format_validation_details(details: list[str]) -> str:
+    """Bound stable validation diagnostics without including rejected values."""
 
-
-def _is_json_compatible(value: object) -> bool:
-    if value is None or isinstance(value, str | bool | int):
-        return True
-    if isinstance(value, float):
-        return math.isfinite(value)
-    if isinstance(value, list):
-        return all(_is_json_compatible(item) for item in value)
-    if isinstance(value, Mapping):
-        return all(
-            isinstance(key, str) and _is_json_compatible(item) for key, item in value.items()
-        )
-    return False
-
-
-def _bounded_details(details: list[str]) -> str:
     reported = details[:_MAX_VALIDATION_ERRORS]
     remaining = len(details) - len(reported)
     if remaining > 0:
@@ -123,12 +73,27 @@ def _bounded_details(details: list[str]) -> str:
     return value
 
 
-def _bounded_location(location: object) -> str:
+def format_validation_location(location: object) -> str:
+    """Render a bounded JSON Schema or Pydantic location."""
+
     if isinstance(location, tuple):
-        path = ".".join(str(part) for part in location)
+        path = ".".join(_escape_location_part(part) for part in location)
     else:
-        path = str(location)
+        path = _escape_location_part(location)
     path = path or "<root>"
     if len(path) > _MAX_LOCATION_LENGTH:
         path = path[: _MAX_LOCATION_LENGTH - 3] + "..."
     return path
+
+
+def _escape_location_part(part: object) -> str:
+    """Keep caller-controlled field names safe in returned diagnostics."""
+
+    value = str(part)
+    escaped: list[str] = []
+    for character in value:
+        if character.isprintable():
+            escaped.append(character)
+        else:
+            escaped.append(f"\\u{ord(character):04x}")
+    return "".join(escaped)

@@ -48,7 +48,7 @@ The Python helper implementation is in
 [`container.py`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/container.py).
 
 The ABI is the boundary between an Execution Plane launcher and an author
-workload. It carries invocation and workflow-run identities, action inputs,
+workload. It carries invocation and workflow-run identities, step inputs,
 output/error contracts, and approved file paths. It does not carry raw
 credentials in workflow JSON, environment variables, or command-line arguments.
 
@@ -66,8 +66,8 @@ Custom-workload authors implement steps with the typed Python API in
 [`syntara_plugin.runtime`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/).
 `BaseStep[TInput, TOutput]` is bound to Pydantic v2 models and exposes one
 stable author-facing entrypoint, `execute(inputs, context)`. Subclasses
-implement `run()`; later SDK stories add raw-input validation and the common
-output envelope at the dispatch boundary without changing that hook.
+implement `run()`; the shared dispatch boundary validates raw input and returns
+the common output envelope without changing that hook.
 
 The four executable taxonomy classes share the same lifecycle:
 
@@ -153,16 +153,20 @@ for step in (ActionEcho(), TaskEcho(), WorkflowEcho(), TriggerEcho()):
 
 ### Registration and descriptors
 
-`StepDescriptor` associates a declared step identity with a taxonomy and the
-input/output JSON schemas derived from the step's Pydantic models.
-`StepDescriptor.for_step()` derives everything from the class itself, and
-`StepBindings` retains each descriptor-and-implementation pair:
+`StepDescriptor` associates a declared step identity with a taxonomy. An
+implementation-derived descriptor uses the step's Pydantic schemas for every
+taxonomy, including Action, so authoring and schema-drift validation can
+compare those models with a source manifest. An installed Action descriptor
+instead derives its input schema from the manifest's resolved `spec.input`; its
+output schema remains implementation-derived. `StepDescriptor.for_step()`
+creates implementation descriptors, and `StepBindings` retains each
+descriptor-and-implementation pair:
 
 ```python
 from syntara_plugin.runtime import StepDescriptor, StepBindings
 
 bindings = StepBindings()
-step = ActionEcho()
+step = TaskEcho()
 bindings.bind(StepDescriptor.for_step("acme.plugin.echo", step), step)
 binding = bindings.binding("acme.plugin.echo")
 resolved = binding.step
@@ -170,16 +174,18 @@ resolved = binding.step
 
 Binding rejects malformed or duplicate identities, taxonomy mismatches between
 the descriptor and the Python class, and attempts to bind a platform-managed
-driver (such as `http.v1`) as a Python implementation. `StepBindings` is an
-in-process lookup table, not the Automation Orchestrator's registration
-database; mapping an installed step revision to a declared identity belongs to
-the registry-binding story.
+driver (such as `http.v1`) as a Python implementation. `StepExecutor` repeats
+the implementation and taxonomy checks before raw-input validation, so a
+directly constructed `StepBinding` cannot bypass them. `StepBindings` is an
+in-process lookup table, not the platform registration database; mapping an
+installed step revision to a declared identity belongs to the registry-binding
+story.
 Pydantic models are implementation types, not replacement manifests: the
-canonical schema bundle remains the source of truth for manifest kinds such as
-Action and Trigger, and comparing implementation schemas with source manifests
-is owned by the schema-drift validation story.
+canonical schema bundle remains the source of truth for installed Actions, and
+comparing implementation schemas with source manifests is owned by the
+schema-drift validation story.
 
-For an installed Action, first resolve its trusted manifest with
+For an installed Action, first resolve its manifest with
 `InstalledActionManifest.from_manifest()`. Inline and asset-backed `spec.input`
 document sources are supported, and the manifest and resolved schema are stored
 recursively as immutable JSON documents. Pass that object to
@@ -214,6 +220,21 @@ result = executor.execute(
 )
 ```
 
+`from_manifest()` is the installation/bootstrap handoff for an installed
+Action. The component loading the installed plugin metadata must supply an
+authorized document. The SDK runtime cannot independently verify remote or
+cryptographic provenance, but it records opaque provenance for the exact
+factory-created manifest and descriptor objects. `StepBindings` accepts
+implementation-derived Action descriptors for authoring validation, while
+`StepExecutor` and container dispatch reject them for execution. At present,
+Action is the only taxonomy with an installed-manifest execution contract, so
+an Action can execute only through the factory-created identity and canonical
+input-schema binding. The validation dispatch is intentionally taxonomy-aware:
+future installed-contract support for Task, Workflow, or Trigger can be added
+as those binding and manifest contracts become defined, without changing the
+generic executor boundary. Those taxonomies currently retain their
+implementation-derived contracts.
+
 `StepExecutor` is the owner of the runtime-local `StandardOutputWrapper` and
 `ErrorMessage` result types. Invalid input returns that wrapper with a nonzero
 status and a safe `ErrorMessage`; the implementation hook is not called. JSON Schema
@@ -223,25 +244,31 @@ when the manifest schema forbids them. Pydantic runs in strict mode after JSON
 Schema validation so coercion cannot accept a value that the published Action
 contract rejects.
 
-The container adapter serializes that same wrapper into its terminal result for
-invalid input, using the canonical digest of the wrapper schema. Direct Python
-execution and container execution therefore expose equivalent status and error
-and success outcomes without exposing the rejected input document. Actions are
-the only taxonomy that requires manifest-sourced input schemas; Task, Workflow,
-and Trigger bindings retain their existing implementation-derived schemas for
-backward compatibility.
+Task, Workflow, and Trigger execution uses each step's registered Pydantic input
+model directly. Those taxonomies retain normal Pydantic coercion, defaults, and
+model configuration; in particular, a Trigger's executor input is its registered
+model rather than manifest configuration. Every taxonomy passes through the same
+`StepExecutor`, which invokes the hook only after its applicable validation
+completes successfully.
+
+The container adapter currently serializes that wrapper into its terminal result
+for invalid input, using the canonical digest of the wrapper schema. Direct
+Python execution always returns `StandardOutputWrapper`, and the same is planned for implementation of containerized execution. Actions are the only
+taxonomy that currently requires manifest-sourced input schemas; Task,
+Workflow, and Trigger bindings retain their existing implementation-derived
+schemas for backward compatibility.
 
 ### Container adapter
 
-`action_registry_from_steps(registry)` builds a container `ActionRegistry`
-with one transport action per registered step. The adapter converts each
+`step_registry_from_bindings(bindings)` builds a container `StepRegistry`
+with one transport handler per registered step. The adapter converts each
 `ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
-cancellation event), runs the same `StepExecutor` raw-input validation boundary
-used by direct Python execution, checks the returned object against the step's
-output model, and returns a `ContainerResult`. Invalid input returns the shared
-wrapper result; valid input returns the step output and echoes the installed
-`outputSchemaDigest` supplied in the runtime context, matching the platform
-contract used by the HTTP runner; when no installed digest is supplied, a
+cancellation event), runs the same `StepExecutor` input-validation boundary used
+by direct Python execution, checks the returned object against the step's output
+model, and returns a `ContainerResult`. Invalid input returns the shared wrapper
+result with its wrapper-schema digest; valid input returns the step output and
+echoes the installed `outputSchemaDigest` supplied in the runtime context,
+matching the platform contract used by the HTTP runner; when no installed digest is supplied, a
 provisional canonical digest of the implementation's Pydantic output model is
 used until the registry-binding story binds the installed manifest schema.
 Authors never import `ContainerInvocation` to write or test a step.

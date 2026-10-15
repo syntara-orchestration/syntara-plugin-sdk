@@ -1,4 +1,4 @@
-"""Transport-independent raw-input execution for installed plugin Actions."""
+"""Transport-independent raw-input execution for typed plugin steps."""
 
 from __future__ import annotations
 
@@ -6,33 +6,28 @@ from collections.abc import Mapping
 from typing import Any
 
 from .abi import FailureCode
-from .bindings import StepBinding, StepBindingError, StepTaxonomy
+from .bindings import StepBinding, StepBindingError, validate_executable_step_binding
 from .context import ExecutionContext
 from .outcome import ErrorMessage, StandardOutputWrapper
-from .validation import ActionInputValidationError, validate_action_inputs
+from .validation import StepInputValidationError, validate_step_inputs
 
 
 class StepExecutionError(RuntimeError):
-    """Raised when a valid Action invocation cannot produce a typed result."""
+    """Raised when a valid invocation cannot produce a typed result."""
 
 
 class StepExecutor:
     """Execute a typed step from raw JSON input.
 
-    Installed Actions use their manifest schema. Other taxologies retain the
-    implementation-derived Pydantic schema for backward compatibility.
+    Input validation is selected by the binding's taxonomy before the typed
+    hook runs. The executor itself does not own taxonomy-specific contracts.
     """
 
     def __init__(self, binding: StepBinding) -> None:
-        if (
-            binding.descriptor.taxonomy is StepTaxonomy.ACTION
-            and binding.descriptor.input_schema_source != "manifest"
-        ):
-            message = (
-                "StepExecutor requires a descriptor created with "
-                "StepDescriptor.for_installed_action"
-            )
+        if type(binding) is not StepBinding:
+            message = "StepExecutor requires an exact StepBinding"
             raise StepBindingError(message)
+        validate_executable_step_binding(binding.descriptor, binding.step)
         self._binding = binding
 
     @property
@@ -45,12 +40,13 @@ class StepExecutor:
         """Validate raw input, invoke the typed hook once, and wrap its result."""
 
         try:
-            validated_inputs = validate_action_inputs(
+            validated_inputs = validate_step_inputs(
+                self._binding.descriptor.taxonomy,
                 inputs,
                 self._binding.descriptor.input_schema,
                 self._binding.step.input_model(),
             )
-        except ActionInputValidationError as error:
+        except StepInputValidationError as error:
             return StandardOutputWrapper(
                 status=1,
                 error=ErrorMessage(
@@ -62,5 +58,5 @@ class StepExecutor:
         output = self._binding.step.execute(validated_inputs, context)
         output_model = self._binding.step.output_model()
         if not isinstance(output, output_model):
-            raise StepExecutionError("The plugin action returned an invalid response.")
+            raise StepExecutionError("The plugin step returned an invalid response.")
         return StandardOutputWrapper(status=0, output=output.model_dump(mode="json"))

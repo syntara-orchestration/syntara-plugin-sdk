@@ -3,7 +3,7 @@ syntax = "proto3";
 package syntara.container.v1alpha1;
 
 // The container ABI is the application-data channel between the Execution
-// Plane and a plugin workload. It deliberately carries action identity and
+// Plane and a plugin workload. It deliberately carries step identity and
 // bounded JSON objects, never a container command or plaintext credential.
 service ContainerService {
   rpc Execute(ExecuteRequest) returns (stream ExecutionEvent);
@@ -22,7 +22,7 @@ message ExecuteRequest {
   bytes credential_file_paths_json = 5;
   uint32 timeout_seconds = 6;
   // A bounded, non-secret runner-specific context selected by Syntara from the
-  // installed immutable action. It never contains an endpoint or credential.
+  // installed immutable step. It never contains an endpoint or credential.
   bytes runtime_context_json = 7;
 }
 

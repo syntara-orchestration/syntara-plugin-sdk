@@ -17,7 +17,7 @@ class ErrorMessage(BaseModel):
 
 
 class StandardOutputWrapper(BaseModel):
-    """The SDK-owned result envelope returned by the raw Action executor."""
+    """The SDK-owned result envelope returned by the raw step executor."""
 
     status: int = Field(ge=0)
     output: Mapping[str, Any] | None = None

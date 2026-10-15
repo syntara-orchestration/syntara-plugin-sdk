@@ -13,14 +13,15 @@ from .bindings import (
     StepBindingError,
     StepBindings,
     StepDescriptor,
+    validate_executable_step_binding,
 )
 from .container import (
-    ActionRegistry,
-    ContainerAction,
     ContainerInvocation,
     ContainerInvocationError,
     ContainerResult,
+    ContainerStepHandler,
     FailureCode,
+    StepRegistry,
 )
 from .context import ExecutionContext
 from .execution import StepExecutionError, StepExecutor
@@ -69,10 +70,10 @@ def _installed_output_schema_digest(invocation: ContainerInvocation) -> str | No
     return digest
 
 
-def container_action_for_binding(binding: StepBinding) -> ContainerAction:
-    """Wrap one typed step as a container action.
+def container_step_for_binding(binding: StepBinding) -> ContainerStepHandler:
+    """Wrap one typed step as a container handler.
 
-    The action validates the invocation's raw JSON inputs against the installed
+    The handler validates the invocation's raw JSON inputs against the installed
     Action manifest schema for Actions or the implementation-derived schema for
     other taxonomies, constructs the registered Pydantic model, executes the
     step through the shared executor, and converts the typed output into a
@@ -84,6 +85,7 @@ def container_action_for_binding(binding: StepBinding) -> ContainerAction:
     story binds the installed manifest schema.
     """
 
+    validate_executable_step_binding(binding.descriptor, binding.step)
     step = binding.step
     if not isinstance(step, BaseStep):
         message = "step must be a BaseStep implementation"
@@ -91,11 +93,11 @@ def container_action_for_binding(binding: StepBinding) -> ContainerAction:
     executor = StepExecutor(binding)
     output_schema_digest = _output_schema_digest(step)
 
-    def action(invocation: ContainerInvocation) -> ContainerResult:
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
         if invocation.step_revision_id != binding.descriptor.step_identity:
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
-                "The requested plugin action is not available in this container image.",
+                "The requested plugin step is not available in this container image.",
                 outcome="not_started",
             )
         context = _execution_context(invocation)
@@ -105,7 +107,7 @@ def container_action_for_binding(binding: StepBinding) -> ContainerAction:
         except StepExecutionError as error:
             raise ContainerInvocationError(
                 FailureCode.ABI_VIOLATION,
-                "The plugin action returned an invalid response.",
+                "The plugin step returned an invalid response.",
                 outcome="unknown",
             ) from error
         if wrapper.status != 0:
@@ -117,27 +119,27 @@ def container_action_for_binding(binding: StepBinding) -> ContainerAction:
         if output is None:
             raise ContainerInvocationError(
                 FailureCode.ABI_VIOLATION,
-                "The plugin action returned an invalid response.",
+                "The plugin step returned an invalid response.",
                 outcome="unknown",
             )
         return ContainerResult(schema_digest, output=output)
 
-    return action
+    return handler
 
 
 def container_action_for_step(
     step: BaseStep[Any, Any],
     *,
     installed_action: InstalledActionManifest,
-) -> ContainerAction:
+) -> ContainerStepHandler:
     """Wrap one Action step with its trusted installed identity and schema."""
 
     descriptor = StepDescriptor.for_installed_action(step, installed_action)
-    return container_action_for_binding(StepBinding(descriptor, step))
+    return container_step_for_binding(StepBinding(descriptor, step))
 
 
-def container_action_for_bindings(bindings: StepBindings) -> ContainerAction:
-    """Wrap typed step bindings as an action resolving by step identity.
+def container_step_for_bindings(bindings: StepBindings) -> ContainerStepHandler:
+    """Wrap typed step bindings as a handler resolving by step identity.
 
     The invocation's ``step_revision_id`` is matched against the declared step
     identity. This serves direct local dispatch and testing; production
@@ -145,35 +147,35 @@ def container_action_for_bindings(bindings: StepBindings) -> ContainerAction:
     revision to its declared identity.
     """
 
-    def action(invocation: ContainerInvocation) -> ContainerResult:
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
         try:
             binding = bindings.binding(invocation.step_revision_id)
-            return container_action_for_binding(binding)(invocation)
+            return container_step_for_binding(binding)(invocation)
         except StepBindingError as error:
-            message = "The requested plugin action is not available in this container image."
+            message = "The requested plugin step is not available in this container image."
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
                 message,
                 outcome="not_started",
             ) from error
 
-    return action
+    return handler
 
 
-def action_registry_from_steps(bindings: StepBindings) -> ActionRegistry:
-    """Build a container action registry with one action per typed step.
+def step_registry_from_bindings(bindings: StepBindings) -> StepRegistry:
+    """Build a container step registry with one handler per typed step.
 
-    Actions are keyed by declared step identity and matched exactly against the
+    Handlers are keyed by declared step identity and matched exactly against the
     invocation's ``step_revision_id``. This supports local execution and tests;
     production dispatch requires the registry-binding loader that maps installed
     step revisions to declared identities.
     """
 
-    actions = {
-        step_identity: container_action_for_binding(bindings.binding(step_identity))
+    handlers = {
+        step_identity: container_step_for_binding(bindings.binding(step_identity))
         for step_identity in bindings.step_identities
     }
-    if not actions:
+    if not handlers:
         message = "at least one typed step must be registered"
         raise ValueError(message)
-    return ActionRegistry(actions)
+    return StepRegistry(handlers)

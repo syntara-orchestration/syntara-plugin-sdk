@@ -27,7 +27,7 @@ if _version_not_supported:
 
 class ContainerServiceStub(object):
     """The container ABI is the application-data channel between the Execution
-    Plane and a plugin workload. It deliberately carries action identity and
+    Plane and a plugin workload. It deliberately carries step identity and
     bounded JSON objects, never a container command or plaintext credential.
     """
 
@@ -56,7 +56,7 @@ class ContainerServiceStub(object):
 
 class ContainerServiceServicer(object):
     """The container ABI is the application-data channel between the Execution
-    Plane and a plugin workload. It deliberately carries action identity and
+    Plane and a plugin workload. It deliberately carries step identity and
     bounded JSON objects, never a container command or plaintext credential.
     """
 
@@ -106,7 +106,7 @@ def add_ContainerServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class ContainerService(object):
     """The container ABI is the application-data channel between the Execution
-    Plane and a plugin workload. It deliberately carries action identity and
+    Plane and a plugin workload. It deliberately carries step identity and
     bounded JSON objects, never a container command or plaintext credential.
     """
 

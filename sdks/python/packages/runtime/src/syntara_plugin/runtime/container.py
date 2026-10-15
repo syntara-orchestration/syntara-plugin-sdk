@@ -15,7 +15,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from threading import Event, Lock
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 import grpc
 
@@ -30,7 +30,7 @@ _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
 
-# A platform-owned runner can handle any installed action that the control
+# A platform-owned runner can handle any installed step that the control
 # plane has already resolved to that runner. It is a health-advertisement
 # capability only, never a valid ``step_revision_id`` in an Execute request.
 ANY_STEP_REVISION = "*"
@@ -38,7 +38,7 @@ ANY_STEP_REVISION = "*"
 
 @dataclass(frozen=True)
 class ContainerInvocation:
-    """The selected plugin action and the safe data supplied to it."""
+    """The selected plugin step and the safe data supplied to it."""
 
     invocation_id: str
     workflow_run_id: str
@@ -58,7 +58,7 @@ class ContainerInvocation:
 
 @dataclass(frozen=True)
 class ContainerProgress:
-    """A non-terminal, user-safe update emitted by a plugin action."""
+    """A non-terminal, user-safe update emitted by a plugin step."""
 
     invocation_id: str
     sequence: int
@@ -69,9 +69,9 @@ class ContainerProgress:
 
 @dataclass(frozen=True)
 class ContainerResult:
-    """The sole successful terminal result of a plugin action.
+    """The sole successful terminal result of a plugin step.
 
-    An action returns either an inline JSON object or an object-store reference,
+    A step returns either an inline JSON object or an object-store reference,
     never both.  The output schema digest lets the control plane interpret the
     result without importing plugin Python code.
     """
@@ -92,7 +92,7 @@ class ContainerResult:
 
 
 class ContainerInvocationError(Exception):
-    """A user-safe terminal failure an action may deliberately return."""
+    """A user-safe terminal failure a step may deliberately return."""
 
     def __init__(
         self,
@@ -132,61 +132,61 @@ class ContainerRemoteError(RuntimeError):
         outcome: str,
         source: Literal["workload", "protocol", "transport"],
     ) -> None:
-        super().__init__("The plugin action did not complete.")
+        super().__init__("The plugin step did not complete.")
         self.code = code
         self.retryable = retryable
         self.outcome = outcome
         self.source = source
 
 
-ContainerAction = Callable[[ContainerInvocation], ContainerResult]
+ContainerStepHandler = Callable[[ContainerInvocation], ContainerResult]
 
 
-class ActionRegistry:
-    """Maps immutable step revisions to actions, with an optional generic fallback.
+class StepRegistry:
+    """Maps immutable step revisions to handlers, with an optional fallback.
 
     Most publisher workload images register their exact supported revisions.
-    A Syntara-managed runner may instead supply ``fallback_action``: the
+    A Syntara-managed runner may instead supply ``fallback_step``: the
     control plane has already selected the runner image and provides a
-    validated runtime context for the particular installed action.  Health
+    validated runtime context for the particular installed step.  Health
     advertises :data:`ANY_STEP_REVISION` in that case so the Execution Plane
     can distinguish a generic runner from an image that omitted a revision.
     """
 
     def __init__(
         self,
-        actions: Mapping[str, ContainerAction],
+        steps: Mapping[str, ContainerStepHandler],
         *,
-        fallback_action: ContainerAction | None = None,
+        fallback_step: ContainerStepHandler | None = None,
     ) -> None:
-        self._actions = dict(actions)
-        self._fallback_action = fallback_action
-        if not self._actions and self._fallback_action is None:
-            raise ValueError("at least one step revision or a fallback action must be registered")
-        for step_revision_id, action in self._actions.items():
+        self._steps = dict(steps)
+        self._fallback_step = fallback_step
+        if not self._steps and self._fallback_step is None:
+            raise ValueError("at least one step revision or a fallback step must be registered")
+        for step_revision_id, handler in self._steps.items():
             if not _IDENTITY.fullmatch(step_revision_id):
                 raise ValueError("step revision IDs must be Syntara identities")
-            if not callable(action):
-                raise TypeError("registered actions must be callable")
-        if self._fallback_action is not None and not callable(self._fallback_action):
-            raise TypeError("fallback action must be callable")
+            if not callable(handler):
+                raise TypeError("registered step handlers must be callable")
+        if self._fallback_step is not None and not callable(self._fallback_step):
+            raise TypeError("fallback step handler must be callable")
 
     @property
     def step_revision_ids(self) -> tuple[str, ...]:
         """Stable exact identities plus generic-runner capability when present."""
 
-        identities = tuple(sorted(self._actions))
-        return identities + ((ANY_STEP_REVISION,) if self._fallback_action is not None else ())
+        identities = tuple(sorted(self._steps))
+        return identities + ((ANY_STEP_REVISION,) if self._fallback_step is not None else ())
 
-    def resolve(self, step_revision_id: str) -> ContainerAction:
-        action = self._actions.get(step_revision_id)
-        if action is not None:
-            return action
-        if self._fallback_action is not None:
-            return self._fallback_action
+    def resolve(self, step_revision_id: str) -> ContainerStepHandler:
+        handler = self._steps.get(step_revision_id)
+        if handler is not None:
+            return handler
+        if self._fallback_step is not None:
+            return self._fallback_step
         raise ContainerInvocationError(
             FailureCode.NOT_FOUND,
-            "The requested plugin action is not available in this container image.",
+            "The requested plugin step is not available in this container image.",
             outcome="not_started",
         )
 
@@ -194,8 +194,8 @@ class ActionRegistry:
 class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     """gRPC implementation of the language-neutral container ABI."""
 
-    def __init__(self, actions: ActionRegistry) -> None:
-        self._actions = actions
+    def __init__(self, steps: StepRegistry) -> None:
+        self._steps = steps
         self._active: dict[str, Event] = {}
         self._active_lock = Lock()
 
@@ -206,23 +206,23 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         invocation_id = request.invocation_id
         try:
             invocation, cancellation = _invocation_from_request(request)
-            action = self._actions.resolve(invocation.step_revision_id)
+            handler = self._steps.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
             # Deadline expiry and a disconnected Execution Plane both become a
-            # cooperative cancellation signal visible to the action.
+            # cooperative cancellation signal visible to the step.
             if not context.add_callback(cancellation.set):
                 cancellation.set()
-            result = action(invocation)
+            result = handler(invocation)
             if invocation.cancelled:
                 raise ContainerInvocationError(
                     FailureCode.CANCELLED,
-                    "The plugin action was cancelled.",
+                    "The plugin step was cancelled.",
                     outcome="not_completed",
                 )
             if not isinstance(result, ContainerResult):
                 raise ContainerInvocationError(
                     FailureCode.ABI_VIOLATION,
-                    "The plugin action returned an invalid response.",
+                    "The plugin step returned an invalid response.",
                     outcome="unknown",
                 )
             yield _result_event(invocation.invocation_id, result)
@@ -233,7 +233,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 invocation_id,
                 ContainerInvocationError(
                     FailureCode.OUTCOME_UNKNOWN,
-                    "The plugin action did not complete.",
+                    "The plugin step did not complete.",
                     outcome="unknown",
                 ),
             )
@@ -257,7 +257,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         return container_pb2.HealthResponse(
             ready=True,
             runtime_abi=CONTAINER_ABI,
-            step_revision_ids=self._actions.step_revision_ids,
+            step_revision_ids=self._steps.step_revision_ids,
         )
 
     def _register_invocation(self, invocation_id: str, cancellation: Event) -> None:
@@ -265,7 +265,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             if invocation_id in self._active:
                 raise ContainerInvocationError(
                     FailureCode.CONFLICT,
-                    "The plugin action is already running.",
+                    "The plugin step is already running.",
                     outcome="not_started",
                 )
             self._active[invocation_id] = cancellation
@@ -277,11 +277,11 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
 
 
 def add_container_runtime_service(
-    server: grpc.Server, actions: ActionRegistry
+    server: grpc.Server, steps: StepRegistry
 ) -> ContainerRuntimeService:
     """Register the generic runtime service on a plugin workload gRPC server."""
 
-    service = ContainerRuntimeService(actions)
+    service = ContainerRuntimeService(steps)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
     return service
 
@@ -299,7 +299,7 @@ class ContainerClient:
         self._stub = container_pb2_grpc.ContainerServiceStub(channel)
 
     def health(self, *, timeout_seconds: float | None = None) -> tuple[str, ...]:
-        """Confirm the container ABI and return the advertised action identities."""
+        """Confirm the container ABI and return the advertised step identities."""
 
         try:
             response = self._stub.Health(container_pb2.HealthRequest(), timeout=timeout_seconds)
@@ -317,7 +317,7 @@ class ContainerClient:
     def execute(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None
     ) -> ContainerResult:
-        """Invoke an action and return its sole terminal result."""
+        """Invoke a step and return its sole terminal result."""
 
         for event in self.stream(invocation, timeout_seconds=timeout_seconds):
             if isinstance(event, ContainerResult):
@@ -332,7 +332,7 @@ class ContainerClient:
     def stream(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None
     ) -> Iterator[ContainerProgress | ContainerResult]:
-        """Invoke an action and yield progress followed by exactly one result."""
+        """Invoke a step and yield progress followed by exactly one result."""
 
         request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)
@@ -360,7 +360,7 @@ class ContainerClient:
             raise _protocol_error()
 
     def cancel(self, invocation_id: str, *, timeout_seconds: float | None = None) -> bool:
-        """Request cooperative cancellation for an active action."""
+        """Request cooperative cancellation for an active step."""
 
         if not _IDENTITY.fullmatch(invocation_id):
             raise ValueError("invocation_id must be a Syntara identity")
@@ -384,7 +384,7 @@ def _invocation_from_request(
     except ValueError as error:
         raise ContainerInvocationError(
             FailureCode.INVALID_INPUT,
-            "The plugin action identity is invalid.",
+            "The plugin step identity is invalid.",
             outcome="not_started",
         ) from error
     if request.runtime_abi != CONTAINER_ABI:
@@ -396,7 +396,7 @@ def _invocation_from_request(
     if not 1 <= request.timeout_seconds <= _MAX_TIMEOUT_SECONDS:
         raise ContainerInvocationError(
             FailureCode.INVALID_INPUT,
-            "The plugin action timeout is outside the supported range.",
+            "The plugin step timeout is outside the supported range.",
             outcome="not_started",
         )
     inputs = _decode_json_object(request.inputs_json, "inputs")
@@ -457,8 +457,11 @@ def _decode_json_object(value: bytes, field_name: str) -> dict[str, Any]:
             outcome="not_started",
         )
     try:
-        decoded = json.loads(value or b"{}")
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        decoded = json.loads(
+            value or b"{}",
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (UnicodeDecodeError, ValueError) as error:
         raise ContainerInvocationError(
             FailureCode.INVALID_INPUT,
             f"The {field_name} payload must be a JSON object.",
@@ -471,6 +474,10 @@ def _decode_json_object(value: bytes, field_name: str) -> dict[str, Any]:
             outcome="not_started",
         )
     return decoded
+
+
+def _reject_nonstandard_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-standard JSON number {value!r}")
 
 
 def _decode_credential_file_paths(value: bytes) -> dict[str, str]:
@@ -527,7 +534,7 @@ def _result_event(invocation_id: str, result: ContainerResult) -> container_pb2.
     except ValueError as error:
         raise ContainerInvocationError(
             FailureCode.ABI_VIOLATION,
-            "The plugin action returned an invalid response.",
+            "The plugin step returned an invalid response.",
             outcome="unknown",
         ) from error
     return container_pb2.ExecutionEvent(

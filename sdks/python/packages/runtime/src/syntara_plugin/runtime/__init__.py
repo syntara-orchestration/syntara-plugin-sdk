@@ -13,11 +13,12 @@ from .abi import (
     validate_provider,
     validate_runtime,
 )
+from .action_validation import ActionInputValidationError
 from .adapter import (
-    action_registry_from_steps,
-    container_action_for_binding,
-    container_action_for_bindings,
     container_action_for_step,
+    container_step_for_binding,
+    container_step_for_bindings,
+    step_registry_from_bindings,
 )
 from .bindings import (
     InstalledActionManifest,
@@ -29,8 +30,6 @@ from .bindings import (
 )
 from .container import (
     ANY_STEP_REVISION,
-    ActionRegistry,
-    ContainerAction,
     ContainerClient,
     ContainerInvocation,
     ContainerInvocationError,
@@ -38,6 +37,8 @@ from .container import (
     ContainerRemoteError,
     ContainerResult,
     ContainerRuntimeService,
+    ContainerStepHandler,
+    StepRegistry,
     add_container_runtime_service,
 )
 from .context import ExecutionContext
@@ -67,18 +68,16 @@ from .http import (
 )
 from .outcome import ErrorMessage, StandardOutputWrapper
 from .step import ActionStep, BaseStep, TaskStep, TriggerStep, WorkflowStep
-from .validation import ActionInputValidationError
+from .validation import StepInputValidationError
 
 __all__ = [
     "ANY_STEP_REVISION",
     "ActionInputValidationError",
-    "ActionRegistry",
     "ActionStep",
     "BaseStep",
     "CONTAINER_ABI",
     "ConformanceHarness",
     "ConformanceResult",
-    "ContainerAction",
     "ContainerClient",
     "ContainerInvocation",
     "ContainerInvocationError",
@@ -86,6 +85,7 @@ __all__ = [
     "ContainerRemoteError",
     "ContainerResult",
     "ContainerRuntimeService",
+    "ContainerStepHandler",
     "ContractBundle",
     "DriftCode",
     "DriftIssue",
@@ -112,23 +112,25 @@ __all__ = [
     "StepDescriptor",
     "StepExecutionError",
     "StepExecutor",
+    "StepInputValidationError",
     "StepTaxonomy",
     "TaskStep",
     "TriggerStep",
     "WorkflowStep",
-    "action_registry_from_steps",
     "add_container_runtime_service",
     "build_http_request",
     "check_plugin_bindings",
     "check_step_contract",
     "check_target_binding",
     "compare_model_to_schema",
-    "container_action_for_binding",
-    "container_action_for_bindings",
     "container_action_for_step",
+    "container_step_for_binding",
+    "container_step_for_bindings",
     "load_http_runner_context",
     "map_http_response",
     "validate_plugin_bindings",
     "validate_provider",
     "validate_runtime",
+    "StepRegistry",
+    "step_registry_from_bindings",
 ]

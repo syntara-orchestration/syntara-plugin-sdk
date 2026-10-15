@@ -8,12 +8,13 @@ import grpc
 import pytest
 from syntara_plugin.runtime import (
     ANY_STEP_REVISION,
-    ActionRegistry,
+    CONTAINER_ABI,
     ContainerClient,
     ContainerInvocation,
     ContainerRemoteError,
     ContainerResult,
     FailureCode,
+    StepRegistry,
     add_container_runtime_service,
 )
 from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
@@ -39,7 +40,7 @@ def runtime() -> tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub,
     server = grpc.server(ThreadPoolExecutor(max_workers=4))
     add_container_runtime_service(
         server,
-        ActionRegistry(
+        StepRegistry(
             {
                 "github.create-issue.v1": create_issue,
                 "github.close-issue.v1": close_issue,
@@ -100,7 +101,29 @@ def test_one_image_dispatches_the_selected_step_revision(
     }
 
 
-def test_unsupported_action_is_a_safe_not_found_failure(
+def test_nonstandard_json_numbers_are_rejected_at_the_container_boundary(
+    runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
+) -> None:
+    _client, stub, calls = runtime
+    request = container_pb2.ExecuteRequest(
+        invocation_id="invocation-1",
+        workflow_run_id="workflow-run-1",
+        step_revision_id="github.create-issue.v1",
+        runtime_abi=CONTAINER_ABI,
+        inputs_json=b'{"value": NaN}',
+        credential_file_paths_json=b"{}",
+        timeout_seconds=30,
+        runtime_context_json=b"{}",
+    )
+
+    events = tuple(stub.Execute(request))
+
+    assert len(events) == 1
+    assert events[0].failure.code == FailureCode.INVALID_INPUT.value
+    assert calls == {}
+
+
+def test_unsupported_step_is_a_safe_not_found_failure(
     runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
 ) -> None:
     client, _stub, calls = runtime
@@ -113,8 +136,8 @@ def test_unsupported_action_is_a_safe_not_found_failure(
     assert calls == {}
 
 
-def test_platform_runner_can_advertise_and_dispatch_a_control_plane_selected_action() -> None:
-    """A generic runner does not need one image build for every installed action."""
+def test_platform_runner_can_advertise_and_dispatch_a_control_plane_selected_step() -> None:
+    """A generic runner does not need one image build for every installed step."""
     calls: list[ContainerInvocation] = []
 
     def runner(invocation: ContainerInvocation) -> ContainerResult:
@@ -122,7 +145,7 @@ def test_platform_runner_can_advertise_and_dispatch_a_control_plane_selected_act
         return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"handled": True})
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, ActionRegistry({}, fallback_action=runner))
+    add_container_runtime_service(server, StepRegistry({}, fallback_step=runner))
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
@@ -138,7 +161,7 @@ def test_platform_runner_can_advertise_and_dispatch_a_control_plane_selected_act
     assert calls[0].step_revision_id == "syntara.github.create-issue:" + "b" * 64
 
 
-def test_unhandled_action_exception_never_exposes_its_message(
+def test_unhandled_step_exception_never_exposes_its_message(
     runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
 ) -> None:
     client, _stub, _calls = runtime
@@ -212,18 +235,18 @@ def test_credential_file_paths_must_use_the_approved_secret_mount(
     assert "/tmp" not in events[0].failure.message
 
 
-def test_cancellation_reaches_the_selected_action() -> None:
+def test_cancellation_reaches_the_selected_step() -> None:
     started = Event()
 
-    def waiting_action(invocation: ContainerInvocation) -> ContainerResult:
+    def waiting_handler(invocation: ContainerInvocation) -> ContainerResult:
         started.set()
         invocation.cancellation.wait(timeout=1)
         if invocation.cancelled:
             return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"ignored": True})
-        raise RuntimeError("test action was not cancelled")
+        raise RuntimeError("test step was not cancelled")
 
     server = grpc.server(ThreadPoolExecutor(max_workers=4))
-    add_container_runtime_service(server, ActionRegistry({"github.wait.v1": waiting_action}))
+    add_container_runtime_service(server, StepRegistry({"github.wait.v1": waiting_handler}))
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
@@ -242,12 +265,12 @@ def test_cancellation_reaches_the_selected_action() -> None:
     assert raised.value.code is FailureCode.CANCELLED
 
 
-def test_invocation_timeout_sets_the_action_cancellation_signal() -> None:
+def test_invocation_timeout_sets_the_step_cancellation_signal() -> None:
     """The required invocation timeout is the default gRPC deadline."""
     started = Event()
     cancelled = Event()
 
-    def waiting_action(invocation: ContainerInvocation) -> ContainerResult:
+    def waiting_handler(invocation: ContainerInvocation) -> ContainerResult:
         started.set()
         invocation.cancellation.wait(timeout=2)
         if invocation.cancelled:
@@ -255,7 +278,7 @@ def test_invocation_timeout_sets_the_action_cancellation_signal() -> None:
         return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"ignored": True})
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, ActionRegistry({"github.wait.v1": waiting_action}))
+    add_container_runtime_service(server, StepRegistry({"github.wait.v1": waiting_handler}))
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
