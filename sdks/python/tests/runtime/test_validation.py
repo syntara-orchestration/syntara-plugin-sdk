@@ -1782,3 +1782,185 @@ def test_binding_for_non_step_target_is_undeclared() -> None:
     reports = check_plugin_bindings(descriptor, bindings)
 
     assert DriftCode.BINDING_UNDECLARED in _codes(reports)
+
+
+class _PairInput(BaseModel):
+    pair: tuple[int, str]
+
+
+def test_prefix_items_are_compared_despite_declared_false_items() -> None:
+    declared = {
+        "type": "object",
+        "properties": {
+            "pair": {
+                "type": "array",
+                "prefixItems": [{"type": "string"}, {"type": "integer"}],
+                "items": False,
+                "minItems": 2,
+            }
+        },
+        "required": ["pair"],
+    }
+
+    issues = compare_model_to_schema(_PairInput, declared, direction="input")
+
+    paths = {issue.path for issue in issues if issue.code is DriftCode.TYPE_INCOMPATIBLE}
+    assert "/properties/pair/prefixItems/0" in paths
+    assert "/properties/pair/prefixItems/1" in paths
+
+
+def test_compatible_fixed_length_tuples_pass_strict() -> None:
+    declared = {
+        "type": "object",
+        "properties": {
+            "pair": {
+                "type": "array",
+                "prefixItems": [{"type": "integer"}, {"type": "string"}],
+                "items": False,
+                "minItems": 2,
+            }
+        },
+        "required": ["pair"],
+    }
+
+    assert compare_model_to_schema(_PairInput, declared, direction="input") == ()
+    assert compare_model_to_schema(_PairInput, declared, direction="output") == ()
+
+
+def test_fixed_tuple_with_maxitems_cannot_emit_forbidden_items() -> None:
+    declared = {
+        "type": "object",
+        "properties": {
+            "pair": {
+                "type": "array",
+                "prefixItems": [{"type": "integer"}, {"type": "string"}],
+                "items": False,
+            }
+        },
+        "required": ["pair"],
+    }
+
+    issues = compare_model_to_schema(_PairInput, declared, direction="output")
+
+    assert all(issue.code is not DriftCode.TYPE_INCOMPATIBLE for issue in issues)
+
+
+def test_finite_enum_proves_consumer_constraints() -> None:
+    class OneOutput(BaseModel):
+        value: Literal[1]
+
+    satisfied = {
+        "type": "object",
+        "properties": {"value": {"type": "integer", "minimum": 0}},
+        "required": ["value"],
+    }
+
+    assert compare_model_to_schema(OneOutput, satisfied, direction="output") == ()
+
+    class ShortName(BaseModel):
+        name: Literal["ab", "abc"]
+
+    length_ok = {
+        "type": "object",
+        "properties": {"name": {"type": "string", "minLength": 2}},
+        "required": ["name"],
+    }
+
+    assert compare_model_to_schema(ShortName, length_ok, direction="output") == ()
+
+
+def test_finite_enum_still_reports_genuine_constraint_drift() -> None:
+    class FiveOutput(BaseModel):
+        value: Literal[5]
+
+    violated = {
+        "type": "object",
+        "properties": {"value": {"type": "integer", "minimum": 10}},
+        "required": ["value"],
+    }
+
+    issues = compare_model_to_schema(FiveOutput, violated, direction="output")
+
+    assert DriftCode.CONSTRAINT_INCOMPATIBLE in _codes(issues)
+
+
+def test_const_intersecting_a_disjoint_enum_accepts_nothing() -> None:
+    class BOutput(BaseModel):
+        value: Literal["b"]
+
+    contradictory = {
+        "type": "object",
+        "properties": {"value": {"enum": ["a"], "const": "b"}},
+        "required": ["value"],
+    }
+
+    assert compare_model_to_schema(BOutput, contradictory, direction="input") == ()
+    issues = compare_model_to_schema(BOutput, contradictory, direction="output")
+    assert DriftCode.ENUM_INCOMPATIBLE in _codes(issues)
+
+
+def test_model_default_violating_declared_bounds_is_an_error() -> None:
+    class Count(BaseModel):
+        count: int = Field(default=100, le=10)
+
+    declared = {
+        "type": "object",
+        "properties": {"count": {"type": "integer", "maximum": 10}},
+        "required": ["count"],
+    }
+
+    issues = compare_model_to_schema(Count, declared, direction="output")
+
+    violating = [issue for issue in issues if "default value" in issue.message]
+    assert violating
+    assert violating[0].code is DriftCode.CONSTRAINT_INCOMPATIBLE
+    assert "maximum" in violating[0].message
+
+
+def test_manifest_default_violating_model_bounds_is_an_error() -> None:
+    class Count(BaseModel):
+        count: int = Field(le=10)
+
+    declared = {
+        "type": "object",
+        "properties": {"count": {"type": "integer", "default": 100}},
+    }
+
+    issues = compare_model_to_schema(Count, declared, direction="input")
+
+    violating = [issue for issue in issues if "default value" in issue.message]
+    assert violating
+    assert "maximum" in violating[0].message
+
+
+def test_check_target_binding_requires_a_usable_identity() -> None:
+    bindings = _issue_bindings()
+    target = _matching_target(CreateIssueStep)
+    del target["identity"]
+
+    report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
+
+    assert DriftCode.IDENTITY_INVALID in _codes(report.issues)
+    assert not report.passed()
+
+
+def test_check_target_binding_rejects_invalid_declared_taxonomy() -> None:
+    bindings = _issue_bindings()
+    target = _matching_target(CreateIssueStep)
+    target["taxonomy"] = "banana"
+
+    report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
+
+    assert DriftCode.TAXONOMY_INVALID in _codes(report.issues)
+    assert not report.passed()
+    assert DriftCode.TAXONOMY_MISMATCH not in _codes(report.issues)
+
+
+def test_check_target_binding_rejects_malformed_declared_taxonomy() -> None:
+    bindings = _issue_bindings()
+    target = _matching_target(CreateIssueStep)
+    target["taxonomy"] = 42
+
+    report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
+
+    assert DriftCode.TAXONOMY_INVALID in _codes(report.issues)

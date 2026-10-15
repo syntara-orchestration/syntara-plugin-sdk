@@ -68,6 +68,8 @@ class DriftCode(StrEnum):
     SCHEMA_UNVERIFIABLE = "SCHEMA_UNVERIFIABLE"
     DEFAULT_MISMATCH = "DEFAULT_MISMATCH"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
+    IDENTITY_INVALID = "IDENTITY_INVALID"
+    TAXONOMY_INVALID = "TAXONOMY_INVALID"
 
 
 @dataclass(frozen=True)
@@ -288,7 +290,15 @@ def _normalize_node(node: Mapping[str, Any]) -> dict[str, Any]:
         for key, value in node.items()
         if key not in _ANNOTATION_KEYWORDS
     }
-    return _collapse_nullable(result)
+    normalized = _collapse_nullable(result)
+    prefix = normalized.get("prefixItems")
+    if (
+        normalized.get("items") is False
+        and isinstance(prefix, list)
+        and not _bound_number(normalized.get("maxItems"))
+    ):
+        normalized["maxItems"] = len(prefix)
+    return normalized
 
 
 def _normalize_keyword(key: str, value: Any) -> Any:
@@ -315,11 +325,27 @@ def _is_null_schema(node: Any) -> bool:
     return node_type == "null" or node_type == ["null"]
 
 
+def _fold_const(node: dict[str, Any]) -> dict[str, Any]:
+    """Fold ``const`` into the enum: the intersection when both are present."""
+
+    const_value = node["const"]
+    folded = {key: value for key, value in node.items() if key != "const"}
+    if isinstance(folded.get("enum"), list):
+        const_digest = canonical_json_digest(const_value)
+        folded["enum"] = [
+            value for value in folded["enum"] if canonical_json_digest(value) == const_digest
+        ]
+    else:
+        folded["enum"] = [const_value]
+    return folded
+
+
 def _collapse_nullable(node: dict[str, Any]) -> dict[str, Any]:
     """Fold ``const`` into a single-value enum and collapse ``anyOf: [X, null]``.
 
     When a node carries both ``const`` and ``enum``, JSON Schema requires both
-    to hold, so the effective value set is the intersection: the const alone.
+    to hold, so the effective value set is their intersection: empty when the
+    const is not among the enum members, the const alone otherwise.
 
     Merging follows the branch shape: ``type`` gains ``null``, ``enum`` gains
     ``None``, and a ``$ref`` branch keeps its reference and is marked
@@ -327,9 +353,7 @@ def _collapse_nullable(node: dict[str, Any]) -> dict[str, Any]:
     """
 
     if "const" in node:
-        const_value = node["const"]
-        node = {key: value for key, value in node.items() if key != "const"}
-        node["enum"] = [const_value]
+        node = _fold_const(node)
     branches = node.get("anyOf")
     if not isinstance(branches, list) or len(branches) != 2:
         return node
@@ -580,6 +604,14 @@ def _compare(declared: Any, model: Any, path: str, comparison: _Comparison) -> N
         return
     if not _comparable_shape(declared, model, path, comparison):
         return
+    if _accepts_nothing(declared):
+        if comparison.direction == "output":
+            _compare_enums(declared, model, path, comparison)
+        return
+    if _accepts_nothing(model):
+        if comparison.direction == "input":
+            _compare_enums(declared, model, path, comparison)
+        return
     comparison.depth += 1
     try:
         _compare_types(declared, model, path, comparison)
@@ -606,27 +638,9 @@ def _compare_defaults(
     """
 
     if "default" in model and comparison.direction == "output":
-        declared_enum = _enum_values(declared)
-        model_default = canonical_json_digest(model.get("default"))
-        if declared_enum is not None and model_default not in declared_enum:
-            comparison.add(
-                DriftCode.ENUM_INCOMPATIBLE,
-                DriftSeverity.ERROR,
-                path,
-                "the model's default value is outside the declared enum",
-                "give the model a default the declared schema accepts.",
-            )
+        _compare_emitted_default(model.get("default"), declared, path, comparison)
     if "default" in declared and comparison.direction == "input":
-        model_enum = _enum_values(model)
-        declared_default = canonical_json_digest(declared.get("default"))
-        if model_enum is not None and declared_default not in model_enum:
-            comparison.add(
-                DriftCode.ENUM_INCOMPATIBLE,
-                DriftSeverity.ERROR,
-                path,
-                "the manifest's default value cannot build the model",
-                "declare a default the model accepts, or widen the model.",
-            )
+        _compare_declared_default(declared.get("default"), model, path, comparison)
     if "default" in declared and "default" in model:
         declared_default = canonical_json_digest(declared.get("default"))
         model_default = canonical_json_digest(model.get("default"))
@@ -638,6 +652,110 @@ def _compare_defaults(
                 "the manifest and the model declare different default values",
                 "align the default in the manifest schema and the model field.",
             )
+
+
+def _compare_emitted_default(
+    model_default: Any, declared: Mapping[str, Any], path: str, comparison: _Comparison
+) -> None:
+    """Check the model's default against the declared output schema."""
+
+    violation = _default_violation(model_default, declared)
+    if violation is not None:
+        comparison.add(
+            DriftCode.CONSTRAINT_INCOMPATIBLE,
+            DriftSeverity.ERROR,
+            path,
+            f"the model's default value violates the declared {violation}",
+            "give the model a default the declared schema accepts.",
+        )
+    declared_enum = _enum_values(declared)
+    if declared_enum is not None and canonical_json_digest(model_default) not in declared_enum:
+        comparison.add(
+            DriftCode.ENUM_INCOMPATIBLE,
+            DriftSeverity.ERROR,
+            path,
+            "the model's default value is outside the declared enum",
+            "give the model a default the declared schema accepts.",
+        )
+
+
+def _compare_declared_default(
+    declared_default: Any, model: Mapping[str, Any], path: str, comparison: _Comparison
+) -> None:
+    """Check the manifest's default against the model's input schema."""
+
+    violation = _default_violation(declared_default, model)
+    if violation is not None:
+        comparison.add(
+            DriftCode.CONSTRAINT_INCOMPATIBLE,
+            DriftSeverity.ERROR,
+            path,
+            f"the manifest's default value violates the model's {violation}",
+            "declare a default the model accepts, or widen the model.",
+        )
+    model_enum = _enum_values(model)
+    if model_enum is not None and canonical_json_digest(declared_default) not in model_enum:
+        comparison.add(
+            DriftCode.ENUM_INCOMPATIBLE,
+            DriftSeverity.ERROR,
+            path,
+            "the manifest's default value cannot build the model",
+            "declare a default the model accepts, or widen the model.",
+        )
+
+
+def _default_violation(default_value: Any, constraints: Mapping[str, Any]) -> str | None:
+    """Return the constraint keyword a default value violates, if any."""
+
+    if _bound_number(default_value):
+        return _numeric_default_violation(default_value, constraints)
+    if isinstance(default_value, str):
+        return _length_default_violation(len(default_value), constraints, "minLength", "maxLength")
+    if isinstance(default_value, list):
+        return _length_default_violation(len(default_value), constraints, "minItems", "maxItems")
+    return None
+
+
+def _numeric_default_violation(value: float, constraints: Mapping[str, Any]) -> str | None:
+    """Return the numeric constraint keyword a default value violates."""
+
+    minimum = constraints.get("minimum")
+    if _bound_number(minimum) and value < minimum:
+        return "minimum"
+    exclusive_minimum = constraints.get("exclusiveMinimum")
+    if _bound_number(exclusive_minimum) and value <= exclusive_minimum:
+        return "exclusiveMinimum"
+    maximum = constraints.get("maximum")
+    if _bound_number(maximum) and value > maximum:
+        return "maximum"
+    exclusive_maximum = constraints.get("exclusiveMaximum")
+    if _bound_number(exclusive_maximum) and value >= exclusive_maximum:
+        return "exclusiveMaximum"
+    multiple = constraints.get("multipleOf")
+    if _bound_number(multiple) and multiple != 0 and not _is_multiple(value, multiple):
+        return "multipleOf"
+    return None
+
+
+def _length_default_violation(
+    length: int, constraints: Mapping[str, Any], minimum_keyword: str, maximum_keyword: str
+) -> str | None:
+    """Return the length constraint keyword a default value violates."""
+
+    minimum = constraints.get(minimum_keyword)
+    if _bound_number(minimum) and length < minimum:
+        return minimum_keyword
+    maximum = constraints.get(maximum_keyword)
+    if _bound_number(maximum) and length > maximum:
+        return maximum_keyword
+    return None
+
+
+def _accepts_nothing(node: Mapping[str, Any]) -> bool:
+    """Return whether the node's effective enum is empty, accepting no value."""
+
+    values = _enum_values(node)
+    return values is not None and not values
 
 
 def _compare_types(
@@ -678,7 +796,7 @@ def _enum_type_names(node: Mapping[str, Any]) -> frozenset[str] | None:
     names = {_json_type_name(member) for member in value}
     if node.get("x-nullable"):
         names.add("null")
-    return frozenset(names)
+    return frozenset(names) if names else None
 
 
 def _json_type_name(value: Any) -> str:
@@ -816,6 +934,13 @@ def _compare_multiple_of(
     consumer_multiple = consumer.get("multipleOf")
     if not isinstance(consumer_multiple, (int, float)) or consumer_multiple == 0:
         return
+    producer_enum = _producer_values(producer)
+    if (
+        producer_enum is not None
+        and all(_bound_number(value) for value in producer_enum)
+        and all(_is_multiple(value, consumer_multiple) for value in producer_enum)
+    ):
+        return
     raw_multiple = producer.get("multipleOf")
     producer_multiple: float | None = raw_multiple if _bound_number(raw_multiple) else None
     if consumer_multiple == 1:
@@ -901,6 +1026,66 @@ def _effective_numeric_bound(
     return best
 
 
+def _producer_values(node: Mapping[str, Any]) -> list[Any] | None:
+    """Return the node's finite value set when it is fully enumerated."""
+
+    value = node.get("enum")
+    if isinstance(value, list) and value:
+        return value
+    return None
+
+
+def _enum_satisfies_numeric_bound(
+    producer: Mapping[str, Any],
+    consumer: Mapping[str, Any],
+    inclusive: str,
+    exclusive: str,
+) -> bool:
+    """Return whether every producer enum value satisfies the consumer bound.
+
+    A fully enumerated producer needs no bound keyword of its own: when each
+    possible value already meets the consumer's bound, the constraint holds.
+    """
+
+    values = _producer_values(producer)
+    if values is None or not all(_bound_number(value) for value in values):
+        return False
+    consumer_bound = _effective_numeric_bound(consumer, inclusive, exclusive)
+    if consumer_bound is None:
+        return True
+    bound, is_exclusive = consumer_bound
+    for value in values:
+        if inclusive == "minimum":
+            if value < bound or (value == bound and is_exclusive):
+                return False
+        elif value > bound or (value == bound and is_exclusive):
+            return False
+    return True
+
+
+def _enum_satisfies_length_bound(
+    producer: Mapping[str, Any], consumer: Mapping[str, Any], keyword: str
+) -> bool:
+    """Return whether every producer enum value satisfies a length bound."""
+
+    values = _producer_values(producer)
+    if values is None:
+        return False
+    wants_string = keyword in ("minLength", "maxLength")
+    if wants_string:
+        if not all(isinstance(value, str) for value in values):
+            return False
+    elif not all(isinstance(value, list) for value in values):
+        return False
+    bound = consumer.get(keyword)
+    if not _bound_number(bound):
+        return True
+    lengths = [len(value) for value in values]
+    if keyword in ("minLength", "minItems"):
+        return all(length >= bound for length in lengths)
+    return all(length <= bound for length in lengths)
+
+
 def _compare_numeric_bound(
     producer: Mapping[str, Any],
     consumer: Mapping[str, Any],
@@ -918,6 +1103,8 @@ def _compare_numeric_bound(
 
     consumer_bound = _effective_numeric_bound(consumer, inclusive, exclusive)
     if consumer_bound is None:
+        return
+    if _enum_satisfies_numeric_bound(producer, consumer, inclusive, exclusive):
         return
     producer_bound = _effective_numeric_bound(producer, inclusive, exclusive)
     if producer_bound is None:
@@ -952,6 +1139,8 @@ def _compare_bound(
 ) -> None:
     """Check one bound keyword where the consumer may be stricter than the producer."""
 
+    if _enum_satisfies_length_bound(producer, consumer, keyword):
+        return
     consumer_value = consumer.get(keyword)
     if not isinstance(consumer_value, (int, float)) or isinstance(consumer_value, bool):
         return
@@ -1106,30 +1295,16 @@ def _compare_requiredness(
 def _compare_items(
     declared: Mapping[str, Any], model: Mapping[str, Any], path: str, comparison: _Comparison
 ) -> None:
-    """Compare array item schemas and positional prefixItems.
+    """Compare positional prefixItems, then array item schemas.
 
-    A declared ``items: false`` forbids items beyond ``prefixItems``: no
-    manifest-valid value carries free items on input, so the model cannot
-    reject one, while any model that can emit items violates it on output.
-    ``items: true`` stays unconstrained and compares normally.
+    prefixItems are compared first so a declared ``items: false`` cannot end
+    the comparison before the positional schemas are checked. A declared
+    ``items: false`` forbids items beyond ``prefixItems``: no manifest-valid
+    value carries free items on input, so the model cannot reject one, while
+    a model that can emit items violates it on output — unless its tuple is
+    fixed-length. ``items: true`` stays unconstrained and compares normally.
     """
 
-    declared_items = declared.get("items")
-    if declared_items is False:
-        if comparison.direction == "output" and model.get("items") is not False:
-            comparison.add(
-                DriftCode.TYPE_INCOMPATIBLE,
-                DriftSeverity.ERROR,
-                f"{path}/items",
-                "the model can emit array items the declared schema forbids",
-                "declare the emitted item schema, or cap the array with maxItems.",
-            )
-        return
-    model_items = model.get("items")
-    declared_items = declared_items if isinstance(declared_items, Mapping) else {}
-    model_items = model_items if isinstance(model_items, Mapping) else {}
-    if declared_items or model_items:
-        _compare(declared_items, model_items, f"{path}/items", comparison)
     declared_prefix = declared.get("prefixItems")
     model_prefix = model.get("prefixItems")
     if isinstance(declared_prefix, list) and isinstance(model_prefix, list):
@@ -1145,6 +1320,39 @@ def _compare_items(
                 "prefixItems lengths differ between the declared schema and the model",
                 "use the same positional item schemas on both sides.",
             )
+    declared_items = declared.get("items")
+    if declared_items is False:
+        if comparison.direction == "output" and _can_emit_extra_items(model):
+            comparison.add(
+                DriftCode.TYPE_INCOMPATIBLE,
+                DriftSeverity.ERROR,
+                f"{path}/items",
+                "the model can emit array items the declared schema forbids",
+                "declare the emitted item schema, or cap the array with maxItems.",
+            )
+        return
+    model_items = model.get("items")
+    declared_items = declared_items if isinstance(declared_items, Mapping) else {}
+    model_items = model_items if isinstance(model_items, Mapping) else {}
+    if declared_items or model_items:
+        _compare(declared_items, model_items, f"{path}/items", comparison)
+
+
+def _can_emit_extra_items(model: Mapping[str, Any]) -> bool:
+    """Return whether the model schema allows items beyond its prefixItems.
+
+    A fixed-length tuple schema caps itself either with ``items: false`` or
+    with ``maxItems`` equal to its ``prefixItems`` length; neither can emit
+    an item a declared ``items: false`` forbids.
+    """
+
+    if model.get("items") is False:
+        return False
+    prefix = model.get("prefixItems")
+    max_items = model.get("maxItems")
+    if isinstance(prefix, list) and _bound_number(max_items) and max_items <= len(prefix):
+        return False
+    return True
 
 
 def _compare_additional(
@@ -1277,12 +1485,14 @@ def _target_taxonomy(target: Mapping[str, Any]) -> StepTaxonomy | None:
     """
 
     declared = target.get("taxonomy")
+    if declared is None:
+        return _TARGET_TAXONOMY.get(str(target.get("kind")))
     if isinstance(declared, str):
         try:
             return StepTaxonomy(declared)
         except ValueError:
             return None
-    return _TARGET_TAXONOMY.get(str(target.get("kind")))
+    return None
 
 
 def _step_class(step: type[BaseStep[Any, Any]] | BaseStep[Any, Any]) -> type[BaseStep[Any, Any]]:
@@ -1467,6 +1677,66 @@ def _entry_point_issues(
     return []
 
 
+def _identity_issues(identity: str | None, binding: StepBinding) -> list[DriftIssue]:
+    """Report a missing identity or one that disagrees with the binding."""
+
+    if identity is None:
+        return [
+            DriftIssue(
+                DriftCode.IDENTITY_INVALID,
+                DriftSeverity.ERROR,
+                "binding",
+                "",
+                "the compiled target declares no usable step identity",
+                "compile the target so it carries its step identity.",
+            )
+        ]
+    if binding.descriptor.step_identity != identity:
+        return [
+            DriftIssue(
+                DriftCode.IDENTITY_MISMATCH,
+                DriftSeverity.ERROR,
+                "binding",
+                "",
+                f"target identity {identity} does not match the bound step identity"
+                f" {binding.descriptor.step_identity}",
+                "bind the step registered for this target identity.",
+            )
+        ]
+    return []
+
+
+def _taxonomy_issues(target: Mapping[str, Any]) -> list[DriftIssue]:
+    """Report a declared taxonomy that is malformed or unknown."""
+
+    declared = target.get("taxonomy")
+    if declared is None or not isinstance(declared, str):
+        if declared is None:
+            return []
+        return [
+            DriftIssue(
+                DriftCode.TAXONOMY_INVALID,
+                DriftSeverity.ERROR,
+                "binding",
+                "",
+                "the compiled target declares a malformed taxonomy",
+                "declare the taxonomy as one of action, task, workflow, or trigger.",
+            )
+        ]
+    if _target_taxonomy(target) is None:
+        return [
+            DriftIssue(
+                DriftCode.TAXONOMY_INVALID,
+                DriftSeverity.ERROR,
+                "binding",
+                "",
+                f"the compiled target declares an unknown taxonomy {declared!r}",
+                "declare the taxonomy as one of action, task, workflow, or trigger.",
+            )
+        ]
+    return []
+
+
 def check_target_binding(
     target: Mapping[str, Any],
     binding: StepBinding,
@@ -1486,23 +1756,13 @@ def check_target_binding(
     if runtime.get("kind") != "custom-workload":
         message = "only custom-workload targets can be checked against Python bindings"
         raise ValueError(message)
-    identity = target.get("identity")
-    identity = identity if isinstance(identity, str) else None
+    raw_identity = target.get("identity")
+    identity = raw_identity if isinstance(raw_identity, str) and raw_identity else None
     version = target.get("version")
     version = version if isinstance(version, str) else None
     issues: list[DriftIssue] = []
-    if identity is not None and binding.descriptor.step_identity != identity:
-        issues.append(
-            DriftIssue(
-                DriftCode.IDENTITY_MISMATCH,
-                DriftSeverity.ERROR,
-                "binding",
-                "",
-                f"target identity {identity} does not match the bound step identity"
-                f" {binding.descriptor.step_identity}",
-                "bind the step registered for this target identity.",
-            )
-        )
+    issues.extend(_identity_issues(identity, binding))
+    issues.extend(_taxonomy_issues(target))
     taxonomy = _target_taxonomy(target)
     if taxonomy is not None and taxonomy != binding.descriptor.taxonomy:
         issues.append(
