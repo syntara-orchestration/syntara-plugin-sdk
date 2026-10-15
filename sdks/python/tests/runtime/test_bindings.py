@@ -139,11 +139,12 @@ def test_installed_action_manifest_resolves_an_asset_backed_schema() -> None:
 
 def test_installed_action_manifests_are_created_by_the_manifest_factory() -> None:
     input_schema = EchoInput.model_json_schema()
+    manifest = _manifest(input_schema)
 
     with pytest.raises(TypeError):
         InstalledActionManifest(  # type: ignore[call-arg]
             "acme.plugin.echo",
-            _manifest(input_schema),
+            manifest,
             input_schema,
         )
 
@@ -209,11 +210,10 @@ def test_installed_action_descriptor_rejects_a_dangling_schema_reference() -> No
         "properties": {"message": {"$ref": "#/$defs/missing"}},
     }
 
+    installed_action = _installed_action(input_schema)
+
     with pytest.raises(StepBindingError, match=r"unresolvable \$ref: #/\$defs/missing"):
-        StepDescriptor.for_installed_action(
-            step,
-            _installed_action(input_schema),
-        )
+        StepDescriptor.for_installed_action(step, installed_action)
 
 
 def test_installed_action_descriptor_rejects_nested_dangling_references() -> None:
@@ -229,11 +229,10 @@ def test_installed_action_descriptor_rejects_nested_dangling_references() -> Non
         },
     }
 
+    installed_action = _installed_action(input_schema)
+
     with pytest.raises(StepBindingError, match=r"unresolvable \$ref: #/\$defs/missing"):
-        StepDescriptor.for_installed_action(
-            step,
-            _installed_action(input_schema),
-        )
+        StepDescriptor.for_installed_action(step, installed_action)
 
 
 def test_resolved_step_executes_directly_without_container_invocation() -> None:
