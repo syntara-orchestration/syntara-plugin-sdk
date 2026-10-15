@@ -63,3 +63,4 @@ examples/*/step-definition.json
 # Environment variables
 .env
 .env.local
+coverage.xml

@@ -84,6 +84,29 @@ intentionally exposes no protobuf, gRPC, container, worker, or Execution Plane
 types, and no raw credential values; typed credential access is tracked
 separately.
 
+### Contract drift validation
+
+A step declares its data shape twice: the JSON Schemas in its manifest, which
+the platform renders and validates against, and the Pydantic models on its
+`BaseStep` subclass, which the code enforces. The
+[`contract_validation`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/contract_validation.py)
+module compares the two before anything ships:
+
+```python
+from syntara_plugin.runtime import validate_plugin_bindings
+
+result = compile_workspace(BuildRequest(root, image_bindings=image_bindings))
+validate_plugin_bindings(result.descriptor, bindings, strict=True)
+```
+
+Input is checked so that every manifest-valid value builds the model, and
+output so that every model-emittable value satisfies the manifest. Definite
+incompatibilities raise `SchemaDriftError` with JSON-pointer paths into the
+declared schema; `strict=True`, intended for CI, also rejects warnings. The
+declared schema is canonical — the Python side is checked against it, never
+the reverse. Call it once per binding set (in CI or when bindings are
+registered), not per invocation.
+
 ### Minimal direct execution
 
 Direct SDK execution exercises the typed implementation only. It does not

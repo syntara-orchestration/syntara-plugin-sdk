@@ -6,7 +6,8 @@ and contributing guide, start at the repository [README](../../README.md) and
 the [documentation index](../../docs/README.md).
 
 - `packages/sdk/` provides Python authoring, compilation, and deterministic offline OCI-artifact assembly APIs.
-- `packages/runtime/` provides Python runtime ABI helpers.
+- `packages/runtime/` provides Python runtime ABI helpers, including the
+  model-versus-manifest `contract_validation` module used at authoring/CI time.
 - `packages/contracts/` packages the canonical repository-level contracts for Python callers.
 - `tests/` contains Python-specific tests.
 
