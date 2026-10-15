@@ -11,6 +11,7 @@ Choose the guide that matches what you are doing.
 | Configure `syntara-plugin.yaml` | [Build settings reference](build-settings.md) |
 | Test step implementations locally | [Testing reference](testing.md) |
 | Contribute to the SDK or change a contract | [Developer guide](developer-guide.md) |
+| Prepare or approve a Python package release | [Release guide](releasing.md) |
 | Understand the OCI artifact and container ABI boundaries | [Runtime and OCI model](runtime-and-oci.md) |
 
 ## Normative sources

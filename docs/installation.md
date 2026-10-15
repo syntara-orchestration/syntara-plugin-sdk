@@ -24,6 +24,14 @@ management process to update the SDK. The installed package is for authors;
 you do not need a Syntara server, Podman, or registry to validate and package a
 credentialless plugin.
 
+To opt in to an alpha or beta release, install prereleases explicitly:
+
+```sh
+uv tool install --prerelease allow syntara-plugin-sdk
+# or
+python -m pip install --pre syntara-plugin-sdk
+```
+
 ## Work from the repository
 
 For an unreleased SDK checkout, clone the repository and install all local

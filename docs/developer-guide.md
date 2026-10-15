@@ -65,9 +65,10 @@ When changing a contract:
    git diff --check
    ```
 
-The SDK is not released yet. Prefer a clear forward-only contract over a
+The SDK is pre-release. Prefer a clear forward-only contract over a
 compatibility shim; removed configuration keys should fail validation rather
-than silently selecting legacy behavior.
+than silently selecting legacy behavior. Follow the [release guide](releasing.md)
+when preparing a published package release.
 
 ## Documentation and review checklist
 

@@ -1,13 +1,30 @@
 [project]
 name = "syntara-plugin-sdk"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "Authoring SDK for Syntara plugins, including the local test harness"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
   "PyYAML>=6.0",
-  "syntara-plugin-contracts>=0.1.0",
-  "syntara-plugin-runtime>=0.1.0",
+  "syntara-plugin-contracts==0.1.0a1",
+  "syntara-plugin-runtime==0.1.0a1",
 ]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/syntara-orchestration/syntara-plugin-sdk"
+Repository = "https://github.com/syntara-orchestration/syntara-plugin-sdk"
+Issues = "https://github.com/syntara-orchestration/syntara-plugin-sdk/issues"
 
 [project.optional-dependencies]
 testing = [
@@ -25,7 +42,9 @@ syntara-plugin-runtime = { workspace = true }
 syntara-plugin = "syntara_plugin.sdk.cli:main"
 
 [build-system]
-requires = ["hatchling>=1.25"]
+# Keep release builds reproducible; upgrades are reviewed like any other
+# build-tool supply-chain change.
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
