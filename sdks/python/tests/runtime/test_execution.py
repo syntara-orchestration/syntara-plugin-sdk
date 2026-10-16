@@ -841,9 +841,10 @@ def test_supported_task_adapter_propagates_the_complete_context() -> None:
 def test_output_violating_the_manifest_schema_is_a_safe_execution_failure() -> None:
     step = ExampleStep()
     executor = _executor(step, {"type": "object", "required": ["absent_field"]})
+    context = _context()
 
     with pytest.raises(StepExecutionError):
-        executor.execute({"message": "hello"}, _context())
+        executor.execute({"message": "hello"}, context)
 
     assert step.run_calls == 1
 
@@ -854,9 +855,10 @@ def test_output_validation_enforces_format_assertions() -> None:
         step,
         {"type": "object", "properties": {"message": {"type": "string", "format": "ipv4"}}},
     )
+    context = _context()
 
     with pytest.raises(StepExecutionError):
-        executor.execute({"message": "hello"}, _context())
+        executor.execute({"message": "hello"}, context)
 
     assert step.run_calls == 1
 

@@ -84,23 +84,26 @@ if TYPE_CHECKING:
 
 # Transport exports whose defining module imports gRPC/protobuf. They are loaded
 # on first attribute access so importing this package stays transport-free.
+_CONTAINER_MODULE = ".container"
+_ADAPTER_MODULE = ".adapter"
+
 _LAZY_EXPORTS = {
-    "ANY_STEP_REVISION": ".container",
-    "ContainerClient": ".container",
-    "ContainerInvocation": ".container",
-    "ContainerInvocationError": ".container",
-    "ContainerProgress": ".container",
-    "ContainerRemoteError": ".container",
-    "ContainerResult": ".container",
-    "ContainerRuntimeService": ".container",
-    "ContainerStepHandler": ".container",
-    "StepRegistry": ".container",
-    "add_container_runtime_service": ".container",
-    "ResultObjectStore": ".adapter",
-    "container_action_for_step": ".adapter",
-    "container_step_for_binding": ".adapter",
-    "container_step_for_bindings": ".adapter",
-    "step_registry_from_bindings": ".adapter",
+    "ANY_STEP_REVISION": _CONTAINER_MODULE,
+    "ContainerClient": _CONTAINER_MODULE,
+    "ContainerInvocation": _CONTAINER_MODULE,
+    "ContainerInvocationError": _CONTAINER_MODULE,
+    "ContainerProgress": _CONTAINER_MODULE,
+    "ContainerRemoteError": _CONTAINER_MODULE,
+    "ContainerResult": _CONTAINER_MODULE,
+    "ContainerRuntimeService": _CONTAINER_MODULE,
+    "ContainerStepHandler": _CONTAINER_MODULE,
+    "StepRegistry": _CONTAINER_MODULE,
+    "add_container_runtime_service": _CONTAINER_MODULE,
+    "ResultObjectStore": _ADAPTER_MODULE,
+    "container_action_for_step": _ADAPTER_MODULE,
+    "container_step_for_binding": _ADAPTER_MODULE,
+    "container_step_for_bindings": _ADAPTER_MODULE,
+    "step_registry_from_bindings": _ADAPTER_MODULE,
 }
 
 

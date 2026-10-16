@@ -27,6 +27,7 @@ from .container import (
 )
 from .context import ExecutionContext
 from .execution import StepExecutionError, StepExecutor
+from .outcome import StandardOutputWrapper
 from .step import BaseStep
 
 _SHA256 = re.compile(r"^sha256:[a-f0-9]{64}$")
@@ -135,6 +136,38 @@ def _place_business_result(
     return None, reference
 
 
+def _container_result(
+    wrapper: StandardOutputWrapper,
+    output_schema_digest: str,
+    object_store: ResultObjectStore | None,
+) -> ContainerResult:
+    """Map one executor envelope onto the container ABI result.
+
+    A deliberate failure keeps its business result inline. A success is placed
+    inline or externalized when it exceeds the inline bound.
+    """
+
+    error = wrapper.error
+    if error is not None:
+        return ContainerResult(
+            output_schema_digest,
+            output=wrapper.output,
+            status_code=wrapper.status,
+            status_message=wrapper.status_message,
+            error_code=error.code,
+            error_message=error.message,
+            retryable=error.retryable,
+        )
+    output, object_reference = _place_business_result(wrapper.output, object_store)
+    return ContainerResult(
+        output_schema_digest,
+        output=output,
+        object_reference=object_reference,
+        status_code=wrapper.status,
+        status_message=wrapper.status_message,
+    )
+
+
 def container_step_for_binding(
     binding: StepBinding,
     *,
@@ -177,7 +210,6 @@ def container_step_for_binding(
                 "The runtime context output schema digest does not match the declared schema.",
                 outcome="not_started",
             )
-        schema_digest = output_schema_digest
         try:
             wrapper = executor.execute(invocation.inputs, context)
         except StepExecutionError as error:
@@ -186,22 +218,7 @@ def container_step_for_binding(
                 "The plugin step returned an invalid response.",
                 outcome="unknown",
             ) from error
-        error = wrapper.error
-        if error is not None:
-            output: Mapping[str, Any] | None = wrapper.output
-            object_reference: str | None = None
-        else:
-            output, object_reference = _place_business_result(wrapper.output, object_store)
-        return ContainerResult(
-            schema_digest,
-            output=output,
-            object_reference=object_reference,
-            status_code=wrapper.status,
-            status_message=wrapper.status_message,
-            error_code=error.code if error is not None else "",
-            error_message=error.message if error is not None else "",
-            retryable=error.retryable if error is not None else False,
-        )
+        return _container_result(wrapper, output_schema_digest, object_store)
 
     return handler
 

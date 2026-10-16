@@ -233,9 +233,10 @@ def test_output_violating_the_manifest_schema_is_an_abi_violation() -> None:
             output_schema={"type": "object", "required": ["absent_field"]},
         ),
     )
+    invocation = _invocation()
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(_invocation())
+        handler(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -253,9 +254,10 @@ def test_output_violating_a_format_assertion_is_an_abi_violation() -> None:
             },
         ),
     )
+    invocation = _invocation()
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(_invocation())
+        handler(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -285,9 +287,10 @@ def test_oversized_output_without_an_object_store_is_an_abi_violation() -> None:
         HugeStep(),
         installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
     )
+    invocation = _invocation("acme.plugin.huge")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(_invocation("acme.plugin.huge"))
+        handler(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -300,9 +303,10 @@ def test_object_store_returning_an_invalid_reference_is_an_abi_violation() -> No
         installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
         object_store=store,
     )
+    invocation = _invocation("acme.plugin.huge")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(_invocation("acme.plugin.huge"))
+        handler(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
