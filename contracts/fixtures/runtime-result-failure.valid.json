@@ -1,0 +1,11 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerResult",
+  "invocationId": "invoke-3",
+  "outputSchemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "statusCode": 1,
+  "statusMessage": "The upstream service rejected the request.",
+  "errorCode": "REMOTE_REJECTED",
+  "errorMessage": "The upstream service rejected the request.",
+  "retryable": false
+}

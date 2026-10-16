@@ -24,10 +24,12 @@ from .protocol import container_pb2, container_pb2_grpc
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _CREDENTIAL_PATH = re.compile(r"^/var/run/syntara/secrets/[A-Za-z0-9._-]+$")
 _PROVIDER_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
+_MAX_STATUS_CODE = 4_294_967_295
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
 
 # A platform-owned runner can handle any installed step that the control
@@ -69,26 +71,61 @@ class ContainerProgress:
 
 @dataclass(frozen=True)
 class ContainerResult:
-    """The sole successful terminal result of a plugin step.
+    """The terminal SDK output envelope of one plugin step invocation.
 
-    A step returns either an inline JSON object or an object-store reference,
-    never both.  The output schema digest lets the control plane interpret the
-    result without importing plugin Python code.
+    A step returns either an inline JSON object or an object-store reference for
+    its business result, never both. ``status_code`` zero is success; a nonzero
+    value is a deliberate step failure that remains a valid outcome and must
+    carry a safe ``error_code`` category and ``error_message``. The output
+    schema digest lets the control plane interpret the business result without
+    importing plugin Python code.
     """
 
     output_schema_digest: str
     output: Mapping[str, Any] | None = None
     object_reference: str | None = None
+    status_code: int = 0
+    status_message: str = ""
+    error_code: str = ""
+    error_message: str = ""
+    retryable: bool = False
 
     def __post_init__(self) -> None:
+        self._validate_schema_and_status_code()
+        self._validate_output_payload()
+        self._validate_status_metadata()
+
+    def _validate_schema_and_status_code(self) -> None:
         if not _OUTPUT_SCHEMA_DIGEST.fullmatch(self.output_schema_digest):
             raise ValueError("output_schema_digest must be a sha256 digest")
-        if (self.output is None) == (self.object_reference is None):
-            raise ValueError("exactly one of output or object_reference is required")
-        if self.output is not None and not isinstance(self.output, Mapping):
+        if not isinstance(self.status_code, int) or isinstance(self.status_code, bool):
+            raise TypeError("status_code must be an integer")
+        if not 0 <= self.status_code <= _MAX_STATUS_CODE:
+            raise ValueError("status_code must be a uint32 value")
+
+    def _validate_output_payload(self) -> None:
+        has_output = self.output is not None
+        has_reference = self.object_reference is not None
+        if has_output and has_reference:
+            raise ValueError("output and object_reference are mutually exclusive")
+        if self.status_code == 0 and not has_output and not has_reference:
+            raise ValueError("a successful result requires output or object_reference")
+        if has_output and not isinstance(self.output, Mapping):
             raise ValueError("output must be a JSON object")
-        if self.object_reference is not None and not _IDENTITY.fullmatch(self.object_reference):
+        if has_reference and not _IDENTITY.fullmatch(self.object_reference):
             raise ValueError("object_reference must be a Syntara identity")
+
+    def _validate_status_metadata(self) -> None:
+        if len(self.status_message) > 4_096 or len(self.error_message) > 4_096:
+            raise ValueError("status and error messages must contain at most 4096 characters")
+        if self.error_code and not _ERROR_CODE.fullmatch(self.error_code):
+            raise ValueError("error_code must be an uppercase failure category")
+        if not isinstance(self.retryable, bool):
+            raise TypeError("retryable must be a boolean")
+        if self.status_code == 0 and (self.error_code or self.error_message or self.retryable):
+            raise ValueError("a successful result must not carry error metadata")
+        if self.status_code != 0 and not (self.error_code and self.error_message):
+            raise ValueError("a failed result requires an error code and message")
 
 
 class ContainerInvocationError(Exception):
@@ -543,6 +580,11 @@ def _result_event(invocation_id: str, result: ContainerResult) -> container_pb2.
             output_schema_digest=result.output_schema_digest,
             output_json=output_json,
             object_reference=result.object_reference or "",
+            status_code=result.status_code,
+            status_message=result.status_message,
+            error_code=result.error_code,
+            error_message=result.error_message,
+            retryable=result.retryable,
         ),
     )
 
@@ -587,7 +629,7 @@ def _result_from_event(event: container_pb2.ExecutionEvent) -> ContainerResult:
     result = event.result
     has_output = bool(result.output_json)
     has_reference = bool(result.object_reference)
-    if has_output == has_reference:
+    if has_output and has_reference:
         raise _protocol_error()
     try:
         output = _decode_json_object(result.output_json, "output") if has_output else None
@@ -595,8 +637,13 @@ def _result_from_event(event: container_pb2.ExecutionEvent) -> ContainerResult:
             output_schema_digest=result.output_schema_digest,
             output=output,
             object_reference=result.object_reference or None,
+            status_code=result.status_code,
+            status_message=result.status_message,
+            error_code=result.error_code,
+            error_message=result.error_message,
+            retryable=result.retryable,
         )
-    except (ContainerInvocationError, ValueError) as error:
+    except (ContainerInvocationError, ValueError, TypeError) as error:
         raise _protocol_error() from error
 
 

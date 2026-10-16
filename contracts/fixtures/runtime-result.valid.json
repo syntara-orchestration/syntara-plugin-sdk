@@ -1,0 +1,9 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerResult",
+  "invocationId": "invoke-1",
+  "outputSchemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "statusCode": 0,
+  "statusMessage": "Completed",
+  "output": {"issue": 42}
+}

@@ -1,0 +1,9 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerResult",
+  "invocationId": "invoke-2",
+  "outputSchemaDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "statusCode": 0,
+  "statusMessage": "Completed",
+  "objectReference": "object-store:large-result-1"
+}

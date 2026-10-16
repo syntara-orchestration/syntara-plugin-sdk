@@ -139,6 +139,8 @@ class _InstalledActionProvenance:
     step_identity: str
     input_schema: Mapping[str, Any]
     input_schema_digest: str
+    output_schema: Mapping[str, Any]
+    output_schema_digest: str
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,8 @@ class _InstalledActionDescriptorProvenance:
     step_identity: str
     input_schema: Mapping[str, Any]
     input_schema_digest: str
+    output_schema: Mapping[str, Any]
+    output_schema_digest: str
 
 
 def _schema_digest(schema: Mapping[str, Any]) -> str:
@@ -280,9 +284,38 @@ def validate_executable_step_binding(
     descriptor.require_executable_contract()
 
 
+def _resolve_document_source(
+    specification: Mapping[str, Any],
+    field_name: str,
+    assets: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Resolve a ``spec.<field>`` inline or asset JSON Schema document source."""
+
+    source = specification.get(field_name)
+    if not isinstance(source, Mapping):
+        message = f"Action manifest must contain a {field_name} document source"
+        raise StepBindingError(message)
+    source_kind = source.get("kind")
+    if source_kind == "inline":
+        schema = source.get("value")
+    elif source_kind == "asset":
+        path = source.get("path")
+        if not isinstance(path, str) or path not in assets:
+            message = f"Action {field_name} asset must be supplied by the installed binding"
+            raise StepBindingError(message)
+        schema = assets[path]
+    else:
+        message = f"Action {field_name} must use an inline or asset document source"
+        raise StepBindingError(message)
+    if not isinstance(schema, Mapping):
+        message = f"resolved Action {field_name} schema must be a JSON object"
+        raise StepBindingError(message)
+    return schema
+
+
 @dataclass(frozen=True)
 class InstalledActionManifest:
-    """An installed Action manifest and its resolved input schema.
+    """An installed Action manifest and its resolved input and output schemas.
 
     ``from_manifest`` is the SDK's local installation/bootstrap boundary. Its
     caller is responsible for obtaining an authorized installed document; an
@@ -295,6 +328,7 @@ class InstalledActionManifest:
     step_identity: str = field(init=False)
     document: Mapping[str, Any] = field(init=False)
     input_schema: Mapping[str, Any] = field(init=False)
+    output_schema: Mapping[str, Any] = field(init=False)
 
     @classmethod
     def from_manifest(
@@ -303,7 +337,7 @@ class InstalledActionManifest:
         manifest: Mapping[str, Any],
         assets: Mapping[str, Mapping[str, Any]],
     ) -> InstalledActionManifest:
-        """Resolve the canonical schema declared by ``spec.input``."""
+        """Resolve the canonical schemas declared by ``spec.input`` and ``spec.output``."""
 
         if not _IDENTITY.fullmatch(step_identity):
             message = "step_identity must be a Syntara identity"
@@ -321,35 +355,21 @@ class InstalledActionManifest:
         if not isinstance(specification, Mapping):
             message = "Action manifest must contain a spec object"
             raise StepBindingError(message)
-        input_source = specification.get("input")
-        if not isinstance(input_source, Mapping):
-            message = "Action manifest must contain an input document source"
-            raise StepBindingError(message)
-        source_kind = input_source.get("kind")
-        if source_kind == "inline":
-            input_schema = input_source.get("value")
-        elif source_kind == "asset":
-            path = input_source.get("path")
-            if not isinstance(path, str) or path not in assets:
-                message = "Action input asset must be supplied by the installed binding"
-                raise StepBindingError(message)
-            input_schema = assets[path]
-        else:
-            message = "Action input must use an inline or asset document source"
-            raise StepBindingError(message)
-        if not isinstance(input_schema, Mapping):
-            message = "resolved Action input schema must be a JSON object"
-            raise StepBindingError(message)
+        input_schema = _resolve_document_source(specification, "input", assets)
+        output_schema = _resolve_document_source(specification, "output", assets)
         installed_action = InstalledActionManifest()
         object.__setattr__(installed_action, "step_identity", step_identity)
         object.__setattr__(installed_action, "document", _freeze_json_document(manifest))
         object.__setattr__(installed_action, "input_schema", _freeze_json_document(input_schema))
+        object.__setattr__(installed_action, "output_schema", _freeze_json_document(output_schema))
         _INSTALLED_ACTION_PROVENANCE.append(
             _InstalledActionProvenance(
                 manifest_ref=ref(installed_action),
                 step_identity=installed_action.step_identity,
                 input_schema=installed_action.input_schema,
                 input_schema_digest=_schema_digest(input_schema),
+                output_schema=installed_action.output_schema,
+                output_schema_digest=_schema_digest(output_schema),
             )
         )
         return installed_action
@@ -446,9 +466,9 @@ class StepDescriptor:
     ) -> StepDescriptor:
         """Build the trusted descriptor for one installed Action revision.
 
-        ``input_schema`` must be the canonical schema resolved from the
-        installed Action manifest. It is intentionally never derived from the
-        implementation's Pydantic model.
+        ``input_schema`` and ``output_schema`` must be the canonical schemas
+        resolved from the installed Action manifest. They are intentionally never
+        derived from the implementation's Pydantic model.
         """
 
         if not isinstance(step, BaseStep):
@@ -463,6 +483,8 @@ class StepDescriptor:
             raise StepBindingError(message)
         if not _schema_matches_digest(
             installed_action.input_schema, provenance.input_schema_digest
+        ) or not _schema_matches_digest(
+            installed_action.output_schema, provenance.output_schema_digest
         ):
             message = "the installed Action schema was changed after installation"
             raise StepBindingError(message)
@@ -473,11 +495,13 @@ class StepDescriptor:
             step_identity=provenance.step_identity,
             taxonomy=StepTaxonomy.ACTION,
             input_schema=provenance.input_schema,
-            output_schema=step.output_model().model_json_schema(),
+            output_schema=provenance.output_schema,
         )
         try:
             Draft202012Validator.check_schema(descriptor.input_schema)
             _validate_schema_references(descriptor.input_schema)
+            Draft202012Validator.check_schema(descriptor.output_schema)
+            _validate_schema_references(descriptor.output_schema)
         except SchemaError as error:
             message = "manifest input_schema must be a valid JSON Schema"
             raise StepBindingError(message) from error
@@ -488,6 +512,8 @@ class StepDescriptor:
                 step_identity=descriptor.step_identity,
                 input_schema=descriptor.input_schema,
                 input_schema_digest=provenance.input_schema_digest,
+                output_schema=descriptor.output_schema,
+                output_schema_digest=provenance.output_schema_digest,
             )
         )
         return descriptor

@@ -5,11 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from jsonschema import Draft202012Validator, FormatChecker
+from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes
+
 from .abi import FailureCode
 from .bindings import StepBinding, StepBindingError, validate_executable_step_binding
 from .context import ExecutionContext
 from .outcome import ErrorMessage, StandardOutputWrapper
 from .validation import StepInputValidationError, validate_step_inputs
+
+_INVALID_STEP_RESPONSE = "The plugin step returned an invalid response."
 
 
 class StepExecutionError(RuntimeError):
@@ -47,16 +52,40 @@ class StepExecutor:
                 self._binding.step.input_model(),
             )
         except StepInputValidationError as error:
-            return StandardOutputWrapper(
-                status=1,
-                error=ErrorMessage(
+            return StandardOutputWrapper.failure(
+                ErrorMessage(
                     code=FailureCode.INVALID_INPUT.value,
                     message=error.safe_message,
-                ),
+                )
             )
 
         output = self._binding.step.execute(validated_inputs, context)
         output_model = self._binding.step.output_model()
         if not isinstance(output, output_model):
-            raise StepExecutionError("The plugin step returned an invalid response.")
-        return StandardOutputWrapper(status=0, output=output.model_dump(mode="json"))
+            raise StepExecutionError(_INVALID_STEP_RESPONSE)
+        result = output.model_dump(mode="json")
+        self._validate_result(result)
+        return StandardOutputWrapper.success(result)
+
+    def _validate_result(self, result: Mapping[str, Any]) -> None:
+        """Validate the serialized business result before declaring success.
+
+        The result is checked against the declared output schema and must be
+        canonical-JSON encodable. The inline-size bound is deliberately not
+        enforced here: a large but valid result is a transport-representation
+        concern owned by the container adapter, which externalizes it to an
+        object-store reference. Direct, in-process execution has no such bound.
+        """
+
+        schema_errors = sorted(
+            Draft202012Validator(
+                self._binding.descriptor.output_schema, format_checker=FormatChecker()
+            ).iter_errors(result),
+            key=lambda error: list(error.path),
+        )
+        if schema_errors:
+            raise StepExecutionError(_INVALID_STEP_RESPONSE)
+        try:
+            canonical_json_bytes(result)
+        except CanonicalJsonError as error:
+            raise StepExecutionError(_INVALID_STEP_RESPONSE) from error

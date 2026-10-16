@@ -165,6 +165,29 @@ def test_custom_workload_action_requires_a_stable_python_entry_point() -> None:
     assert validate_document(bundle, "action", action) == []
 
 
+def test_action_error_document_is_optional() -> None:
+    bundle = load_bundle()
+    action = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Action",
+        "metadata": {
+            "name": "create-issue",
+            "displayName": "Create issue",
+            "description": "Creates GitHub issues.",
+        },
+        "spec": {
+            "runtime": {"kind": "custom-workload", "entryPoint": "github.actions:CreateIssue"},
+            "input": {"kind": "inline", "value": {"type": "object"}},
+            "output": {"kind": "inline", "value": {"type": "object"}},
+        },
+    }
+
+    assert validate_document(bundle, "action", action) == []
+
+    action["spec"]["error"] = {"kind": "inline", "value": {"type": "object"}}
+    assert validate_document(bundle, "action", action) == []
+
+
 def test_http_mapping_contract_accepts_only_bounded_pointer_or_literal_values() -> None:
     bundle = load_bundle()
 

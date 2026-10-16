@@ -11,7 +11,7 @@
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["runtime", "input", "output", "error"],
+      "required": ["runtime", "input", "output"],
       "properties": {
         "runtime": {
           "type": "object",

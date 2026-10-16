@@ -42,20 +42,30 @@ def _make_step(base: type[BaseStep[Any, Any]]) -> BaseStep[EchoInput, EchoOutput
     return Step()
 
 
-def _manifest(input_schema: dict[str, object]) -> dict[str, object]:
+def _manifest(
+    input_schema: dict[str, object],
+    output_schema: dict[str, object] | None = None,
+) -> dict[str, object]:
     return {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Action",
-        "spec": {"input": {"kind": "inline", "value": input_schema}},
+        "spec": {
+            "input": {"kind": "inline", "value": input_schema},
+            "output": {
+                "kind": "inline",
+                "value": output_schema if output_schema is not None else {"type": "object"},
+            },
+        },
     }
 
 
 def _installed_action(
     input_schema: dict[str, object],
+    output_schema: dict[str, object] | None = None,
 ) -> InstalledActionManifest:
     return InstalledActionManifest.from_manifest(
         "acme.plugin.echo",
-        _manifest(input_schema),
+        _manifest(input_schema, output_schema),
         {},
     )
 
@@ -118,11 +128,20 @@ def test_installed_action_descriptor_uses_the_manifest_schema() -> None:
         "additionalProperties": False,
     }
 
-    installed_action = _installed_action(manifest_schema)
+    output_schema = {
+        "type": "object",
+        "required": ["message"],
+        "properties": {"message": {"type": "string"}},
+        "additionalProperties": False,
+    }
+
+    installed_action = _installed_action(manifest_schema, output_schema)
     descriptor = StepDescriptor.for_installed_action(step, installed_action)
 
     assert descriptor.input_schema == manifest_schema
     assert descriptor.input_schema_source == "manifest"
+    assert installed_action.output_schema == output_schema
+    assert descriptor.output_schema == output_schema
 
 
 def test_installed_action_manifest_resolves_an_asset_backed_schema() -> None:
@@ -165,7 +184,12 @@ def test_installed_action_documents_and_schemas_are_immutable() -> None:
             "type": "object",
             "required": ["message"],
             "properties": {"message": {"type": "string"}},
-        }
+        },
+        {
+            "type": "object",
+            "required": ["message"],
+            "properties": {"message": {"type": "string"}},
+        },
     )
     descriptor = StepDescriptor.for_installed_action(
         _make_step(ActionStep), installed_action

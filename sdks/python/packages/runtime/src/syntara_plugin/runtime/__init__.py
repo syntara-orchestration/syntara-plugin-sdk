@@ -1,4 +1,13 @@
-"""Runtime package boundary for Syntara plugins."""
+"""Runtime package boundary for Syntara plugins.
+
+Direct, transport-independent execution (typed steps, bindings, the output
+envelope) imports without pulling in gRPC or the generated protobuf. The
+container transport symbols, which depend on those libraries, are exported
+lazily through :pep:`562` module ``__getattr__`` and resolve only on first use.
+"""
+
+import importlib
+from typing import TYPE_CHECKING, Any
 
 from syntara_plugin.contracts import ContractBundle
 
@@ -14,12 +23,6 @@ from .abi import (
     validate_runtime,
 )
 from .action_validation import ActionInputValidationError
-from .adapter import (
-    container_action_for_step,
-    container_step_for_binding,
-    container_step_for_bindings,
-    step_registry_from_bindings,
-)
 from .bindings import (
     InstalledActionManifest,
     StepBinding,
@@ -27,19 +30,6 @@ from .bindings import (
     StepBindings,
     StepDescriptor,
     StepTaxonomy,
-)
-from .container import (
-    ANY_STEP_REVISION,
-    ContainerClient,
-    ContainerInvocation,
-    ContainerInvocationError,
-    ContainerProgress,
-    ContainerRemoteError,
-    ContainerResult,
-    ContainerRuntimeService,
-    ContainerStepHandler,
-    StepRegistry,
-    add_container_runtime_service,
 )
 from .context import ExecutionContext
 from .contract_validation import (
@@ -69,6 +59,65 @@ from .http import (
 from .outcome import ErrorMessage, StandardOutputWrapper
 from .step import ActionStep, BaseStep, TaskStep, TriggerStep, WorkflowStep
 from .validation import StepInputValidationError
+
+if TYPE_CHECKING:
+    from .adapter import (
+        ResultObjectStore,
+        container_action_for_step,
+        container_step_for_binding,
+        container_step_for_bindings,
+        step_registry_from_bindings,
+    )
+    from .container import (
+        ANY_STEP_REVISION,
+        ContainerClient,
+        ContainerInvocation,
+        ContainerInvocationError,
+        ContainerProgress,
+        ContainerRemoteError,
+        ContainerResult,
+        ContainerRuntimeService,
+        ContainerStepHandler,
+        StepRegistry,
+        add_container_runtime_service,
+    )
+
+# Transport exports whose defining module imports gRPC/protobuf. They are loaded
+# on first attribute access so importing this package stays transport-free.
+_LAZY_EXPORTS = {
+    "ANY_STEP_REVISION": ".container",
+    "ContainerClient": ".container",
+    "ContainerInvocation": ".container",
+    "ContainerInvocationError": ".container",
+    "ContainerProgress": ".container",
+    "ContainerRemoteError": ".container",
+    "ContainerResult": ".container",
+    "ContainerRuntimeService": ".container",
+    "ContainerStepHandler": ".container",
+    "StepRegistry": ".container",
+    "add_container_runtime_service": ".container",
+    "ResultObjectStore": ".adapter",
+    "container_action_for_step": ".adapter",
+    "container_step_for_binding": ".adapter",
+    "container_step_for_bindings": ".adapter",
+    "step_registry_from_bindings": ".adapter",
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve transport exports lazily (:pep:`562`)."""
+
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        message = f"module {__name__!r} has no attribute {name!r}"
+        raise AttributeError(message)
+    module = importlib.import_module(module_name, __name__)
+    return getattr(module, name)
+
+
+def __dir__() -> list[str]:
+    return sorted(__all__)
+
 
 __all__ = [
     "ANY_STEP_REVISION",
@@ -102,6 +151,7 @@ __all__ = [
     "HttpRunnerContextError",
     "InstalledActionManifest",
     "PROVIDER_ABI",
+    "ResultObjectStore",
     "RuntimeBinding",
     "RuntimeOwnership",
     "SchemaDriftError",
@@ -113,6 +163,7 @@ __all__ = [
     "StepExecutionError",
     "StepExecutor",
     "StepInputValidationError",
+    "StepRegistry",
     "StepTaxonomy",
     "TaskStep",
     "TriggerStep",
@@ -128,9 +179,8 @@ __all__ = [
     "container_step_for_bindings",
     "load_http_runner_context",
     "map_http_response",
+    "step_registry_from_bindings",
     "validate_plugin_bindings",
     "validate_provider",
     "validate_runtime",
-    "StepRegistry",
-    "step_registry_from_bindings",
 ]
