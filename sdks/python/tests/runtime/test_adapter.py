@@ -71,8 +71,35 @@ class LeakyStep(ActionStep[EchoInput, EchoOutput]):
         return SecretOutput(secret="leaked-secret-value")  # type: ignore[return-value]
 
 
-def _expected_digest() -> str:
-    return canonical_json_digest(EchoOutput.model_json_schema())
+class HugeOutput(BaseModel):
+    data: str
+
+
+class HugeStep(ActionStep[EchoInput, HugeOutput]):
+    def run(self, inputs: EchoInput, context: Any) -> HugeOutput:
+        return HugeOutput(data="x" * 1_048_577)
+
+
+class RecordingObjectStore:
+    """Test object store capturing the spilled payload and content digest."""
+
+    def __init__(self, reference: str = "object-store:result-1") -> None:
+        self.reference = reference
+        self.payload: bytes | None = None
+        self.content_digest: str | None = None
+
+    def store(self, payload: bytes, *, content_digest: str) -> str:
+        self.payload = payload
+        self.content_digest = content_digest
+        return self.reference
+
+
+def _permissive_output_schema() -> dict[str, object]:
+    return {"type": "object"}
+
+
+def _expected_digest(output_schema: dict[str, object] | None = None) -> str:
+    return canonical_json_digest(output_schema or _permissive_output_schema())
 
 
 def _echo_input_schema() -> dict[str, object]:
@@ -96,13 +123,20 @@ def _bulk_input_schema() -> dict[str, object]:
 def _installed_action(
     step_identity: str,
     input_schema: dict[str, object],
+    output_schema: dict[str, object] | None = None,
 ) -> InstalledActionManifest:
     return InstalledActionManifest.from_manifest(
         step_identity,
         {
             "apiVersion": "syntara.io/v1alpha1",
             "kind": "Action",
-            "spec": {"input": {"kind": "inline", "value": input_schema}},
+            "spec": {
+                "input": {"kind": "inline", "value": input_schema},
+                "output": {
+                    "kind": "inline",
+                    "value": output_schema or _permissive_output_schema(),
+                },
+            },
         },
         {},
     )
@@ -160,20 +194,147 @@ def test_container_handler_executes_a_typed_step() -> None:
     }
 
 
-def test_container_handler_echoes_the_installed_output_schema_digest() -> None:
+def test_matching_runtime_context_digest_is_accepted() -> None:
     handler = container_action_for_step(
         ActionEchoStep(),
         installed_action=_installed_action(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
-    invocation = _invocation(
-        runtime_context={"outputSchemaDigest": "sha256:" + "a" * 64}
-    )
+    invocation = _invocation(runtime_context={"outputSchemaDigest": _expected_digest()})
 
     result = handler(invocation)
 
-    assert result.output_schema_digest == "sha256:" + "a" * 64
+    assert result.output_schema_digest == _expected_digest()
+
+
+def test_mismatched_runtime_context_digest_is_an_abi_violation() -> None:
+    handler = container_action_for_step(
+        ActionEchoStep(),
+        installed_action=_installed_action(
+            "acme.plugin.echo", _echo_input_schema()
+        ),
+    )
+    invocation = _invocation(runtime_context={"outputSchemaDigest": "sha256:" + "a" * 64})
+
+    with pytest.raises(ContainerInvocationError) as raised:
+        handler(invocation)
+
+    assert raised.value.code is FailureCode.ABI_VIOLATION
+    assert raised.value.outcome == "not_started"
+
+
+def test_output_violating_the_manifest_schema_is_an_abi_violation() -> None:
+    handler = container_action_for_step(
+        ActionEchoStep(),
+        installed_action=_installed_action(
+            "acme.plugin.echo",
+            _echo_input_schema(),
+            output_schema={"type": "object", "required": ["absent_field"]},
+        ),
+    )
+    invocation = _invocation()
+
+    with pytest.raises(ContainerInvocationError) as raised:
+        handler(invocation)
+
+    assert raised.value.code is FailureCode.ABI_VIOLATION
+    assert raised.value.outcome == "unknown"
+
+
+def test_output_violating_a_format_assertion_is_an_abi_violation() -> None:
+    handler = container_action_for_step(
+        ActionEchoStep(),
+        installed_action=_installed_action(
+            "acme.plugin.echo",
+            _echo_input_schema(),
+            output_schema={
+                "type": "object",
+                "properties": {"message": {"type": "string", "format": "ipv4"}},
+            },
+        ),
+    )
+    invocation = _invocation()
+
+    with pytest.raises(ContainerInvocationError) as raised:
+        handler(invocation)
+
+    assert raised.value.code is FailureCode.ABI_VIOLATION
+    assert raised.value.outcome == "unknown"
+
+
+def test_oversized_output_is_externalized_through_the_object_store() -> None:
+    store = RecordingObjectStore()
+    handler = container_action_for_step(
+        HugeStep(),
+        installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
+        object_store=store,
+    )
+
+    result = handler(_invocation("acme.plugin.huge"))
+
+    assert result.status_code == 0
+    assert result.output is None
+    assert result.object_reference == "object-store:result-1"
+    assert store.payload is not None
+    assert len(store.payload) > 1_048_576
+    assert store.content_digest is not None
+    assert store.content_digest.startswith("sha256:")
+
+
+def test_oversized_output_without_an_object_store_is_an_abi_violation() -> None:
+    handler = container_action_for_step(
+        HugeStep(),
+        installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
+    )
+    invocation = _invocation("acme.plugin.huge")
+
+    with pytest.raises(ContainerInvocationError) as raised:
+        handler(invocation)
+
+    assert raised.value.code is FailureCode.ABI_VIOLATION
+    assert raised.value.outcome == "unknown"
+
+
+def test_object_store_returning_an_invalid_reference_is_an_abi_violation() -> None:
+    store = RecordingObjectStore(reference="not a valid identity!!")
+    handler = container_action_for_step(
+        HugeStep(),
+        installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
+        object_store=store,
+    )
+    invocation = _invocation("acme.plugin.huge")
+
+    with pytest.raises(ContainerInvocationError) as raised:
+        handler(invocation)
+
+    assert raised.value.code is FailureCode.ABI_VIOLATION
+    assert raised.value.outcome == "unknown"
+
+
+def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
+    store = RecordingObjectStore(reference="object-store:huge-1")
+    handler = container_action_for_step(
+        HugeStep(),
+        installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
+        object_store=store,
+    )
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    add_container_runtime_service(server, StepRegistry({"acme.plugin.huge": handler}))
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    try:
+        client = ContainerClient(channel)
+        result = client.execute(_invocation("acme.plugin.huge"))
+    finally:
+        channel.close()
+        server.stop(grace=0).wait()
+
+    assert result.status_code == 0
+    assert result.output is None
+    assert result.object_reference == "object-store:huge-1"
 
 
 def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
@@ -216,10 +377,12 @@ def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
 
     result = handler(invocation)
 
-    assert result.output is not None
-    assert result.output["status"] != 0
-    assert result.output["error"]["code"] == FailureCode.INVALID_INPUT.value
-    assert "message" in result.output["error"]["message"]
+    assert result.output is None
+    assert result.status_code != 0
+    assert result.error_code == FailureCode.INVALID_INPUT.value
+    assert result.status_message == result.error_message
+    assert result.retryable is False
+    assert "message" in result.error_message
 
 
 def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
@@ -235,12 +398,10 @@ def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
 
     result = handler(invocation)
 
-    assert result.output is not None
-    error = result.output["error"]
-    assert error["code"] == FailureCode.INVALID_INPUT.value
-    assert len(error["message"]) <= 4096
-    assert "and 190 more" in error["message"]
-    assert "leaked-secret-value" not in error["message"]
+    assert result.error_code == FailureCode.INVALID_INPUT.value
+    assert len(result.error_message) <= 4096
+    assert "and 190 more" in result.error_message
+    assert "leaked-secret-value" not in result.error_message
 
 
 def test_small_validation_failures_report_every_stable_code() -> None:
@@ -254,9 +415,8 @@ def test_small_validation_failures_report_every_stable_code() -> None:
 
     result = handler(invocation)
 
-    assert result.output is not None
-    assert "properties.message.type: type" in result.output["error"]["message"]
-    assert "and " not in result.output["error"]["message"]
+    assert "properties.message.type: type" in result.error_message
+    assert "and " not in result.error_message
 
 
 def test_undeclared_output_model_is_an_abi_violation() -> None:
@@ -388,9 +548,9 @@ def test_large_invalid_payloads_remain_invalid_input_over_grpc() -> None:
         channel.close()
         server.stop(grace=0).wait()
 
-    assert result.output is not None
-    assert result.output["status"] != 0
-    assert result.output["error"]["code"] == FailureCode.INVALID_INPUT.value
+    assert result.output is None
+    assert result.status_code != 0
+    assert result.error_code == FailureCode.INVALID_INPUT.value
 
 
 def test_generic_runner_can_dispatch_a_bindings_fallback_step() -> None:

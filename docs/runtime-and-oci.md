@@ -187,10 +187,13 @@ schema-drift validation story.
 
 For an installed Action, first resolve its manifest with
 `InstalledActionManifest.from_manifest()`. Inline and asset-backed `spec.input`
-document sources are supported, and the manifest and resolved schema are stored
-recursively as immutable JSON documents. Pass that object to
-`StepDescriptor.for_installed_action()`; the descriptor's input schema is
-manifest-sourced and cannot be replaced by a caller-supplied schema. The
+and `spec.output` document sources are supported, and the manifest and resolved
+schemas are stored recursively as immutable JSON documents. Pass that object to
+`StepDescriptor.for_installed_action()`; both the descriptor's input and output
+schemas are manifest-sourced and cannot be replaced by a caller-supplied schema.
+The business result is validated against the manifest output schema before a
+successful outcome is declared, so the echoed digest names the schema actually
+applied. The
 schema must be self-contained; local JSON Schema references are resolved when
 the descriptor is created, so a dangling reference fails installation instead of
 breaking every invocation. The
@@ -251,12 +254,25 @@ model rather than manifest configuration. Every taxonomy passes through the same
 `StepExecutor`, which invokes the hook only after its applicable validation
 completes successfully.
 
-The container adapter currently serializes that wrapper into its terminal result
-for invalid input, using the canonical digest of the wrapper schema. Direct
-Python execution always returns `StandardOutputWrapper`, and the same is planned for implementation of containerized execution. Actions are the only
-taxonomy that currently requires manifest-sourced input schemas; Task,
-Workflow, and Trigger bindings retain their existing implementation-derived
-schemas for backward compatibility.
+The container adapter maps that same wrapper onto the terminal `Result`
+envelope: the business output and the four wrapper status/error fields travel as
+sibling protobuf fields (`status_code`, `status_message`, `error_code`,
+`error_message`, `retryable`). A completed step with a nonzero `status_code`
+remains a valid terminal `Result` and must carry a safe `error_code` category
+and `error_message`; the separate `Failure` event is reserved for protocol or
+runtime failures where no valid outcome exists. Direct Python execution and
+container execution therefore expose equivalent success and deliberate-failure
+outcomes without exposing the rejected input document. Actions are the only
+taxonomy that requires manifest-sourced input schemas; Task, Workflow, and
+Trigger bindings retain their existing implementation-derived schemas for
+backward compatibility.
+
+Direct execution is transport-independent: importing `syntara_plugin.runtime`
+and using `StepExecutor`, the typed bindings, and the `StandardOutputWrapper`
+never pulls in gRPC or the generated protobuf. The container transport symbols
+(`ContainerClient`, `ContainerRuntimeService`, the adapter factories, and
+`ResultObjectStore`) are exported lazily and resolve those dependencies only on
+first use, so steps run and test where the transport libraries are absent.
 
 ### Container adapter
 
@@ -265,13 +281,18 @@ with one transport handler per registered step. The adapter converts each
 `ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
 cancellation event), runs the same `StepExecutor` input-validation boundary used
 by direct Python execution, checks the returned object against the step's output
-model, and returns a `ContainerResult`. Invalid input returns the shared wrapper
-result with its wrapper-schema digest; valid input returns the step output and
-echoes the installed `outputSchemaDigest` supplied in the runtime context,
-matching the platform contract used by the HTTP runner; when no installed digest is supplied, a
-provisional canonical digest of the implementation's Pydantic output model is
-used until the registry-binding story binds the installed manifest schema.
-Authors never import `ContainerInvocation` to write or test a step.
+model, and returns a `ContainerResult`. Invalid input and other deliberate step
+failures return a nonzero-status `Result`; valid input returns a zero-status
+`Result`. Both carry the canonical digest of the declared output schema that the
+executor validates the business result against, so the terminal `Result` stays
+self-describing. An `outputSchemaDigest` supplied in the runtime context is
+accepted only when it matches that applied schema; a mismatch is an ABI
+violation rather than an unverifiable echoed claim. A successful business result
+that exceeds the 1 MiB inline bound is serialized and handed to a
+`ResultObjectStore` supplied by the host (`object_store=`), which persists the
+payload and returns the `object_reference` identity; without a store, an
+oversized result is a safe ABI violation. Authors never import
+`ContainerInvocation` to write or test a step.
 
 ### Installed revision mapping
 

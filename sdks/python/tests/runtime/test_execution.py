@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from datetime import datetime
 from threading import Event
 from typing import Any, Literal
@@ -200,7 +203,10 @@ def _input_schema() -> dict[str, object]:
     }
 
 
-def _installed_action(input_schema: dict[str, object]) -> InstalledActionManifest:
+def _installed_action(
+    input_schema: dict[str, object],
+    output_schema: dict[str, object] | None = None,
+) -> InstalledActionManifest:
     manifest = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Action",
@@ -215,7 +221,7 @@ def _installed_action(input_schema: dict[str, object]) -> InstalledActionManifes
                 "entryPoint": "example_module:ExampleStep",
             },
             "input": {"kind": "inline", "value": input_schema},
-            "output": {"kind": "inline", "value": {}},
+            "output": {"kind": "inline", "value": output_schema if output_schema is not None else {}},
             "error": {"kind": "inline", "value": {}},
         },
     }
@@ -224,17 +230,17 @@ def _installed_action(input_schema: dict[str, object]) -> InstalledActionManifes
     )
 
 
-def _bind(step: ExampleStep) -> StepBindings:
+def _bind(step: ExampleStep, output_schema: dict[str, object] | None = None) -> StepBindings:
     bindings = StepBindings()
     descriptor = StepDescriptor.for_installed_action(
-        step, _installed_action(_input_schema())
+        step, _installed_action(_input_schema(), output_schema)
     )
     bindings.bind(descriptor, step)
     return bindings
 
 
-def _executor(step: ExampleStep) -> StepExecutor:
-    return StepExecutor(_bind(step).binding("acme.plugin.example"))
+def _executor(step: ExampleStep, output_schema: dict[str, object] | None = None) -> StepExecutor:
+    return StepExecutor(_bind(step, output_schema).binding("acme.plugin.example"))
 
 
 def _context() -> ExecutionContext:
@@ -412,7 +418,10 @@ def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
         "The input failed model construction."
     )
     assert "sensitive construction failure" not in direct_wrapper.error.message
-    assert container_result.output == direct_wrapper.model_dump(mode="json")
+    assert container_result.output is None
+    assert container_result.status_code != 0
+    assert container_result.error_code == direct_wrapper.error.code
+    assert container_result.error_message == direct_wrapper.error.message
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0
 
@@ -462,12 +471,15 @@ def test_schema_evaluation_failure_is_a_safe_invalid_input(
         "The installed input schema could not be evaluated."
     )
     assert "sensitive schema failure" not in direct_wrapper.error.message
-    assert container_result.output == direct_wrapper.model_dump(mode="json")
+    assert container_result.output is None
+    assert container_result.status_code != 0
+    assert container_result.error_code == direct_wrapper.error.code
+    assert container_result.error_message == direct_wrapper.error.message
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0
 
 
-def test_supported_action_adapter_serializes_the_invalid_input_wrapper() -> None:
+def test_supported_action_adapter_maps_the_invalid_input_wrapper_to_the_envelope() -> None:
     direct_step = ExampleStep()
     container_step = ExampleStep()
     invalid_input = {"message": "hello", "count": "3"}
@@ -480,11 +492,11 @@ def test_supported_action_adapter_serializes_the_invalid_input_wrapper() -> None
     container_result = container_handler(_container_invocation(invalid_input))
 
     assert direct_wrapper.error is not None
-    assert container_result.output is not None
-    assert container_result.output == direct_wrapper.model_dump(mode="json")
-    assert container_result.output_schema_digest == canonical_json_digest(
-        StandardOutputWrapper.model_json_schema()
-    )
+    assert container_result.output is None
+    assert container_result.status_code != 0
+    assert container_result.error_code == direct_wrapper.error.code
+    assert container_result.error_message == direct_wrapper.error.message
+    assert container_result.output_schema_digest == canonical_json_digest({})
     assert direct_wrapper.error.code == FailureCode.INVALID_INPUT.value
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0
@@ -493,20 +505,19 @@ def test_supported_action_adapter_serializes_the_invalid_input_wrapper() -> None
 def test_supported_action_adapter_preserves_success_payload_and_digest() -> None:
     direct_step = ExampleStep()
     container_step = ExampleStep()
+    output_schema = ExampleOutput.model_json_schema()
     valid_input = {"message": "hello", "count": 3, "mode": "slow"}
 
-    direct_wrapper = _executor(direct_step).execute(valid_input, _context())
+    direct_wrapper = _executor(direct_step, output_schema).execute(valid_input, _context())
     container_handler = container_action_for_step(
         container_step,
-        installed_action=_installed_action(_input_schema()),
+        installed_action=_installed_action(_input_schema(), output_schema),
     )
     container_result = container_handler(_container_invocation(valid_input))
 
     assert direct_wrapper.status == 0
     assert container_result.output == direct_wrapper.output
-    assert container_result.output_schema_digest == canonical_json_digest(
-        ExampleOutput.model_json_schema()
-    )
+    assert container_result.output_schema_digest == canonical_json_digest(output_schema)
     assert direct_step.run_calls == 1
     assert container_step.run_calls == 1
 
@@ -778,7 +789,7 @@ def test_supported_task_adapter_preserves_success_payload_and_digest() -> None:
     assert container_step.run_calls == 1
 
 
-def test_supported_task_adapter_serializes_the_invalid_input_wrapper() -> None:
+def test_supported_task_adapter_maps_the_invalid_input_wrapper_to_the_envelope() -> None:
     step = TaskExampleStep()
     bindings = StepBindings()
     bindings.bind(StepDescriptor.for_step("acme.plugin.task", step), step)
@@ -788,11 +799,11 @@ def test_supported_task_adapter_serializes_the_invalid_input_wrapper() -> None:
     )
 
     assert result.output_schema_digest == canonical_json_digest(
-        StandardOutputWrapper.model_json_schema()
+        TaskExampleOutput.model_json_schema()
     )
-    assert result.output is not None
-    assert result.output["status"] != 0
-    assert result.output["error"]["code"] == FailureCode.INVALID_INPUT.value
+    assert result.output is None
+    assert result.status_code != 0
+    assert result.error_code == FailureCode.INVALID_INPUT.value
     assert step.run_calls == 0
 
 
@@ -825,3 +836,83 @@ def test_supported_task_adapter_propagates_the_complete_context() -> None:
     assert step.last_context.runtime_context is runtime_context
     assert step.last_context.cancellation is cancellation
     assert step.last_context.cancelled is True
+
+
+def test_output_violating_the_manifest_schema_is_a_safe_execution_failure() -> None:
+    step = ExampleStep()
+    executor = _executor(step, {"type": "object", "required": ["absent_field"]})
+    context = _context()
+
+    with pytest.raises(StepExecutionError):
+        executor.execute({"message": "hello"}, context)
+
+    assert step.run_calls == 1
+
+
+def test_output_validation_enforces_format_assertions() -> None:
+    step = ExampleStep()
+    executor = _executor(
+        step,
+        {"type": "object", "properties": {"message": {"type": "string", "format": "ipv4"}}},
+    )
+    context = _context()
+
+    with pytest.raises(StepExecutionError):
+        executor.execute({"message": "hello"}, context)
+
+    assert step.run_calls == 1
+
+
+def test_oversized_output_is_not_capped_by_direct_execution() -> None:
+    # The inline-size bound is a transport concern owned by the container
+    # adapter; in-process execution returns the large result unchanged.
+    step = ExampleStep()
+    executor = _executor(step)
+
+    wrapper = executor.execute({"message": "x" * 1_100_000}, _context())
+
+    assert wrapper.status == 0
+    assert wrapper.output is not None
+    assert wrapper.output["message"] == "x" * 1_100_000
+    assert step.run_calls == 1
+
+
+def test_importing_the_runtime_does_not_require_grpc() -> None:
+    """Direct execution must import where gRPC/protobuf are unavailable."""
+
+    script = textwrap.dedent(
+        """
+        import sys
+
+        # Make `import grpc` fail the way a transport-free environment would.
+        sys.modules["grpc"] = None
+
+        import syntara_plugin.runtime as runtime
+
+        # The direct-execution surface resolves without gRPC.
+        for name in (
+            "StepExecutor",
+            "StandardOutputWrapper",
+            "ErrorMessage",
+            "StepBindings",
+            "StepDescriptor",
+            "InstalledActionManifest",
+        ):
+            assert getattr(runtime, name) is not None, name
+        assert "grpc" not in [m for m in sys.modules if sys.modules[m] is not None]
+
+        # Transport exports still resolve by name, but their deps are required.
+        try:
+            runtime.ContainerClient
+        except ImportError:
+            pass
+        else:
+            raise AssertionError("ContainerClient resolved despite unavailable grpc")
+        """
+    )
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-I", "-c", script],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

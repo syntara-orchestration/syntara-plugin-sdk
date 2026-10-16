@@ -41,7 +41,7 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.integrationType` | Optional qualified integration type required by the action. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |
 | `spec.output` | Required output JSON Schema source. |
-| `spec.error` | Required error JSON Schema source. |
+| `spec.error` | Optional error JSON Schema source. The SDK-owned `ErrorMessage` fields on the terminal output envelope are the validated error contract at the execution boundary; an author-declared `spec.error` document is not validated as a structured step error payload there. Making the field optional is backward compatible: installed manifests that already declare it remain valid. |
 
 Custom-workload actions implement `spec.runtime.entryPoint` with the typed
 Python API; see [Typed Python steps](runtime-and-oci.md#typed-python-steps).

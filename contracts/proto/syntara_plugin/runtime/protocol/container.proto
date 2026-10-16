@@ -34,12 +34,36 @@ message Progress {
   bool has_percent = 5;
 }
 
+// The terminal SDK output envelope. A completed step with a nonzero
+// status_code remains a valid SDK outcome; the separate Failure event is
+// reserved for protocol or runtime failures where no valid outcome exists.
 message Result {
+  // Trusted digest of the step type's declared output schema. It is applied
+  // to the successful business result below, never to this envelope itself.
   string output_schema_digest = 1;
+  // Canonical JSON of the SDK wrapper's Result field (the business output).
   bytes output_json = 2;
+  // Object-store reference to the serialized business result when it exceeds
+  // the inline JSON bound. A successful result carries exactly one of
+  // output_json/object_reference; a deliberate step failure may omit both.
   string object_reference = 3;
+  // The SDK wrapper's StatusCode: 0 is success and any nonzero value is a
+  // deliberate step failure that remains a valid terminal outcome.
+  uint32 status_code = 4;
+  // Safe, bounded wrapper StatusMessage.
+  string status_message = 5;
+  // Named failure category for a deliberate step failure; empty on success.
+  // Consumers must not invent numeric status subcodes.
+  string error_code = 6;
+  // Safe, bounded wrapper ErrorMessage; empty on success.
+  string error_message = 7;
+  // Whether a deliberate step failure may be retried.
+  bool retryable = 8;
 }
 
+// Emitted only when no valid SDK outcome can be produced, for example an ABI
+// violation or an unexpected runtime failure. A completed step with a nonzero
+// StatusCode is carried by Result instead.
 message Failure {
   string code = 1;
   string message = 2;

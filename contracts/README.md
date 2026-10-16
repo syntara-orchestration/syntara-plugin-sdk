@@ -60,3 +60,15 @@ protocol: it selects a step revision, carries bounded JSON input, bounded
 non-secret runtime context, and mounted credential-file paths, and returns
 progress or one terminal result/failure. It does not select an image, command,
 execution pool, endpoint, or credential value.
+
+`Result` carries the SDK output envelope explicitly: `output_json` or
+`object_reference` holds the business result, while `status_code`,
+`status_message`, `error_code`, `error_message`, and `retryable` hold the
+wrapper's status and safe error metadata. `output_schema_digest` always binds
+the step type's declared output schema to the business result, never the
+envelope itself. A nonzero `StatusCode` is a valid completed outcome and must
+carry a safe `error_code` and `error_message`; the `Failure` event is reserved
+for protocol/runtime failures where no valid outcome exists. The added `Result`
+fields are wire-compatible additions within `syntara.container/v1alpha1`; absent
+fields decode as a zero `StatusCode`, and the `runtime_abi` string pins the
+envelope version.

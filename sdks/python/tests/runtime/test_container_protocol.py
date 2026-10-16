@@ -303,3 +303,133 @@ def test_invocation_timeout_sets_the_step_cancellation_signal() -> None:
 
     assert started.is_set()
     assert raised.value.code is FailureCode.TIMEOUT
+
+
+def test_container_result_enforces_terminal_invariants() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ContainerResult(
+            OUTPUT_SCHEMA_DIGEST,
+            output={"issue": 1},
+            object_reference="object-store:result-1",
+        )
+
+    with pytest.raises(ValueError, match="successful result requires"):
+        ContainerResult(OUTPUT_SCHEMA_DIGEST)
+
+    failure = ContainerResult(
+        OUTPUT_SCHEMA_DIGEST,
+        status_code=1,
+        status_message="The upstream service rejected the request.",
+        error_code="REMOTE_REJECTED",
+        error_message="The upstream service rejected the request.",
+    )
+    assert failure.output is None
+    assert failure.object_reference is None
+
+    with pytest.raises(ValueError, match="uppercase failure category"):
+        ContainerResult(
+            OUTPUT_SCHEMA_DIGEST,
+            status_code=1,
+            error_code="not-a-code",
+            error_message="m",
+        )
+
+    with pytest.raises(ValueError, match="successful result must not carry error metadata"):
+        ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 1}, error_code="REMOTE_REJECTED")
+
+    with pytest.raises(ValueError, match="uint32"):
+        ContainerResult(
+            OUTPUT_SCHEMA_DIGEST,
+            status_code=4_294_967_296,
+            error_code="X",
+            error_message="m",
+        )
+
+    with pytest.raises(ValueError, match="failed result requires an error"):
+        ContainerResult(OUTPUT_SCHEMA_DIGEST, status_code=7)
+
+    with pytest.raises(ValueError, match="failed result requires an error"):
+        ContainerResult(OUTPUT_SCHEMA_DIGEST, status_code=7, error_code="REMOTE_REJECTED")
+
+
+def test_deliberate_step_failure_round_trips_as_a_result_event() -> None:
+    from syntara_plugin.runtime.container import _result_event, _result_from_event
+
+    failure = ContainerResult(
+        OUTPUT_SCHEMA_DIGEST,
+        status_code=1,
+        status_message="The upstream service rejected the request.",
+        error_code="REMOTE_REJECTED",
+        error_message="The upstream service rejected the request.",
+        retryable=True,
+    )
+    event = _result_event("invocation-1", failure)
+    decoded = _result_from_event(event)
+
+    assert decoded.status_code == 1
+    assert decoded.output is None
+    assert decoded.object_reference is None
+    assert decoded.error_code == "REMOTE_REJECTED"
+    assert decoded.error_message == "The upstream service rejected the request."
+    assert decoded.retryable is True
+
+
+def test_object_reference_result_round_trips() -> None:
+    from syntara_plugin.runtime.container import _result_event, _result_from_event
+
+    result = ContainerResult(OUTPUT_SCHEMA_DIGEST, object_reference="object-store:large-1")
+    decoded = _result_from_event(_result_event("invocation-1", result))
+
+    assert decoded.status_code == 0
+    assert decoded.output is None
+    assert decoded.object_reference == "object-store:large-1"
+
+
+def test_legacy_result_without_status_fields_decodes_as_success() -> None:
+    from syntara_plugin.runtime.container import _result_from_event
+
+    event = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        result=container_pb2.Result(
+            output_schema_digest=OUTPUT_SCHEMA_DIGEST,
+            output_json=b'{"legacy": true}',
+        ),
+    )
+    decoded = _result_from_event(event)
+
+    assert decoded.status_code == 0
+    assert decoded.output == {"legacy": True}
+
+
+def test_failed_result_without_error_metadata_is_a_protocol_error() -> None:
+    from syntara_plugin.runtime.container import _result_from_event
+
+    event = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        result=container_pb2.Result(
+            output_schema_digest=OUTPUT_SCHEMA_DIGEST,
+            status_code=7,
+        ),
+    )
+    with pytest.raises(ContainerRemoteError) as raised:
+        _result_from_event(event)
+
+    assert raised.value.code is FailureCode.ABI_VIOLATION
+    assert raised.value.source == "protocol"
+
+
+def test_success_result_with_error_metadata_is_a_protocol_error() -> None:
+    from syntara_plugin.runtime.container import _result_from_event
+
+    event = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        result=container_pb2.Result(
+            output_schema_digest=OUTPUT_SCHEMA_DIGEST,
+            output_json=b'{"issue": 42}',
+            error_code="REMOTE_REJECTED",
+        ),
+    )
+    with pytest.raises(ContainerRemoteError) as raised:
+        _result_from_event(event)
+
+    assert raised.value.source == "protocol"

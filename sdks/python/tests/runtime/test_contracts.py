@@ -161,3 +161,100 @@ def test_runtime_package_does_not_depend_on_sdk_implementation() -> None:
     assert "syntara_plugin.sdk" not in "\n".join(
         path.read_text() for path in runtime_source.glob("*.py")
     )
+
+
+def test_container_result_envelope_fixtures_conform() -> None:
+    harness = ConformanceHarness()
+
+    assert harness.validate_runtime(
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "ContainerResult",
+            "invocationId": "invoke-1",
+            "outputSchemaDigest": HASH,
+            "statusCode": 0,
+            "statusMessage": "Completed",
+            "output": {"issue": 42},
+        }
+    ).valid
+    assert harness.validate_runtime(
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "ContainerResult",
+            "invocationId": "invoke-2",
+            "outputSchemaDigest": HASH,
+            "statusCode": 0,
+            "objectReference": "object-store:large-result-1",
+        }
+    ).valid
+    assert harness.validate_runtime(
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "ContainerResult",
+            "invocationId": "invoke-3",
+            "outputSchemaDigest": HASH,
+            "statusCode": 1,
+            "statusMessage": "The upstream service rejected the request.",
+            "errorCode": "REMOTE_REJECTED",
+            "errorMessage": "The upstream service rejected the request.",
+            "retryable": False,
+        }
+    ).valid
+    # A legacy result that predates the status fields decodes as a success.
+    assert harness.validate_runtime(
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "ContainerResult",
+            "invocationId": "invoke-legacy",
+            "outputSchemaDigest": HASH,
+            "output": {"issue": 42},
+        }
+    ).valid
+
+
+def test_container_result_envelope_rejects_invalid_payload_shapes() -> None:
+    harness = ConformanceHarness()
+    base = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "ContainerResult",
+        "invocationId": "invoke-1",
+        "outputSchemaDigest": HASH,
+        "statusCode": 0,
+        "statusMessage": "Completed",
+    }
+
+    assert not harness.validate_runtime(dict(base)).valid
+
+    assert not harness.validate_runtime(
+        dict(base, output={"issue": 42}, objectReference="object-store:result-1")
+    ).valid
+
+    assert not harness.validate_runtime(dict(base, statusCode=-1, output={"issue": 42})).valid
+
+    assert not harness.validate_runtime(
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "ContainerResult",
+            "invocationId": "invoke-4",
+            "outputSchemaDigest": HASH,
+            "statusCode": 1,
+            "errorCode": "not-a-safe-code",
+            "errorMessage": "boom",
+        }
+    ).valid
+
+    assert not harness.validate_runtime(
+        dict(base, output={"issue": 42}, errorCode="REMOTE_REJECTED")
+    ).valid
+
+    assert not harness.validate_runtime(dict(base, output={"issue": 42}, retryable=True)).valid
+
+    assert not harness.validate_runtime(
+        dict(base, statusCode=4_294_967_296, output={"issue": 42})
+    ).valid
+
+    # A nonzero status must carry error metadata in both representations.
+    assert not harness.validate_runtime(dict(base, statusCode=7)).valid
+    assert not harness.validate_runtime(
+        dict(base, statusCode=7, errorCode="REMOTE_REJECTED")
+    ).valid
