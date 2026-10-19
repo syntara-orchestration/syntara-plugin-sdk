@@ -148,6 +148,7 @@ def test_runtime_image_contract_stays_minimal_and_runs_the_server_entrypoint() -
     assert "--locked" in containerfile
     assert "--no-dev" in containerfile
     assert "--no-editable" in containerfile
+    assert containerfile.count("--no-build") == 2
     assert "--package syntara-plugin-runtime" in containerfile
     assert (
         "command -v uv >/dev/null 2>&1 || "

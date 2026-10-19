@@ -97,9 +97,15 @@ builder and runtime base images. The builder uses the pinned Red Hat
 runtime image. When that builder image does not already provide `uv`, the
 Containerfile installs pinned `uv==0.12.3` with `pip install --only-binary :all:`.
 PyPI publishes wheels for the UBI architectures, and the flag refuses the sdist
-so its setup script never runs. Konflux also passes `PIP_FIND_LINKS` to the
-prefetched dependency directory, allowing `uv sync` to run with `--offline`,
-`--no-index`, and `--find-links`.
+so its setup script never runs. Both `uv sync` invocations pass `--no-build`.
+That refuses registry source distributions, whose setup scripts would otherwise
+run. The locked runtime dependencies, including `grpcio`, `pydantic-core`, and
+`rpds-py`, publish manylinux wheels for `linux/amd64` and `linux/arm64`. uv
+still builds the copied first-party packages `syntara-plugin-runtime` and
+`syntara-plugin-contracts`; `--no-build` does not apply to those workspace
+sources. Konflux also passes `PIP_FIND_LINKS` to the prefetched dependency
+directory, allowing `uv sync` to run with `--offline`, `--no-index`, and
+`--find-links`.
 
 ## Typed Python steps
 

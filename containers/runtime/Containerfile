@@ -14,11 +14,11 @@ COPY sdks/python/packages/runtime ./sdks/python/packages/runtime
 RUN python3.12 -m venv /opt/syntara/.venv \
     && if [ -n "$PIP_FIND_LINKS" ]; then \
         UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
-            --locked --no-dev --no-editable --package syntara-plugin-runtime \
+            --locked --no-dev --no-editable --no-build --package syntara-plugin-runtime \
             --offline --no-index --find-links "$PIP_FIND_LINKS"; \
     else \
         UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
-            --locked --no-dev --no-editable --package syntara-plugin-runtime; \
+            --locked --no-dev --no-editable --no-build --package syntara-plugin-runtime; \
     fi
 
 FROM ${RUNTIME_BASE_IMAGE}
