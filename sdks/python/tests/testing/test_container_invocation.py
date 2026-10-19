@@ -237,8 +237,10 @@ def test_equivalence_compares_failure_categories() -> None:
     )
     # A direct business crash maps to OUTCOME_UNKNOWN, so an unrelated TIMEOUT
     # on the container path is a genuine inequivalence.
+    mismatched_direct = raised("direct", crash)
+    mismatched_container = raised("container", timeout)
     with pytest.raises(AssertionError, match="failure category"):
-        assert_outcomes_equivalent(raised("direct", crash), raised("container", timeout))
+        assert_outcomes_equivalent(mismatched_direct, mismatched_container)
     assert_outcomes_equivalent(raised("direct", crash), raised("container", unknown))
 
 
@@ -251,10 +253,10 @@ def test_equivalence_compares_status_messages() -> None:
             error=None, run_calls=1, raised=None, transport=transport, raw=None,  # type: ignore[arg-type]
         )
 
+    differing_direct = success("direct", "Completed")
+    differing_container = success("container", "Something else")
     with pytest.raises(AssertionError, match="status_message"):
-        assert_outcomes_equivalent(
-            success("direct", "Completed"), success("container", "Something else")
-        )
+        assert_outcomes_equivalent(differing_direct, differing_container)
     assert_outcomes_equivalent(success("direct", "Completed"), success("container", "Completed"))
 
 
