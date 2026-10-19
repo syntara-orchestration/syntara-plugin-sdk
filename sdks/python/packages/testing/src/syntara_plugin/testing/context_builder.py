@@ -13,9 +13,28 @@ from .errors import HarnessUsageError
 
 # The container ABI accepts only Syntara identity characters and at most 256
 # of them; the harness derives ``{invocation_id}-run`` as the workflow-run id,
-# so the accepted maximum leaves room for that four-character suffix.
-_IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,252}$")
-_RUN_ID = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+# so a context that needs derivation leaves room for that suffix.
+_IDENTITY_CHARSET = re.compile(r"^[A-Za-z0-9._:-]+$")
+_ABI_MAX = 256
+_DERIVED_SUFFIX = "-run"
+_DERIVATION_MAX = _ABI_MAX - len(_DERIVED_SUFFIX)
+
+
+def _require_identity(
+    value: str,
+    *,
+    field: str,
+    maximum: int,
+    note: str = "",
+) -> None:
+    """Reject identifier values the container ABI would refuse later."""
+
+    if not _IDENTITY_CHARSET.fullmatch(value) or len(value) > maximum:
+        message = (
+            f"{field} must be a Syntara identity (letters, digits, '. _ : -', "
+            f"at most {maximum} characters{note}) so both execution paths accept it"
+        )
+        raise HarnessUsageError(message)
 
 
 def build_execution_context(
@@ -45,21 +64,19 @@ def build_execution_context(
         cancelled: Pre-set the cooperative cancellation signal when true.
     """
 
-    if invocation_id is not None and not _IDENTITY.fullmatch(invocation_id):
-        message = (
-            "invocation_id must be a Syntara identity (letters, digits, '. _ : -', "
-            "at most 252 characters, leaving room for the derived run id) so both "
-            "execution paths accept it"
+    if invocation_id is not None:
+        _require_identity(
+            invocation_id,
+            field="invocation_id",
+            maximum=_DERIVATION_MAX,
+            note=", leaving room for the derived run id",
         )
-        raise HarnessUsageError(message)
-    if workflow_run_id is not None and not _RUN_ID.fullmatch(workflow_run_id):
-        message = (
-            "workflow_run_id must be a Syntara identity (letters, digits, '. _ : -', "
-            "at most 256 characters) so both execution paths accept it"
-        )
-        raise HarnessUsageError(message)
+    if workflow_run_id is not None:
+        _require_identity(workflow_run_id, field="workflow_run_id", maximum=_ABI_MAX)
     context = ExecutionContext(
-        invocation_id=invocation_id if invocation_id is not None else f"test-invocation-{uuid4().hex}",
+        invocation_id=(
+            invocation_id if invocation_id is not None else f"test-invocation-{uuid4().hex}"
+        ),
         workflow_run_id=workflow_run_id,
         runtime_context=dict(runtime_context or {}),
     )
@@ -69,19 +86,34 @@ def build_execution_context(
 
 
 def normalize_run_id(context: ExecutionContext) -> ExecutionContext:
-    """Give one context the deterministic run id both execution paths present.
+    """Validate one context's identifiers and give it the deterministic run id.
 
-    The container ABI requires a workflow-run identifier, so the container path
-    can never present ``None``. When a context carries no run id, both
+    Both invocation helpers run this before executing, so raw
+    ``ExecutionContext`` objects are held to the same rules as harness-built
+    ones: identifiers must be Syntara identities the container ABI accepts,
+    and an invocation id that needs a derived run id must leave room for the
+    suffix. When the context already carries a run id, its length may use the
+    full ABI maximum because nothing is derived.
+
+    The container ABI requires a workflow-run identifier, so the container
+    path can never present ``None``. When a context carries no run id, both
     invocation helpers substitute ``{invocation_id}-run`` so the two SDK paths
     present identical identifiers to the business hook.
     """
 
+    _require_identity(context.invocation_id, field="invocation_id", maximum=_ABI_MAX)
     if context.workflow_run_id is not None:
+        _require_identity(context.workflow_run_id, field="workflow_run_id", maximum=_ABI_MAX)
         return context
+    _require_identity(
+        context.invocation_id,
+        field="invocation_id",
+        maximum=_DERIVATION_MAX,
+        note=", leaving room for the derived run id",
+    )
     return ExecutionContext(
         invocation_id=context.invocation_id,
-        workflow_run_id=f"{context.invocation_id}-run",
+        workflow_run_id=f"{context.invocation_id}{_DERIVED_SUFFIX}",
         runtime_context=context.runtime_context,
         cancellation=context.cancellation,
     )

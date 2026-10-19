@@ -215,6 +215,24 @@ def test_supplied_workflow_run_ids_work_on_both_paths() -> None:
     assert container.output == {"workflow_run_id": "team.aap:run-42"}
 
 
+def test_raw_contexts_with_supplied_run_ids_use_the_full_abi_maximum() -> None:
+    """With a supplied run id nothing is derived, so 254 characters are valid.
+
+    The 252-character cap exists only to leave room for the derived
+    ``-run`` suffix; a raw context that already carries a run id may use the
+    container ABI's full 256-character maximum for its invocation id.
+    """
+
+    from syntara_plugin.runtime import ExecutionContext
+
+    context = ExecutionContext(invocation_id="x" * 254, workflow_run_id="run-1")
+    direct = invoke_step(ReferenceTaskStep(), {"title": "x"}, context=context)
+    container = invoke_step_in_container(
+        ReferenceTaskStep(), {"title": "x"}, context=context
+    )
+    assert_outcomes_equivalent(direct, container)
+
+
 def test_equivalence_compares_failure_categories() -> None:
     """Raised outcomes must agree on category, not merely both be raised."""
 

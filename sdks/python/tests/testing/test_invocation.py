@@ -150,3 +150,27 @@ def test_credential_reference_input_does_not_leak_into_the_outcome() -> None:
     )
     assert outcome.ok
     assert_no_secrets(outcome, [FIXED_SECRET_SENTINEL])
+
+
+def test_raw_contexts_are_held_to_the_same_identity_rules() -> None:
+    """Directly constructed ExecutionContext values are validated on both paths.
+
+    The builder validates its inputs, but the invocation helpers also accept
+    raw runtime contexts; the shared normalization rejects identifiers the
+    container ABI would refuse before either path runs.
+    """
+
+    from syntara_plugin.testing import invoke_step_in_container
+
+    step = ReferenceTaskStep()
+    invalid_run_id = ExecutionContext(
+        invocation_id="raw-probe", workflow_run_id="not valid"
+    )
+    with pytest.raises(HarnessUsageError, match="workflow_run_id"):
+        invoke_step_in_container(step, {"title": "x"}, context=invalid_run_id)
+
+    oversized_invocation = ExecutionContext(invocation_id="x" * 300)
+    with pytest.raises(HarnessUsageError, match="invocation_id"):
+        invoke_step(step, {"title": "x"}, context=oversized_invocation)
+    with pytest.raises(HarnessUsageError, match="invocation_id"):
+        invoke_step_in_container(step, {"title": "x"}, context=oversized_invocation)
