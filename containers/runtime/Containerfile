@@ -31,7 +31,8 @@ RUN set -- --no-build-package annotated-types \
         --no-dev \
         --no-editable \
         "$@" \
-        --package syntara-plugin-runtime # NOSONAR: registry sdists are refused per package; workspace sources must build.
+        --package syntara-plugin-runtime # NOSONAR: registry sdists \
+            are refused per package; workspace sources must build.
 
 FROM ${RUNTIME_BASE_IMAGE}
 USER 0
