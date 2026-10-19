@@ -126,8 +126,10 @@ def serve_runtime(config: RuntimeServerConfig) -> None:
     signal.signal(signal.SIGINT, terminate)
     server.start()
     try:
-        while not stopping.wait(0.1):
-            pass
+        # Poll so a signal that arrives between the flag check and the wait
+        # cannot leave the process blocked until a second signal.
+        while not stopping.is_set():
+            stopping.wait(0.1)
     finally:
         server.stop(grace=30).wait(timeout=35)
 

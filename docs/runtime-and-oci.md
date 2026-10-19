@@ -94,9 +94,12 @@ Official publication is owned by the Konflux component; local Make targets are
 for verification only. The Konflux build supplies separate authenticated
 builder and runtime base images. The builder uses the pinned Red Hat
 `uv-builder-rhel9` image, while the final image uses the pinned UBI Python
-runtime image. Konflux also passes `PIP_FIND_LINKS` to the prefetched
-dependency directory, allowing `uv sync` to run with `--offline`, `--no-index`,
-and `--find-links`.
+runtime image. When that builder image does not already provide `uv`, the
+Containerfile installs pinned `uv==0.12.3` with `pip install --only-binary :all:`.
+PyPI publishes wheels for the UBI architectures, and the flag refuses the sdist
+so its setup script never runs. Konflux also passes `PIP_FIND_LINKS` to the
+prefetched dependency directory, allowing `uv sync` to run with `--offline`,
+`--no-index`, and `--find-links`.
 
 ## Typed Python steps
 

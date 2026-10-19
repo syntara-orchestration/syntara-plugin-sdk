@@ -149,7 +149,10 @@ def test_runtime_image_contract_stays_minimal_and_runs_the_server_entrypoint() -
     assert "--no-dev" in containerfile
     assert "--no-editable" in containerfile
     assert "--package syntara-plugin-runtime" in containerfile
-    assert "command -v uv >/dev/null 2>&1 || pip install" in containerfile
+    assert (
+        "command -v uv >/dev/null 2>&1 || "
+        "pip install --no-cache-dir --only-binary :all: uv==0.12.3"
+    ) in containerfile
     assert "ARG BUILDER_IMAGE=" in containerfile
     assert "ARG RUNTIME_BASE_IMAGE=" in containerfile
     assert "FROM ${BUILDER_IMAGE} AS builder" in containerfile

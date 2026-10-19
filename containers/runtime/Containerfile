@@ -4,7 +4,7 @@ ARG PIP_FIND_LINKS=""
 
 FROM ${BUILDER_IMAGE} AS builder
 USER 0
-RUN command -v uv >/dev/null 2>&1 || pip install --no-cache-dir uv==0.12.3
+RUN command -v uv >/dev/null 2>&1 || pip install --no-cache-dir --only-binary :all: uv==0.12.3
 WORKDIR /build
 COPY pyproject.toml uv.lock ./
 COPY contracts ./contracts
