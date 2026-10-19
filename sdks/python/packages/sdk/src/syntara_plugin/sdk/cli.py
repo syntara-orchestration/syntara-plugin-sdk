@@ -51,6 +51,7 @@ from .settings import (
     WorkloadBuildSettings,
     load_settings,
 )
+from .testgen import ScaffoldError, generate_step_tests
 from .workload import WorkloadBuildError, WorkloadBuildRequest, build_and_push_workload
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -65,6 +66,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     if arguments.command == "init":
         return _init_workspace(arguments)
+    if arguments.command == "test-init":
+        return _init_tests(arguments)
     try:
         settings = load_settings(
             explicit_path=getattr(arguments, "settings", None),
@@ -105,6 +108,29 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--name", help="Plugin name (default: final directory name).")
     init.add_argument("--version", default="0.1.0", help="Plugin SemVer version (default: 0.1.0).")
     init.add_argument("--action", default="request", help="Initial action name (default: request).")
+
+    test_init = commands.add_parser(
+        "test-init",
+        help="Generate local pytest tests for custom-workload Action steps.",
+    )
+    test_init.add_argument(
+        "manifest",
+        type=Path,
+        nargs="?",
+        default=Path("plugin.yaml"),
+        help="Path to plugin.yaml or its directory (default: ./plugin.yaml).",
+    )
+    test_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing generated test files.",
+    )
+    test_init.add_argument(
+        "--tests-dir",
+        type=Path,
+        default=None,
+        help="Tests directory (default: <workspace>/tests).",
+    )
 
     for command, help_text in (
         ("validate", "Compile and validate a plugin workspace."),
@@ -575,6 +601,26 @@ def _boolean_option(command_line: bool | None, settings: bool | None, *, default
     if settings is not None:
         return settings
     return default
+
+
+def _init_tests(arguments: argparse.Namespace) -> int:
+    """Generate local pytest tests for custom-workload Action targets."""
+    try:
+        written = generate_step_tests(
+            arguments.manifest,
+            tests_dir=arguments.tests_dir,
+            force=arguments.force,
+        )
+    except (ScaffoldError, CompilationError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    except OSError as error:
+        print(f"error: could not write tests: {error}", file=sys.stderr)
+        return 1
+    for path in written:
+        print(f"Created {path}")
+    print("Next: pytest tests -q")
+    return 0
 
 
 def _init_workspace(arguments: argparse.Namespace) -> int:
