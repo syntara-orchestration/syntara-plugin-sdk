@@ -46,7 +46,12 @@ outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
   `ContainerInvocation`, no gRPC server.
 - `invoke_step_in_container` runs the same registered implementation over a
   real in-process gRPC server on `127.0.0.1` through the container adapter.
-  Authors never construct a `ContainerInvocation`.
+  Authors never construct a `ContainerInvocation`. Two boundaries apply only
+  to this path: a preset `cancelled` context is not transported (the container
+  path delivers cancellation through the transport), and business results
+  above the container ABI's inline bound (1 MiB) fail with `ABI_VIOLATION`
+  because the harness wires no object store. Test pre-cancelled contexts and
+  oversized outputs with `invoke_step`.
 - Both accept a `StepBinding`, a step class or instance, or a
   `module:Class` entry point, and return a `StepOutcome`.
 

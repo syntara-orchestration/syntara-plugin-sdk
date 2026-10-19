@@ -37,6 +37,11 @@ def assert_outcomes_equivalent(direct: StepOutcome, container: StepOutcome) -> N
     both paths report a raised failure, the failure categories must match;
     direct-path exceptions are normalized onto the same category model the
     container path reports.
+
+    Equivalence holds within the container ABI's inline result bound (1 MiB):
+    above it the container path fails with ``ABI_VIOLATION`` because the
+    harness wires no object store, so compare oversized business results on
+    the direct path only.
     """
 
     if direct.transport != "direct" or container.transport != "container":

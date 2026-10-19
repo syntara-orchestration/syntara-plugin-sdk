@@ -258,6 +258,37 @@ def test_equivalence_compares_status_messages() -> None:
     assert_outcomes_equivalent(success("direct", "Completed"), success("container", "Completed"))
 
 
+def test_oversized_results_document_the_inline_bound_asymmetry() -> None:
+    """Above the container inline bound, equivalence intentionally does not hold.
+
+    The harness wires no ResultObjectStore, so a business result larger than
+    the container ABI's 1 MiB inline bound succeeds on the direct path and
+    fails with ABI_VIOLATION on the container path; large outputs are a
+    direct-path concern, as the invoke_step_in_container docstring and
+    docs/testing.md state.
+    """
+
+    class BigInput(BaseModel):
+        value: str = "x"
+
+    class BigOutput(BaseModel):
+        blob: str
+
+    class BigTask(TaskStep[BigInput, BigOutput]):
+        def run(self, inputs: BigInput, context: ExecutionContext) -> BigOutput:
+            return BigOutput(blob="x" * 1_200_000)
+
+    context = build_execution_context(invocation_id="inline-bound")
+    direct = invoke_step(BigTask(), {}, context=context)
+    container = invoke_step_in_container(BigTask(), {}, context=context)
+    assert direct.ok
+    assert not container.ok
+    assert container.raised is not None
+    assert container.raised.code.value == "ABI_VIOLATION"
+    with pytest.raises(AssertionError, match="raised"):
+        assert_outcomes_equivalent(direct, container)
+
+
 def test_the_same_invocation_id_can_be_reused_sequentially() -> None:
     context = build_execution_context(invocation_id="reused-id")
     first = invoke_step_in_container(ReferenceTaskStep(), {"title": "a"}, context=context)

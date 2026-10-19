@@ -244,6 +244,11 @@ def invoke_step_in_container(
     pre-cancelled context is not transported and the handler will not observe
     it. Test pre-cancelled contexts with :func:`invoke_step`.
 
+    Business results above the container ABI's inline bound (1 MiB) are also
+    a direct-path concern: the harness wires no ``ResultObjectStore``, so an
+    oversized result that succeeds on the direct path fails here with
+    ``ABI_VIOLATION``. Test large outputs with :func:`invoke_step`.
+
     Args:
         target: A ``StepBinding``, a step class or instance, or a ``module:Class``
             entry point, with the same Action rule as :func:`invoke_step`.
