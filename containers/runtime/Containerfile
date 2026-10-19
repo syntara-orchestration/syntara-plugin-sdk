@@ -10,7 +10,7 @@ WORKDIR /build
 COPY pyproject.toml uv.lock ./
 COPY contracts ./contracts
 COPY sdks/python/packages ./sdks/python/packages
-RUN NO_BUILD_PACKAGES="--no-build-package annotated-types \
+RUN set -- --no-build-package annotated-types \
         --no-build-package attrs \
         --no-build-package grpcio \
         --no-build-package jsonschema \
@@ -21,18 +21,12 @@ RUN NO_BUILD_PACKAGES="--no-build-package annotated-types \
         --no-build-package referencing \
         --no-build-package rpds-py \
         --no-build-package typing-extensions \
-        --no-build-package typing-inspection" \
+        --no-build-package typing-inspection \
     && python3.12 -m venv /opt/syntara/.venv \
     && if [ -n "$PIP_FIND_LINKS" ]; then \
-        UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
-            --locked --no-dev --no-editable $NO_BUILD_PACKAGES \
-            --package syntara-plugin-runtime \
-            --offline --no-index --find-links "$PIP_FIND_LINKS"; \
-    else \
-        UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
-            --locked --no-dev --no-editable $NO_BUILD_PACKAGES \
-            --package syntara-plugin-runtime; \
-    fi
+        set -- "$@" --offline --no-index --find-links "$PIP_FIND_LINKS"; \
+    fi \
+    && UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync --locked --no-dev --no-editable "$@" --package syntara-plugin-runtime # NOSONAR: registry sdists are refused per package; workspace sources must build.
 
 FROM ${RUNTIME_BASE_IMAGE}
 USER 0

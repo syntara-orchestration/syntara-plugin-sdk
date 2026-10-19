@@ -211,7 +211,7 @@ def test_runtime_server_serves_health_and_executes_a_bound_step() -> None:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     async def scenario() -> None:
-        server = await create_runtime_server(
+        server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_bindings",
                 address=f"127.0.0.1:{port}",
@@ -238,7 +238,7 @@ def test_runtime_server_executes_steps_concurrently() -> None:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     async def scenario() -> None:
-        server = await create_runtime_server(
+        server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_barrier_bindings",
                 address=f"127.0.0.1:{port}",
@@ -269,7 +269,7 @@ def test_runtime_server_cancels_an_active_step() -> None:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     async def scenario() -> None:
-        server = await create_runtime_server(
+        server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_cancellation_bindings",
                 address=f"127.0.0.1:{port}",
@@ -308,7 +308,7 @@ def test_runtime_server_serves_health_and_steps_over_mutual_tls(
         tmp_path
     )
     async def scenario() -> None:
-        server = await create_runtime_server(
+        server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_bindings",
                 address=f"localhost:{port}",
@@ -423,11 +423,13 @@ def test_runtime_image_contract_stays_minimal_and_runs_the_server_entrypoint() -
     makefile = (repository_root / "Makefile").read_text(encoding="utf-8")
 
     assert "uv sync" in containerfile
+    assert containerfile.count("uv sync") == 1
     assert "--locked" in containerfile
     assert "--no-dev" in containerfile
     assert "--no-editable" in containerfile
     assert containerfile.count("ARG PIP_FIND_LINKS") == 2
-    assert containerfile.count("$NO_BUILD_PACKAGES") == 2
+    assert containerfile.count("--no-build-package") == 12
+    assert containerfile.count('"$@"') == 2
     assert re.search(r"--no-build(?:\s|$)", containerfile) is None
     for package in (
         "annotated-types",

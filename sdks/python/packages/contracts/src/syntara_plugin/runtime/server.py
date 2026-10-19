@@ -18,11 +18,10 @@ from .adapter import step_registry_from_bindings
 from .bindings import StepBindings
 from .container import (
     ContainerInvocationError,
-    ContainerResult,
     StepRegistry,
     _failure_event,
     _invocation_from_request,
-    _result_event,
+    _terminal_execution_event,
 )
 from .protocol import container_pb2, container_pb2_grpc
 
@@ -59,19 +58,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             self._register_invocation(invocation.invocation_id, cancellation)
             context.add_done_callback(cancellation.set)
             result = await asyncio.to_thread(handler, invocation)
-            if invocation.cancelled:
-                raise ContainerInvocationError(
-                    FailureCode.CANCELLED,
-                    "The plugin step was cancelled.",
-                    outcome="not_completed",
-                )
-            if not isinstance(result, ContainerResult):
-                raise ContainerInvocationError(
-                    FailureCode.ABI_VIOLATION,
-                    "The plugin step returned an invalid response.",
-                    outcome="unknown",
-                )
-            yield _result_event(invocation.invocation_id, result)
+            yield _terminal_execution_event(invocation, result)
         except ContainerInvocationError as error:
             yield _failure_event(invocation_id, error)
         except Exception:
@@ -188,7 +175,7 @@ def load_runtime_bindings(specification: str) -> StepBindings:
     return bindings
 
 
-async def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
+def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
     """Create and bind, but do not start, the in-container gRPC server."""
 
     bindings = load_runtime_bindings(config.bindings_factory)
@@ -211,7 +198,7 @@ async def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
 async def serve_runtime(config: RuntimeServerConfig) -> None:
     """Run the gRPC server until SIGTERM or SIGINT is received."""
 
-    server = await create_runtime_server(config)
+    server = create_runtime_server(config)
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

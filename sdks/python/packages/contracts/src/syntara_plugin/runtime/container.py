@@ -250,19 +250,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             if not context.add_callback(cancellation.set):
                 cancellation.set()
             result = handler(invocation)
-            if invocation.cancelled:
-                raise ContainerInvocationError(
-                    FailureCode.CANCELLED,
-                    "The plugin step was cancelled.",
-                    outcome="not_completed",
-                )
-            if not isinstance(result, ContainerResult):
-                raise ContainerInvocationError(
-                    FailureCode.ABI_VIOLATION,
-                    "The plugin step returned an invalid response.",
-                    outcome="unknown",
-                )
-            yield _result_event(invocation.invocation_id, result)
+            yield _terminal_execution_event(invocation, result)
         except ContainerInvocationError as error:
             yield _failure_event(invocation_id, error)
         except Exception:
@@ -311,6 +299,37 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         with self._active_lock:
             if self._active.get(invocation_id) is cancellation:
                 del self._active[invocation_id]
+
+
+def _terminal_execution_event(
+    invocation: ContainerInvocation,
+    result: ContainerResult | None,
+) -> container_pb2.ExecutionEvent:
+    try:
+        if invocation.cancelled:
+            raise ContainerInvocationError(
+                FailureCode.CANCELLED,
+                "The plugin step was cancelled.",
+                outcome="not_completed",
+            )
+        if not isinstance(result, ContainerResult):
+            raise ContainerInvocationError(
+                FailureCode.ABI_VIOLATION,
+                "The plugin step returned an invalid response.",
+                outcome="unknown",
+            )
+        return _result_event(invocation.invocation_id, result)
+    except ContainerInvocationError as error:
+        return _failure_event(invocation.invocation_id, error)
+    except Exception:
+        return _failure_event(
+            invocation.invocation_id,
+            ContainerInvocationError(
+                FailureCode.OUTCOME_UNKNOWN,
+                "The plugin step did not complete.",
+                outcome="unknown",
+            ),
+        )
 
 
 def add_container_runtime_service(
