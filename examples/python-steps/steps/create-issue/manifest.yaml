@@ -1,0 +1,38 @@
+apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: create-issue
+  displayName: Create issue
+  description: Creates one issue in an external tracker.
+spec:
+  runtime:
+    kind: custom-workload
+    entryPoint: python_steps.create_issue:CreateIssueStep
+  input:
+    kind: inline
+    value:
+      type: object
+      properties:
+        title:
+          type: string
+        priority:
+          type: string
+          default: low
+          enum: [low, medium, high]
+        api_token:
+          type: string
+          default: ""
+          description: Secret token; never echoed into outputs or errors.
+      required: [title]
+  output:
+    kind: inline
+    value:
+      type: object
+      properties:
+        issue_url:
+          type: string
+      required: [issue_url]
+  error:
+    kind: inline
+    value:
+      type: object

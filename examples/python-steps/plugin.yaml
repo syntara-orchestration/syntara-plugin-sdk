@@ -1,0 +1,16 @@
+apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: example
+  name: python-steps
+  version: 0.1.0
+  displayName: Python steps
+  description: One example step for each taxonomy class.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: python-steps-workload
+  targets:
+    - steps/create-issue/manifest.yaml
+    - steps/record-opened/manifest.yaml

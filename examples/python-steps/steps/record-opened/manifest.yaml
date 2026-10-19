@@ -1,0 +1,22 @@
+apiVersion: syntara.io/v1alpha1
+kind: Trigger
+metadata:
+  name: record-opened
+  displayName: Record opened
+  description: Fires when a record is opened in a repository.
+spec:
+  driver: webhook.v1
+  configuration:
+    kind: inline
+    value:
+      type: object
+  output:
+    kind: inline
+    value:
+      type: object
+      properties:
+        issue_url:
+          type: string
+        repository:
+          type: string
+      required: [issue_url, repository]
