@@ -129,25 +129,61 @@ def generate_step_tests(
     so author-owned conftest content is never overwritten.
     """
 
-    manifest = Path(root_manifest)
+    manifest = _resolve_manifest(root_manifest)
+    result = compile_workspace(
+        BuildRequest(root_manifest=manifest, require_image_bindings=False)
+    )
+    workspace = manifest.parent
+    tests = _resolve_tests_dir(workspace, tests_dir)
+    workspace_relative = os.path.relpath(workspace, tests)
+    planned = _plan_test_modules(result, tests, manifest.name, workspace_relative)
+    if not planned:
+        message = "the workspace declares no custom-workload Action targets"
+        raise ScaffoldError(message)
+    _refuse_existing(planned, force)
+    written = _write_planned_modules(planned)
+    written.extend(_write_conftest(tests, workspace_relative))
+    return written
+
+
+def _resolve_manifest(root_manifest: Path) -> Path:
+    """Resolve the root manifest, rejecting traversal in the supplied path."""
+
+    manifest = Path(root_manifest).expanduser()
+    if ".." in manifest.parts:
+        message = f"manifest path must not contain '..' path traversal: {root_manifest}"
+        raise ScaffoldError(message)
     if manifest.is_dir():
         manifest = manifest / "plugin.yaml"
     if not manifest.is_file():
         message = f"plugin manifest not found: {manifest}"
         raise ScaffoldError(message)
-    result = compile_workspace(
-        BuildRequest(root_manifest=manifest, require_image_bindings=False)
-    )
-    workspace = manifest.parent
+    return manifest
+
+
+def _resolve_tests_dir(workspace: Path, tests_dir: Path | None) -> Path:
+    """Resolve the tests directory against the workspace, rejecting traversal."""
+
     if tests_dir is None:
-        tests = workspace / "tests"
-    else:
-        # A relative --tests-dir resolves against the workspace, never the
-        # current directory; the default is already workspace-relative.
-        tests = tests_dir if tests_dir.is_absolute() else workspace / tests_dir
-    workspace_relative = os.path.relpath(workspace, tests)
-    # Plan every module first so a mid-run overwrite refusal never leaves a
-    # half-generated suite behind.
+        return workspace / "tests"
+    resolved = tests_dir.expanduser()
+    if ".." in resolved.parts:
+        message = f"tests directory must not contain '..' path traversal: {tests_dir}"
+        raise ScaffoldError(message)
+    # A relative --tests-dir resolves against the workspace, never the current
+    # directory; the default is already workspace-relative.
+    return resolved if resolved.is_absolute() else workspace / resolved
+
+
+def _plan_test_modules(
+    result: Any,
+    tests: Path,
+    manifest_name: str,
+    workspace_relative: str,
+) -> list[tuple[Path, str]]:
+    """Plan every module before writing so a mid-run overwrite refusal never
+    leaves a half-generated suite behind."""
+
     planned: list[tuple[Path, str]] = []
     for target in result.descriptor["spec"]["targets"]:
         runtime = target.get("runtime", {})
@@ -161,7 +197,7 @@ def generate_step_tests(
                 path,
                 _TEMPLATE.format(
                     identity=target["identity"],
-                    manifest=manifest.name,
+                    manifest=manifest_name,
                     entry_point=entry_point,
                     workspace_relative=workspace_relative,
                     valid_cases=_render_cases([valid]),
@@ -171,27 +207,43 @@ def generate_step_tests(
                 ),
             )
         )
-    if not planned:
-        message = "the workspace declares no custom-workload Action targets"
-        raise ScaffoldError(message)
+    return planned
+
+
+def _refuse_existing(planned: list[tuple[Path, str]], force: bool) -> None:
+    """Refuse to replace planned files unless ``force`` was requested."""
+
+    if force:
+        return
     existing = [path for path, _ in planned if path.exists()]
-    if existing and not force:
+    if existing:
         listed = ", ".join(str(path) for path in existing)
         message = f"refusing to overwrite existing file(s): {listed} (use --force)"
         raise ScaffoldError(message)
+
+
+def _write_planned_modules(planned: list[tuple[Path, str]]) -> list[Path]:
+    """Write every planned module and return the written paths."""
+
     written: list[Path] = []
     for path, content in planned:
-        tests.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         written.append(path)
-    conftest = tests / "conftest.py"
-    if not conftest.exists():
-        conftest.write_text(
-            _CONTEST_TEMPLATE.format(workspace_relative=workspace_relative),
-            encoding="utf-8",
-        )
-        written.append(conftest)
     return written
+
+
+def _write_conftest(tests: Path, workspace_relative: str) -> list[Path]:
+    """Write the import shim only when the author has none."""
+
+    conftest = tests / "conftest.py"
+    if conftest.exists():
+        return []
+    conftest.write_text(
+        _CONTEST_TEMPLATE.format(workspace_relative=workspace_relative),
+        encoding="utf-8",
+    )
+    return [conftest]
 
 
 def _slug(name: str) -> str:

@@ -199,6 +199,18 @@ def test_cli_test_init_rejects_a_missing_manifest(
     assert "error:" in capsys.readouterr().err
 
 
+def test_traversal_in_supplied_paths_is_rejected(tmp_path: Path) -> None:
+    """Caller-supplied paths are sanitized before any file is written."""
+
+    workspace = _write_workspace(tmp_path / "gen")
+    with pytest.raises(ScaffoldError, match="path traversal"):
+        generate_step_tests(workspace / ".." / "gen" / "plugin.yaml")
+    with pytest.raises(ScaffoldError, match="path traversal"):
+        generate_step_tests(
+            workspace / "plugin.yaml", tests_dir=Path("../outside")
+        )
+
+
 def test_relative_manifest_paths_do_not_double_the_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
