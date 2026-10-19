@@ -26,7 +26,12 @@ RUN set -- --no-build-package annotated-types \
     && if [ -n "$PIP_FIND_LINKS" ]; then \
         set -- "$@" --offline --no-index --find-links "$PIP_FIND_LINKS"; \
     fi \
-    && UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync --locked --no-dev --no-editable "$@" --package syntara-plugin-runtime # NOSONAR: registry sdists are refused per package; workspace sources must build.
+    && UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
+        --locked \
+        --no-dev \
+        --no-editable \
+        "$@" \
+        --package syntara-plugin-runtime # NOSONAR: registry sdists are refused per package; workspace sources must build.
 
 FROM ${RUNTIME_BASE_IMAGE}
 USER 0

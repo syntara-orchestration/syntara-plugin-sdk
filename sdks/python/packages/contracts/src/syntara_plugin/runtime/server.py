@@ -17,6 +17,7 @@ from .abi import CONTAINER_ABI, FailureCode
 from .adapter import step_registry_from_bindings
 from .bindings import StepBindings
 from .container import (
+    _INCOMPLETE_STEP_MESSAGE,
     ContainerInvocationError,
     StepRegistry,
     _failure_event,
@@ -66,7 +67,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 invocation_id,
                 ContainerInvocationError(
                     FailureCode.OUTCOME_UNKNOWN,
-                    "The plugin step did not complete.",
+                    _INCOMPLETE_STEP_MESSAGE,
                     outcome="unknown",
                 ),
             )

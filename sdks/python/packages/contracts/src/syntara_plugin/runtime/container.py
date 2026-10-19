@@ -31,6 +31,7 @@ _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
 _MAX_STATUS_CODE = 4_294_967_295
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
+_INCOMPLETE_STEP_MESSAGE = "The plugin step did not complete."
 
 # A platform-owned runner can handle any installed step that the control
 # plane has already resolved to that runner. It is a health-advertisement
@@ -169,7 +170,7 @@ class ContainerRemoteError(RuntimeError):
         outcome: str,
         source: Literal["workload", "protocol", "transport"],
     ) -> None:
-        super().__init__("The plugin step did not complete.")
+        super().__init__(_INCOMPLETE_STEP_MESSAGE)
         self.code = code
         self.retryable = retryable
         self.outcome = outcome
@@ -258,7 +259,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 invocation_id,
                 ContainerInvocationError(
                     FailureCode.OUTCOME_UNKNOWN,
-                    "The plugin step did not complete.",
+                    _INCOMPLETE_STEP_MESSAGE,
                     outcome="unknown",
                 ),
             )
@@ -326,7 +327,7 @@ def _terminal_execution_event(
             invocation.invocation_id,
             ContainerInvocationError(
                 FailureCode.OUTCOME_UNKNOWN,
-                "The plugin step did not complete.",
+                _INCOMPLETE_STEP_MESSAGE,
                 outcome="unknown",
             ),
         )
