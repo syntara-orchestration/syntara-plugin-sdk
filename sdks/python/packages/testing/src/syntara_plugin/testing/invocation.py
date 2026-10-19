@@ -138,13 +138,14 @@ class _BoundedHandler:
         self._timeout_seconds = timeout_seconds
 
     def __call__(self, invocation: ContainerInvocation) -> ContainerResult:
-        completed: dict[str, ContainerResult | BaseException] = {}
+        completed: dict[str, ContainerResult] = {}
+        failure: list[BaseException] = []
 
         def run() -> None:
             try:
                 completed["result"] = self._handler(invocation)
             except BaseException as error:  # noqa: BLE001 - re-raised on the worker
-                completed["error"] = error
+                failure.append(error)
 
         worker = threading.Thread(
             target=run, daemon=True, name="syntara-testing-step-handler"
@@ -152,9 +153,9 @@ class _BoundedHandler:
         worker.start()
         worker.join(self._timeout_seconds + self._GRACE_SECONDS)
         if "result" in completed:
-            return completed["result"]  # type: ignore[return-value]
-        if "error" in completed:
-            error = completed["error"]
+            return completed["result"]
+        if failure:
+            error = failure[0]
             if isinstance(error, Exception):
                 raise error
             # SystemExit and KeyboardInterrupt escape the container service's
@@ -269,9 +270,13 @@ def invoke_step_in_container(
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     try:
         client = ContainerClient(channel)
+        # normalize_run_id guarantees a run id; narrow the optional type for
+        # the container request, which requires a str.
+        workflow_run_id = context.workflow_run_id
+        assert workflow_run_id is not None
         invocation = ContainerInvocation(
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id,
+            workflow_run_id=workflow_run_id,
             step_revision_id=binding.descriptor.step_identity,
             inputs=dict(inputs),
             credential_file_paths={},
@@ -281,11 +286,11 @@ def invoke_step_in_container(
         with _counting_run(binding.step) as spy:
             try:
                 result = client.execute(invocation)
-            except ContainerRemoteError as error:
-                return _raised_outcome(spy, error, "container")
-        error = None
+            except ContainerRemoteError as remote_error:
+                return _raised_outcome(spy, remote_error, "container")
+        wrapper_error = None
         if result.error_code:
-            error = ErrorMessage(
+            wrapper_error = ErrorMessage(
                 code=result.error_code,
                 message=result.error_message,
                 retryable=result.retryable,
@@ -295,7 +300,7 @@ def invoke_step_in_container(
             status=result.status_code,
             status_message=result.status_message,
             output=result.output,
-            error=error,
+            error=wrapper_error,
             run_calls=spy.call_count,
             raised=None,
             transport="container",

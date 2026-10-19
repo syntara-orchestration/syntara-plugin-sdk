@@ -17,20 +17,20 @@ def secret_sentinel(prefix: str = "syntara-test-secret-") -> str:
     return f"{prefix}{uuid4().hex}"
 
 
-def _outcome_texts(outcome: StepOutcome) -> list[str]:
+def _outcome_texts(outcome: StepOutcome) -> list[tuple[str, str]]:
     """Collect every caller-visible text an outcome could leak a secret into."""
 
-    texts: list[str] = []
+    texts: list[tuple[str, str]] = []
     if outcome.status_message:
-        texts.append(outcome.status_message)
+        texts.append(("status message", outcome.status_message))
     if outcome.error is not None:
-        texts.append(outcome.error.message)
+        texts.append(("error message", outcome.error.message))
     if outcome.raised is not None:
-        texts.append(repr(outcome.raised))
+        texts.append(("raised exception", repr(outcome.raised)))
     if outcome.output is not None:
-        texts.append(json.dumps(outcome.output, default=str, sort_keys=True))
+        texts.append(("business output", json.dumps(outcome.output, default=str, sort_keys=True)))
     if outcome.raw is not None:
-        texts.append(repr(outcome.raw))
+        texts.append(("raw envelope", repr(outcome.raw)))
     return texts
 
 
@@ -51,21 +51,32 @@ def assert_no_secrets(
     which defaults to WARNING. Use ``with caplog.at_level(logging.INFO):``
     around the step invocation so INFO-level leaks are captured.
 
+    The failure message never repeats the sentinel value: it names the
+    sentinel by position and length and the location it leaked into, so CI
+    output cannot echo the secret through the report itself.
+
     Args:
         value: The outcome to scan, or an arbitrary text to check directly.
         sentinels: The secret values that must not appear.
         caplog: The pytest log-capture fixture when logs should be scanned too.
     """
 
-    texts = [value] if isinstance(value, str) else _outcome_texts(value)
+    texts: list[tuple[str, str]] = (
+        [("supplied text", value)] if isinstance(value, str) else _outcome_texts(value)
+    )
     if caplog is not None:
-        texts.append(caplog.text)
+        texts.append(("captured logs", caplog.text))
+    sentinel_list = list(sentinels)
     leaks = [
-        (sentinel, index)
-        for sentinel in sentinels
-        for index, text in enumerate(texts)
+        (sentinel_index, location)
+        for sentinel_index, sentinel in enumerate(sentinel_list)
+        for location, text in texts
         if sentinel in text
     ]
     if leaks:
-        locations = ", ".join(f"{sentinel!r} in text #{index}" for sentinel, index in leaks)
+        locations = "; ".join(
+            f"sentinel #{sentinel_index} ({len(sentinel_list[sentinel_index])} chars) "
+            f"leaked into the {location}"
+            for sentinel_index, location in leaks
+        )
         pytest.fail(f"secret sentinel leaked into the step outcome or logs: {locations}")

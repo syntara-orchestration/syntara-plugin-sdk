@@ -2,45 +2,69 @@
 
 from __future__ import annotations
 
-from typing import Any
+from syntara_plugin.runtime import FailureCode, StepExecutionError
+from syntara_plugin.runtime.container import ContainerInvocationError, ContainerRemoteError
 
 from .invocation import StepOutcome
 
 
-def _failure_code(outcome: StepOutcome) -> Any:
+def _failure_category(outcome: StepOutcome) -> FailureCode | None:
+    """Map one raised outcome onto the public failure category both paths present.
+
+    The mapping mirrors the runtime's own conversions: a deliberate
+    ``ContainerInvocationError`` keeps its category, an executor output
+    violation becomes an ABI violation on the container path, and any other
+    exception becomes OUTCOME_UNKNOWN, exactly as the container service
+    reports unhandled step failures.
+    """
+
     raised = outcome.raised
-    return getattr(raised, "code", None) if raised is not None else None
+    if raised is None:
+        return None
+    if isinstance(raised, ContainerInvocationError | ContainerRemoteError):
+        return raised.code
+    if isinstance(raised, StepExecutionError):
+        return FailureCode.ABI_VIOLATION
+    return FailureCode.OUTCOME_UNKNOWN
 
 
 def assert_outcomes_equivalent(direct: StepOutcome, container: StepOutcome) -> None:
     """Assert two outcomes of one invocation agree on the public contract.
 
-    Compares success, status, business output, and error envelope. Schema
-    digests are deliberately ignored: installed and provisional digests
-    legitimately differ between the two transports. Executor-level failures are
-    equivalent when both paths report the invocation ended in a raised failure;
-    failure codes are compared when both paths carry one.
+    Compares success, status, status message, business output, and error
+    envelope. Schema digests are deliberately ignored: installed and
+    provisional digests legitimately differ between the two transports. When
+    both paths report a raised failure, the failure categories must match;
+    direct-path exceptions are normalized onto the same category model the
+    container path reports.
     """
 
     if direct.transport != "direct" or container.transport != "container":
         message = (
-            "assert_outcomes_equivalent expects the direct outcome first, then the container "
-            "outcome"
+            "assert_outcomes_equivalent expects the direct outcome first, then the "
+            "container outcome"
         )
         raise AssertionError(message)
     problems: list[str] = []
     if (direct.raised is None) != (container.raised is None):
         problems.append(f"raised: direct={direct.raised!r} container={container.raised!r}")
     if direct.raised is not None and container.raised is not None:
-        direct_code = _failure_code(direct)
-        container_code = _failure_code(container)
-        if direct_code is not None and container_code is not None and direct_code != container_code:
-            problems.append(f"failure code: direct={direct_code} container={container_code}")
+        direct_category = _failure_category(direct)
+        container_category = _failure_category(container)
+        if direct_category != container_category:
+            problems.append(
+                f"failure category: direct={direct_category} container={container_category}"
+            )
     else:
         if direct.ok != container.ok:
             problems.append(f"ok: direct={direct.ok} container={container.ok}")
         if direct.status != container.status:
             problems.append(f"status: direct={direct.status} container={container.status}")
+        if direct.status_message != container.status_message:
+            problems.append(
+                f"status_message: direct={direct.status_message!r} "
+                f"container={container.status_message!r}"
+            )
         if direct.output != container.output:
             problems.append(f"output: direct={direct.output!r} container={container.output!r}")
         if direct.error != container.error:

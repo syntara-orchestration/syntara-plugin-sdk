@@ -21,6 +21,7 @@ from syntara_plugin.testing import (
     HarnessUsageError,
     StepBindingsFactory,
     assert_outcomes_equivalent,
+    entry_point_of,
     invoke_step,
     invoke_step_in_container,
 )
@@ -216,10 +217,81 @@ def test_bind_action_matches_caller_supplied_entry_point_strings(
             entry_point="reexport_helper:GreetActionStep",
         ),
     )
-    binding = StepBindingsFactory().bind_action(
+    factory = StepBindingsFactory()
+    binding = factory.bind_action(
         "reexport_helper:GreetActionStep", workspace=workspace
     )
     assert invoke_step(binding, {"name": "a"}).ok
+    # Both the declared manifest entry point and the implementation's
+    # canonical path must resolve to the same binding.
+    assert factory.resolve("reexport_helper:GreetActionStep").descriptor is binding.descriptor
+    assert factory.resolve(entry_point_of(GreetActionStep)).descriptor is binding.descriptor
+
+
+def test_bind_action_rejects_platform_runner_targets_selected_by_identity(
+    tmp_path: Path,
+) -> None:
+    """An identity selecting a declarative runtime fails with guidance, not KeyError."""
+
+    workspace = tmp_path / "mixed"
+    (workspace / "steps/http-action").mkdir(parents=True)
+    (workspace / "docs").mkdir()
+    (workspace / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "syntara.io/v1alpha1",
+                "kind": "Plugin",
+                "metadata": {
+                    "namespace": "testing",
+                    "name": "mixed",
+                    "version": "0.1.0",
+                    "displayName": "Mixed",
+                    "description": "One platform-runner action.",
+                },
+                "spec": {
+                    "documentation": {"path": "docs/README.md"},
+                    "targets": ["steps/http-action/manifest.yaml"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "steps/http-action/manifest.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "syntara.io/v1alpha1",
+                "kind": "Action",
+                "metadata": {
+                    "name": "http-action",
+                    "displayName": "Http",
+                    "description": "Http.",
+                },
+                "spec": {
+                    "runtime": {
+                        "kind": "platform-runner",
+                        "driver": "http.v1",
+                        "operation": {
+                            "method": "GET",
+                            "path": "/items",
+                            "responseMap": {
+                                "kind": "inline",
+                                "value": {"id": {"from": "/id"}},
+                            },
+                        },
+                    },
+                    "input": {"kind": "inline", "value": {"type": "object"}},
+                    "output": {"kind": "inline", "value": {"type": "object"}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "docs/README.md").write_text("# Mixed\n", encoding="utf-8")
+    factory = StepBindingsFactory()
+    with pytest.raises(HarnessUsageError, match="custom-workload"):
+        factory.bind_action(
+            GreetActionStep, workspace=workspace, identity="testing.mixed.http-action"
+        )
 
 
 def test_bind_task_builds_a_drift_verified_binding() -> None:

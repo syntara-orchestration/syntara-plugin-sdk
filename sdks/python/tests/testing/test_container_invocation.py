@@ -193,6 +193,71 @@ def test_boundary_length_invocation_ids_work_on_both_paths() -> None:
     assert container.output == {"invocation_id": invocation_id}
 
 
+def test_supplied_workflow_run_ids_work_on_both_paths() -> None:
+    """A caller-supplied run id must be presented identically by both paths."""
+
+    class RunInput(BaseModel):
+        value: str = "x"
+
+    class RunOutput(BaseModel):
+        workflow_run_id: str
+
+    class RunTask(TaskStep[RunInput, RunOutput]):
+        def run(self, inputs: RunInput, context: ExecutionContext) -> RunOutput:
+            return RunOutput(workflow_run_id=context.workflow_run_id or "")
+
+    context = build_execution_context(
+        invocation_id="run-id-probe", workflow_run_id="team.aap:run-42"
+    )
+    direct = invoke_step(RunTask(), {}, context=context)
+    container = invoke_step_in_container(RunTask(), {}, context=context)
+    assert_outcomes_equivalent(direct, container)
+    assert container.output == {"workflow_run_id": "team.aap:run-42"}
+
+
+def test_equivalence_compares_failure_categories() -> None:
+    """Raised outcomes must agree on category, not merely both be raised."""
+
+    from syntara_plugin.runtime import FailureCode
+    from syntara_plugin.runtime.container import ContainerRemoteError
+    from syntara_plugin.testing import StepOutcome
+
+    def raised(transport: str, error: BaseException) -> StepOutcome:
+        return StepOutcome(
+            ok=False, status=None, status_message="", output=None, error=None,
+            run_calls=1, raised=error, transport=transport, raw=None,  # type: ignore[arg-type]
+        )
+
+    crash = RuntimeError("the business logic crashed")
+    timeout = ContainerRemoteError(
+        FailureCode.TIMEOUT, retryable=True, outcome="unknown", source="transport"
+    )
+    unknown = ContainerRemoteError(
+        FailureCode.OUTCOME_UNKNOWN, retryable=False, outcome="unknown", source="workload"
+    )
+    # A direct business crash maps to OUTCOME_UNKNOWN, so an unrelated TIMEOUT
+    # on the container path is a genuine inequivalence.
+    with pytest.raises(AssertionError, match="failure category"):
+        assert_outcomes_equivalent(raised("direct", crash), raised("container", timeout))
+    assert_outcomes_equivalent(raised("direct", crash), raised("container", unknown))
+
+
+def test_equivalence_compares_status_messages() -> None:
+    from syntara_plugin.testing import StepOutcome
+
+    def success(transport: str, status_message: str) -> StepOutcome:
+        return StepOutcome(
+            ok=True, status=0, status_message=status_message, output={"value": "x"},
+            error=None, run_calls=1, raised=None, transport=transport, raw=None,  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(AssertionError, match="status_message"):
+        assert_outcomes_equivalent(
+            success("direct", "Completed"), success("container", "Something else")
+        )
+    assert_outcomes_equivalent(success("direct", "Completed"), success("container", "Completed"))
+
+
 def test_the_same_invocation_id_can_be_reused_sequentially() -> None:
     context = build_execution_context(invocation_id="reused-id")
     first = invoke_step_in_container(ReferenceTaskStep(), {"title": "a"}, context=context)

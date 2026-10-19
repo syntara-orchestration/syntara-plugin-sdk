@@ -2,7 +2,6 @@
 
 - Status: Accepted
 - Date: 2026-10-19
-- Story: [AAP-95456](https://redhat.atlassian.net/browse/AAP-95456)
 
 ## Context
 

@@ -15,6 +15,7 @@ from .errors import HarnessUsageError
 # of them; the harness derives ``{invocation_id}-run`` as the workflow-run id,
 # so the accepted maximum leaves room for that four-character suffix.
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,252}$")
+_RUN_ID = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 
 
 def build_execution_context(
@@ -36,7 +37,10 @@ def build_execution_context(
             when omitted. Must be a Syntara identity (letters, digits,
             ``. _ : -``, at most 252 characters) so the context and its
             derived run id also work on the container path.
-        workflow_run_id: Optional workflow-run correlation identifier.
+        workflow_run_id: Optional workflow-run correlation identifier; when
+            supplied it must be a Syntara identity (letters, digits,
+            ``. _ : -``, at most 256 characters) so both execution paths
+            accept it.
         runtime_context: Optional non-secret runtime data surfaced to the step.
         cancelled: Pre-set the cooperative cancellation signal when true.
     """
@@ -46,6 +50,12 @@ def build_execution_context(
             "invocation_id must be a Syntara identity (letters, digits, '. _ : -', "
             "at most 252 characters, leaving room for the derived run id) so both "
             "execution paths accept it"
+        )
+        raise HarnessUsageError(message)
+    if workflow_run_id is not None and not _RUN_ID.fullmatch(workflow_run_id):
+        message = (
+            "workflow_run_id must be a Syntara identity (letters, digits, '. _ : -', "
+            "at most 256 characters) so both execution paths accept it"
         )
         raise HarnessUsageError(message)
     context = ExecutionContext(

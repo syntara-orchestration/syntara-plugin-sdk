@@ -121,5 +121,8 @@ def chain_steps(
                 tuple(outcomes), None, index, binding.descriptor.step_identity
             )
         if index < len(resolved_seams):
+            # A successful wrapper always carries a business output; narrow
+            # the optional type for the seam, which requires a Mapping.
+            assert outcome.output is not None
             current = resolved_seams[index](outcome.output)
     return ChainOutcome(tuple(outcomes), outcomes[-1].output, None, None)

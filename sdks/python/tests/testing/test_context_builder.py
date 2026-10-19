@@ -55,3 +55,12 @@ def test_invocation_ids_leave_room_for_the_derived_run_id() -> None:
         build_execution_context(invocation_id="x" * 253)
     context = build_execution_context(invocation_id="x" * 252)
     assert context.invocation_id == "x" * 252
+
+
+def test_invalid_workflow_run_ids_are_rejected_with_guidance() -> None:
+    from syntara_plugin.testing import HarnessUsageError
+
+    with pytest.raises(HarnessUsageError, match="workflow_run_id"):
+        build_execution_context(workflow_run_id="not a valid id")
+    with pytest.raises(HarnessUsageError, match="workflow_run_id"):
+        build_execution_context(workflow_run_id="x" * 300)

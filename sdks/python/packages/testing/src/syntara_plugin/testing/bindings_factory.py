@@ -204,6 +204,11 @@ class StepBindingsFactory:
         )
         report.raise_for_drift(strict=self._strict)
         self._register(descriptor, step_instance)
+        declared = str(target["runtime"]["entryPoint"])
+        if declared != entry_point_of(type(step_instance)):
+            # Re-exported entry points resolve by the string the manifest
+            # declares, not only by the implementation's canonical path.
+            self._entry_points[declared] = descriptor.step_identity
         return candidate
 
     def _register(self, descriptor: StepDescriptor, step_instance: BaseStep[Any, Any]) -> None:
@@ -244,6 +249,14 @@ class StepBindingsFactory:
         target = matches[0]
         if target.get("kind") != "Action":
             message = f"target {target.get('identity')!r} is not an Action"
+            raise HarnessUsageError(message)
+        runtime_kind = target.get("runtime", {}).get("kind")
+        if runtime_kind != "custom-workload":
+            message = (
+                f"target {target.get('identity')!r} uses the {runtime_kind!r} runtime; "
+                "only custom-workload Actions bind Python implementations "
+                "(platform-runner targets are declarative manifests)"
+            )
             raise HarnessUsageError(message)
         return target
 

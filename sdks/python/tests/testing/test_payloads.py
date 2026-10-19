@@ -90,6 +90,17 @@ def test_assert_no_secrets_fails_when_output_contains_the_sentinel() -> None:
         assert_no_secrets(outcome, [token])
 
 
+def test_leak_report_does_not_echo_the_sentinel_value() -> None:
+    token = secret_sentinel()
+    outcome = invoke_step(ReferenceTaskStep(), {"title": token})
+    with pytest.raises(pytest.fail.Exception) as raised:
+        assert_no_secrets(outcome, [token])
+    message = str(raised.value)
+    assert token not in message
+    assert "sentinel #0" in message
+    assert "business output" in message
+
+
 def test_assert_no_secrets_fails_when_the_error_message_contains_the_sentinel() -> None:
     token = secret_sentinel()
 
