@@ -25,6 +25,15 @@ def test_workflow_composes_operations_inside_run(
     }
 
 
+def test_invalid_input_blocks_the_hook(mock_execution_context, step_bindings) -> None:
+    binding = step_bindings.bind(ComposeRemediationWorkflow)
+    outcome = invoke_step(
+        binding, {"records": "not-a-list"}, context=mock_execution_context()
+    )
+    assert not outcome.ok
+    assert outcome.run_calls == 0
+
+
 def test_workflow_direct_and_container_paths_are_equivalent(
     mock_execution_context, step_bindings
 ) -> None:

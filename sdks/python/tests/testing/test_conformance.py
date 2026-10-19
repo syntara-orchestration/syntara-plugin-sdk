@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from syntara_plugin.runtime import StepBindings, StepDescriptor
+from pydantic import BaseModel
+from syntara_plugin.runtime import (
+    ExecutionContext,
+    StepBindings,
+    StepDescriptor,
+    TaskStep,
+)
 from syntara_plugin.testing import (
     ConformanceReport,
     check_invalid_blocks_hook,
@@ -72,3 +78,31 @@ def test_empty_conformance_run_passes_without_cases() -> None:
     assert ConformanceReport().passed
     report = check_step_conformance(_binding().binding("testing.conformance.reference"))
     assert report.passed
+
+
+def test_conformance_without_context_compares_identical_contexts() -> None:
+    """A step echoing invocation identifiers must not false-fail equivalence."""
+
+    class EchoInput(BaseModel):
+        value: str = "x"
+
+    class EchoOutput(BaseModel):
+        invocation_id: str
+        workflow_run_id: str
+
+    class EchoContextTask(TaskStep[EchoInput, EchoOutput]):
+        def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+            return EchoOutput(
+                invocation_id=context.invocation_id,
+                workflow_run_id=context.workflow_run_id or "",
+            )
+
+    bindings = StepBindings()
+    step = EchoContextTask()
+    bindings.bind(StepDescriptor.for_step("testing.conformance.echo", step), step)
+    report = check_step_conformance(
+        bindings.binding("testing.conformance.echo"),
+        valid_cases=[{"value": "x"}],
+        invalid_cases=[{"value": 12345}],
+    )
+    assert report.passed, report.failures

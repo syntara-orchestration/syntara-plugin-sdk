@@ -7,14 +7,23 @@ business hook once, every invalid case blocks it, and the direct and
 container-adapter paths yield equivalent outcomes. Generated code imports the
 ``syntara-plugin-testing`` package; this module never imports it, so the sdk
 package keeps no dependency on the testing package.
+
+The scaffolded valid case is validated against the compiled input schema
+before it is emitted. When no placeholder can satisfy a declared constraint
+(for example a ``pattern``), the generated valid tests carry a skip marker and
+a TODO listing the schema errors, so scaffolding never produces a suite that
+fails on first run.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from jsonschema import Draft202012Validator, FormatChecker
 
 from .authoring import BuildRequest, compile_workspace
 
@@ -31,6 +40,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from syntara_plugin.testing import (
     assert_outcomes_equivalent,
     invoke_step,
@@ -38,7 +49,7 @@ from syntara_plugin.testing import (
 )
 
 ENTRY_POINT = "{entry_point}"
-WORKSPACE = Path(__file__).resolve().parents[1]
+WORKSPACE = (Path(__file__).resolve().parent / {workspace_relative!r}).resolve()
 
 VALID_CASES = [
 {valid_cases}
@@ -49,14 +60,14 @@ INVALID_CASES = [
 ]
 
 
-def test_valid_input_reaches_the_hook_once(mock_execution_context, step_bindings):
+{valid_guard}def test_valid_input_reaches_the_hook_once(mock_execution_context, step_bindings):
     binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
     outcome = invoke_step(binding, VALID_CASES[0], context=mock_execution_context())
     assert outcome.ok, outcome.error
     assert outcome.run_calls == 1
 
 
-def test_invalid_input_blocks_the_hook(mock_execution_context, step_bindings):
+{invalid_guard}def test_invalid_input_blocks_the_hook(mock_execution_context, step_bindings):
     binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
     for inputs in INVALID_CASES:
         outcome = invoke_step(binding, inputs, context=mock_execution_context())
@@ -64,7 +75,7 @@ def test_invalid_input_blocks_the_hook(mock_execution_context, step_bindings):
         assert outcome.run_calls == 0, inputs
 
 
-def test_direct_and_container_paths_are_equivalent(mock_execution_context, step_bindings):
+{valid_guard}def test_direct_and_container_paths_are_equivalent(mock_execution_context, step_bindings):
     binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
     context = mock_execution_context(invocation_id="generated-equivalence")
     direct = invoke_step(binding, VALID_CASES[0], context=context)
@@ -85,7 +96,19 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str((Path(__file__).resolve().parent / {workspace_relative!r}).resolve()))
+'''
+
+_SKIP_DECORATOR = '''# TODO: replace VALID_CASES with a real payload; the scaffolded placeholder
+# does not satisfy the declared input schema. Schema validation reported:
+{comment_lines}
+@pytest.mark.skip(reason="the scaffolded placeholder does not satisfy the input schema")
+'''
+
+_SKIP_NO_INVALID = '''# TODO: no invalid case could be derived from the declared input schema
+# (nothing is required, enum-constrained, or singly typed); add
+# business-specific invalid payloads to INVALID_CASES.
+@pytest.mark.skip(reason="no invalid case could be derived from the input schema")
 '''
 
 
@@ -117,35 +140,54 @@ def generate_step_tests(
     )
     workspace = manifest.parent
     tests = tests_dir or workspace / "tests"
-    written: list[Path] = []
+    if not tests.is_absolute():
+        tests = workspace / tests
+    workspace_relative = os.path.relpath(workspace, tests)
+    # Plan every module first so a mid-run overwrite refusal never leaves a
+    # half-generated suite behind.
+    planned: list[tuple[Path, str]] = []
     for target in result.descriptor["spec"]["targets"]:
         runtime = target.get("runtime", {})
         if target.get("kind") != "Action" or runtime.get("kind") != "custom-workload":
             continue
         entry_point = str(runtime["entryPoint"])
-        valid, invalid = _cases_from_schema(target["input"])
-        content = _TEMPLATE.format(
-            identity=target["identity"],
-            manifest=manifest.name,
-            entry_point=entry_point,
-            valid_cases=_render_cases(valid),
-            invalid_cases=_render_cases(invalid),
-        )
-        tests.mkdir(parents=True, exist_ok=True)
+        valid, invalid, valid_errors = _cases_from_schema(target["input"])
         path = tests / f"test_{_slug(str(target['metadata']['name']))}.py"
-        if path.exists() and not force:
-            message = f"refusing to overwrite existing file: {path} (use --force)"
-            raise ScaffoldError(message)
-        path.write_text(content, encoding="utf-8")
-        written.append(path)
-    if written:
-        conftest = tests / "conftest.py"
-        if not conftest.exists():
-            conftest.write_text(_CONTEST_TEMPLATE, encoding="utf-8")
-            written.append(conftest)
-    if not written:
+        planned.append(
+            (
+                path,
+                _TEMPLATE.format(
+                    identity=target["identity"],
+                    manifest=manifest.name,
+                    entry_point=entry_point,
+                    workspace_relative=workspace_relative,
+                    valid_cases=_render_cases([valid]),
+                    invalid_cases=_render_cases(invalid),
+                    valid_guard=_skip_guard(valid_errors),
+                    invalid_guard="" if invalid else _SKIP_NO_INVALID,
+                ),
+            )
+        )
+    if not planned:
         message = "the workspace declares no custom-workload Action targets"
         raise ScaffoldError(message)
+    existing = [path for path, _ in planned if path.exists()]
+    if existing and not force:
+        listed = ", ".join(str(path) for path in existing)
+        message = f"refusing to overwrite existing file(s): {listed} (use --force)"
+        raise ScaffoldError(message)
+    written: list[Path] = []
+    for path, content in planned:
+        tests.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        written.append(path)
+    conftest = tests / "conftest.py"
+    if not conftest.exists():
+        conftest.write_text(
+            _CONTEST_TEMPLATE.format(workspace_relative=workspace_relative),
+            encoding="utf-8",
+        )
+        written.append(conftest)
     return written
 
 
@@ -157,13 +199,30 @@ def _slug(name: str) -> str:
 
 
 def _render_cases(cases: list[dict[str, Any]]) -> str:
-    return "\n".join(f"    {case!r}," for case in cases)
+    rendered = "\n".join(f"    {case!r}," for case in cases)
+    return rendered or "    {},"
+
+
+def _skip_guard(valid_errors: list[str]) -> str:
+    """Render the skip decorator block when the placeholder fails the schema."""
+
+    if not valid_errors:
+        return ""
+    comment_lines = "\n".join(f"#   {error}" for error in valid_errors)
+    return _SKIP_DECORATOR.format(comment_lines=comment_lines)
 
 
 def _cases_from_schema(
     schema: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Derive one valid case and bounded invalid cases from an input schema."""
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    """Derive one valid case and bounded invalid cases from an input schema.
+
+    Returns the valid case, the invalid cases, and the schema-validation errors
+    for the valid case (empty when the scaffolded placeholder satisfies the
+    declared constraints). Derived invalid cases that the schema actually
+    accepts (for example a wrong-typed value under a union type) are dropped,
+    so the generated invalid test only iterates cases that genuinely fail.
+    """
 
     properties = schema.get("properties", {})
     if not isinstance(properties, Mapping):
@@ -172,6 +231,7 @@ def _cases_from_schema(
     valid = {
         field: _placeholder(field, properties.get(field, {})) for field in required
     }
+    valid_errors = _validate_case(schema, valid)
     invalid: list[dict[str, Any]] = []
     for field in required:
         case = {key: value for key, value in valid.items() if key != field}
@@ -187,10 +247,43 @@ def _cases_from_schema(
                 invalid.append({**valid, field: wrong})
         if len(invalid) >= _MAX_INVALID_CASES:
             break
-    return [valid], invalid[:_MAX_INVALID_CASES]
+    kept = [case for case in invalid[:_MAX_INVALID_CASES] if _validate_case(schema, case)]
+    return valid, kept, valid_errors
+
+
+def _validate_case(schema: Mapping[str, Any], case: Mapping[str, Any]) -> list[str]:
+    """Return the schema-validation errors for one scaffolded case."""
+
+    if not isinstance(schema, Mapping) or not schema:
+        return []
+    try:
+        validator = Draft202012Validator(schema, format_checker=FormatChecker())
+        errors = sorted(validator.iter_errors(case), key=lambda error: list(error.path))
+    except Exception:  # noqa: BLE001 - an unvalidatable schema must not break scaffolding
+        return []
+    return [f"{list(error.path)}: {error.message}" for error in errors]
 
 
 _UNSET = object()
+
+_FORMAT_PLACEHOLDERS: dict[str, str] = {
+    "date-time": "2026-01-01T12:00:00Z",
+    "date": "2026-01-01",
+    "time": "12:00:00Z",
+    "duration": "P1D",
+    "uuid": "123e4567-e89b-42d3-a456-426614174000",
+    "email": "example@example.test",
+    "idn-email": "example@example.test",
+    "uri": "https://example.test/",
+    "uri-reference": "/example",
+    "iri": "https://example.test/",
+    "hostname": "example.test",
+    "idn-hostname": "example.test",
+    "ipv4": "192.0.2.1",
+    "ipv6": "2001:db8::1",
+    "json-pointer": "/example",
+    "regex": "example",
+}
 
 
 def _placeholder(field: str, property_schema: Mapping[str, Any]) -> Any:
@@ -200,6 +293,9 @@ def _placeholder(field: str, property_schema: Mapping[str, Any]) -> Any:
         return property_schema["default"]
     if "enum" in property_schema and isinstance(property_schema["enum"], list):
         return property_schema["enum"][0]
+    declared_format = property_schema.get("format")
+    if isinstance(declared_format, str) and declared_format in _FORMAT_PLACEHOLDERS:
+        return _fit_bounds(_FORMAT_PLACEHOLDERS[declared_format], property_schema)
     schema_type = property_schema.get("type")
     if schema_type == "integer":
         return 1
@@ -211,7 +307,21 @@ def _placeholder(field: str, property_schema: Mapping[str, Any]) -> Any:
         return []
     if schema_type == "object":
         return {}
-    return f"example-{field}"
+    return _fit_bounds(f"example-{field}", property_schema)
+
+
+def _fit_bounds(value: str, property_schema: Mapping[str, Any]) -> str:
+    """Fit one string placeholder inside declared length bounds when possible."""
+
+    minimum = property_schema.get("minLength")
+    maximum = property_schema.get("maxLength")
+    if not isinstance(minimum, int) and not isinstance(maximum, int):
+        return value
+    if isinstance(maximum, int) and len(value) > maximum:
+        value = value[:maximum]
+    if isinstance(minimum, int) and len(value) < minimum:
+        value = value + "x" * (minimum - len(value))
+    return value
 
 
 def _non_enum_value(field: str, property_schema: Mapping[str, Any]) -> str:

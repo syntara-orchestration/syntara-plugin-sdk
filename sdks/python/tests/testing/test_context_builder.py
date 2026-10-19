@@ -35,3 +35,12 @@ def test_cancelled_presets_the_cancellation_signal() -> None:
 def test_empty_invocation_id_is_rejected_by_the_context_contract() -> None:
     with pytest.raises(ValueError, match="invocation_id"):
         build_execution_context(invocation_id="")
+
+
+def test_non_identity_invocation_ids_are_rejected_with_guidance() -> None:
+    from syntara_plugin.testing import HarnessUsageError
+
+    with pytest.raises(HarnessUsageError, match="Syntara identity"):
+        build_execution_context(invocation_id="not a valid id")
+    with pytest.raises(HarnessUsageError, match="Syntara identity"):
+        build_execution_context(invocation_id="x" * 257)

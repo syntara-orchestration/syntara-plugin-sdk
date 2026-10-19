@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from syntara_plugin.runtime import FailureCode, StepBinding
 
+from .context_builder import build_execution_context
 from .equivalence import assert_outcomes_equivalent
 from .invocation import invoke_step, invoke_step_in_container
 from .payloads import Expectation, PayloadCase
@@ -107,13 +108,22 @@ def check_paths_equivalent(
     *,
     context: ExecutionContext | None = None,
 ) -> ConformanceReport:
-    """Verify the direct and container-adapter paths yield equivalent outcomes."""
+    """Verify the direct and container-adapter paths yield equivalent outcomes.
+
+    Both paths execute each case under one shared context: when ``context`` is
+    omitted, a fresh context is built per case and passed to both invocations,
+    so steps whose output correlates with the invocation identifiers compare
+    the same identifiers on both paths.
+    """
 
     failures: list[ConformanceFailure] = []
     for index, case in enumerate(cases):
         payload = _normalize(case, index)
-        direct = invoke_step(binding, payload.inputs, context=context)
-        container = invoke_step_in_container(binding, payload.inputs, context=context)
+        case_context = context or build_execution_context()
+        direct = invoke_step(binding, payload.inputs, context=case_context)
+        container = invoke_step_in_container(
+            binding, payload.inputs, context=case_context
+        )
         try:
             assert_outcomes_equivalent(direct, container)
         except AssertionError as error:
@@ -136,7 +146,8 @@ def check_step_conformance(
     Checks that invalid input blocks the business hook, valid input reaches it
     exactly once, and (unless ``include_equivalence=False``) that the direct
     and container-adapter SDK paths yield equivalent outcomes for the valid
-    cases.
+    cases. A run with no cases passes vacuously; always pass at least one
+    valid and one invalid case for a meaningful report.
     """
 
     reports = [

@@ -16,6 +16,8 @@ from syntara_plugin.sdk import (
     compile_workspace,
 )
 
+from .errors import HarnessUsageError
+
 
 class ManifestValidationError(ValueError):
     """Raised when a manifest document fails canonical schema validation."""
@@ -27,10 +29,42 @@ class ManifestValidationError(ValueError):
         super().__init__(f"{kind} manifest failed validation: {details}")
 
 
+def _resolve_kind(kind: str) -> str:
+    """Normalize one declared or explicit kind to a contract kind name.
+
+    Manifest kinds are CamelCase (``CredentialRecipe``, ``IntegrationType``)
+    while contract kinds are snake_case (``credential_recipe``, ``integration``);
+    both spellings are accepted.
+    """
+
+    lowered = kind.lower()
+    return _KIND_ALIASES.get(lowered, lowered)
+
+
+_KIND_ALIASES = {
+    "action": "action",
+    "trigger": "trigger",
+    "plugin": "plugin",
+    "provider": "provider",
+    "runtime": "runtime",
+    "credentialrecipe": "credential_recipe",
+    "integrationtype": "integration",
+    "catalogindex": "catalog_index",
+    "catalogsource": "catalog_source",
+    "catalogsourcestatus": "catalog_source_status",
+    "httpoperation": "http_mapping",
+    "httprunnercontext": "http_runner_context",
+    "installedidentity": "installed_identity",
+    "pluginbuildsettings": "plugin_build_settings",
+    "triggerdriver": "trigger_driver",
+    "triggereventmapping": "trigger_event_mapping",
+}
+
+
 def _inferred_kind(document: Mapping[str, Any]) -> str:
     declared = document.get("kind")
     if isinstance(declared, str) and declared:
-        return declared.lower()
+        return _resolve_kind(declared)
     message = "kind could not be inferred; pass kind= explicitly, for example kind='action'"
     raise ValueError(message)
 
@@ -57,8 +91,16 @@ class ManifestValidator:
         """Return the diagnostics for one document; empty when valid."""
 
         active = bundle or self._bundle
-        resolved = kind or _inferred_kind(document)
-        return list(validate_document(active, resolved, document))
+        resolved = _resolve_kind(kind) if kind is not None else _inferred_kind(document)
+        try:
+            return list(validate_document(active, resolved, document))
+        except KeyError as error:
+            message = (
+                f"kind {resolved!r} is not covered by the active bundle; kinds owned by "
+                "step-type repositories need their canonical bundle supplied with "
+                "bundle= (for example a Task or Workflow owner bundle)"
+            )
+            raise HarnessUsageError(message) from error
 
     def __call__(
         self,
@@ -71,7 +113,7 @@ class ManifestValidator:
 
         diagnostics = self.check(document, kind=kind, bundle=bundle)
         if diagnostics:
-            resolved = kind or _inferred_kind(document)
+            resolved = _resolve_kind(kind) if kind is not None else _inferred_kind(document)
             raise ManifestValidationError(resolved, diagnostics)
 
 

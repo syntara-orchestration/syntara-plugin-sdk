@@ -70,15 +70,22 @@ references, with `ReferenceTaskStep`, `FailingReferenceStep`, and
 `schema_violating_binding()` as the matching stand-ins.
 
 ```python
+import logging
+
 from syntara_plugin.testing import secret_sentinel, assert_no_secrets
 
 token = secret_sentinel()
-outcome = invoke_step(binding, {"title": "x", "api_token": token}, context=ctx)
+with caplog.at_level(logging.INFO):
+    outcome = invoke_step(binding, {"title": "x", "api_token": token}, context=ctx)
 assert_no_secrets(outcome, [token], caplog=caplog)
 ```
 
 `assert_no_secrets` scans the status message, error message, raised exception,
-serialized output, raw envelope, and the pytest log capture.
+serialized output, raw envelope, and the pytest log capture. When scanning
+logs, wrap the invocation in `caplog.at_level(logging.INFO)` (or higher):
+pytest only captures records that pass the root logger's effective level,
+which defaults to WARNING, and INFO is exactly where a chatty step leaks
+credentials.
 
 ## Conformance in one call
 

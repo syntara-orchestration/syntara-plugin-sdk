@@ -13,6 +13,7 @@ from syntara_plugin.runtime import (
     ActionStep,
     ExecutionContext,
     SchemaDriftError,
+    StepBindingError,
     StepTaxonomy,
     TaskStep,
     TriggerStep,
@@ -74,12 +75,13 @@ def _action_manifest(
     input_schema: Mapping[str, Any],
     output_schema: Mapping[str, Any],
     entry_point: str = ENTRY_POINT,
+    name: str = "greet",
 ) -> dict[str, Any]:
     return {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Action",
         "metadata": {
-            "name": "greet",
+            "name": name,
             "displayName": "Greet",
             "description": "Greets one person.",
         },
@@ -129,6 +131,96 @@ def _matching_workspace(tmp_path: Path) -> Path:
         tmp_path,
         _action_manifest(GreetInput.model_json_schema(), GreetOutput.model_json_schema()),
     )
+
+
+def _two_action_workspace(tmp_path: Path) -> Path:
+    workspace = tmp_path / "two-actions"
+    (workspace / "steps/greet").mkdir(parents=True)
+    (workspace / "steps/wave").mkdir(parents=True)
+    (workspace / "docs").mkdir()
+    (workspace / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "syntara.io/v1alpha1",
+                "kind": "Plugin",
+                "metadata": {
+                    "namespace": "testing",
+                    "name": "two-actions",
+                    "version": "0.1.0",
+                    "displayName": "Two actions",
+                    "description": "Two custom-workload actions.",
+                },
+                "spec": {
+                    "documentation": {"path": "docs/README.md"},
+                    "workload": {"image": "two-actions-workload"},
+                    "targets": ["steps/greet/manifest.yaml", "steps/wave/manifest.yaml"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "steps/greet/manifest.yaml").write_text(
+        yaml.safe_dump(
+            _action_manifest(GreetInput.model_json_schema(), GreetOutput.model_json_schema())
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "steps/wave/manifest.yaml").write_text(
+        yaml.safe_dump(
+            _action_manifest(
+                GreetInput.model_json_schema(),
+                GreetOutput.model_json_schema(),
+                entry_point=f"{__name__}:WaveActionStep",
+                name="wave",
+            )
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "docs/README.md").write_text("# Two actions\n", encoding="utf-8")
+    return workspace
+
+
+class WaveActionStep(ActionStep[GreetInput, GreetOutput]):
+    def run(self, inputs: GreetInput, context: ExecutionContext) -> GreetOutput:
+        return GreetOutput(message=f"wave {inputs.name}")
+
+
+def test_bind_action_supports_multi_action_workspaces(tmp_path: Path) -> None:
+    """Each call validates only its own target, so siblings never block it."""
+
+    workspace = _two_action_workspace(tmp_path)
+    factory = StepBindingsFactory()
+    first = factory.bind_action(GreetActionStep, workspace=workspace)
+    second = factory.bind_action(WaveActionStep, workspace=workspace)
+    assert first.descriptor.step_identity == "testing.two-actions.greet"
+    assert second.descriptor.step_identity == "testing.two-actions.wave"
+    assert invoke_step(first, {"name": "a"}).ok
+    assert invoke_step(second, {"name": "b"}).ok
+
+
+def test_bind_action_matches_caller_supplied_entry_point_strings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-export entry point matches the manifest as written."""
+
+    import sys
+    import types
+
+    reexport = types.ModuleType("reexport_helper")
+    reexport.GreetActionStep = GreetActionStep
+    monkeypatch.setitem(sys.modules, "reexport_helper", reexport)
+    workspace = _workspace(
+        tmp_path,
+        _action_manifest(
+            GreetInput.model_json_schema(),
+            GreetOutput.model_json_schema(),
+            entry_point="reexport_helper:GreetActionStep",
+        ),
+    )
+    binding = StepBindingsFactory().bind_action(
+        "reexport_helper:GreetActionStep", workspace=workspace
+    )
+    assert invoke_step(binding, {"name": "a"}).ok
 
 
 def test_bind_task_builds_a_drift_verified_binding() -> None:
@@ -219,8 +311,20 @@ def test_bind_action_fails_on_schema_drift(tmp_path: Path) -> None:
     workspace = _workspace(
         tmp_path, _action_manifest(drifted_input, GreetOutput.model_json_schema())
     )
+    factory = StepBindingsFactory()
     with pytest.raises(SchemaDriftError):
-        StepBindingsFactory().bind_action(GreetActionStep, workspace=workspace)
+        factory.bind_action(GreetActionStep, workspace=workspace)
+    # A failed drift check must not leave an unverified binding resolvable.
+    assert factory.step_identities == ()
+    with pytest.raises(StepBindingError, match="not bound"):
+        factory.resolve(IDENTITY)
+
+
+def test_resolve_accepts_identities_containing_colons() -> None:
+    factory = StepBindingsFactory()
+    identity = "testing.greet-plugin:qualified-action"
+    binding = factory.bind(NormalizeTask, identity=identity)
+    assert factory.resolve(identity).descriptor is binding.descriptor
 
 
 def test_bind_action_fails_on_entry_point_drift(tmp_path: Path) -> None:
@@ -235,9 +339,7 @@ def test_bind_action_fails_on_entry_point_drift(tmp_path: Path) -> None:
     with pytest.raises(SchemaDriftError) as raised:
         StepBindingsFactory().bind_action(GreetActionStep, workspace=workspace, identity=IDENTITY)
     assert any(
-        issue.code == "ENTRY_POINT_MISMATCH"
-        for report in raised.value.report
-        for issue in report.issues
+        issue.code == "ENTRY_POINT_MISMATCH" for issue in raised.value.report.issues
     )
 
 

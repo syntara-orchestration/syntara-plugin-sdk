@@ -45,7 +45,7 @@ OUTPUT_SCHEMA = {
 }
 
 
-def _write_workspace(root: Path) -> Path:
+def _write_workspace(root: Path, *, input_schema: dict | None = None) -> Path:
     """Write one compilable workspace whose Action has a real importable step."""
 
     (root / "steps/create").mkdir(parents=True, exist_ok=True)
@@ -83,7 +83,7 @@ spec:
     entryPoint: gen_pkg.steps:CreateStep
   input:
     kind: inline
-    value: {INPUT_SCHEMA}
+    value: {input_schema or INPUT_SCHEMA}
   output:
     kind: inline
     value: {OUTPUT_SCHEMA}
@@ -204,3 +204,143 @@ def test_generated_tests_pass_in_a_fresh_project(pytester: pytest.Pytester) -> N
     generate_step_tests(pytester.path / "plugin.yaml")
     result = pytester.runpytest_subprocess("tests")
     result.assert_outcomes(passed=3)
+
+
+def test_generated_tests_pass_from_a_nested_tests_dir(
+    pytester: pytest.Pytester,
+) -> None:
+    _write_workspace(pytester.path)
+    generate_step_tests(pytester.path / "plugin.yaml", tests_dir=pytester.path / "tests/unit")
+    result = pytester.runpytest_subprocess("tests/unit")
+    result.assert_outcomes(passed=3)
+
+
+def test_pattern_constrained_fields_skip_with_a_todo(tmp_path: Path) -> None:
+    workspace = _write_workspace(
+        tmp_path / "gen",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "pattern": "^[A-Z]{3}-[0-9]{4}$"},
+            },
+            "required": ["title"],
+        },
+    )
+    generate_step_tests(workspace / "plugin.yaml")
+    content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
+    assert "@pytest.mark.skip" in content
+    assert "TODO: replace VALID_CASES" in content
+    assert "does not match" in content
+
+
+def test_format_constrained_fields_get_valid_placeholders(tmp_path: Path) -> None:
+    workspace = _write_workspace(
+        tmp_path / "gen",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "format": "date-time"},
+            },
+            "required": ["title"],
+        },
+    )
+    generate_step_tests(workspace / "plugin.yaml")
+    content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
+    assert "@pytest.mark.skip" not in content
+    assert "'title': '2026-01-01T12:00:00Z'" in content
+
+
+def test_union_typed_fields_skip_valid_and_drop_accepted_wrong_types(
+    tmp_path: Path,
+) -> None:
+    workspace = _write_workspace(
+        tmp_path / "gen",
+        input_schema={
+            "type": "object",
+            "properties": {"count": {"type": ["integer", "null"]}},
+            "required": ["count"],
+        },
+    )
+    generate_step_tests(workspace / "plugin.yaml")
+    content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
+    # The placeholder cannot satisfy the union, so the valid tests skip.
+    assert "@pytest.mark.skip" in content
+    # A wrong-typed value the union actually accepts is dropped rather than
+    # generating an invalid case that fails the generated test.
+    assert "'count': 12345" not in content
+
+
+def test_propertyless_schemas_mark_the_invalid_test_as_underived(
+    tmp_path: Path,
+) -> None:
+    workspace = _write_workspace(
+        tmp_path / "gen", input_schema={"type": "object"}
+    )
+    generate_step_tests(workspace / "plugin.yaml")
+    content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
+    assert "no invalid case could be derived" in content
+    assert "INVALID_CASES = [\n    {},\n]" in content
+
+
+def test_mid_run_refusal_leaves_no_partial_output(tmp_path: Path) -> None:
+    workspace = _write_workspace(tmp_path / "gen")
+    (workspace / "steps/wave").mkdir()
+    (workspace / "steps/wave/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: wave
+  displayName: Wave
+  description: Waves.
+spec:
+  runtime:
+    kind: custom-workload
+    entryPoint: gen_pkg.steps:CreateStep
+  input:
+    kind: inline
+    value: {INPUT_SCHEMA}
+  output:
+    kind: inline
+    value: {OUTPUT_SCHEMA}
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    plugin = workspace / "plugin.yaml"
+    plugin.write_text(
+        plugin.read_text(encoding="utf-8").replace(
+            "    - steps/create/manifest.yaml\n",
+            "    - steps/create/manifest.yaml\n    - steps/wave/manifest.yaml\n",
+        ),
+        encoding="utf-8",
+    )
+    # The second target's file already exists; the refusal must fire before
+    # the first target's file is written.
+    (workspace / "tests").mkdir()
+    (workspace / "tests/test_wave.py").write_text("# existing\n", encoding="utf-8")
+    with pytest.raises(ScaffoldError, match="refusing to overwrite"):
+        generate_step_tests(workspace / "plugin.yaml")
+    assert not (workspace / "tests/test_create.py").exists()
+
+
+def test_relative_tests_dirs_resolve_against_the_workspace(tmp_path: Path) -> None:
+    import os
+
+    original = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        workspace = _write_workspace(tmp_path / "gen")
+        written = generate_step_tests(
+            workspace / "plugin.yaml", tests_dir=Path("nested/unit")
+        )
+    finally:
+        os.chdir(original)
+    assert any(path.name == "test_create.py" for path in written)
+    module = (workspace / "nested/unit/test_create.py").read_text(encoding="utf-8")
+    conftest = (workspace / "nested/unit/conftest.py").read_text(encoding="utf-8")
+    # The generated paths must climb from the nested directory to the workspace.
+    assert repr("../..") in module
+    assert repr("../..") in conftest

@@ -104,12 +104,13 @@ def chain_steps(
         )
         raise ValueError(message)
     base = context or build_execution_context()
+    run_id = base.workflow_run_id or f"{base.invocation_id}-run"
     outcomes: list[StepOutcome] = []
     current: Mapping[str, Any] = inputs
     for index, binding in enumerate(bindings):
         link_context = build_execution_context(
             invocation_id=f"{base.invocation_id}-link-{index}",
-            workflow_run_id=base.workflow_run_id,
+            workflow_run_id=run_id,
             runtime_context=base.runtime_context,
             cancelled=base.cancelled,
         )

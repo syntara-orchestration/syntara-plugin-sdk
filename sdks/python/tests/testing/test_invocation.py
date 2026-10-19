@@ -72,7 +72,10 @@ def test_default_context_flows_into_the_step() -> None:
     assert outcome.ok
     assert outcome.output is not None
     assert outcome.output["invocation_id"].startswith("test-invocation-")
-    assert outcome.output["workflow_run_id"] == ""
+    # Both execution paths substitute a deterministic run id when none is set,
+    # so the container ABI's required identifier never diverges from the
+    # direct path.
+    assert outcome.output["workflow_run_id"] == f"{outcome.output['invocation_id']}-run"
     assert outcome.output["cancelled"] is False
 
 

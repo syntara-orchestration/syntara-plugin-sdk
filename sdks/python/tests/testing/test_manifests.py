@@ -57,6 +57,22 @@ def test_validator_rejects_documents_without_an_inferable_kind() -> None:
         ManifestValidator()({"spec": {}})
 
 
+def test_validator_names_the_bundle_escape_hatch_for_uncovered_kinds() -> None:
+    from syntara_plugin.testing import HarnessUsageError
+
+    with pytest.raises(HarnessUsageError, match="bundle="):
+        ManifestValidator()({"kind": "Task", "spec": {}})
+
+
+def test_validator_maps_camel_case_kinds_to_contract_kinds() -> None:
+    validator = ManifestValidator()
+    # Kind inference must resolve to the kebab-case contract kind rather than
+    # raising a raw KeyError for CamelCase manifest kinds.
+    assert isinstance(validator.check({"kind": "CredentialRecipe"}), list)
+    assert isinstance(validator.check({"kind": "IntegrationType"}), list)
+    assert isinstance(validator.check({"kind": "CredentialRecipe"}, kind="CredentialRecipe"), list)
+
+
 def test_validator_accepts_an_owner_supplied_bundle() -> None:
     from syntara_plugin.contracts import load_bundle
 

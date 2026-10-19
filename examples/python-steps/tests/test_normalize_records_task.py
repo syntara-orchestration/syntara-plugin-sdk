@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from python_steps.normalize_records import NormalizeRecordsTask
 from syntara_plugin.testing import (
+    assert_outcomes_equivalent,
     chain_steps,
     check_seam_compatible,
     identity_seam,
     invoke_step,
+    invoke_step_in_container,
 )
 
 
@@ -28,6 +30,17 @@ def test_task_rejects_wrong_input_types(mock_execution_context, step_bindings) -
     outcome = invoke_step(binding, {"records": "not-a-list"}, context=mock_execution_context())
     assert not outcome.ok
     assert outcome.run_calls == 0
+
+
+def test_direct_and_container_paths_are_equivalent(
+    mock_execution_context, step_bindings
+) -> None:
+    binding = step_bindings.bind(NormalizeRecordsTask)
+    context = mock_execution_context(invocation_id="task-equivalence")
+    inputs = {"records": ["Alpha"]}
+    direct = invoke_step(binding, inputs, context=context)
+    container = invoke_step_in_container(binding, inputs, context=context)
+    assert_outcomes_equivalent(direct, container)
 
 
 def test_chained_tasks_pass_outputs_through_an_explicit_seam(

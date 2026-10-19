@@ -50,6 +50,11 @@ def assert_no_secrets(
     serialized business output, raw envelope, and (when supplied) the pytest
     ``caplog`` capture. Secrets must never appear in any of them.
 
+    When scanning logs, raise the capture level around the invocation first:
+    pytest captures only records that pass the root logger's effective level,
+    which defaults to WARNING. Use ``with caplog.at_level(logging.INFO):``
+    around the step invocation so INFO-level leaks are captured.
+
     Args:
         value: The outcome to scan, or an arbitrary text to check directly.
         sentinels: The secret values that must not appear.

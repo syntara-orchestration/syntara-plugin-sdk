@@ -11,10 +11,11 @@ from syntara_plugin.runtime import (
     InstalledActionManifest,
     SchemaDriftError,
     StepBinding,
+    StepBindingError,
     StepBindings,
     StepDescriptor,
     check_step_contract,
-    validate_plugin_bindings,
+    check_target_binding,
 )
 from syntara_plugin.sdk import BuildRequest, CompilationResult, compile_workspace
 
@@ -88,16 +89,23 @@ class StepBindingsFactory:
         return self._bindings.step_identities
 
     def resolve(self, identity_or_entry_point: str) -> StepBinding:
-        """Return the bound binding for one identity or ``module:Class`` entry point."""
+        """Return the bound binding for one identity or ``module:Class`` entry point.
 
-        if ":" in identity_or_entry_point:
-            identity = self._entry_points.get(identity_or_entry_point)
-            if identity is None:
-                message = f"entry point {identity_or_entry_point!r} has not been bound yet"
-                raise HarnessUsageError(message)
-        else:
-            identity = identity_or_entry_point
-        return self._bindings.binding(identity)
+        A key containing a colon is tried as an entry point first, then as a
+        literal identity, because Syntara identities may legally contain colons.
+        """
+
+        key = identity_or_entry_point
+        identity = self._entry_points.get(key)
+        if identity is not None:
+            return self._bindings.binding(identity)
+        if ":" in key:
+            try:
+                return self._bindings.binding(key)
+            except StepBindingError:
+                message = f"entry point {key!r} has not been bound yet"
+                raise HarnessUsageError(message) from None
+        return self._bindings.binding(key)
 
     def bind(
         self,
@@ -128,8 +136,8 @@ class StepBindingsFactory:
         descriptor = StepDescriptor(
             step_identity=resolved_identity,
             taxonomy=base.taxonomy,
-            input_schema=input_schema or base.input_schema,
-            output_schema=output_schema or base.output_schema,
+            input_schema=input_schema if input_schema is not None else base.input_schema,
+            output_schema=output_schema if output_schema is not None else base.output_schema,
         )
         report = check_step_contract(
             step_instance,
@@ -155,12 +163,18 @@ class StepBindingsFactory:
         local tests build no images). The matching custom-workload Action
         target is located by entry point (or explicitly by ``identity``), its
         compiled manifest is installed through
-        ``InstalledActionManifest.from_manifest``, and the resulting binding is
-        verified with ``validate_plugin_bindings`` so schema drift between the
-        manifest and the implementation fails the test.
+        ``InstalledActionManifest.from_manifest``, and only that target is
+        verified with ``check_target_binding`` so schema drift between the
+        manifest and the implementation fails the test. Sibling targets are
+        validated by their own ``bind_action`` calls; each call checks exactly
+        the target it binds.
 
         Args:
             step: The implementation, as an entry point, class, or instance.
+                When given as an entry-point string, that exact string is used
+                to locate the target, so re-exported classes
+                (``pkg:Class`` resolving to ``pkg.steps:Class``) match the
+                manifest as written.
             workspace: Path to the root ``plugin.yaml`` or its directory.
             identity: Full step identity; located by entry point when omitted.
         """
@@ -172,38 +186,28 @@ class StepBindingsFactory:
             BuildRequest(root_manifest=root, require_image_bindings=False)
         )
         step_instance = resolve_step(step)
-        entry_point = entry_point_of(type(step_instance))
+        declared_entry_point = step if isinstance(step, str) else None
+        entry_point = declared_entry_point or entry_point_of(type(step_instance))
         target = self._find_action_target(result, entry_point=entry_point, identity=identity)
         resolved_identity = identity or str(target["identity"])
         installed = InstalledActionManifest.from_manifest(
             resolved_identity, _installable_manifest(target), {}
         )
         descriptor = StepDescriptor.for_installed_action(step_instance, installed)
-        self._register(descriptor, step_instance)
-        validate_plugin_bindings(
-            result.descriptor,
-            self._declared_view(result.descriptor),
-            entry_point_resolver=load_step_class,
-            strict=self._strict,
+        candidate = StepBinding(descriptor, step_instance)
+        # Validate only the bound target, before registering, so a failed drift
+        # check never leaves an unverified binding resolvable in this factory
+        # and sibling targets cannot fail a call that does not bind them.
+        report = check_target_binding(
+            target, candidate, entry_point_resolver=load_step_class
         )
-        return StepBinding(descriptor, step_instance)
+        report.raise_for_drift(strict=self._strict)
+        self._register(descriptor, step_instance)
+        return candidate
 
     def _register(self, descriptor: StepDescriptor, step_instance: BaseStep[Any, Any]) -> None:
         self._bindings.bind(descriptor, step_instance)
         self._entry_points[entry_point_of(type(step_instance))] = descriptor.step_identity
-
-    def _declared_view(self, descriptor: Mapping[str, Any]) -> StepBindings:
-        """Build a bindings view limited to identities this descriptor declares."""
-
-        declared = {
-            str(target["identity"]) for target in descriptor["spec"]["targets"]
-        }
-        view = StepBindings()
-        for step_identity in self._bindings.step_identities:
-            if step_identity in declared:
-                binding = self._bindings.binding(step_identity)
-                view.bind(binding.descriptor, binding.step)
-        return view
 
     def _find_action_target(
         self,
@@ -213,6 +217,7 @@ class StepBindingsFactory:
         identity: str | None,
     ) -> Mapping[str, Any]:
         targets = result.descriptor["spec"]["targets"]
+        lookup = f"identity {identity!r}" if identity is not None else f"entry point {entry_point!r}"
         if identity is not None:
             matches = [item for item in targets if str(item.get("identity")) == identity]
         else:
@@ -228,8 +233,8 @@ class StepBindingsFactory:
                 for item in targets
             )
             message = (
-                f"no Action target matches entry point {entry_point!r} in the compiled "
-                f"workspace; compiled targets: {available or 'none'}"
+                f"no Action target matches {lookup} in the compiled workspace; "
+                f"compiled targets: {available or 'none'}"
             )
             raise HarnessUsageError(message)
         if len(matches) > 1:
