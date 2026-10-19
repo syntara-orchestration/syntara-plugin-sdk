@@ -199,6 +199,30 @@ def test_cli_test_init_rejects_a_missing_manifest(
     assert "error:" in capsys.readouterr().err
 
 
+def test_relative_manifest_paths_do_not_double_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative manifest path must not prepend the workspace twice."""
+
+    workspace = _write_workspace(tmp_path / "gen")
+    monkeypatch.chdir(workspace)
+    generate_step_tests(Path("plugin.yaml"))
+    assert (workspace / "tests/test_create.py").is_file()
+    assert not (workspace / "gen/tests/test_create.py").exists()
+    assert not (workspace / "plugin.yaml/tests").exists()
+
+
+def test_hyphenated_target_names_slug_to_underscores(tmp_path: Path) -> None:
+    workspace = _write_workspace(tmp_path / "gen")
+    action = workspace / "steps/create/manifest.yaml"
+    action.write_text(
+        action.read_text(encoding="utf-8").replace("name: create", "name: send-note"),
+        encoding="utf-8",
+    )
+    written = generate_step_tests(workspace)
+    assert any(path.name == "test_send_note.py" for path in written)
+
+
 def test_generated_tests_pass_in_a_fresh_project(pytester: pytest.Pytester) -> None:
     _write_workspace(pytester.path)
     generate_step_tests(pytester.path / "plugin.yaml")

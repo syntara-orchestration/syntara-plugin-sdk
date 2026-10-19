@@ -28,7 +28,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from .authoring import BuildRequest, compile_workspace
 
 _MAX_INVALID_CASES = 8
-_IDENTIFIER_SAFE = re.compile(r"[^a-z0-9-]")
+_IDENTIFIER_SAFE = re.compile(r"[^a-z0-9]")
 
 _TEMPLATE = '''"""Generated local tests for the {identity} Action step.
 
@@ -139,9 +139,12 @@ def generate_step_tests(
         BuildRequest(root_manifest=manifest, require_image_bindings=False)
     )
     workspace = manifest.parent
-    tests = tests_dir or workspace / "tests"
-    if not tests.is_absolute():
-        tests = workspace / tests
+    if tests_dir is None:
+        tests = workspace / "tests"
+    else:
+        # A relative --tests-dir resolves against the workspace, never the
+        # current directory; the default is already workspace-relative.
+        tests = tests_dir if tests_dir.is_absolute() else workspace / tests_dir
     workspace_relative = os.path.relpath(workspace, tests)
     # Plan every module first so a mid-run overwrite refusal never leaves a
     # half-generated suite behind.
@@ -192,9 +195,9 @@ def generate_step_tests(
 
 
 def _slug(name: str) -> str:
-    """Turn one target name into a stable lowercase test-file slug."""
+    """Turn one target name into a stable lowercase underscore test-file slug."""
 
-    slug = _IDENTIFIER_SAFE.sub("-", name.lower()).strip("-")
+    slug = _IDENTIFIER_SAFE.sub("_", name.lower()).strip("_")
     return slug or "step"
 
 
