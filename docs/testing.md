@@ -87,6 +87,13 @@ pytest only captures records that pass the root logger's effective level,
 which defaults to WARNING, and INFO is exactly where a chatty step leaks
 credentials.
 
+One asymmetry to know: a secret placed in a deliberate-failure message (a
+raised `ContainerInvocationError`) is caller-visible on the direct path, but
+the container transport deliberately drops untrusted-workload message text
+(`ContainerRemoteError` carries only the failure code), so
+`assert_no_secrets` can only catch that leak class through `invoke_step`.
+Test deliberate-failure messages on the direct path.
+
 ## Conformance in one call
 
 ```python

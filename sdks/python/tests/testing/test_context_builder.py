@@ -44,3 +44,14 @@ def test_non_identity_invocation_ids_are_rejected_with_guidance() -> None:
         build_execution_context(invocation_id="not a valid id")
     with pytest.raises(HarnessUsageError, match="Syntara identity"):
         build_execution_context(invocation_id="x" * 257)
+
+
+def test_invocation_ids_leave_room_for_the_derived_run_id() -> None:
+    from syntara_plugin.testing import HarnessUsageError
+
+    # The container path derives "{invocation_id}-run" as the workflow-run id,
+    # so 253+ character ids cannot work there and are rejected up front.
+    with pytest.raises(HarnessUsageError, match="derived run id"):
+        build_execution_context(invocation_id="x" * 253)
+    context = build_execution_context(invocation_id="x" * 252)
+    assert context.invocation_id == "x" * 252

@@ -619,7 +619,8 @@ def _init_tests(arguments: argparse.Namespace) -> int:
         return 1
     for path in written:
         print(f"Created {path}")
-    print("Next: pytest tests -q")
+    hint = arguments.tests_dir if arguments.tests_dir is not None else Path("tests")
+    print(f"Next: pytest {hint} -q")
     return 0
 
 

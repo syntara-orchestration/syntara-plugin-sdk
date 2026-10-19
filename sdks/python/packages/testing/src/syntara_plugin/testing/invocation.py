@@ -154,7 +154,18 @@ class _BoundedHandler:
         if "result" in completed:
             return completed["result"]  # type: ignore[return-value]
         if "error" in completed:
-            raise completed["error"]
+            error = completed["error"]
+            if isinstance(error, Exception):
+                raise error
+            # SystemExit and KeyboardInterrupt escape the container service's
+            # Exception handlers, which would stall the client until the RPC
+            # deadline with a mislabeled timeout; convert them so a terminal
+            # failure event is sent promptly.
+            raise ContainerInvocationError(
+                FailureCode.OUTCOME_UNKNOWN,
+                "The plugin step did not complete.",
+                outcome="unknown",
+            ) from error
         raise ContainerInvocationError(
             FailureCode.TIMEOUT,
             "The plugin step did not complete within the invocation timeout.",

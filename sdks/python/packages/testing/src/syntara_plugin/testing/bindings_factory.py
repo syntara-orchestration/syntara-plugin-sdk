@@ -99,13 +99,14 @@ class StepBindingsFactory:
         identity = self._entry_points.get(key)
         if identity is not None:
             return self._bindings.binding(identity)
-        if ":" in key:
-            try:
-                return self._bindings.binding(key)
-            except StepBindingError:
-                message = f"entry point {key!r} has not been bound yet"
-                raise HarnessUsageError(message) from None
-        return self._bindings.binding(key)
+        try:
+            return self._bindings.binding(key)
+        except StepBindingError as error:
+            if ":" not in key:
+                message = f"step identity {key!r} has not been bound yet"
+                raise HarnessUsageError(message) from error
+            message = f"entry point {key!r} has not been bound yet"
+            raise HarnessUsageError(message) from error
 
     def bind(
         self,

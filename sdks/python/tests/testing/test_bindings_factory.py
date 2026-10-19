@@ -13,7 +13,6 @@ from syntara_plugin.runtime import (
     ActionStep,
     ExecutionContext,
     SchemaDriftError,
-    StepBindingError,
     StepTaxonomy,
     TaskStep,
     TriggerStep,
@@ -317,7 +316,7 @@ def test_bind_action_fails_on_schema_drift(tmp_path: Path) -> None:
         factory.bind_action(GreetActionStep, workspace=workspace)
     # A failed drift check must not leave an unverified binding resolvable.
     assert factory.step_identities == ()
-    with pytest.raises(StepBindingError, match="not bound"):
+    with pytest.raises(HarnessUsageError, match="has not been bound yet"):
         factory.resolve(IDENTITY)
 
 

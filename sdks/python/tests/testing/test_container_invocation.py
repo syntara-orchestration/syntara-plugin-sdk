@@ -143,6 +143,56 @@ def test_a_deadlocked_step_returns_its_timeout_without_hanging_the_session() -> 
     assert elapsed < 10, f"cleanup was not bounded: {elapsed:.1f}s"
 
 
+def test_system_exit_on_the_container_path_fails_promptly() -> None:
+    """A BaseException from run() must not stall until the RPC deadline."""
+
+    import time
+
+    class ExitInput(BaseModel):
+        value: str = "x"
+
+    class ExitOutput(BaseModel):
+        value: str = "done"
+
+    class ExitingTask(TaskStep[ExitInput, ExitOutput]):
+        def run(self, inputs: ExitInput, context: ExecutionContext) -> ExitOutput:
+            raise SystemExit(3)
+
+    started = time.monotonic()
+    outcome = invoke_step_in_container(
+        ExitingTask(),
+        {},
+        context=build_execution_context(invocation_id="sysexit-probe"),
+        timeout_seconds=30,
+    )
+    elapsed = time.monotonic() - started
+    assert not outcome.ok
+    assert outcome.raised is not None
+    assert outcome.raised.code.value == "OUTCOME_UNKNOWN"
+    assert elapsed < 10, f"SystemExit was not converted promptly: {elapsed:.1f}s"
+
+
+def test_boundary_length_invocation_ids_work_on_both_paths() -> None:
+    """A 252-character id plus the derived run id fits the container ABI."""
+
+    class EchoInput(BaseModel):
+        value: str = "x"
+
+    class EchoOutput(BaseModel):
+        invocation_id: str
+
+    class EchoTask(TaskStep[EchoInput, EchoOutput]):
+        def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+            return EchoOutput(invocation_id=context.invocation_id)
+
+    invocation_id = "x" * 252
+    context = build_execution_context(invocation_id=invocation_id)
+    direct = invoke_step(EchoTask(), {}, context=context)
+    container = invoke_step_in_container(EchoTask(), {}, context=context)
+    assert_outcomes_equivalent(direct, container)
+    assert container.output == {"invocation_id": invocation_id}
+
+
 def test_the_same_invocation_id_can_be_reused_sequentially() -> None:
     context = build_execution_context(invocation_id="reused-id")
     first = invoke_step_in_container(ReferenceTaskStep(), {"title": "a"}, context=context)
