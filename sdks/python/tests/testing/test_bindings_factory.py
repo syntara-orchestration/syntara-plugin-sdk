@@ -258,8 +258,9 @@ def test_bind_with_drifted_declared_schema_raises() -> None:
         "properties": {"records": {"type": "string"}},
         "required": ["records"],
     }
+    factory = StepBindingsFactory()
     with pytest.raises(SchemaDriftError):
-        StepBindingsFactory().bind(NormalizeTask, input_schema=drifted)
+        factory.bind(NormalizeTask, input_schema=drifted)
 
 
 def test_bind_action_installs_the_compiled_manifest(tmp_path: Path) -> None:
@@ -336,8 +337,9 @@ def test_bind_action_fails_on_entry_point_drift(tmp_path: Path) -> None:
             entry_point=f"{__name__}:NormalizeTask",
         ),
     )
+    factory = StepBindingsFactory()
     with pytest.raises(SchemaDriftError) as raised:
-        StepBindingsFactory().bind_action(GreetActionStep, workspace=workspace, identity=IDENTITY)
+        factory.bind_action(GreetActionStep, workspace=workspace, identity=IDENTITY)
     assert any(
         issue.code == "ENTRY_POINT_MISMATCH" for issue in raised.value.report.issues
     )
@@ -352,8 +354,9 @@ def test_bind_action_rejects_unknown_entry_points(tmp_path: Path) -> None:
             entry_point="somewhere.else:Missing",
         ),
     )
+    factory = StepBindingsFactory()
     with pytest.raises(HarnessUsageError, match="no Action target matches"):
-        StepBindingsFactory().bind_action(GreetActionStep, workspace=workspace)
+        factory.bind_action(GreetActionStep, workspace=workspace)
 
 
 def test_action_bound_with_bind_is_not_executable(tmp_path: Path) -> None:
@@ -373,8 +376,9 @@ def test_strict_factory_fails_on_warning_drift(tmp_path: Path) -> None:
     workspace = _workspace(
         tmp_path, _action_manifest(GreetInput.model_json_schema(), loosened_output)
     )
+    factory = StepBindingsFactory(strict=True)
     with pytest.raises(SchemaDriftError):
-        StepBindingsFactory(strict=True).bind_action(GreetActionStep, workspace=workspace)
+        factory.bind_action(GreetActionStep, workspace=workspace)
 
 
 def test_reference_task_step_binds_directly() -> None:

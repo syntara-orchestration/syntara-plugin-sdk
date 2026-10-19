@@ -71,5 +71,6 @@ def test_platform_managed_drivers_are_not_python_steps() -> None:
         input_schema={"type": "object"},
         output_schema={"type": "object"},
     )
+    bindings = StepBindings()
     with pytest.raises(StepBindingError, match="platform-managed"):
-        StepBindings().bind(descriptor, "http.v1")  # type: ignore[arg-type]
+        bindings.bind(descriptor, "http.v1")  # type: ignore[arg-type]

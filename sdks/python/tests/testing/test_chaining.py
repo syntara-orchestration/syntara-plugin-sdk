@@ -141,12 +141,12 @@ def test_chain_rejects_empty_bindings() -> None:
 
 
 def test_chain_rejects_wrong_seam_counts() -> None:
+    bindings = [
+        _bind(UpperTask, "chain.upper"),
+        _bind(CountVowelsTask, "chain.count"),
+    ]
     with pytest.raises(ValueError, match="seams"):
-        chain_steps(
-            [_bind(UpperTask, "chain.upper"), _bind(CountVowelsTask, "chain.count")],
-            {"text": "hello"},
-            seams=[identity_seam, identity_seam],
-        )
+        chain_steps(bindings, {"text": "hello"}, seams=[identity_seam, identity_seam])
 
 
 def test_check_seam_compatible_passes_for_matching_schemas() -> None:

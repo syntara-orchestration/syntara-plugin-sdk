@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
 
 from .invocation import StepOutcome
-
-if TYPE_CHECKING:
-    from pytest import LogCaptureFixture
 
 
 def secret_sentinel(prefix: str = "syntara-test-secret-") -> str:
@@ -42,7 +38,7 @@ def assert_no_secrets(
     value: StepOutcome | str,
     sentinels: Iterable[str],
     *,
-    caplog: LogCaptureFixture | None = None,
+    caplog: pytest.LogCaptureFixture | None = None,
 ) -> None:
     """Fail when any sentinel secret appears in an outcome or captured logs.
 

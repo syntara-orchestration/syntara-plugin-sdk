@@ -10,6 +10,7 @@ import pytest
 import yaml
 from syntara_plugin.sdk import CompilationError, Plugin, Target
 from syntara_plugin.testing import (
+    HarnessUsageError,
     ManifestValidationError,
     ManifestValidator,
     compile_manifest,
@@ -53,15 +54,15 @@ def test_validator_reports_diagnostics_for_invalid_documents() -> None:
 
 
 def test_validator_rejects_documents_without_an_inferable_kind() -> None:
+    validator = ManifestValidator()
     with pytest.raises(ValueError, match="kind could not be inferred"):
-        ManifestValidator()({"spec": {}})
+        validator({"spec": {}})
 
 
 def test_validator_names_the_bundle_escape_hatch_for_uncovered_kinds() -> None:
-    from syntara_plugin.testing import HarnessUsageError
-
+    validator = ManifestValidator()
     with pytest.raises(HarnessUsageError, match="bundle="):
-        ManifestValidator()({"kind": "Task", "spec": {}})
+        validator({"kind": "Task", "spec": {}})
 
 
 def test_validator_maps_camel_case_kinds_to_contract_kinds() -> None:

@@ -147,7 +147,8 @@ def test_the_same_invocation_id_can_be_reused_sequentially() -> None:
     context = build_execution_context(invocation_id="reused-id")
     first = invoke_step_in_container(ReferenceTaskStep(), {"title": "a"}, context=context)
     second = invoke_step_in_container(ReferenceTaskStep(), {"title": "b"}, context=context)
-    assert first.ok and second.ok
+    assert first.ok
+    assert second.ok
     assert first.output != second.output
 
 
