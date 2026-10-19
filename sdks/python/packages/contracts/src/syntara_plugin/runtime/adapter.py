@@ -243,9 +243,8 @@ def container_step_for_bindings(
     """Wrap typed step bindings as a handler resolving by step identity.
 
     The invocation's ``step_revision_id`` is matched against the declared step
-    identity. This serves direct local dispatch and testing; production
-    dispatch requires the registry-binding loader that maps an installed step
-    revision to its declared identity.
+    identity. The current container bootstrap requires the Execution Plane to
+    resolve an installed revision to that identity before sending the request.
     """
 
     def handler(invocation: ContainerInvocation) -> ContainerResult:
@@ -271,9 +270,9 @@ def step_registry_from_bindings(
     """Build a container step registry with one handler per typed step.
 
     Handlers are keyed by declared step identity and matched exactly against the
-    invocation's ``step_revision_id``. This supports local execution and tests;
-    production dispatch requires the registry-binding loader that maps installed
-    step revisions to declared identities.
+    invocation's ``step_revision_id``. The current container bootstrap requires
+    the Execution Plane to resolve an installed revision to that identity
+    before sending the request.
     """
 
     handlers = {

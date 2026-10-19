@@ -2,21 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import os
 import signal
-from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
-from typing import Any
 
 import grpc
 
+from .abi import CONTAINER_ABI, FailureCode
 from .adapter import step_registry_from_bindings
 from .bindings import StepBindings
-from .container import add_container_runtime_service
+from .container import (
+    ContainerInvocationError,
+    ContainerResult,
+    StepRegistry,
+    _failure_event,
+    _invocation_from_request,
+    _result_event,
+)
+from .protocol import container_pb2, container_pb2_grpc
 
 _BINDINGS_FACTORY = "SYNTARA_RUNTIME_BINDINGS_FACTORY"
 _GRPC_ADDRESS = "SYNTARA_RUNTIME_GRPC_ADDRESS"
@@ -29,6 +37,90 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 class RuntimeServerError(RuntimeError):
     """Raised when the runtime image cannot start its gRPC server."""
+
+
+class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
+    """Async gRPC implementation used by the SDK runtime base image."""
+
+    def __init__(self, steps: StepRegistry) -> None:
+        self._steps = steps
+        self._active: dict[str, Event] = {}
+
+    async def Execute(
+        self,
+        request: container_pb2.ExecuteRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[container_pb2.ExecutionEvent]:
+        invocation_id = request.invocation_id
+        cancellation: Event | None = None
+        try:
+            invocation, cancellation = _invocation_from_request(request)
+            handler = self._steps.resolve(invocation.step_revision_id)
+            self._register_invocation(invocation.invocation_id, cancellation)
+            context.add_done_callback(cancellation.set)
+            result = await asyncio.to_thread(handler, invocation)
+            if invocation.cancelled:
+                raise ContainerInvocationError(
+                    FailureCode.CANCELLED,
+                    "The plugin step was cancelled.",
+                    outcome="not_completed",
+                )
+            if not isinstance(result, ContainerResult):
+                raise ContainerInvocationError(
+                    FailureCode.ABI_VIOLATION,
+                    "The plugin step returned an invalid response.",
+                    outcome="unknown",
+                )
+            yield _result_event(invocation.invocation_id, result)
+        except ContainerInvocationError as error:
+            yield _failure_event(invocation_id, error)
+        except Exception:
+            yield _failure_event(
+                invocation_id,
+                ContainerInvocationError(
+                    FailureCode.OUTCOME_UNKNOWN,
+                    "The plugin step did not complete.",
+                    outcome="unknown",
+                ),
+            )
+        finally:
+            if cancellation is not None:
+                self._unregister_invocation(invocation_id, cancellation)
+
+    async def Cancel(
+        self,
+        request: container_pb2.CancelRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> container_pb2.CancelResponse:
+        cancellation = self._active.get(request.invocation_id)
+        if cancellation is None:
+            return container_pb2.CancelResponse(accepted=False)
+        cancellation.set()
+        return container_pb2.CancelResponse(accepted=True)
+
+    async def Health(
+        self,
+        request: container_pb2.HealthRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> container_pb2.HealthResponse:
+        return container_pb2.HealthResponse(
+            ready=True,
+            runtime_abi=CONTAINER_ABI,
+            step_revision_ids=self._steps.step_revision_ids,
+        )
+
+    def _register_invocation(self, invocation_id: str, cancellation: Event) -> None:
+        if invocation_id in self._active:
+            raise ContainerInvocationError(
+                FailureCode.CONFLICT,
+                "The plugin step is already running.",
+                outcome="not_started",
+            )
+        self._active[invocation_id] = cancellation
+
+    def _unregister_invocation(self, invocation_id: str, cancellation: Event) -> None:
+        if self._active.get(invocation_id) is cancellation:
+            del self._active[invocation_id]
 
 
 @dataclass(frozen=True)
@@ -66,7 +158,8 @@ def load_runtime_server_config(
     ):
         message = "runtime gRPC TLS requires certificate, key, and client CA paths"
         raise RuntimeServerError(message)
-    if host.removeprefix("[").removesuffix("]") not in _LOOPBACK_HOSTS and certificate is None:
+    normalized_host = host.removeprefix("[").removesuffix("]").casefold()
+    if normalized_host not in _LOOPBACK_HOSTS and certificate is None:
         message = "non-loopback runtime gRPC listeners require mutual TLS"
         raise RuntimeServerError(message)
     return RuntimeServerConfig(bindings_factory, address, certificate, key, client_ca)
@@ -95,12 +188,14 @@ def load_runtime_bindings(specification: str) -> StepBindings:
     return bindings
 
 
-def create_runtime_server(config: RuntimeServerConfig) -> grpc.Server:
+async def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
     """Create and bind, but do not start, the in-container gRPC server."""
 
     bindings = load_runtime_bindings(config.bindings_factory)
-    server = grpc.server(ThreadPoolExecutor(max_workers=4))
-    add_container_runtime_service(server, step_registry_from_bindings(bindings))
+    server = grpc.aio.server()
+    container_pb2_grpc.add_ContainerServiceServicer_to_server(
+        AsyncContainerRuntimeService(step_registry_from_bindings(bindings)), server
+    )
     credentials = _server_credentials(config)
     port = (
         server.add_secure_port(config.address, credentials)
@@ -113,41 +208,35 @@ def create_runtime_server(config: RuntimeServerConfig) -> grpc.Server:
     return server
 
 
-def serve_runtime(config: RuntimeServerConfig) -> None:
+async def serve_runtime(config: RuntimeServerConfig) -> None:
     """Run the gRPC server until SIGTERM or SIGINT is received."""
 
-    server = create_runtime_server(config)
-    stopping = Event()
-
-    def terminate(_signum: int, _frame: Any) -> None:
-        stopping.set()
-
-    signal.signal(signal.SIGTERM, terminate)
-    signal.signal(signal.SIGINT, terminate)
-    server.start()
+    server = await create_runtime_server(config)
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stopping.set)
+    await server.start()
     try:
-        # Poll so a signal that arrives between the flag check and the wait
-        # cannot leave the process blocked until a second signal.
-        while not stopping.is_set():
-            stopping.wait(0.1)
+        await stopping.wait()
     finally:
-        server.stop(grace=30).wait(timeout=35)
+        await server.stop(grace=30)
 
 
 def main() -> None:
     """Console entrypoint used by the SDK runtime base image."""
 
-    serve_runtime(load_runtime_server_config())
+    asyncio.run(serve_runtime(load_runtime_server_config()))
 
 
 def _split_address(address: str) -> tuple[str, str]:
-    if address.count(":") == 1:
-        return address.split(":", 1)
+    if "://" in address:
+        return "", ""
     if address.startswith("[") and address.count("]") == 1:
         host, port = address.rsplit(":", 1)
         return host.removeprefix("[").removesuffix("]"), port
-    if address.count(":") == 2 and address.rsplit(":", 1)[0].count(":") == 1:
-        return address.rsplit(":", 1)
+    if address.count(":") == 1:
+        return address.split(":", 1)
     return "", ""
 
 

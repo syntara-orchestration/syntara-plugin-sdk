@@ -3,22 +3,35 @@ ARG RUNTIME_BASE_IMAGE=registry.access.redhat.com/ubi9/python-312@sha256:e6a10c3
 ARG PIP_FIND_LINKS=""
 
 FROM ${BUILDER_IMAGE} AS builder
+ARG PIP_FIND_LINKS
 USER 0
 RUN command -v uv >/dev/null 2>&1 || pip install --no-cache-dir --only-binary :all: uv==0.12.3
 WORKDIR /build
 COPY pyproject.toml uv.lock ./
 COPY contracts ./contracts
-COPY sdks/python/packages/contracts ./sdks/python/packages/contracts
-COPY sdks/python/packages/sdk ./sdks/python/packages/sdk
-COPY sdks/python/packages/runtime ./sdks/python/packages/runtime
-RUN python3.12 -m venv /opt/syntara/.venv \
+COPY sdks/python/packages ./sdks/python/packages
+RUN NO_BUILD_PACKAGES="--no-build-package annotated-types \
+        --no-build-package attrs \
+        --no-build-package grpcio \
+        --no-build-package jsonschema \
+        --no-build-package jsonschema-specifications \
+        --no-build-package protobuf \
+        --no-build-package pydantic \
+        --no-build-package pydantic-core \
+        --no-build-package referencing \
+        --no-build-package rpds-py \
+        --no-build-package typing-extensions \
+        --no-build-package typing-inspection" \
+    && python3.12 -m venv /opt/syntara/.venv \
     && if [ -n "$PIP_FIND_LINKS" ]; then \
         UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
-            --locked --no-dev --no-editable --no-build --package syntara-plugin-runtime \
+            --locked --no-dev --no-editable $NO_BUILD_PACKAGES \
+            --package syntara-plugin-runtime \
             --offline --no-index --find-links "$PIP_FIND_LINKS"; \
     else \
         UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
-            --locked --no-dev --no-editable --no-build --package syntara-plugin-runtime; \
+            --locked --no-dev --no-editable $NO_BUILD_PACKAGES \
+            --package syntara-plugin-runtime; \
     fi
 
 FROM ${RUNTIME_BASE_IMAGE}
@@ -34,7 +47,7 @@ ENV PATH="/opt/syntara/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1
 LABEL org.opencontainers.image.title="Syntara Plugin Runtime" \
     org.opencontainers.image.description="Base gRPC runtime for Syntara step containers" \
-    org.opencontainers.image.source="https://github.com/syntara-orchestration/syntara-step-sdk" \
+    org.opencontainers.image.source="https://github.com/syntara-orchestration/syntara-plugin-sdk" \
     org.opencontainers.image.licenses="Apache-2.0"
 USER 1001
 EXPOSE 50051

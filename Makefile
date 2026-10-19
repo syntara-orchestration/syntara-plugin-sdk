@@ -37,6 +37,7 @@ runtime-image:
 
 runtime-image-archive:
 	$(MAKE) runtime-image
+	@mkdir -p dist
 	$(CONTAINER_ENGINE) save \
 		--output dist/$(RUNTIME_IMAGE)-$(RUNTIME_IMAGE_PLATFORM).tar \
 		$(RUNTIME_IMAGE):$(RUNTIME_IMAGE_TAG)

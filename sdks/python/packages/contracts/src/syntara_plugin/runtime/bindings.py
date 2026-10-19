@@ -649,9 +649,10 @@ class StepBindings:
 
     This is an SDK-local lookup table for direct execution and local
     container dispatch. It is deliberately not the Automation Orchestrator's
-    plugin or step registration database. Mapping an immutable installed step
-    revision to one of these declared identities is owned by the separate SDK
-    registry-binding story.
+    plugin or step registration database. The container bootstrap currently
+    requires callers to supply a ``step_revision_id`` equal to a declared
+    identity; mapping immutable installed revisions remains part of the separate
+    SDK registry-binding story.
     """
 
     def __init__(self) -> None:

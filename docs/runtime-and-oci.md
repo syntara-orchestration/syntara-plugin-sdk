@@ -63,12 +63,42 @@ identity.
 ### SDK runtime base image
 
 The SDK repository builds one reusable Python runtime base image from
-[`containers/runtime/Containerfile`](../containers/runtime/Containerfile). A
-derived step image installs its step package, sets
-`SYNTARA_RUNTIME_BINDINGS_FACTORY=module:factory`, and inherits the
-runtime server entrypoint. Install the derived package into the inherited
-virtualenv with `/opt/syntara/.venv/bin/pip`, then set the factory. The named
-factory must take no arguments and return a non-empty `StepBindings` object.
+[`containers/runtime/Containerfile`](../containers/runtime/Containerfile). The
+base image contains the Python runtime, the gRPC server, and the container ABI
+implementation. It does **not** contain a plugin or a step implementation.
+
+A derived step image is the concrete image for one plugin. Its `Containerfile`
+starts from the runtime base image, installs the plugin wheel, and sets the
+environment variable that tells the inherited server entrypoint which Python
+factory to import:
+
+```dockerfile
+FROM quay.io/example/syntara-plugin-runtime@sha256:...
+USER 0
+COPY dist/acme_plugin-0.1.0-py3-none-any.whl /tmp/acme_plugin.whl
+RUN /opt/syntara/.venv/bin/pip install --no-cache-dir /tmp/acme_plugin.whl
+USER 1001
+ENV SYNTARA_RUNTIME_BINDINGS_FACTORY=acme_plugin.runtime:create_bindings
+```
+
+`module:factory` is a Python import path, not a filesystem path. In the example
+above, the server imports `acme_plugin.runtime` and calls its
+`create_bindings` function. That function takes no arguments and returns a
+non-empty `StepBindings` object:
+
+```python
+from syntara_plugin.runtime import StepBindings, StepDescriptor
+
+def create_bindings() -> StepBindings:
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_step("acme.echo.v1"), EchoStep())
+    return bindings
+```
+
+The factory is plugin-specific, not node-type-specific. A derived image may
+register one or more steps; the Execution Plane selects the exact step revision
+in each gRPC request. The base image never sets
+`SYNTARA_RUNTIME_BINDINGS_FACTORY`; the derived image owns that value.
 
 The server listens on `127.0.0.1:50051` by default. Override the address with
 `SYNTARA_RUNTIME_GRPC_ADDRESS`; every non-loopback listener requires mutual
@@ -90,22 +120,29 @@ make runtime-image \
 logical image name is `syntara-plugin-runtime`; release tags combine the SDK
 version with the container ABI version. Downstream consumers and derived images
 must record the published `repository@sha256:...` digest, never a mutable tag.
+
+The **container ABI** is the versioned gRPC/protobuf contract that the
+Execution Plane and a step container use to exchange execution requests,
+progress, results, and cancellation. It is not a CPU ABI. The current contract
+is defined in
+[`container.proto`](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
+and identified as `syntara.container/v1alpha1`.
+
 Official publication is owned by the Konflux component; local Make targets are
-for verification only. The Konflux build supplies separate authenticated
-builder and runtime base images. The builder uses the pinned Red Hat
-`uv-builder-rhel9` image, while the final image uses the pinned UBI Python
-runtime image. When that builder image does not already provide `uv`, the
-Containerfile installs pinned `uv==0.12.3` with `pip install --only-binary :all:`.
-PyPI publishes wheels for the UBI architectures, and the flag refuses the sdist
-so its setup script never runs. Both `uv sync` invocations pass `--no-build`.
-That refuses registry source distributions, whose setup scripts would otherwise
-run. The locked runtime dependencies, including `grpcio`, `pydantic-core`, and
-`rpds-py`, publish manylinux wheels for `linux/amd64` and `linux/arm64`. uv
-still builds the copied first-party packages `syntara-plugin-runtime` and
-`syntara-plugin-contracts`; `--no-build` does not apply to those workspace
-sources. Konflux also passes `PIP_FIND_LINKS` to the prefetched dependency
-directory, allowing `uv sync` to run with `--offline`, `--no-index`, and
-`--find-links`.
+for verification only. The local build stage uses the pinned UBI Python image
+and installs a pinned version of `uv` with `pip install --only-binary :all:`
+when `uv` is not already present. Konflux supplies separate authenticated builder
+and runtime base images: it may override `BUILDER_IMAGE` with the pinned Red
+Hat `uv-builder-rhel9` image, while the final image always uses
+`RUNTIME_BASE_IMAGE`. The build installs a pinned version of `uv` with
+`--only-binary :all:` and
+passes one `--no-build-package` flag per locked registry dependency. That
+refuses registry source distributions, whose setup scripts would otherwise
+run, while allowing the copied workspace packages to build normally. The locked
+registry dependencies, including `grpcio`, `pydantic-core`, and `rpds-py`,
+publish manylinux wheels for `linux/amd64` and `linux/arm64`. Konflux passes
+`PIP_FIND_LINKS` to the prefetched dependency directory, allowing `uv sync` to
+run with `--offline`, `--no-index`, and `--find-links`.
 
 ## Typed Python steps
 
