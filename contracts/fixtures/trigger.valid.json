@@ -1,0 +1,32 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Trigger",
+  "metadata": {
+    "name": "issue-opened",
+    "displayName": "Issue opened",
+    "description": "Receives issue-opened events."
+  },
+  "spec": {
+    "driver": "webhook.v1",
+    "runtime": {
+      "kind": "platform-runner",
+      "driver": "webhook.v1"
+    },
+    "configuration": {
+      "kind": "inline",
+      "value": {"type": "object", "properties": {"secret": {"type": "string"}}}
+    },
+    "input": {
+      "kind": "inline",
+      "value": {"type": "object", "properties": {"event": {"type": "string"}}}
+    },
+    "output": {
+      "kind": "inline",
+      "value": {"type": "object", "properties": {"runId": {"type": "string"}}}
+    },
+    "error": {
+      "kind": "inline",
+      "value": {"type": "object", "properties": {"message": {"type": "string"}}}
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Control",
+  "metadata": {
+    "name": "invoke-deploy",
+    "displayName": "Invoke deploy",
+    "description": "Invokes a deployment workflow."
+  },
+  "spec": {
+    "invocation": {"kind": "workflow-invocation"},
+    "input": {"kind": "inline", "value": {"type": "object"}},
+    "output": {"kind": "inline", "value": {"type": "object"}},
+    "runtime": {"kind": "custom-runner", "entryPoint": "flows:Deploy"}
+  }
+}

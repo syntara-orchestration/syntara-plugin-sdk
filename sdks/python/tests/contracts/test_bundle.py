@@ -47,10 +47,13 @@ def test_bundle_has_stable_digest_and_required_contracts() -> None:
         "provider.schema.json",
         "plugin.schema.json",
         "plugin-build-settings.schema.json",
+        "plugin-descriptor.schema.json",
         "runtime.schema.json",
+        "step.schema.json",
         "trigger-driver.schema.json",
         "trigger-event-mapping.schema.json",
         "trigger.schema.json",
+        "control.schema.json",
     }
     assert RuntimeContractBundle is SdkContractBundle
 
@@ -61,18 +64,21 @@ def test_plugin_build_settings_schema_is_descriptive_and_strict() -> None:
 
     assert schema["properties"]["registry"]["properties"]["artifactRepository"]["description"]
     assert schema["properties"]["build"]["properties"]["artifactOutput"]["description"]
-    assert schema["properties"]["build"]["properties"]["workload"]["properties"][
-        "context"
-    ]["description"]
-    assert validate_document(
-        bundle,
-        "plugin_build_settings",
-        {
-            "apiVersion": "syntara.io/v1alpha1",
-            "kind": "PluginBuildSettings",
-            "build": {"artifactOutput": "dist/plugin.oci.tar"},
-        },
-    ) == []
+    assert schema["properties"]["build"]["properties"]["workload"]["properties"]["context"][
+        "description"
+    ]
+    assert (
+        validate_document(
+            bundle,
+            "plugin_build_settings",
+            {
+                "apiVersion": "syntara.io/v1alpha1",
+                "kind": "PluginBuildSettings",
+                "build": {"artifactOutput": "dist/plugin.oci.tar"},
+            },
+        )
+        == []
+    )
     assert validate_document(
         bundle,
         "plugin_build_settings",
@@ -116,7 +122,6 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
             },
             "input": {"kind": "asset", "path": "schemas/create-issue.input.json"},
             "output": {"kind": "inline", "value": {"type": "object"}},
-            "error": {"kind": "inline", "value": {"type": "object"}},
         },
     }
     trigger = {
@@ -129,7 +134,9 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
         },
         "spec": {
             "driver": "webhook.v1",
+            "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
             "configuration": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"type": "object"}},
             "output": {"kind": "asset", "path": "schemas/pull-request.output.json"},
         },
     }
@@ -142,7 +149,7 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
     assert validate_document(bundle, "action", action)
 
 
-def test_custom_workload_action_requires_a_stable_python_entry_point() -> None:
+def test_custom_runner_action_requires_a_stable_python_entry_point() -> None:
     bundle = load_bundle()
     action = {
         "apiVersion": "syntara.io/v1alpha1",
@@ -153,10 +160,9 @@ def test_custom_workload_action_requires_a_stable_python_entry_point() -> None:
             "description": "Creates GitHub issues.",
         },
         "spec": {
-            "runtime": {"kind": "custom-workload"},
+            "runtime": {"kind": "custom-runner"},
             "input": {"kind": "inline", "value": {"type": "object"}},
             "output": {"kind": "inline", "value": {"type": "object"}},
-            "error": {"kind": "inline", "value": {"type": "object"}},
         },
     }
 
@@ -165,8 +171,9 @@ def test_custom_workload_action_requires_a_stable_python_entry_point() -> None:
     assert validate_document(bundle, "action", action) == []
 
 
-def test_action_error_document_is_optional() -> None:
+def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
     bundle = load_bundle()
+    source = {"kind": "inline", "value": {"type": "object"}}
     action = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Action",
@@ -176,16 +183,100 @@ def test_action_error_document_is_optional() -> None:
             "description": "Creates GitHub issues.",
         },
         "spec": {
-            "runtime": {"kind": "custom-workload", "entryPoint": "github.actions:CreateIssue"},
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "runtime": {"kind": "custom-runner", "entryPoint": "github.actions:CreateIssue"},
+            "input": source,
+            "output": source,
+            "error": source,
+        },
+    }
+    control = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Control",
+        "metadata": {
+            "name": "control",
+            "displayName": "Control",
+            "description": "Runs control flow.",
+        },
+        "spec": {
+            "invocation": {"kind": "orchestration"},
+            "runtime": {"kind": "custom-runner", "entryPoint": "flows:Control"},
+            "input": source,
+            "output": source,
+            "error": source,
+        },
+    }
+    trigger = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Trigger",
+        "metadata": {
+            "name": "trigger",
+            "displayName": "Trigger",
+            "description": "Receives events.",
+        },
+        "spec": {
+            "driver": "webhook.v1",
+            "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
+            "configuration": source,
+            "input": source,
+            "output": source,
+            "error": source,
         },
     }
 
-    assert validate_document(bundle, "action", action) == []
+    documents = (("action", action), ("control", control), ("trigger", trigger))
+    for kind, document in documents:
+        assert validate_document(bundle, kind, document) == []
+        assert validate_document(bundle, "step", document) == []
 
-    action["spec"]["error"] = {"kind": "inline", "value": {"type": "object"}}
-    assert validate_document(bundle, "action", action) == []
+
+def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantics() -> None:
+    bundle = load_bundle()
+    source = {"kind": "inline", "value": {"type": "object"}}
+    metadata = {
+        "name": "example",
+        "displayName": "Example",
+        "description": "One category-specific Step type.",
+    }
+    control = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Control",
+        "metadata": metadata,
+        "spec": {
+            "invocation": {"kind": "workflow-invocation", "workflow": "acme.release.deploy"},
+            "runtime": {"kind": "custom-runner", "entryPoint": "flows:Deploy"},
+            "input": source,
+            "output": source,
+        },
+    }
+    trigger = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Trigger",
+        "metadata": metadata,
+        "spec": {
+            "driver": "webhook.v1",
+            "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
+            "configuration": {
+                "kind": "inline",
+                "value": {"type": "object", "properties": {"secret": {"type": "string"}}},
+            },
+            "input": {
+                "kind": "inline",
+                "value": {"type": "object", "properties": {"event": {"type": "string"}}},
+            },
+            "output": {
+                "kind": "inline",
+                "value": {"type": "object", "properties": {"runId": {"type": "string"}}},
+            },
+        },
+    }
+
+    assert validate_document(bundle, "control", control) == []
+    assert validate_document(bundle, "trigger", trigger) == []
+
+    control["spec"]["runtime"] = {"kind": "custom-runner", "entryPoint": "flows:Deploy"}
+    assert validate_document(bundle, "control", control) == []
+    trigger["spec"]["driver"] = "webhook.v0"
+    assert validate_document(bundle, "trigger", trigger)
 
 
 def test_http_mapping_contract_accepts_only_bounded_pointer_or_literal_values() -> None:
@@ -225,6 +316,19 @@ def test_contracts_reject_legacy_images_and_unsafe_asset_paths() -> None:
     assert validate_document(bundle, "action", unsafe_action)
 
 
+def test_plugin_language_documents_step_type_category_runner_execution_terms() -> None:
+    language = (Path(__file__).parents[4] / "docs" / "plugin-language.md").read_text()
+
+    assert "Step type -> Category -> Runner -> Execution" in language
+    assert "Create GitHub Issue" in language
+    assert "Launch AAP Job Template" in language
+    assert "Control Step type" in language
+    assert "orchestration behavior in the control plane" in language
+    assert "Launch production inventory sync -> control -> platform control plane" in language
+    assert "Pull request webhook -> trigger -> platform control plane" in language
+    assert "category/kind mismatch" not in language
+
+
 def test_fixture_corpus_exercises_valid_and_invalid_documents() -> None:
     bundle = load_bundle()
     fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
@@ -236,6 +340,11 @@ def test_fixture_corpus_exercises_valid_and_invalid_documents() -> None:
     assert any("version" in error for error in errors)
     assert any("abi" in error for error in errors)
     assert any("path" in error for error in errors)
+
+    control = json.loads((fixtures / "control.invalid.json").read_text())
+    trigger = json.loads((fixtures / "trigger.invalid.json").read_text())
+    assert validate_document(bundle, "control", control)
+    assert validate_document(bundle, "trigger", trigger)
 
 
 def test_pinned_catalog_fixture_bundle_exercises_control_plane_contracts() -> None:

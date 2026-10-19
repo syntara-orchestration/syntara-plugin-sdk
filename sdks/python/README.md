@@ -124,5 +124,5 @@ newly written archive in the same invocation. A versioned non-secret
 `syntara-plugin.yaml` supplies stable `manifest`, shared `registry`, `build`,
 workload, publication, and catalog values; explicit CLI values override it. See
 the [build settings reference](../../docs/build-settings.md) and
-[ADR 0006](../../.sdlc/adrs/0006-deferred-custom-workload-build-ux.md) for the
+[ADR 0006](../../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md) for the
 settings schema, security boundaries, and remaining Execution Plane gate.

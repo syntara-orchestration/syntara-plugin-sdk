@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.syntara.io/v1alpha1/control.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "syntara.io/v1alpha1"},
+    "kind": {"const": "Control"},
+    "metadata": {"$ref": "step.schema.json#/$defs/stepMetadata"},
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invocation", "runtime", "input", "output"],
+      "properties": {
+        "invocation": {"$ref": "step.schema.json#/$defs/workflowInvocation"},
+        "runtime": {"$ref": "step.schema.json#/$defs/runner"},
+        "input": {"$ref": "step.schema.json#/$defs/schemaSource"},
+        "output": {"$ref": "step.schema.json#/$defs/schemaSource"},
+        "error": {"$ref": "step.schema.json#/$defs/schemaSource"}
+      }
+    }
+  }
+}

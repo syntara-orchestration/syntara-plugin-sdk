@@ -124,6 +124,7 @@ def _installed_action(
     step_identity: str,
     input_schema: dict[str, object],
     output_schema: dict[str, object] | None = None,
+    step_class: type[ActionStep[Any, Any]] = ActionEchoStep,
 ) -> InstalledActionManifest:
     return InstalledActionManifest.from_manifest(
         step_identity,
@@ -131,6 +132,10 @@ def _installed_action(
             "apiVersion": "syntara.io/v1alpha1",
             "kind": "Action",
             "spec": {
+                "runtime": {
+                    "kind": "custom-runner",
+                    "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
+                },
                 "input": {"kind": "inline", "value": input_schema},
                 "output": {
                     "kind": "inline",
@@ -151,7 +156,7 @@ def _bind_step(
     bindings.bind(
         StepDescriptor.for_installed_action(
             step,
-            _installed_action(step_identity, input_schema),
+            _installed_action(step_identity, input_schema, step_class=type(step)),
         ),
         step,
     )
@@ -267,7 +272,9 @@ def test_oversized_output_is_externalized_through_the_object_store() -> None:
     store = RecordingObjectStore()
     handler = container_action_for_step(
         HugeStep(),
-        installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
+        installed_action=_installed_action(
+            "acme.plugin.huge", _echo_input_schema(), step_class=HugeStep
+        ),
         object_store=store,
     )
 
@@ -285,7 +292,9 @@ def test_oversized_output_is_externalized_through_the_object_store() -> None:
 def test_oversized_output_without_an_object_store_is_an_abi_violation() -> None:
     handler = container_action_for_step(
         HugeStep(),
-        installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
+        installed_action=_installed_action(
+            "acme.plugin.huge", _echo_input_schema(), step_class=HugeStep
+        ),
     )
     invocation = _invocation("acme.plugin.huge")
 
@@ -300,7 +309,9 @@ def test_object_store_returning_an_invalid_reference_is_an_abi_violation() -> No
     store = RecordingObjectStore(reference="not a valid identity!!")
     handler = container_action_for_step(
         HugeStep(),
-        installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
+        installed_action=_installed_action(
+            "acme.plugin.huge", _echo_input_schema(), step_class=HugeStep
+        ),
         object_store=store,
     )
     invocation = _invocation("acme.plugin.huge")
@@ -316,7 +327,9 @@ def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
     store = RecordingObjectStore(reference="object-store:huge-1")
     handler = container_action_for_step(
         HugeStep(),
-        installed_action=_installed_action("acme.plugin.huge", _echo_input_schema()),
+        installed_action=_installed_action(
+            "acme.plugin.huge", _echo_input_schema(), step_class=HugeStep
+        ),
         object_store=store,
     )
 
@@ -389,7 +402,7 @@ def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
     handler = container_action_for_step(
         BulkStep(),
         installed_action=_installed_action(
-            "acme.plugin.bulk", _bulk_input_schema()
+            "acme.plugin.bulk", _bulk_input_schema(), step_class=BulkStep
         ),
     )
     invocation = _invocation(
@@ -407,9 +420,7 @@ def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
 def test_small_validation_failures_report_every_stable_code() -> None:
     handler = container_action_for_step(
         ActionEchoStep(),
-        installed_action=_installed_action(
-            "acme.plugin.echo", _echo_input_schema()
-        ),
+        installed_action=_installed_action("acme.plugin.echo", _echo_input_schema()),
     )
     invocation = _invocation(inputs={"message": 42})
 
@@ -423,7 +434,7 @@ def test_undeclared_output_model_is_an_abi_violation() -> None:
     handler = container_action_for_step(
         LeakyStep(),
         installed_action=_installed_action(
-            "acme.plugin.echo", _echo_input_schema()
+            "acme.plugin.echo", _echo_input_schema(), step_class=LeakyStep
         ),
     )
     invocation = _invocation()

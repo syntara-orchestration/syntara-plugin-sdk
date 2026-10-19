@@ -1,4 +1,4 @@
-# ADR 0006: Defer combined custom-workload image builds until catalog flow is proven
+# ADR 0006: Defer combined custom-runner image builds until catalog flow is proven
 
 - Status: Accepted — developer-preview implementation; Execution Plane release gate retained
 - Date: 2026-10-07
@@ -10,7 +10,7 @@ build` compiles a plugin workspace and writes a reviewable metadata OCI archive.
 `syntara-plugin publish` uploads that exact archive. Neither command builds or
 pushes executable workload images.
 
-That separation is deliberate, but a custom-workload author eventually needs a
+That separation is deliberate, but a custom-runner author eventually needs a
 short developer command that builds the author-owned container image, obtains
 its immutable registry digest, and produces metadata pinned to that digest.
 The same author should be able to put stable non-secret defaults in a settings
@@ -29,26 +29,26 @@ proven:
 - the local catalog UI can configure a source, reconcile a catalog index,
   browse a plugin, render its documentation, and install a selected immutable
   version; and
-- a minimal `custom-workload` plugin can run through the Execution Plane from
+- a minimal `custom-runner` plugin can run through the Execution Plane from
   one pinned image, using the shared container ABI.
 
 ## Implementation amendment
 
 The local catalog browse, documentation, installation, and workflow-authoring
 proof has now been completed. Implement a narrowly scoped **developer preview**
-for SDK packaging before the custom-workload Execution Plane proof is complete.
-The preview is not evidence that a custom workload can execute successfully,
+for SDK packaging before the custom-runner Execution Plane proof is complete.
+The preview is not evidence that a custom runner can execute successfully,
 receive credentials, or meet production networking policy.
 
 The preview adds the settings model and `build --with-workload` orchestration
-below. It may build and push a custom workload image through Podman, capture
+below. It may build and push a custom runner image through Podman, capture
 its immutable digest, write the normal metadata archive, and, when explicitly
 requested, publish that archive. It must retain its preview label until the
-end-to-end custom-workload Execution Plane proof is complete.
+end-to-end custom-runner Execution Plane proof is complete.
 
 ## Preview command and settings contract
 
-A custom-workload author can use one command such as:
+A custom-runner author can use one command such as:
 
 ```bash
 syntara-plugin build plugin.yaml --with-workload --verbose
@@ -56,7 +56,7 @@ syntara-plugin build plugin.yaml --with-workload --verbose
 
 The command must visibly perform these separate operations:
 
-1. Validate the plugin source and its custom-workload requirements.
+1. Validate the plugin source and its custom-runner requirements.
 2. Build the author-owned OCI workload image through an explicitly selected
    local container engine; the first adapter is Podman.
 3. Push that image to the configured repository and read the registry-returned
@@ -100,7 +100,7 @@ it is intentionally not coupled to `build --publish`.
 
 ## Consequences
 
-- Custom-workload authors will eventually use a concise command without losing
+- Custom-runner authors will eventually use a concise command without losing
   visibility of the two distinct OCI outputs.
 - The explicit current `--image-binding` path remains available for CI and
   advanced integrations. It is not removed merely because the convenience path
@@ -120,7 +120,7 @@ validation, no-secret enforcement, Podman command construction,
 target-platform validation, image-push digest capture, metadata image binding,
 and verbose/redacted output. Before removing the preview label or representing
 the feature as production-ready, add cancellation and failure-cleanup coverage
-and prove an end-to-end custom-workload run through the Execution Plane and an
+and prove an end-to-end custom-runner run through the Execution Plane and an
 installed catalog version.
 
 When that path is accepted, remove any temporary demo wrapper or duplicate

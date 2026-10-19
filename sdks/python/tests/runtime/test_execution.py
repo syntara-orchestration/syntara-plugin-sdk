@@ -17,6 +17,7 @@ from syntara_plugin.runtime import (
     ActionStep,
     ContainerInvocation,
     ContainerInvocationError,
+    ControlStep,
     ExecutionContext,
     FailureCode,
     InstalledActionManifest,
@@ -27,9 +28,7 @@ from syntara_plugin.runtime import (
     StepDescriptor,
     StepExecutionError,
     StepExecutor,
-    TaskStep,
     TriggerStep,
-    WorkflowStep,
     container_action_for_step,
     container_step_for_binding,
 )
@@ -92,24 +91,24 @@ class FailingModelStep(ExampleStep):
         raise AssertionError("run must not be called")
 
 
-class TaskExampleOutput(BaseModel):
+class ControlExampleOutput(BaseModel):
     message: str
     invocation_id: str
     count: int
     mode: str
 
 
-class TaskExampleStep(TaskStep[ExampleInput, TaskExampleOutput]):
+class ControlExampleStep(ControlStep[ExampleInput, ControlExampleOutput]):
     def __init__(self) -> None:
         self.run_calls = 0
         self.last_inputs: ExampleInput | None = None
         self.last_context: ExecutionContext | None = None
 
-    def run(self, inputs: ExampleInput, context: Any) -> TaskExampleOutput:
+    def run(self, inputs: ExampleInput, context: Any) -> ControlExampleOutput:
         self.run_calls += 1
         self.last_inputs = inputs
         self.last_context = context
-        return TaskExampleOutput(
+        return ControlExampleOutput(
             message=inputs.message,
             invocation_id=context.invocation_id,
             count=inputs.count,
@@ -117,17 +116,17 @@ class TaskExampleStep(TaskStep[ExampleInput, TaskExampleOutput]):
         )
 
 
-class WorkflowExampleStep(WorkflowStep[ExampleInput, TaskExampleOutput]):
+class TriggerExampleStep(TriggerStep[ExampleInput, ControlExampleOutput]):
     def __init__(self) -> None:
         self.run_calls = 0
         self.last_inputs: ExampleInput | None = None
         self.last_context: ExecutionContext | None = None
 
-    def run(self, inputs: ExampleInput, context: Any) -> TaskExampleOutput:
+    def run(self, inputs: ExampleInput, context: Any) -> ControlExampleOutput:
         self.run_calls += 1
         self.last_inputs = inputs
         self.last_context = context
-        return TaskExampleOutput(
+        return ControlExampleOutput(
             message=inputs.message,
             invocation_id=context.invocation_id,
             count=inputs.count,
@@ -135,34 +134,16 @@ class WorkflowExampleStep(WorkflowStep[ExampleInput, TaskExampleOutput]):
         )
 
 
-class TriggerExampleStep(TriggerStep[ExampleInput, TaskExampleOutput]):
-    def __init__(self) -> None:
-        self.run_calls = 0
-        self.last_inputs: ExampleInput | None = None
-        self.last_context: ExecutionContext | None = None
-
-    def run(self, inputs: ExampleInput, context: Any) -> TaskExampleOutput:
-        self.run_calls += 1
-        self.last_inputs = inputs
-        self.last_context = context
-        return TaskExampleOutput(
-            message=inputs.message,
-            invocation_id=context.invocation_id,
-            count=inputs.count,
-            mode=inputs.mode,
-        )
-
-
-class UnexpectedTaskOutput(BaseModel):
+class UnexpectedControlOutput(BaseModel):
     value: str
 
 
-class InvalidOutputTaskStep(TaskStep[ExampleInput, TaskExampleOutput]):
-    def run(self, inputs: ExampleInput, context: Any) -> TaskExampleOutput:
-        return UnexpectedTaskOutput(value="not-the-registered-output")  # type: ignore[return-value]
+class InvalidOutputControlStep(ControlStep[ExampleInput, ControlExampleOutput]):
+    def run(self, inputs: ExampleInput, context: Any) -> ControlExampleOutput:
+        return UnexpectedControlOutput(value="not-the-registered-output")  # type: ignore[return-value]
 
 
-class ConfiguredTaskInput(BaseModel):
+class ConfiguredControlInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_to_upper=True)
 
     message: str
@@ -170,19 +151,19 @@ class ConfiguredTaskInput(BaseModel):
     mode: Literal["fast", "slow"] = "fast"
 
     @model_validator(mode="after")
-    def require_positive_slow_count(self) -> ConfiguredTaskInput:
+    def require_positive_slow_count(self) -> ConfiguredControlInput:
         if self.mode == "slow" and self.count < 1:
             raise ValueError("slow mode requires a positive count")
         return self
 
 
-class ConfiguredTaskStep(TaskStep[ConfiguredTaskInput, TaskExampleOutput]):
+class ConfiguredControlStep(ControlStep[ConfiguredControlInput, ControlExampleOutput]):
     def __init__(self) -> None:
         self.run_calls = 0
 
-    def run(self, inputs: ConfiguredTaskInput, context: Any) -> TaskExampleOutput:
+    def run(self, inputs: ConfiguredControlInput, context: Any) -> ControlExampleOutput:
         self.run_calls += 1
-        return TaskExampleOutput(
+        return ControlExampleOutput(
             message=inputs.message,
             invocation_id=context.invocation_id,
             count=inputs.count,
@@ -206,6 +187,7 @@ def _input_schema() -> dict[str, object]:
 def _installed_action(
     input_schema: dict[str, object],
     output_schema: dict[str, object] | None = None,
+    step_class: type[ActionStep[Any, Any]] = ExampleStep,
 ) -> InstalledActionManifest:
     manifest = {
         "apiVersion": "syntara.io/v1alpha1",
@@ -217,12 +199,11 @@ def _installed_action(
         },
         "spec": {
             "runtime": {
-                "kind": "custom-workload",
-                "entryPoint": "example_module:ExampleStep",
+                "kind": "custom-runner",
+                "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
             },
             "input": {"kind": "inline", "value": input_schema},
             "output": {"kind": "inline", "value": output_schema if output_schema is not None else {}},
-            "error": {"kind": "inline", "value": {}},
         },
     }
     return InstalledActionManifest.from_manifest(
@@ -335,7 +316,8 @@ def test_action_validation_uses_strict_json_mode_for_json_representations() -> N
     step = DateTimeActionStep()
     bindings = StepBindings()
     descriptor = StepDescriptor.for_installed_action(
-        step, _installed_action(DateTimeInput.model_json_schema())
+        step,
+        _installed_action(DateTimeInput.model_json_schema(), step_class=DateTimeActionStep),
     )
     bindings.bind(descriptor, step)
 
@@ -373,7 +355,7 @@ def test_model_construction_error_is_a_safe_invalid_input() -> None:
     bindings = StepBindings()
     bindings.bind(
         StepDescriptor.for_installed_action(
-            step, _installed_action(schema)
+            step, _installed_action(schema, step_class=FailingModelStep)
         ),
         step,
     )
@@ -427,11 +409,11 @@ def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
 
 
 def test_non_action_validation_escapes_control_characters_in_field_names() -> None:
-    step = ConfiguredTaskStep()
+    step = ConfiguredControlStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.task", step), step)
+    bindings.bind(StepDescriptor.for_step("acme.plugin.control", step), step)
 
-    wrapper = StepExecutor(bindings.binding("acme.plugin.task")).execute(
+    wrapper = StepExecutor(bindings.binding("acme.plugin.control")).execute(
         {"message": "hello", "bad\nfield": "value"}, _context()
     )
 
@@ -561,11 +543,11 @@ def test_container_execution_rejects_an_implementation_derived_action_binding() 
 
 def test_direct_mismatched_binding_is_rejected_before_any_typed_hook_runs() -> None:
     action_step = ExampleStep()
-    task_step = TaskExampleStep()
+    control_step = ControlExampleStep()
     descriptor = StepDescriptor.for_installed_action(
         action_step, _installed_action(_input_schema())
     )
-    binding = StepBinding(descriptor, task_step)
+    binding = StepBinding(descriptor, control_step)
 
     with pytest.raises(StepBindingError, match="does not match"):
         StepExecutor(binding)
@@ -574,11 +556,49 @@ def test_direct_mismatched_binding_is_rejected_before_any_typed_hook_runs() -> N
         container_step_for_binding(binding)
 
     assert action_step.run_calls == 0
-    assert task_step.run_calls == 0
+    assert control_step.run_calls == 0
 
 
-def test_non_action_taxonomy_retains_implementation_schema_compatibility() -> None:
-    step = TaskExampleStep()
+@pytest.mark.parametrize(
+    ("installed_step_type", "supplied_step_type"),
+    [
+        (ExampleStep, DateTimeActionStep),
+        (DateTimeActionStep, ExampleStep),
+    ],
+)
+def test_same_category_action_entry_point_mismatch_is_rejected_before_hooks(
+    installed_step_type: type[ActionStep[Any, Any]],
+    supplied_step_type: type[ActionStep[Any, Any]],
+) -> None:
+    installed_step = installed_step_type()
+    supplied_step = supplied_step_type()
+    installed_action = _installed_action(
+        installed_step.input_model().model_json_schema(),
+        step_class=installed_step_type,
+    )
+    descriptor = StepDescriptor.for_installed_action(
+        installed_step, installed_action
+    )
+    binding = StepBinding(descriptor, supplied_step)
+
+    with pytest.raises(StepBindingError, match="entry point"):
+        StepDescriptor.for_installed_action(supplied_step, installed_action)
+
+    with pytest.raises(StepBindingError, match="entry point"):
+        container_action_for_step(supplied_step, installed_action=installed_action)
+
+    with pytest.raises(StepBindingError, match="entry point"):
+        StepExecutor(binding)
+
+    with pytest.raises(StepBindingError, match="entry point"):
+        container_step_for_binding(binding)
+
+    assert installed_step.run_calls == 0
+    assert supplied_step.run_calls == 0
+
+
+def test_non_action_category_retains_implementation_schema_compatibility() -> None:
+    step = ControlExampleStep()
     bindings = StepBindings()
     bindings.bind(StepDescriptor.for_step("acme.plugin.example", step), step)
 
@@ -598,11 +618,11 @@ def test_non_action_taxonomy_retains_implementation_schema_compatibility() -> No
 
 @pytest.mark.parametrize(
     "step_factory",
-    [TaskExampleStep, WorkflowExampleStep, TriggerExampleStep],
-    ids=["task", "workflow", "trigger"],
+    [ControlExampleStep, TriggerExampleStep],
+    ids=["control", "trigger"],
 )
-def test_non_action_taxonomies_use_registered_pydantic_models(
-    step_factory: type[TaskExampleStep | WorkflowExampleStep | TriggerExampleStep],
+def test_non_action_categories_use_registered_pydantic_models(
+    step_factory: type[ControlExampleStep | TriggerExampleStep],
 ) -> None:
     step = step_factory()
     bindings = StepBindings()
@@ -638,11 +658,11 @@ def test_non_action_taxonomies_use_registered_pydantic_models(
 
 @pytest.mark.parametrize(
     "step_factory",
-    [TaskExampleStep, WorkflowExampleStep, TriggerExampleStep],
-    ids=["task", "workflow", "trigger"],
+    [ControlExampleStep, TriggerExampleStep],
+    ids=["control", "trigger"],
 )
 def test_non_action_executor_propagates_the_complete_context(
-    step_factory: type[TaskExampleStep | WorkflowExampleStep | TriggerExampleStep],
+    step_factory: type[ControlExampleStep | TriggerExampleStep],
 ) -> None:
     step = step_factory()
     bindings = StepBindings()
@@ -680,7 +700,7 @@ def test_non_action_executor_propagates_the_complete_context(
 def test_non_action_uses_registered_pydantic_model_failures(
     inputs: dict[str, object], error_type: str
 ) -> None:
-    step = ConfiguredTaskStep()
+    step = ConfiguredControlStep()
     bindings = StepBindings()
     bindings.bind(StepDescriptor.for_step("acme.plugin.configured", step), step)
 
@@ -696,7 +716,7 @@ def test_non_action_uses_registered_pydantic_model_failures(
 
 
 def test_non_action_uses_its_pydantic_model_configuration() -> None:
-    step = ConfiguredTaskStep()
+    step = ConfiguredControlStep()
     bindings = StepBindings()
     bindings.bind(StepDescriptor.for_step("acme.plugin.configured", step), step)
 
@@ -744,10 +764,10 @@ def test_trigger_executor_uses_its_registered_model_not_manifest_configuration()
 
 
 def test_non_action_output_validation_uses_generic_step_wording() -> None:
-    step = InvalidOutputTaskStep()
+    step = InvalidOutputControlStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.task", step), step)
-    binding = bindings.binding("acme.plugin.task")
+    bindings.bind(StepDescriptor.for_step("acme.plugin.control", step), step)
+    binding = bindings.binding("acme.plugin.control")
     executor = StepExecutor(binding)
     context = _context()
 
@@ -757,49 +777,78 @@ def test_non_action_output_validation_uses_generic_step_wording() -> None:
     assert "action" not in str(raised.value).lower()
 
 
-def test_supported_task_adapter_preserves_success_payload_and_digest() -> None:
-    direct_step = TaskExampleStep()
-    container_step = TaskExampleStep()
+def test_supported_control_adapter_preserves_success_payload_and_digest() -> None:
+    direct_step = ControlExampleStep()
+    container_step = ControlExampleStep()
     direct_bindings = StepBindings()
     container_bindings = StepBindings()
     direct_bindings.bind(
-        StepDescriptor.for_step("acme.plugin.task", direct_step), direct_step
+        StepDescriptor.for_step("acme.plugin.control", direct_step), direct_step
     )
     container_bindings.bind(
-        StepDescriptor.for_step("acme.plugin.task", container_step), container_step
+        StepDescriptor.for_step("acme.plugin.control", container_step), container_step
     )
     inputs = {"message": "hello", "count": "3"}
 
-    direct_wrapper = StepExecutor(direct_bindings.binding("acme.plugin.task")).execute(
+    direct_wrapper = StepExecutor(direct_bindings.binding("acme.plugin.control")).execute(
         inputs, _context()
     )
     container_handler = container_step_for_binding(
-        container_bindings.binding("acme.plugin.task")
+        container_bindings.binding("acme.plugin.control")
     )
     container_result = container_handler(
-        _container_invocation(inputs, step_revision_id="acme.plugin.task")
+        _container_invocation(inputs, step_revision_id="acme.plugin.control")
     )
 
     assert direct_wrapper.status == 0
     assert container_result.output == direct_wrapper.output
     assert container_result.output_schema_digest == canonical_json_digest(
-        TaskExampleOutput.model_json_schema()
+        ControlExampleOutput.model_json_schema()
     )
     assert direct_step.run_calls == 1
     assert container_step.run_calls == 1
 
 
-def test_supported_task_adapter_maps_the_invalid_input_wrapper_to_the_envelope() -> None:
-    step = TaskExampleStep()
-    bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.task", step), step)
+def test_supported_trigger_adapter_preserves_success_payload_and_digest() -> None:
+    direct_step = TriggerExampleStep()
+    container_step = TriggerExampleStep()
+    direct_bindings = StepBindings()
+    container_bindings = StepBindings()
+    direct_bindings.bind(
+        StepDescriptor.for_step("acme.plugin.trigger", direct_step), direct_step
+    )
+    container_bindings.bind(
+        StepDescriptor.for_step("acme.plugin.trigger", container_step), container_step
+    )
+    inputs = {"message": "hello", "count": "3"}
 
-    result = container_step_for_binding(bindings.binding("acme.plugin.task"))(
-        _container_invocation({"message": 42}, step_revision_id="acme.plugin.task")
+    direct_wrapper = StepExecutor(direct_bindings.binding("acme.plugin.trigger")).execute(
+        inputs, _context()
+    )
+    container_result = container_step_for_binding(
+        container_bindings.binding("acme.plugin.trigger")
+    )(_container_invocation(inputs, step_revision_id="acme.plugin.trigger"))
+
+    assert direct_wrapper.status == 0
+    assert container_result.output == direct_wrapper.output
+    assert container_result.output_schema_digest == canonical_json_digest(
+        ControlExampleOutput.model_json_schema()
+    )
+    assert direct_step.run_calls == 1
+    assert container_step.run_calls == 1
+
+
+def test_supported_control_adapter_maps_the_invalid_input_wrapper_to_the_envelope() -> None:
+    step = ControlExampleStep()
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_step("acme.plugin.control", step), step)
+
+    result = container_step_for_binding(bindings.binding("acme.plugin.control"))(
+        _container_invocation({"message": 42}, step_revision_id="acme.plugin.control")
     )
 
     assert result.output_schema_digest == canonical_json_digest(
-        TaskExampleOutput.model_json_schema()
+        ControlExampleOutput.model_json_schema()
     )
     assert result.output is None
     assert result.status_code != 0
@@ -807,17 +856,35 @@ def test_supported_task_adapter_maps_the_invalid_input_wrapper_to_the_envelope()
     assert step.run_calls == 0
 
 
-def test_supported_task_adapter_propagates_the_complete_context() -> None:
-    step = TaskExampleStep()
+def test_supported_trigger_adapter_maps_invalid_input_to_the_envelope() -> None:
+    step = TriggerExampleStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.task", step), step)
+    bindings.bind(StepDescriptor.for_step("acme.plugin.trigger", step), step)
+
+    result = container_step_for_binding(bindings.binding("acme.plugin.trigger"))(
+        _container_invocation({"message": 42}, step_revision_id="acme.plugin.trigger")
+    )
+
+    assert result.output_schema_digest == canonical_json_digest(
+        ControlExampleOutput.model_json_schema()
+    )
+    assert result.output is None
+    assert result.status_code != 0
+    assert result.error_code == FailureCode.INVALID_INPUT.value
+    assert step.run_calls == 0
+
+
+def test_supported_control_adapter_propagates_the_complete_context() -> None:
+    step = ControlExampleStep()
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_step("acme.plugin.control", step), step)
     cancellation = Event()
     cancellation.set()
     runtime_context = {"environment": "test", "requestId": "request-1"}
     invocation = ContainerInvocation(
         invocation_id="invoke-1",
         workflow_run_id="run-1",
-        step_revision_id="acme.plugin.task",
+        step_revision_id="acme.plugin.control",
         inputs={"message": "hello"},
         credential_file_paths={},
         timeout_seconds=30,
@@ -825,7 +892,7 @@ def test_supported_task_adapter_propagates_the_complete_context() -> None:
         cancellation=cancellation,
     )
 
-    result = container_step_for_binding(bindings.binding("acme.plugin.task"))(
+    result = container_step_for_binding(bindings.binding("acme.plugin.control"))(
         invocation
     )
 

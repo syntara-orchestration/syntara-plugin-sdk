@@ -1,0 +1,37 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Control",
+  "metadata": {
+    "name": "invoke-deploy",
+    "displayName": "Invoke deploy",
+    "description": "Invokes a deployment workflow."
+  },
+  "spec": {
+    "invocation": {
+      "kind": "workflow-invocation",
+      "workflow": "acme.issue-tools.deploy"
+    },
+    "runtime": {
+      "kind": "custom-runner",
+      "entryPoint": "acme.issue_tools.controls:Deploy"
+    },
+    "input": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "properties": {"environment": {"type": "string"}}
+      }
+    },
+    "output": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "properties": {"runId": {"type": "string"}}
+      }
+    },
+    "error": {
+      "kind": "inline",
+      "value": {"type": "object", "properties": {"message": {"type": "string"}}}
+    }
+  }
+}

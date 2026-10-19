@@ -14,6 +14,7 @@ from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
     ActionStep,
     BaseStep,
+    ControlStep,
     DriftCode,
     DriftIssue,
     DriftReport,
@@ -22,10 +23,8 @@ from syntara_plugin.runtime import (
     SchemaDriftError,
     StepBindings,
     StepDescriptor,
-    StepTaxonomy,
-    TaskStep,
+    StepKind,
     TriggerStep,
-    WorkflowStep,
     check_plugin_bindings,
     check_step_contract,
     check_target_binding,
@@ -66,18 +65,18 @@ def _paths(issues: tuple[DriftIssue, ...]) -> set[str]:
     return {issue.path for issue in issues}
 
 
-def _make_binding(step: BaseStep[Any, Any], identity: str, taxonomy: StepTaxonomy) -> StepBindings:
+def _make_binding(step: BaseStep[Any, Any], identity: str) -> StepBindings:
     bindings = StepBindings()
-    bindings.bind(StepDescriptor(identity, taxonomy, {"type": "object"}, {"type": "object"}), step)
+    bindings.bind(StepDescriptor.for_step(identity, step), step)
     return bindings
 
 
 @pytest.mark.parametrize(
     "base",
-    [ActionStep, TaskStep, WorkflowStep, TriggerStep],
-    ids=["action", "task", "workflow", "trigger"],
+    [ActionStep, ControlStep, TriggerStep],
+    ids=["action", "control", "trigger"],
 )
-def test_matching_model_and_schema_pass_strict_for_every_taxonomy(
+def test_matching_model_and_schema_pass_strict_for_every_category(
     base: type[BaseStep[Any, Any]],
 ) -> None:
     class PriorityInput(BaseModel):
@@ -116,6 +115,23 @@ def test_matching_model_and_schema_pass_strict_for_every_taxonomy(
         }
     )
     assert report.output_schema_digest is not None
+
+
+def test_check_step_contract_accepts_frozen_descriptor_schemas() -> None:
+    step = _make_step(ControlStep, TitleInput, TitleOutput)
+    descriptor = StepDescriptor.for_step("acme.plugin.step", step)
+
+    report = check_step_contract(
+        step,
+        input_schema=descriptor.input_schema,
+        output_schema=descriptor.output_schema,
+        step_identity="acme.plugin.step",
+    )
+
+    assert report.passed(strict=True)
+    assert report.input_schema_digest == canonical_json_digest(
+        TitleInput.model_json_schema()
+    )
 
 
 def test_input_manifest_property_missing_from_model_is_an_error() -> None:
@@ -869,7 +885,7 @@ def test_report_issues_are_deduplicated_and_sorted() -> None:
 
 
 def _matching_target(step_class: type[BaseStep[Any, Any]], **overrides: Any) -> dict[str, Any]:
-    """Build one compiled custom-workload Action target matching the step's models."""
+    """Build one compiled custom-runner Action target matching the step's models."""
 
     target: dict[str, Any] = {
         "kind": "Action",
@@ -886,7 +902,7 @@ def _matching_target(step_class: type[BaseStep[Any, Any]], **overrides: Any) -> 
             "required": ["issue_url"],
         },
         "runtime": {
-            "kind": "custom-workload",
+            "kind": "custom-runner",
             "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
             "workload": "plugin-workload",
             "abi": "syntara.container/v1alpha1",
@@ -914,7 +930,7 @@ def _issue_bindings(step: BaseStep[Any, Any] | None = None) -> StepBindings:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.create-issue",
-            StepTaxonomy.ACTION,
+            StepKind.ACTION,
             _IssueInput.model_json_schema(),
             _IssueOutput.model_json_schema(),
         ),
@@ -943,12 +959,12 @@ def test_check_target_binding_rejects_platform_runner_targets() -> None:
     target["runtime"] = {"kind": "platform-runner", "driver": "http.v1"}
 
     binding = bindings.binding("acme.issue-tools.create-issue")
-    with pytest.raises(ValueError, match="custom-workload"):
+    with pytest.raises(ValueError, match="custom-runner"):
         check_target_binding(target, binding)
 
 
-def test_check_target_binding_reports_taxonomy_mismatch() -> None:
-    class CreateIssueTask(TaskStep[_IssueInput, _IssueOutput]):
+def test_check_target_binding_reports_category_mismatch() -> None:
+    class CreateIssueControl(ControlStep[_IssueInput, _IssueOutput]):
         def run(self, inputs: _IssueInput, context: ExecutionContext) -> _IssueOutput:
             return _IssueOutput(issue_url=inputs.title)
 
@@ -956,18 +972,18 @@ def test_check_target_binding_reports_taxonomy_mismatch() -> None:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.create-issue",
-            StepTaxonomy.TASK,
+            StepKind.CONTROL,
             {"type": "object"},
             {"type": "object"},
         ),
-        CreateIssueTask(),
+        CreateIssueControl(),
     )
-    target = _matching_target(CreateIssueTask)
+    target = _matching_target(CreateIssueControl)
     target["kind"] = "Action"
 
     report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
 
-    assert DriftCode.TAXONOMY_MISMATCH in _codes(report.issues)
+    assert DriftCode.CATEGORY_MISMATCH in _codes(report.issues)
     assert not report.passed()
 
 
@@ -983,7 +999,7 @@ def test_check_target_binding_reports_unresolved_models() -> None:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.create-issue",
-            StepTaxonomy.ACTION,
+            StepKind.ACTION,
             {"type": "object"},
             {"type": "object"},
         ),
@@ -1000,7 +1016,7 @@ def test_check_target_binding_reports_unresolved_models() -> None:
 def test_check_target_binding_entry_point_not_declared_is_an_error() -> None:
     bindings = _issue_bindings()
     target = _matching_target(CreateIssueStep)
-    target["runtime"] = {"kind": "custom-workload", "workload": "plugin-workload"}
+    target["runtime"] = {"kind": "custom-runner", "workload": "plugin-workload"}
 
     report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
 
@@ -1095,7 +1111,7 @@ def test_check_plugin_bindings_reports_missing_and_undeclared() -> None:
     stray.bind(
         StepDescriptor(
             "acme.issue-tools.close-issue",
-            StepTaxonomy.ACTION,
+            StepKind.ACTION,
             {"type": "object"},
             {"type": "object"},
         ),
@@ -1126,10 +1142,6 @@ def test_check_plugin_bindings_reports_trigger_without_schemas() -> None:
         "kind": "Trigger",
         "identity": "acme.issue-tools.issue-opened",
         "version": "0.1.0",
-        "runtime": {
-            "kind": "custom-workload",
-            "entryPoint": f"{IssueOpenedTrigger.__module__}:{IssueOpenedTrigger.__qualname__}",
-        },
         "configuration": {"type": "object"},
     }
     descriptor = {"spec": {"targets": [trigger]}}
@@ -1137,7 +1149,7 @@ def test_check_plugin_bindings_reports_trigger_without_schemas() -> None:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.issue-opened",
-            StepTaxonomy.TRIGGER,
+            StepKind.TRIGGER,
             {"type": "object"},
             {"type": "object"},
         ),
@@ -1149,6 +1161,142 @@ def test_check_plugin_bindings_reports_trigger_without_schemas() -> None:
     assert _codes(reports) == {DriftCode.SCHEMA_UNAVAILABLE}
     assert reports[0].passed()
     assert not reports[0].passed(strict=True)
+
+
+def test_check_plugin_bindings_checks_direct_control_and_trigger_targets() -> None:
+    class InventoryControl(ControlStep[_IssueInput, _IssueOutput]):
+        def run(self, inputs: _IssueInput, context: ExecutionContext) -> _IssueOutput:
+            return _IssueOutput(issue_url=inputs.title)
+
+    control_identity = "acme.issue-tools.inventory-sync"
+    trigger_identity = "acme.issue-tools.issue-opened"
+    bindings = StepBindings()
+    control = InventoryControl()
+    bindings.bind(
+        StepDescriptor.for_step(control_identity, control),
+        control,
+    )
+    trigger = IssueOpenedTrigger()
+    bindings.bind(
+        StepDescriptor.for_step(trigger_identity, trigger),
+        trigger,
+    )
+    descriptor = {
+        "spec": {
+            "targets": [
+                {
+                    "kind": "Control",
+                    "identity": control_identity,
+                    "version": "0.1.0",
+                    "invocation": {"kind": "orchestration"},
+                    "input": _IssueInput.model_json_schema(),
+                    "output": _IssueOutput.model_json_schema(),
+                },
+                {
+                    "kind": "Trigger",
+                    "identity": trigger_identity,
+                    "version": "0.1.0",
+                    "driver": "webhook.v1",
+                    "configuration": {"type": "object"},
+                    "input": _IssueInput.model_json_schema(),
+                    "output": _IssueOutput.model_json_schema(),
+                },
+            ]
+        }
+    }
+
+    reports = check_plugin_bindings(descriptor, bindings)
+
+    assert [report.step_identity for report in reports] == [
+        control_identity,
+        trigger_identity,
+    ]
+    assert all(report.passed(strict=True) for report in reports)
+
+
+def test_check_target_binding_accepts_frozen_descriptor_schemas() -> None:
+    class InventoryControl(ControlStep[_IssueInput, _IssueOutput]):
+        def run(self, inputs: _IssueInput, context: ExecutionContext) -> _IssueOutput:
+            return _IssueOutput(issue_url=inputs.title)
+
+    identity = "acme.issue-tools.inventory-sync"
+    step = InventoryControl()
+    descriptor = StepDescriptor.for_step(identity, step)
+    bindings = StepBindings()
+    bindings.bind(descriptor, step)
+    target = {
+        "kind": "Control",
+        "identity": identity,
+        "version": "0.1.0",
+        "invocation": {"kind": "orchestration"},
+        "input": descriptor.input_schema,
+        "output": descriptor.output_schema,
+    }
+
+    report = check_target_binding(target, bindings.binding(identity))
+
+    assert report.passed(strict=True)
+    assert report.input_schema_digest is not None
+
+
+@pytest.mark.parametrize(
+    ("kind", "target_fields"),
+    [
+        (
+            "Control",
+            {"invocation": {"kind": "orchestration"}},
+        ),
+        (
+            "Trigger",
+            {
+                "driver": "webhook.v1",
+                "configuration": {"type": "object"},
+            },
+        ),
+    ],
+    ids=["control", "trigger"],
+)
+def test_direct_control_and_trigger_targets_report_input_and_output_contract_drift(
+    kind: str,
+    target_fields: dict[str, object],
+) -> None:
+    step_base = ControlStep if kind == "Control" else TriggerStep
+    step = _make_step(step_base, _IssueInput, _IssueOutput)
+    identity = f"acme.issue-tools.{kind.lower()}-drift"
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_step(identity, step), step)
+    target = {
+        "kind": kind,
+        "identity": identity,
+        "version": "0.1.0",
+        **target_fields,
+        "input": {
+            "type": "object",
+            "properties": {"unexpected_input": {"type": "string"}},
+            "required": ["unexpected_input"],
+        },
+        "output": {
+            "type": "object",
+            "properties": {"unexpected_output": {"type": "string"}},
+            "required": ["unexpected_output"],
+        },
+    }
+
+    report = check_target_binding(target, bindings.binding(identity))
+
+    assert not report.passed(strict=True)
+    assert {
+        issue.code for issue in report.issues if issue.contract == "input"
+    } >= {
+        DriftCode.FIELD_MISSING_FROM_MODEL,
+        DriftCode.FIELD_MISSING_FROM_SCHEMA,
+    }
+    assert {
+        issue.code for issue in report.issues if issue.contract == "output"
+    } >= {
+        DriftCode.FIELD_MISSING_FROM_MODEL,
+        DriftCode.FIELD_MISSING_FROM_SCHEMA,
+    }
 
 
 def test_check_plugin_bindings_rejects_bad_descriptor_argument() -> None:
@@ -1189,7 +1337,7 @@ def test_validate_plugin_bindings_strict_escalates_warnings() -> None:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.close-issue",
-            StepTaxonomy.ACTION,
+            StepKind.ACTION,
             {"type": "object"},
             {"type": "object"},
         ),
@@ -1703,7 +1851,7 @@ def test_check_target_binding_reports_identity_mismatch() -> None:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.close-issue",
-            StepTaxonomy.ACTION,
+            StepKind.ACTION,
             _IssueInput.model_json_schema(),
             _IssueOutput.model_json_schema(),
         ),
@@ -1717,38 +1865,29 @@ def test_check_target_binding_reports_identity_mismatch() -> None:
     assert not report.passed()
 
 
-def test_unmapped_kind_with_python_runtime_is_validated() -> None:
-    """The umbrella Step kind must not gate validation: runtime shape decides."""
+def test_category_and_kind_must_agree_for_python_runtime_targets() -> None:
+    """Compiled descriptors cannot use a generic kind to evade category checks."""
 
     bindings = _issue_bindings()
     target = _matching_target(CreateIssueStep)
     target["kind"] = "Step"
 
     report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
-    assert report.passed(strict=True)
-
-    target["input"] = {
-        "type": "object",
-        "properties": {"title": {"type": "string"}, "owner": {"type": "string"}},
-        "required": ["title", "owner"],
-    }
-    reports = check_plugin_bindings({"spec": {"targets": [target]}}, bindings)
-    assert _codes(reports) == {DriftCode.FIELD_MISSING_FROM_MODEL}
+    assert DriftCode.CATEGORY_MISMATCH in _codes(report.issues)
 
 
-def test_unmapped_kind_with_python_runtime_is_not_reported_undeclared() -> None:
+def test_unmapped_kind_with_python_runtime_is_reported_as_a_category_mismatch() -> None:
     bindings = _issue_bindings()
     target = _matching_target(CreateIssueStep)
     target["kind"] = "Step"
 
     reports = check_plugin_bindings({"spec": {"targets": [target]}}, bindings)
 
-    assert reports[0].passed(strict=True)
-    assert DriftCode.BINDING_UNDECLARED not in _codes(reports)
+    assert DriftCode.CATEGORY_MISMATCH in _codes(reports)
 
 
-def test_taxonomy_metadata_is_verified_for_unmapped_kinds() -> None:
-    class CreateIssueTask(TaskStep[_IssueInput, _IssueOutput]):
+def test_duplicated_category_metadata_is_rejected() -> None:
+    class CreateIssueControl(ControlStep[_IssueInput, _IssueOutput]):
         def run(self, inputs: _IssueInput, context: ExecutionContext) -> _IssueOutput:
             return _IssueOutput(issue_url=inputs.title)
 
@@ -1756,26 +1895,30 @@ def test_taxonomy_metadata_is_verified_for_unmapped_kinds() -> None:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.create-issue",
-            StepTaxonomy.TASK,
+            StepKind.CONTROL,
             {"type": "object"},
             {"type": "object"},
         ),
-        CreateIssueTask(),
+        CreateIssueControl(),
     )
-    target = _matching_target(CreateIssueTask)
-    target["kind"] = "Step"
-    target["taxonomy"] = "action"
+    target = _matching_target(CreateIssueControl)
+    target["category"] = "action"
 
     report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
 
-    assert DriftCode.TAXONOMY_MISMATCH in _codes(report.issues)
+    assert DriftCode.CATEGORY_MISMATCH in _codes(report.issues)
 
 
 def test_binding_for_non_step_target_is_undeclared() -> None:
     descriptor = {"spec": {"targets": [{"kind": "IntegrationType", "identity": "acme.conn"}]}}
     bindings = _issue_bindings()
     bindings.bind(
-        StepDescriptor("acme.conn", StepTaxonomy.ACTION, {"type": "object"}, {"type": "object"}),
+        StepDescriptor(
+            "acme.conn",
+            StepKind.ACTION,
+            {"type": "object"},
+            {"type": "object"},
+        ),
         CreateIssueStep(),
     )
 
@@ -1944,23 +2087,48 @@ def test_check_target_binding_requires_a_usable_identity() -> None:
     assert not report.passed()
 
 
-def test_check_target_binding_rejects_invalid_declared_taxonomy() -> None:
+def test_check_target_binding_rejects_duplicated_category() -> None:
     bindings = _issue_bindings()
     target = _matching_target(CreateIssueStep)
-    target["taxonomy"] = "banana"
+    target["category"] = "action"
 
     report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
 
-    assert DriftCode.TAXONOMY_INVALID in _codes(report.issues)
+    assert DriftCode.CATEGORY_INVALID in _codes(report.issues)
     assert not report.passed()
-    assert DriftCode.TAXONOMY_MISMATCH not in _codes(report.issues)
+    assert DriftCode.CATEGORY_MISMATCH not in _codes(report.issues)
 
 
-def test_check_target_binding_rejects_malformed_declared_taxonomy() -> None:
+def test_check_target_binding_accepts_custom_runner_runtime_on_control_targets() -> None:
+    class InventoryControl(ControlStep[_IssueInput, _IssueOutput]):
+        def run(self, inputs: _IssueInput, context: ExecutionContext) -> _IssueOutput:
+            return _IssueOutput(issue_url=inputs.title)
+
+    identity = "acme.issue-tools.inventory-sync"
+    step = InventoryControl()
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_step(identity, step), step)
+    target = {
+        "kind": "Control",
+        "identity": identity,
+        "version": "0.1.0",
+        "input": _IssueInput.model_json_schema(),
+        "output": _IssueOutput.model_json_schema(),
+        "runtime": {
+            "kind": "custom-runner",
+            "entryPoint": f"{InventoryControl.__module__}:{InventoryControl.__qualname__}",
+        },
+    }
+
+    report = check_target_binding(target, bindings.binding(identity))
+    assert report.passed()
+
+
+def test_check_target_binding_rejects_any_duplicated_category_value() -> None:
     bindings = _issue_bindings()
     target = _matching_target(CreateIssueStep)
-    target["taxonomy"] = 42
+    target["category"] = 42
 
     report = check_target_binding(target, bindings.binding("acme.issue-tools.create-issue"))
 
-    assert DriftCode.TAXONOMY_INVALID in _codes(report.issues)
+    assert DriftCode.CATEGORY_INVALID in _codes(report.issues)

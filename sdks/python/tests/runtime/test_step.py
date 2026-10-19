@@ -9,10 +9,9 @@ from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
     BaseStep,
+    ControlStep,
     ExecutionContext,
-    TaskStep,
     TriggerStep,
-    WorkflowStep,
 )
 
 
@@ -35,16 +34,7 @@ class ActionEchoStep(ActionStep[EchoInput, EchoOutput]):
         )
 
 
-class TaskEchoStep(TaskStep[EchoInput, EchoOutput]):
-    def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
-        return EchoOutput(
-            message=inputs.message,
-            invocation_id=context.invocation_id,
-            cancelled=context.cancelled,
-        )
-
-
-class WorkflowEchoStep(WorkflowStep[EchoInput, EchoOutput]):
+class ControlEchoStep(ControlStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
         return EchoOutput(
             message=inputs.message,
@@ -64,8 +54,7 @@ class TriggerEchoStep(TriggerStep[EchoInput, EchoOutput]):
 
 def test_public_api_exports_the_typed_step_classes() -> None:
     assert issubclass(ActionStep, BaseStep)
-    assert issubclass(TaskStep, BaseStep)
-    assert issubclass(WorkflowStep, BaseStep)
+    assert issubclass(ControlStep, BaseStep)
     assert issubclass(TriggerStep, BaseStep)
 
 
@@ -86,8 +75,8 @@ def test_execution_context_reports_cooperative_cancellation() -> None:
     assert context.cancelled
 
 
-def test_all_taxonomy_classes_resolve_their_pydantic_models() -> None:
-    for step_type in (ActionEchoStep, TaskEchoStep, WorkflowEchoStep, TriggerEchoStep):
+def test_all_category_classes_resolve_their_pydantic_models() -> None:
+    for step_type in (ActionEchoStep, ControlEchoStep, TriggerEchoStep):
         assert step_type.input_model() is EchoInput
         assert step_type.output_model() is EchoOutput
 
@@ -112,13 +101,10 @@ def test_generic_intermediate_base_class_resolves_models_transitively() -> None:
 
 @pytest.mark.parametrize(
     "step_type",
-    [ActionEchoStep, TaskEchoStep, WorkflowEchoStep, TriggerEchoStep],
+    [ActionEchoStep, ControlEchoStep, TriggerEchoStep],
 )
 def test_direct_execution_delegates_and_propagates_context(
-    step_type: type[ActionEchoStep]
-    | type[TaskEchoStep]
-    | type[WorkflowEchoStep]
-    | type[TriggerEchoStep],
+    step_type: type[ActionEchoStep] | type[ControlEchoStep] | type[TriggerEchoStep],
 ) -> None:
     context = ExecutionContext(
         invocation_id="invoke-1",

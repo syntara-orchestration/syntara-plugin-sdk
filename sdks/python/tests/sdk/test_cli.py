@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+import yaml
 from syntara_plugin.sdk.cli import _catalog_entry, _credentials_from_auth_file, main
 from syntara_plugin.sdk.settings import SETTINGS_FILENAME
 
@@ -55,6 +57,10 @@ def test_init_creates_a_compilable_workspace_and_validate_reports_its_digest(
     assert (workspace / SETTINGS_FILENAME).is_file()
     assert (workspace / "steps/request/manifest.yaml").is_file()
     assert (workspace / "schemas/request.input.yaml").is_file()
+    generated_manifest = yaml.safe_load(
+        (workspace / "steps/request/manifest.yaml").read_text(encoding="utf-8")
+    )
+    assert "error" in generated_manifest["spec"]
 
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out.splitlines()[-1])
@@ -190,11 +196,11 @@ def test_validate_reports_compiler_diagnostics_without_a_traceback(tmp_path: Pat
     assert payload["diagnostics"][0]["code"] == "DOCUMENT_UNREADABLE"
 
 
-def test_validate_defers_a_custom_workload_image_binding_until_build(
+def test_validate_defers_a_custom_runner_image_binding_until_build(
     tmp_path: Path, capsys
 ) -> None:
     """Source validation does not need an image that has not been built yet."""
-    workspace = tmp_path / "custom-workload"
+    workspace = tmp_path / "custom-runner"
     workspace.mkdir()
     (workspace / "plugin.yaml").write_text(
         """\
@@ -202,15 +208,15 @@ apiVersion: syntara.io/v1alpha1
 kind: Plugin
 metadata:
   namespace: acme
-  name: custom-workload
+  name: custom-runner
   version: 0.1.0
-  displayName: Custom workload
-  description: A custom workload plugin.
+  displayName: Custom runner
+  description: A custom runner plugin.
 spec:
   documentation:
     path: docs/README.md
   workload:
-    image: custom-workload-image
+    image: custom-runner-image
   targets:
     - steps/request/manifest.yaml
 """,
@@ -225,11 +231,11 @@ kind: Action
 metadata:
   name: request
   displayName: Request
-  description: A custom workload action.
+  description: A custom runner action.
 spec:
   runtime:
-    kind: custom-workload
-    entryPoint: custom_workload.actions:Request
+    kind: custom-runner
+    entryPoint: custom_runner.actions:Request
   input:
     kind: inline
     value:
@@ -247,12 +253,12 @@ spec:
     )
     documentation = workspace / "docs/README.md"
     documentation.parent.mkdir()
-    documentation.write_text("# Custom workload\n", encoding="utf-8")
+    documentation.write_text("# Custom runner\n", encoding="utf-8")
 
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
-    assert payload["deferredImageBindings"] == ["custom-workload-image"]
+    assert payload["deferredImageBindings"] == ["custom-runner-image"]
 
     assert (
         main(
@@ -260,7 +266,7 @@ spec:
                 "build",
                 str(workspace / "plugin.yaml"),
                 "--output",
-                str(workspace / "custom-workload.oci.tar"),
+                str(workspace / "custom-runner.oci.tar"),
                 "--json",
             ]
         )
@@ -560,7 +566,7 @@ def test_settings_rejects_registry_secrets(tmp_path: Path, capsys) -> None:
 
 def test_settings_reject_legacy_duplicate_registry_fields(tmp_path: Path, capsys) -> None:
     """Unreleased settings use one registry block instead of compatibility aliases."""
-    workspace = _custom_workload_workspace(tmp_path)
+    workspace = _custom_runner_workspace(tmp_path)
     settings = workspace / SETTINGS_FILENAME
     settings.write_text(
         "\n".join(
@@ -585,7 +591,7 @@ def test_settings_reject_legacy_duplicate_registry_fields(tmp_path: Path, capsys
 
 def test_settings_rejects_legacy_plugin_repository_field(tmp_path: Path, capsys) -> None:
     """The artifact repository name describes the published OCI object precisely."""
-    workspace = _custom_workload_workspace(tmp_path)
+    workspace = _custom_runner_workspace(tmp_path)
     settings = workspace / SETTINGS_FILENAME
     settings.write_text(
         "\n".join(
@@ -634,7 +640,7 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
     """One opt-in command retains both OCI outputs and never stores a password."""
-    workspace = _custom_workload_workspace(tmp_path)
+    workspace = _custom_runner_workspace(tmp_path)
     settings = workspace / SETTINGS_FILENAME
     settings.write_text(
         "\n".join(
@@ -645,7 +651,7 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
                 "registry:",
                 "  origin: https://registry.example.test",
                 "  artifactRepository: acme/plugins/custom",
-                "  workloadRepository: acme/custom-workload",
+                "  workloadRepository: acme/custom-runner",
                 "  username: publisher",
                 "build:",
                 "  artifactOutput: dist/custom.oci.tar",
@@ -655,7 +661,7 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
                 "    containerfile: Containerfile",
                 "    tag: 0.1.0",
                 "    platform: linux/amd64",
-                "    imageId: custom-workload",
+                "    imageId: custom-runner",
                 "publish:",
                 "  channel: 0.1.0",
                 "  updateCatalog: false",
@@ -669,7 +675,7 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     def build_workload(request, *, verbose):
         built["request"] = request
         built["verbose"] = verbose
-        return f"registry.example.test/acme/custom-workload@{_WORKLOAD_DIGEST}"
+        return f"registry.example.test/acme/custom-runner@{_WORKLOAD_DIGEST}"
 
     class Publisher:
         def __init__(self, target, *, credentials) -> None:
@@ -705,10 +711,10 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     )
     payload = json.loads(capsys.readouterr().out)
     assert (
-        payload["workloadImage"] == f"registry.example.test/acme/custom-workload@{_WORKLOAD_DIGEST}"
+        payload["workloadImage"] == f"registry.example.test/acme/custom-runner@{_WORKLOAD_DIGEST}"
     )
     assert payload["workloadPlatform"] == "linux/amd64"
-    assert payload["workloadRepository"] == "registry.example.test/acme/custom-workload"
+    assert payload["workloadRepository"] == "registry.example.test/acme/custom-runner"
     assert payload["publication"]["immutableReference"] == (
         f"acme/plugins/custom@{payload['artifactDigest']}"
     )
@@ -716,8 +722,8 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     assert built["credentials"].password == "not-printed"
     assert built["request"].platform == "linux/amd64"
     descriptor = json.loads(built["artifact"].plugin_manifest.content)
-    assert descriptor["spec"]["workloads"]["custom-workload"]["image"] == (
-        f"registry.example.test/acme/custom-workload@{_WORKLOAD_DIGEST}"
+    assert descriptor["spec"]["workloads"]["custom-runner"]["image"] == (
+        f"registry.example.test/acme/custom-runner@{_WORKLOAD_DIGEST}"
     )
 
 
@@ -725,7 +731,7 @@ def test_build_with_workload_validates_before_pushing_an_image(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
     """Invalid plugin source never leaves an orphan image in a registry."""
-    workspace = _custom_workload_workspace(tmp_path)
+    workspace = _custom_runner_workspace(tmp_path)
     settings = workspace / SETTINGS_FILENAME
     settings.write_text(
         """apiVersion: syntara.io/v1alpha1
@@ -733,7 +739,7 @@ kind: PluginBuildSettings
 manifest: plugin.yaml
 registry:
   origin: https://registry.example.test
-  workloadRepository: acme/custom-workload
+  workloadRepository: acme/custom-runner
 build:
   artifactOutput: dist/custom.oci.tar
   workload:
@@ -742,7 +748,7 @@ build:
     containerfile: Containerfile
     tag: 0.1.0
     platform: linux/amd64
-    imageId: custom-workload
+    imageId: custom-runner
 """,
         encoding="utf-8",
     )
@@ -947,7 +953,7 @@ catalog:
 
 
 def test_catalog_entry_records_all_runtime_ownerships() -> None:
-    """Only action targets contribute runtime ownership to a catalog entry."""
+    """Every target runtime contributes ownership, regardless of concrete kind."""
     descriptor = {
         "metadata": {"namespace": "example", "name": "mixed", "version": "0.1.0"},
         "spec": {
@@ -955,7 +961,7 @@ def test_catalog_entry_records_all_runtime_ownerships() -> None:
             "targets": [
                 {"kind": "IntegrationType", "identity": "example.connection"},
                 {"kind": "CredentialType", "identity": "example.token"},
-                {"kind": "Action", "runtime": {"kind": "custom-workload"}},
+                {"kind": "Action", "runtime": {"kind": "custom-runner"}},
                 {"kind": "Action", "runtime": {"kind": "platform-runner"}},
             ],
         },
@@ -967,12 +973,31 @@ def test_catalog_entry_records_all_runtime_ownerships() -> None:
 
     entry = _catalog_entry(artifact, "acme/plugins/mixed")
 
-    assert entry["runtimeOwnerships"] == ["custom-workload", "platform-runner"]
+    assert entry["runtimeOwnerships"] == ["custom-runner", "platform-runner"]
 
 
-def _custom_workload_workspace(tmp_path: Path) -> Path:
-    """Write the smallest source workspace that requires one custom workload image."""
-    workspace = tmp_path / "custom-workload"
+@pytest.mark.parametrize("kind", ["Control", "Trigger"])
+def test_catalog_entry_supports_plugins_without_runner_targets(kind: str) -> None:
+    descriptor = {
+        "metadata": {"namespace": "example", "name": "control-only", "version": "0.1.0"},
+        "spec": {
+            "documentation": {"digest": "sha256:" + "d" * 64},
+            "targets": [{"kind": kind, "identity": "example.step"}],
+        },
+    }
+    artifact = SimpleNamespace(
+        digest="sha256:" + "a" * 64,
+        plugin_manifest=SimpleNamespace(content=json.dumps(descriptor).encode("utf-8")),
+    )
+
+    entry = _catalog_entry(artifact, "acme/plugins/control-only")
+
+    assert entry["runtimeOwnerships"] == []
+
+
+def _custom_runner_workspace(tmp_path: Path) -> Path:
+    """Write the smallest source workspace that requires one custom runner image."""
+    workspace = tmp_path / "custom-runner"
     (workspace / "steps/create/manifest.yaml").parent.mkdir(parents=True)
     (workspace / "docs").mkdir()
     (workspace / "Containerfile").write_text("FROM scratch\n", encoding="utf-8")
@@ -981,15 +1006,15 @@ def _custom_workload_workspace(tmp_path: Path) -> Path:
 kind: Plugin
 metadata:
   namespace: acme
-  name: custom-workload
+  name: custom-runner
   version: 0.1.0
-  displayName: Custom workload
-  description: One custom workload action.
+  displayName: Custom runner
+  description: One custom runner action.
 spec:
   documentation:
     path: docs/README.md
   workload:
-    image: custom-workload
+    image: custom-runner
   targets:
     - steps/create/manifest.yaml
 """,
@@ -1001,11 +1026,11 @@ kind: Action
 metadata:
   name: create
   displayName: Create
-  description: A custom workload action.
+  description: A custom runner action.
 spec:
   runtime:
-    kind: custom-workload
-    entryPoint: custom_workload.actions:Create
+    kind: custom-runner
+    entryPoint: custom_runner.actions:Create
   input:
     kind: inline
     value:
@@ -1021,5 +1046,5 @@ spec:
 """,
         encoding="utf-8",
     )
-    (workspace / "docs/README.md").write_text("# Custom workload\n", encoding="utf-8")
+    (workspace / "docs/README.md").write_text("# Custom runner\n", encoding="utf-8")
     return workspace

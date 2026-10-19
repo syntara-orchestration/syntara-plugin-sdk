@@ -1,7 +1,7 @@
 {
   "fixtureBundleVersion": "syntara.catalog-fixtures/v1alpha1",
-  "contractBundleDigest": "sha256:544e504c66849dc9018af9458709360362116a5f7d21404c9f69376fb7906a99",
-  "fixtureContentDigest": "sha256:2f3a50aa4db6b074d21909cf6bea2b752a427c9e620e6130424b85b9794d9e0e",
+  "contractBundleDigest": "sha256:0a80b27a8b9d24b2444adaf93e491a7de0f423a08d9c042159a9906d1f499c41",
+  "fixtureContentDigest": "sha256:141b7796bbbb63a378c98a57774b057c8bcdd64a1f53c6473b9c47589b9e35fd",
   "catalogCases": [
     {"path": "catalog/valid-20.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 41, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": []},
     {"path": "catalog/expired.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_INDEX_EXPIRED"]},
@@ -18,6 +18,9 @@
     {"path": "credential-recipe.valid.json", "kind": "credential_recipe"},
     {"path": "trigger-driver.valid.json", "kind": "trigger_driver"},
     {"path": "trigger-event-mapping.valid.json", "kind": "trigger_event_mapping"},
-    {"path": "installed-identity.valid.json", "kind": "installed_identity"}
+    {"path": "installed-identity.valid.json", "kind": "installed_identity"},
+    {"path": "control.valid.json", "kind": "control"},
+    {"path": "trigger.valid.json", "kind": "trigger"},
+    {"path": "plugin-descriptor.valid.json", "kind": "plugin_descriptor"}
   ]
 }

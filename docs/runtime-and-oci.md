@@ -1,7 +1,7 @@
 # Runtime and OCI model
 
 This page distinguishes the pieces of a plugin release. It is useful when you
-need a custom workload; ordinary platform-runner actions need only the plugin
+need a custom runner; ordinary platform-runner actions need only the plugin
 artifact.
 
 ## Release boundaries
@@ -17,7 +17,7 @@ plugin.yaml + target manifests + schemas + Markdown
                   v
        registry artifact repository / catalog index
 
-custom-workload source + Containerfile
+custom-runner source + Containerfile
                   |
                   | syntara-plugin build --with-workload --publish
                   v
@@ -30,7 +30,7 @@ custom-workload source + Containerfile
 
 The artifact is the declarative, inspectable plugin release. A workload image
 is a separate OCI image containing author-owned executable code. The compiler
-records a custom-workload action's logical image ID and binds it to an immutable
+records a custom-runner action's logical image ID and binds it to an immutable
 `repository@sha256:...` reference. The Execution Plane uses that resolved
 reference, never a mutable tag.
 
@@ -52,7 +52,7 @@ workload. It carries invocation and workflow-run identities, step inputs,
 output/error contracts, and approved file paths. It does not carry raw
 credentials in workflow JSON, environment variables, or command-line arguments.
 
-Credential-bearing custom workload execution is intentionally deferred in the
+Credential-bearing custom runner execution is intentionally deferred in the
 current local proof of concept. The ABI reserves a map of credential-file paths:
 the eventual Execution Plane will redeem an opaque, short-lived credential
 handle, write a secret into an isolated per-invocation in-memory mount, make
@@ -62,20 +62,22 @@ identity.
 
 ## Typed Python steps
 
-Custom-workload authors implement steps with the typed Python API in
+Custom-runner authors implement steps with the typed Python API in
 [`syntara_plugin.runtime`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/).
 `BaseStep[TInput, TOutput]` is bound to Pydantic v2 models and exposes one
 stable author-facing entrypoint, `execute(inputs, context)`. Subclasses
 implement `run()`; the shared dispatch boundary validates raw input and returns
 the common output envelope without changing that hook.
 
-The four executable taxonomy classes share the same lifecycle:
+The three executable Step classes share the same lifecycle. A catalog
+**Step type** (for example, Create GitHub Issue) belongs to one **Category**;
+runner ownership is selected independently, and execution consumes the final
+contract: **Step type -> Category -> Runner -> Execution**.
 
 | Class | Category |
 | --- | --- |
 | `ActionStep` | `action` |
-| `TaskStep` | `task` |
-| `WorkflowStep` | `workflow` |
+| `ControlStep` | `control` |
 | `TriggerStep` | `trigger` |
 
 `ExecutionContext` carries the invocation ID, an optional workflow run ID,
@@ -118,9 +120,8 @@ from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
     ExecutionContext,
-    TaskStep,
     TriggerStep,
-    WorkflowStep,
+    ControlStep,
 )
 
 class EchoInput(BaseModel):
@@ -134,11 +135,7 @@ class ActionEcho(ActionStep[EchoInput, EchoOutput]):
     def run(self, inputs, context):
         return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
 
-class TaskEcho(TaskStep[EchoInput, EchoOutput]):
-    def run(self, inputs, context):
-        return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
-
-class WorkflowEcho(WorkflowStep[EchoInput, EchoOutput]):
+class ControlEcho(ControlStep[EchoInput, EchoOutput]):
     def run(self, inputs, context):
         return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
 
@@ -147,43 +144,44 @@ class TriggerEcho(TriggerStep[EchoInput, EchoOutput]):
         return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
 
 context = ExecutionContext(invocation_id="demo-1")
-for step in (ActionEcho(), TaskEcho(), WorkflowEcho(), TriggerEcho()):
+for step in (ActionEcho(), ControlEcho(), TriggerEcho()):
     print(step.execute(EchoInput(message="hello"), context))
 ```
 
 ### Registration and descriptors
 
-`StepDescriptor` associates a declared step identity with a taxonomy. An
-implementation-derived descriptor uses the step's Pydantic schemas for every
-taxonomy, including Action, so authoring and schema-drift validation can
-compare those models with a source manifest. An installed Action descriptor
-instead derives its input schema from the manifest's resolved `spec.input`; its
-output schema remains implementation-derived. `StepDescriptor.for_step()`
-creates implementation descriptors, and `StepBindings` retains each
-descriptor-and-implementation pair:
+`StepDescriptor` associates a declared step identity with its concrete Step
+kind and `StepCategory`. An implementation-derived descriptor uses the step's
+Pydantic schemas for authoring and schema-drift validation. An installed Action
+descriptor instead derives both its input and output schemas from the
+manifest's resolved `spec.input` and `spec.output`; Control and Trigger
+descriptors currently retain their implementation-derived schemas.
+`StepDescriptor.for_step()` creates implementation descriptors, and
+`StepBindings` retains each descriptor-and-implementation pair:
 
 ```python
 from syntara_plugin.runtime import StepDescriptor, StepBindings
 
 bindings = StepBindings()
-step = TaskEcho()
+step = ControlEcho()
 bindings.bind(StepDescriptor.for_step("acme.plugin.echo", step), step)
 binding = bindings.binding("acme.plugin.echo")
 resolved = binding.step
 ```
 
-Binding rejects malformed or duplicate identities, taxonomy mismatches between
-the descriptor and the Python class, and attempts to bind a platform-managed
+Binding rejects malformed or duplicate identities, concrete-kind or category
+mismatches between the descriptor and the Python class, and attempts to bind a platform-managed
 driver (such as `http.v1`) as a Python implementation. `StepExecutor` repeats
-the implementation and taxonomy checks before raw-input validation, so a
+the implementation and category checks before raw-input validation, so a
 directly constructed `StepBinding` cannot bypass them. `StepBindings` is an
-in-process lookup table, not the platform registration database; mapping an
+local SDK lookup table, not the platform registration database; mapping an
 installed step revision to a declared identity belongs to the registry-binding
 story.
-Pydantic models are implementation types, not replacement manifests: the
-canonical schema bundle remains the source of truth for installed Actions, and
+Pydantic models are implementation types, not replacement manifests. For an
+installed Action, the canonical manifest schema is the execution contract;
 comparing implementation schemas with source manifests is owned by the
-schema-drift validation story.
+schema-drift validation story. Control and Trigger currently execute against
+their registered Pydantic input models.
 
 For an installed Action, first resolve its manifest with
 `InstalledActionManifest.from_manifest()`. Inline and asset-backed `spec.input`
@@ -191,6 +189,9 @@ and `spec.output` document sources are supported, and the manifest and resolved
 schemas are stored recursively as immutable JSON documents. Pass that object to
 `StepDescriptor.for_installed_action()`; both the descriptor's input and output
 schemas are manifest-sourced and cannot be replaced by a caller-supplied schema.
+The exposed documents are immutable mappings/sequences; call the runtime
+`to_json_document()` helper when a mutable plain-JSON export is required for
+serialization or transport.
 The business result is validated against the manifest output schema before a
 successful outcome is declared, so the echoed digest names the schema actually
 applied. The
@@ -230,13 +231,12 @@ cryptographic provenance, but it records opaque provenance for the exact
 factory-created manifest and descriptor objects. `StepBindings` accepts
 implementation-derived Action descriptors for authoring validation, while
 `StepExecutor` and container dispatch reject them for execution. At present,
-Action is the only taxonomy with an installed-manifest execution contract, so
+Action is the only Step type with an installed-manifest execution contract, so
 an Action can execute only through the factory-created identity and canonical
-input-schema binding. The validation dispatch is intentionally taxonomy-aware:
-future installed-contract support for Task, Workflow, or Trigger can be added
-as those binding and manifest contracts become defined, without changing the
-generic executor boundary. Those taxonomies currently retain their
-implementation-derived contracts.
+manifest-schema binding. This describes the current contract boundary; it is
+not a design statement that other categories must remain
+implementation-derived. Control and Trigger currently retain their registered
+Pydantic contracts.
 
 `StepExecutor` is the owner of the runtime-local `StandardOutputWrapper` and
 `ErrorMessage` result types. Invalid input returns that wrapper with a nonzero
@@ -247,25 +247,30 @@ when the manifest schema forbids them. Pydantic runs in strict mode after JSON
 Schema validation so coercion cannot accept a value that the published Action
 contract rejects.
 
-Task, Workflow, and Trigger execution uses each step's registered Pydantic input
-model directly. Those taxonomies retain normal Pydantic coercion, defaults, and
+Control and Trigger execution uses each step's registered Pydantic input
+model directly. Those Step types retain normal Pydantic coercion, defaults, and
 model configuration; in particular, a Trigger's executor input is its registered
-model rather than manifest configuration. Every taxonomy passes through the same
+model rather than driver configuration. Every Step type passes through the same
 `StepExecutor`, which invokes the hook only after its applicable validation
 completes successfully.
 
-The container adapter maps that same wrapper onto the terminal `Result`
-envelope: the business output and the four wrapper status/error fields travel as
-sibling protobuf fields (`status_code`, `status_message`, `error_code`,
-`error_message`, `retryable`). A completed step with a nonzero `status_code`
-remains a valid terminal `Result` and must carry a safe `error_code` category
-and `error_message`; the separate `Failure` event is reserved for protocol or
-runtime failures where no valid outcome exists. Direct Python execution and
-container execution therefore expose equivalent success and deliberate-failure
-outcomes without exposing the rejected input document. Actions are the only
-taxonomy that requires manifest-sourced input schemas; Task, Workflow, and
-Trigger bindings retain their existing implementation-derived schemas for
-backward compatibility.
+The current container adapter mapping is provisional: it maps that same wrapper
+onto the terminal `Result` envelope pending the canonical wrapper and terminal-
+failure normalization tracked by AAP-95402. The business output and the four
+wrapper status/error fields currently travel as sibling protobuf fields
+(`status_code`, `status_message`, `error_code`, `error_message`, `retryable`).
+A completed step with a nonzero `status_code` remains a valid terminal `Result`
+and must carry a safe `error_code` failure classification and `error_message`;
+the separate `Failure` event is reserved for protocol or runtime failures where
+no valid outcome exists. Direct Python and container execution share the same
+validation behavior and hook-call guarantees, but their current result
+representations are not the final canonical wrapper contract. Actions are the
+only category that currently requires manifest-sourced input schemas; Control
+and Trigger bindings retain their implementation-derived schemas.
+
+The eventual AAP-95402 mapping is expected to carry the canonical
+`StandardOutputWrapper` shape directly. Until that work lands, the flattened
+mapping above remains the compatibility behavior for this SDK revision.
 
 Direct execution is transport-independent: importing `syntara_plugin.runtime`
 and using `StepExecutor`, the typed bindings, and the `StandardOutputWrapper`

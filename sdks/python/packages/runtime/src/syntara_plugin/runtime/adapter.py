@@ -15,6 +15,7 @@ from .bindings import (
     StepBindingError,
     StepBindings,
     StepDescriptor,
+    _thaw_json_document,
     validate_executable_step_binding,
 )
 from .container import (
@@ -73,7 +74,7 @@ def _applied_output_schema_digest(binding: StepBinding) -> str:
     same schema the business result was validated against.
     """
 
-    return canonical_json_digest(binding.descriptor.output_schema)
+    return canonical_json_digest(_thaw_json_document(binding.descriptor.output_schema))
 
 
 def _installed_output_schema_digest(invocation: ContainerInvocation) -> str | None:
@@ -177,7 +178,7 @@ def container_step_for_binding(
 
     The handler validates the invocation's raw JSON inputs against the installed
     Action manifest schema for Actions or the implementation-derived schema for
-    other taxonomies, constructs the registered Pydantic model, executes the
+    other categories, constructs the registered Pydantic model, executes the
     step through the shared executor, and converts the typed output into a
     ``ContainerResult``. The wrapper's business result and status fields map
     onto the terminal ``Result`` envelope, and the output schema digest is the

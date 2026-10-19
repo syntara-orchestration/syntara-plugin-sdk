@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.syntara.io/v1alpha1/step.schema.json",
+  "oneOf": [
+    {"$ref": "action.schema.json"},
+    {"$ref": "control.schema.json"},
+    {"$ref": "trigger.schema.json"}
+  ],
+  "$defs": {
+    "category": {
+      "type": "string",
+      "enum": ["action", "control", "trigger"]
+    },
+    "entryPoint": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "driver": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*\\.v[1-9][0-9]*$"
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["platform-runner", "custom-runner"]},
+        "entryPoint": {"$ref": "#/$defs/entryPoint"},
+        "driver": {"$ref": "#/$defs/driver"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "platform-runner"}}},
+          "then": {"required": ["driver"], "not": {"required": ["entryPoint"]}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "custom-runner"}}},
+          "then": {"required": ["entryPoint"], "not": {"required": ["driver"]}}
+        }
+      ]
+    },
+    "workflowInvocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["orchestration", "workflow-invocation"]},
+        "workflow": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "workflow-invocation"}}},
+          "then": {"required": ["workflow"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "orchestration"}}},
+          "then": {"not": {"required": ["workflow"]}}
+        }
+      ]
+    },
+    "stepMetadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+    "schemaSource": {"$ref": "common.schema.json#/$defs/documentSource"}
+  }
+}

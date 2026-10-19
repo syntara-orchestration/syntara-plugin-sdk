@@ -28,8 +28,10 @@ from .bindings import (
     StepBinding,
     StepBindingError,
     StepBindings,
+    StepCategory,
     StepDescriptor,
-    StepTaxonomy,
+    StepKind,
+    to_json_document,
 )
 from .context import ExecutionContext
 from .contract_validation import (
@@ -57,7 +59,7 @@ from .http import (
     map_http_response,
 )
 from .outcome import ErrorMessage, StandardOutputWrapper
-from .step import ActionStep, BaseStep, TaskStep, TriggerStep, WorkflowStep
+from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 from .validation import StepInputValidationError
 
 if TYPE_CHECKING:
@@ -167,10 +169,11 @@ __all__ = [
     "StepExecutor",
     "StepInputValidationError",
     "StepRegistry",
-    "StepTaxonomy",
-    "TaskStep",
+    "StepCategory",
+    "StepKind",
+    "to_json_document",
     "TriggerStep",
-    "WorkflowStep",
+    "ControlStep",
     "add_container_runtime_service",
     "build_http_request",
     "check_plugin_bindings",

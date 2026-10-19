@@ -65,7 +65,7 @@ def _resolve_models(cls: type[BaseStep[Any, Any]]) -> tuple[type[BaseModel], typ
             ...
 
     The helper walks the MRO from base to derived class while tracking how each
-    generic level specializes ``BaseStep``'s type variables, so taxonomy
+    generic level specializes ``BaseStep``'s type variables, so concrete Step
     subclasses can stay generic without forcing constructor boilerplate.
     """
 
@@ -145,26 +145,17 @@ class BaseStep[TInput: BaseModel, TOutput: BaseModel](ABC):
 class ActionStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
     """Executable base for Action steps (domain and external integrations).
 
-    Actions are workflow step types that integrate with external systems or
+    Actions are Step types that integrate with external systems or
     perform domain operations. They remain directly callable from Python and do
     not require a container invocation.
     """
 
 
-class TaskStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
-    """Executable base for Task steps (atomic compute operations).
+class ControlStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
+    """Executable base for control Step types (control-flow logic).
 
-    Tasks perform self-contained computation, scripting, or data
-    transformation. A missing Task source-manifest schema does not prevent
-    direct SDK execution with a valid runtime descriptor.
-    """
-
-
-class WorkflowStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
-    """Executable base for Workflow steps (control-flow logic).
-
-    Workflow steps implement control flow or composition. They share the same
-    typed lifecycle as the other taxonomy classes and remain callable without
+    Control Step types implement control flow or composition. They share the
+    same typed lifecycle as the other Step classes and remain callable without
     transport types.
     """
 

@@ -9,7 +9,12 @@ from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes
 
 from .abi import FailureCode
-from .bindings import StepBinding, StepBindingError, validate_executable_step_binding
+from .bindings import (
+    StepBinding,
+    StepBindingError,
+    _thaw_json_document,
+    validate_executable_step_binding,
+)
 from .context import ExecutionContext
 from .outcome import ErrorMessage, StandardOutputWrapper
 from .validation import StepInputValidationError, validate_step_inputs
@@ -24,8 +29,8 @@ class StepExecutionError(RuntimeError):
 class StepExecutor:
     """Execute a typed step from raw JSON input.
 
-    Input validation is selected by the binding's taxonomy before the typed
-    hook runs. The executor itself does not own taxonomy-specific contracts.
+    Input validation is selected by the binding's concrete Step kind before the typed
+    hook runs. The executor itself does not own Step-type-specific contracts.
     """
 
     def __init__(self, binding: StepBinding) -> None:
@@ -46,7 +51,7 @@ class StepExecutor:
 
         try:
             validated_inputs = validate_step_inputs(
-                self._binding.descriptor.taxonomy,
+                self._binding.descriptor.kind,
                 inputs,
                 self._binding.descriptor.input_schema,
                 self._binding.step.input_model(),
@@ -79,7 +84,8 @@ class StepExecutor:
 
         schema_errors = sorted(
             Draft202012Validator(
-                self._binding.descriptor.output_schema, format_checker=FormatChecker()
+                _thaw_json_document(self._binding.descriptor.output_schema),
+                format_checker=FormatChecker(),
             ).iter_errors(result),
             key=lambda error: list(error.path),
         )

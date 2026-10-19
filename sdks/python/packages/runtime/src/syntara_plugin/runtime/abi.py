@@ -21,7 +21,7 @@ class RuntimeOwnership(StrEnum):
     """The only execution ownership classes recognized by the shared ABI."""
 
     PLATFORM_RUNNER = "platform-runner"
-    PUBLISHER_WORKLOAD = "custom-workload"
+    PUBLISHER_RUNNER = "custom-runner"
 
 
 class FailureCode(StrEnum):

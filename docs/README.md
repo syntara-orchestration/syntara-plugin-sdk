@@ -30,4 +30,4 @@ The accepted design decisions live in [`../.sdlc/adrs`](../.sdlc/adrs):
 - [Catalog publication boundaries](../.sdlc/adrs/0003-bounded-catalog-index-publication.md)
 - [Plugin publication boundaries](../.sdlc/adrs/0004-bounded-plugin-artifact-publication.md)
 - [Generic container request hash](../.sdlc/adrs/0005-generic-container-request-hash.md)
-- [Custom-workload preview scope](../.sdlc/adrs/0006-deferred-custom-workload-build-ux.md)
+- [Custom-runner preview scope](../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md)

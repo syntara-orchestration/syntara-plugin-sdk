@@ -1,7 +1,7 @@
 """Developer-oriented command-line adapter for the Syntara plugin SDK.
 
 The CLI delegates every source interpretation to ``compile_workspace``. Its
-default build stays offline and deterministic. An explicit custom-workload
+default build stays offline and deterministic. An explicit custom-runner
 preview may use Podman to build and push one author-owned image before binding
 the registry-returned immutable digest into the normal metadata artifact.
 """
@@ -124,7 +124,7 @@ def _parser() -> argparse.ArgumentParser:
             action="append",
             default=None,
             metavar="ID=REPOSITORY@sha256:DIGEST",
-            help="Immutable custom-workload image binding; repeat for each logical image ID.",
+            help="Immutable custom-runner image binding; repeat for each logical image ID.",
         )
         compile_command.add_argument(
             "--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP
@@ -136,7 +136,7 @@ def _parser() -> argparse.ArgumentParser:
             compile_command.add_argument(
                 "--with-workload",
                 action="store_true",
-                help="Build and push the configured custom-workload image through Podman.",
+                help="Build and push the configured custom-runner image through Podman.",
             )
             compile_command.add_argument(
                 "--publish",
@@ -729,7 +729,7 @@ def _build_archive(
 ) -> tuple[CompilationResult, PluginArtifact, Path, str | None, WorkloadBuildRequest | None]:
     image_bindings = dict(arguments.image_bindings)
     # Validate the complete authoring workspace before any remote side effect.
-    # A custom workload binding is intentionally deferred until Podman returns
+    # A custom runner binding is intentionally deferred until Podman returns
     # its registry digest, so preflight checks every other source contract.
     if arguments.with_workload:
         compile_workspace(
@@ -756,7 +756,7 @@ def _build_workload(
         allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         auth_file=arguments.registry_auth_file,
     )
-    _phase(arguments, "Building and pushing the custom workload image")
+    _phase(arguments, "Building and pushing the custom runner image")
     image = build_and_push_workload(request, verbose=arguments.verbose)
     image_bindings[image_id] = image
     return image, request
@@ -1096,15 +1096,16 @@ def _catalog_entry(artifact: PluginArtifact, artifact_repository: str) -> dict[s
     ownerships: set[str] = set()
     for index, target in enumerate(targets):
         target_mapping = _mapping(target, f"plugin artifact target {index}")
-        if target_mapping.get("kind") != "Action":
+        if target_mapping.get("kind") not in {"Action", "Control", "Trigger"}:
             continue
-        runtime = _mapping(target_mapping.get("runtime"), f"plugin artifact target {index} runtime")
+        runtime = target_mapping.get("runtime")
+        if not isinstance(runtime, Mapping):
+            continue
+        runtime = _mapping(runtime, f"plugin artifact target {index} runtime")
         kind = _required_string(runtime.get("kind"), f"plugin artifact target {index} runtime.kind")
-        if kind not in {"platform-runner", "custom-workload"}:
+        if kind not in {"platform-runner", "custom-runner"}:
             raise ValueError(f"unsupported plugin runtime kind for catalog: {kind!r}")
         ownerships.add(kind)
-    if not ownerships:
-        raise ValueError("a catalog entry requires at least one action runtime ownership")
     return {
         "namespace": namespace,
         "name": name,

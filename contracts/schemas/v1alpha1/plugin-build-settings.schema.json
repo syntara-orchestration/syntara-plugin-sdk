@@ -53,7 +53,7 @@
         "workloadRepository": {
           "type": "string",
           "minLength": 1,
-          "description": "Repository that stores the custom-workload container image, when the plugin declares one."
+          "description": "Repository that stores the custom-runner container image, when the plugin declares one."
         },
         "catalogRepository": {
           "type": "string",
@@ -79,7 +79,7 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Settings for deterministic metadata-artifact assembly and an optional custom-workload image build.",
+      "description": "Settings for deterministic metadata-artifact assembly and an optional custom-runner image build.",
       "properties": {
         "artifactOutput": {
           "type": "string",
@@ -88,7 +88,7 @@
         },
         "imageBindings": {
           "type": "object",
-          "description": "Existing immutable custom-workload image references indexed by logical image ID.",
+          "description": "Existing immutable custom-runner image references indexed by logical image ID.",
           "additionalProperties": {
             "type": "string",
             "minLength": 1,
@@ -98,11 +98,11 @@
         "workload": {
           "type": "object",
           "additionalProperties": false,
-          "description": "One author-owned custom-workload image build target. It is used only with the explicit --with-workload command option.",
+          "description": "One author-owned custom-runner image build target. It is used only with the explicit --with-workload command option.",
           "properties": {
             "engine": {
               "const": "podman",
-              "description": "Container engine used to build and push the custom-workload image. Podman is the currently supported engine."
+              "description": "Container engine used to build and push the custom-runner image. Podman is the currently supported engine."
             },
             "context": {
               "type": "string",
@@ -127,7 +127,7 @@
             "imageId": {
               "type": "string",
               "minLength": 1,
-              "description": "Logical custom-workload image identifier declared by plugin.yaml and bound to the pushed digest."
+              "description": "Logical custom-runner image identifier declared by plugin.yaml and bound to the pushed digest."
             }
           }
         }

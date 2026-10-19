@@ -1,8 +1,9 @@
 # Syntara Plugin SDK
 
 Build, validate, package, and publish Syntara plugins. A plugin is a
-versioned declaration of workflow actions, triggers, integration types,
-credential recipes, documentation, and—when needed—one custom workload image.
+versioned declaration of Step types in the action, control, and trigger categories,
+integration types,
+credential recipes, documentation, and—when needed—one custom runner image.
 
 The SDK gives plugin authors one public command: `syntara-plugin`.
 
@@ -69,7 +70,7 @@ be advertised. `catalog update` remains available for release administration
 and `catalog recover --previous-index-digest ...` repairs a deleted or replaced
 mutable catalog tag from the exact digest Syntara last accepted. This preserves
 rollback protection rather than restarting at generation one.
-For an action using an author-owned container, use
+For an Action Step type using an author-owned container, use
 `syntara-plugin build --with-workload --publish` after configuring the
 `build.workload` settings; see the [user guide](docs/user-guide.md).
 
@@ -90,7 +91,7 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
 
 - [Installation](docs/installation.md) — install a released SDK or prepare a source checkout.
 - [Getting started](docs/getting-started.md) — first plugin and the four core commands.
-- [User guide](docs/user-guide.md) — settings, custom workloads, artifact publication, and catalog release.
+- [User guide](docs/user-guide.md) — settings, custom runners, artifact publication, and catalog release.
 - [Plugin language reference](docs/plugin-language.md) — each manifest kind and field, with links to its normative schema.
 - [Build settings reference](docs/build-settings.md) — every `syntara-plugin.yaml` key and its behavior.
 - [Developer guide](docs/developer-guide.md) — local setup, tests, contract changes, and contribution expectations.
@@ -126,6 +127,6 @@ facing workflow changes.
 The SDK supports offline plugin packaging, bounded OCI publication with
 default catalog publication, catalog recovery, and a developer-preview Podman workload build.
 Artifact signing, catalog refresh automation, and end-to-end Execution Plane
-delivery of credentials to custom workloads remain follow-on work. See
-[ADR 0006](.sdlc/adrs/0006-deferred-custom-workload-build-ux.md) for the
-custom-workload preview boundary.
+delivery of credentials to custom runners remain follow-on work. See
+[ADR 0006](.sdlc/adrs/0006-deferred-custom-runner-build-ux.md) for the
+custom-runner preview boundary.

@@ -141,7 +141,7 @@ def test_malicious_runtime_and_provider_fixtures_are_rejected() -> None:
 
 def test_both_runtime_ownership_classes_materialize_deterministically() -> None:
     platform = RuntimeBinding(RuntimeOwnership.PLATFORM_RUNNER, DIGEST)
-    publisher = RuntimeBinding(RuntimeOwnership.PUBLISHER_WORKLOAD, DIGEST)
+    publisher = RuntimeBinding(RuntimeOwnership.PUBLISHER_RUNNER, DIGEST)
 
     assert platform.to_document() == {
         "ownership": "platform-runner",
@@ -149,7 +149,7 @@ def test_both_runtime_ownership_classes_materialize_deterministically() -> None:
         "abi": CONTAINER_ABI,
     }
     assert publisher.to_document() == {
-        "ownership": "custom-workload",
+        "ownership": "custom-runner",
         "imageDigest": DIGEST,
         "abi": CONTAINER_ABI,
     }

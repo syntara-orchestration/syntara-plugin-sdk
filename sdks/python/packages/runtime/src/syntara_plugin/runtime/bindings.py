@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Literal
 from weakref import ReferenceType, ref
 
@@ -16,65 +19,31 @@ from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
 from syntara_plugin.contracts import canonical_json_digest
 
-from .step import ActionStep, BaseStep, TaskStep, TriggerStep, WorkflowStep
+from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 
 
-class _ImmutableJSONMapping(dict[str, Any]):
-    """A JSON object that rejects mutation through its public API."""
-
-    def _reject_mutation(self, *_args: Any, **_kwargs: Any) -> Any:
-        message = "installed schema documents are immutable"
-        raise TypeError(message)
-
-    __setitem__ = _reject_mutation  # type: ignore[method-assign]
-    __delitem__ = _reject_mutation  # type: ignore[method-assign]
-    clear = _reject_mutation  # type: ignore[method-assign]
-    pop = _reject_mutation  # type: ignore[method-assign]
-    popitem = _reject_mutation  # type: ignore[method-assign]
-    setdefault = _reject_mutation  # type: ignore[method-assign]
-    update = _reject_mutation  # type: ignore[method-assign]
-    __ior__ = _reject_mutation  # type: ignore[method-assign]
-
-
-class _ImmutableJSONList(list[Any]):
-    """A JSON array that rejects mutation through its public API."""
-
-    def _reject_mutation(self, *_args: Any, **_kwargs: Any) -> None:
-        message = "installed schema documents are immutable"
-        raise TypeError(message)
-
-    __setitem__ = _reject_mutation  # type: ignore[method-assign]
-    __delitem__ = _reject_mutation  # type: ignore[method-assign]
-    append = _reject_mutation  # type: ignore[method-assign]
-    extend = _reject_mutation  # type: ignore[method-assign]
-    insert = _reject_mutation  # type: ignore[method-assign]
-    pop = _reject_mutation  # type: ignore[method-assign]
-    remove = _reject_mutation  # type: ignore[method-assign]
-    sort = _reject_mutation  # type: ignore[method-assign]
-    reverse = _reject_mutation  # type: ignore[method-assign]
-    __iadd__ = _reject_mutation  # type: ignore[method-assign]
-    __imul__ = _reject_mutation  # type: ignore[method-assign]
-
-
 def _freeze_json_document(value: Any) -> Any:
     if isinstance(value, Mapping):
-        frozen = _ImmutableJSONMapping()
-        dict.update(
-            frozen,
-            ((key, _freeze_json_document(item)) for key, item in value.items()),
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("JSON document object keys must be strings")
+        return MappingProxyType(
+            {key: _freeze_json_document(item) for key, item in value.items()}
         )
-        return frozen
-    if isinstance(value, list):
-        return _ImmutableJSONList(_freeze_json_document(item) for item in value)
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return tuple(_freeze_json_document(item) for item in value)
-    return value
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    raise TypeError("JSON documents may contain only JSON-compatible values")
 
 
 def _validate_schema_references(schema: Mapping[str, Any]) -> None:
-    resource = Resource.from_contents(schema, default_specification=DRAFT202012)
+    resource = Resource.from_contents(
+        _thaw_json_document(schema), default_specification=DRAFT202012
+    )
     _validate_resource_references(
         resource,
         Registry().resolver_with_root(resource),
@@ -118,13 +87,20 @@ def _validate_resource_references(resource: Resource[Any], resolver: Any) -> Non
         )
 
 
-class StepTaxonomy(StrEnum):
-    """The four executable plugin step categories."""
+class StepCategory(StrEnum):
+    """The executable plugin Step categories."""
 
     ACTION = "action"
-    TASK = "task"
-    WORKFLOW = "workflow"
+    CONTROL = "control"
     TRIGGER = "trigger"
+
+
+class StepKind(StrEnum):
+    """The concrete public Step types, distinct from their broad category."""
+
+    ACTION = "Action"
+    CONTROL = "Control"
+    TRIGGER = "Trigger"
 
 
 class StepBindingError(ValueError):
@@ -137,6 +113,7 @@ class _InstalledActionProvenance:
 
     manifest_ref: ReferenceType[InstalledActionManifest]
     step_identity: str
+    entry_point: str
     input_schema: Mapping[str, Any]
     input_schema_digest: str
     output_schema: Mapping[str, Any]
@@ -149,6 +126,7 @@ class _InstalledActionDescriptorProvenance:
 
     descriptor_ref: ReferenceType[StepDescriptor]
     step_identity: str
+    entry_point: str
     input_schema: Mapping[str, Any]
     input_schema_digest: str
     output_schema: Mapping[str, Any]
@@ -168,12 +146,59 @@ def _schema_matches_digest(schema: Mapping[str, Any], expected: str) -> bool:
         return False
 
 
+def _step_entry_point(step: BaseStep[Any, Any]) -> str:
+    """Return the canonical fully-qualified entry point for one step instance."""
+
+    step_class = type(step)
+    return f"{step_class.__module__}:{step_class.__qualname__}"
+
+
+def _loaded_entry_point(entry_point: str) -> type[Any] | None:
+    module_name, separator, qualname = entry_point.partition(":")
+    if not separator or not qualname:
+        return None
+    module = sys.modules.get(module_name)
+    if module is None:
+        return None
+    found: Any = module
+    for part in qualname.split("."):
+        found = getattr(found, part, None)
+        if found is None:
+            return None
+    return found if isinstance(found, type) else None
+
+
+def _require_installed_action_entry_point(
+    entry_point: str,
+    step: BaseStep[Any, Any],
+) -> None:
+    """Reject an Action implementation that differs from its installed manifest."""
+
+    actual = _step_entry_point(step)
+    if entry_point == actual or _loaded_entry_point(entry_point) is type(step):
+        return
+    message = (
+        f"installed Action entry point {entry_point!r} does not match "
+        f"the supplied ActionStep class {actual!r}"
+    )
+    raise StepBindingError(message)
+
+
 def _thaw_json_document(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {key: _thaw_json_document(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_thaw_json_document(item) for item in value]
     return value
+
+
+def to_json_document(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a mutable plain-JSON copy of an immutable runtime document."""
+
+    thawed = _thaw_json_document(value)
+    if not isinstance(thawed, dict):
+        raise TypeError("JSON documents must be object mappings")
+    return thawed
 
 
 _INSTALLED_ACTION_PROVENANCE: list[_InstalledActionProvenance] = []
@@ -220,21 +245,34 @@ def _installed_action_descriptor_provenance(
     )
 
 
-_TAXONOMY_CLASSES: tuple[tuple[type[BaseStep[Any, Any]], StepTaxonomy], ...] = (
-    (ActionStep, StepTaxonomy.ACTION),
-    (TaskStep, StepTaxonomy.TASK),
-    (WorkflowStep, StepTaxonomy.WORKFLOW),
-    (TriggerStep, StepTaxonomy.TRIGGER),
+_STEP_CLASSES: tuple[tuple[type[BaseStep[Any, Any]], StepKind, StepCategory], ...] = (
+    (ActionStep, StepKind.ACTION, StepCategory.ACTION),
+    (ControlStep, StepKind.CONTROL, StepCategory.CONTROL),
+    (TriggerStep, StepKind.TRIGGER, StepCategory.TRIGGER),
 )
 
+_CATEGORY_BY_KIND: Mapping[StepKind, StepCategory] = {
+    StepKind.ACTION: StepCategory.ACTION,
+    StepKind.CONTROL: StepCategory.CONTROL,
+    StepKind.TRIGGER: StepCategory.TRIGGER,
+}
 
-def _step_taxonomy(cls: type[BaseStep[Any, Any]]) -> StepTaxonomy:
-    """Return the taxonomy of a concrete ``BaseStep`` subclass."""
 
-    for taxonomy_class, taxonomy in _TAXONOMY_CLASSES:
-        if issubclass(cls, taxonomy_class):
-            return taxonomy
-    message = f"{cls.__qualname__} does not belong to a step taxonomy class"
+def _category_for_kind(kind: StepKind) -> StepCategory:
+    """Return the canonical category for a concrete Step kind."""
+
+    return _CATEGORY_BY_KIND[kind]
+
+
+def _step_kind_and_category(
+    cls: type[BaseStep[Any, Any]],
+) -> tuple[StepKind, StepCategory]:
+    """Return the concrete Step kind and category for a ``BaseStep`` subclass."""
+
+    for step_class, kind, category in _STEP_CLASSES:
+        if issubclass(cls, step_class):
+            return kind, category
+    message = f"{cls.__qualname__} does not belong to a step category class"
     raise StepBindingError(message)
 
 
@@ -260,11 +298,17 @@ def validate_step_binding(
             "Python implementations"
         )
         raise StepBindingError(message)
-    step_taxonomy = _step_taxonomy(type(step))
-    if step_taxonomy != descriptor.taxonomy:
+    step_kind, step_category = _step_kind_and_category(type(step))
+    if step_kind is not descriptor.kind:
         message = (
-            f"descriptor taxonomy {descriptor.taxonomy.value!r} does not match "
-            f"{type(step).__qualname__} taxonomy {step_taxonomy.value!r}"
+            f"descriptor kind {descriptor.kind.value!r} does not match "
+            f"{type(step).__qualname__} kind {step_kind.value!r}"
+        )
+        raise StepBindingError(message)
+    if step_category != descriptor.category:
+        message = (
+            f"descriptor category {descriptor.category.value!r} does not match "
+            f"{type(step).__qualname__} category {step_category.value!r}"
         )
         raise StepBindingError(message)
 
@@ -281,7 +325,7 @@ def validate_executable_step_binding(
     """
 
     validate_step_binding(descriptor, step)
-    descriptor.require_executable_contract()
+    descriptor.require_executable_contract(step)
 
 
 def _resolve_document_source(
@@ -355,6 +399,14 @@ class InstalledActionManifest:
         if not isinstance(specification, Mapping):
             message = "Action manifest must contain a spec object"
             raise StepBindingError(message)
+        runtime = specification.get("runtime")
+        if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
+            message = "installed Action bindings require a custom-runner implementation"
+            raise StepBindingError(message)
+        entry_point = runtime.get("entryPoint")
+        if not isinstance(entry_point, str) or not entry_point:
+            message = "installed Action bindings require a runtime entryPoint"
+            raise StepBindingError(message)
         input_schema = _resolve_document_source(specification, "input", assets)
         output_schema = _resolve_document_source(specification, "output", assets)
         installed_action = InstalledActionManifest()
@@ -366,6 +418,7 @@ class InstalledActionManifest:
             _InstalledActionProvenance(
                 manifest_ref=ref(installed_action),
                 step_identity=installed_action.step_identity,
+                entry_point=entry_point,
                 input_schema=installed_action.input_schema,
                 input_schema_digest=_schema_digest(input_schema),
                 output_schema=installed_action.output_schema,
@@ -388,19 +441,20 @@ class StepDescriptor:
     """
 
     step_identity: str
-    taxonomy: StepTaxonomy
+    kind: StepKind
     input_schema: Mapping[str, Any]
     output_schema: Mapping[str, Any]
     input_schema_source: Literal["implementation", "manifest"] = "implementation"
     def __post_init__(self) -> None:
-        """Validate and normalize the descriptor's identity, taxonomy, and schemas."""
+        """Validate and normalize the descriptor's identity, kind, and schemas."""
 
-        if not isinstance(self.taxonomy, StepTaxonomy):
+        if not isinstance(self.kind, StepKind):
             try:
-                object.__setattr__(self, "taxonomy", StepTaxonomy(self.taxonomy))
+                object.__setattr__(self, "kind", StepKind(self.kind))
             except ValueError:
-                message = "taxonomy must be a valid step taxonomy value"
+                message = "kind must be a valid concrete Step kind"
                 raise StepBindingError(message) from None
+
         if not _IDENTITY.fullmatch(self.step_identity):
             message = "step_identity must be a Syntara identity"
             raise StepBindingError(message)
@@ -420,6 +474,12 @@ class StepDescriptor:
         object.__setattr__(self, "output_schema", _freeze_json_document(self.output_schema))
 
     @property
+    def category(self) -> StepCategory:
+        """Return the category derived from the concrete Step kind."""
+
+        return _category_for_kind(self.kind)
+
+    @property
     def is_installed_action(self) -> bool:
         """Whether this descriptor was created from a trusted installed Action."""
 
@@ -429,12 +489,14 @@ class StepDescriptor:
             and self.step_identity == provenance.step_identity
             and self.input_schema is provenance.input_schema
             and _schema_matches_digest(self.input_schema, provenance.input_schema_digest)
+            and self.output_schema is provenance.output_schema
+            and _schema_matches_digest(self.output_schema, provenance.output_schema_digest)
         )
 
-    def require_executable_contract(self) -> None:
+    def require_executable_contract(self, step: BaseStep[Any, Any]) -> None:
         """Reject bindings that cannot establish their required input contract."""
 
-        if self.taxonomy is not StepTaxonomy.ACTION:
+        if self.kind is not StepKind.ACTION:
             return
         provenance = _installed_action_descriptor_provenance(self)
         if (
@@ -442,18 +504,21 @@ class StepDescriptor:
             or self.step_identity != provenance.step_identity
             or self.input_schema is not provenance.input_schema
             or not _schema_matches_digest(self.input_schema, provenance.input_schema_digest)
+            or self.output_schema is not provenance.output_schema
+            or not _schema_matches_digest(self.output_schema, provenance.output_schema_digest)
         ):
             message = "the descriptor was not created from an unchanged installed contract"
             raise StepBindingError(message)
+        _require_installed_action_entry_point(provenance.entry_point, step)
 
     @classmethod
     def for_step(cls, step_identity: str, step: BaseStep[Any, Any]) -> StepDescriptor:
         """Build an implementation-derived descriptor for a typed step."""
 
-        taxonomy = _step_taxonomy(type(step))
+        kind, _ = _step_kind_and_category(type(step))
         return StepDescriptor(
             step_identity=step_identity,
-            taxonomy=taxonomy,
+            kind=kind,
             input_schema=step.input_model().model_json_schema(),
             output_schema=step.output_model().model_json_schema(),
         )
@@ -481,6 +546,14 @@ class StepDescriptor:
         if provenance is None:
             message = "installed Action bindings require a verified installed manifest"
             raise StepBindingError(message)
+        specification = installed_action.document.get("spec")
+        runtime = specification.get("runtime") if isinstance(specification, Mapping) else None
+        if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
+            message = "installed Action bindings require a custom-runner runtime"
+            raise StepBindingError(message)
+        if runtime.get("entryPoint") != provenance.entry_point:
+            message = "the installed Action entry point was changed after installation"
+            raise StepBindingError(message)
         if not _schema_matches_digest(
             installed_action.input_schema, provenance.input_schema_digest
         ) or not _schema_matches_digest(
@@ -488,19 +561,21 @@ class StepDescriptor:
         ):
             message = "the installed Action schema was changed after installation"
             raise StepBindingError(message)
-        if _step_taxonomy(type(step)) is not StepTaxonomy.ACTION:
+        kind, _ = _step_kind_and_category(type(step))
+        if kind is not StepKind.ACTION:
             message = "installed Action bindings require an ActionStep implementation"
             raise StepBindingError(message)
+        _require_installed_action_entry_point(provenance.entry_point, step)
         descriptor = StepDescriptor(
             step_identity=provenance.step_identity,
-            taxonomy=StepTaxonomy.ACTION,
+            kind=StepKind.ACTION,
             input_schema=provenance.input_schema,
             output_schema=provenance.output_schema,
         )
         try:
-            Draft202012Validator.check_schema(descriptor.input_schema)
+            Draft202012Validator.check_schema(_thaw_json_document(descriptor.input_schema))
             _validate_schema_references(descriptor.input_schema)
-            Draft202012Validator.check_schema(descriptor.output_schema)
+            Draft202012Validator.check_schema(_thaw_json_document(descriptor.output_schema))
             _validate_schema_references(descriptor.output_schema)
         except SchemaError as error:
             message = "manifest input_schema must be a valid JSON Schema"
@@ -510,6 +585,7 @@ class StepDescriptor:
             _InstalledActionDescriptorProvenance(
                 descriptor_ref=ref(descriptor),
                 step_identity=descriptor.step_identity,
+                entry_point=provenance.entry_point,
                 input_schema=descriptor.input_schema,
                 input_schema_digest=provenance.input_schema_digest,
                 output_schema=descriptor.output_schema,
@@ -552,8 +628,8 @@ class StepBindings:
         Raises:
             StepBindingError: If the descriptor is not a real
                 exact ``StepDescriptor``, the step is not a ``BaseStep``, the
-                identity is malformed or duplicate, or the descriptor taxonomy
-                does not match the step's taxonomy class.
+                identity is malformed or duplicate, or the descriptor kind or
+                category does not match the step's concrete class.
         """
 
         validate_step_binding(descriptor, step)

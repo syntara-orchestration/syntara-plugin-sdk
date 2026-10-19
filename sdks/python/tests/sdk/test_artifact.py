@@ -58,7 +58,7 @@ metadata:
   description: Creates one issue.
 spec:
   runtime:
-    kind: custom-workload
+    kind: custom-runner
     entryPoint: issue_tools.actions:CreateIssue
   input:
     kind: asset

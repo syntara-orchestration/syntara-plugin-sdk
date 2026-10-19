@@ -7,7 +7,7 @@ with the [getting-started guide](getting-started.md) instead.
 
 - Python 3.12 or newer
 - [uv](https://docs.astral.sh/uv/)
-- Podman only when exercising a custom-workload image build
+- Podman only when exercising a custom-runner image build
 
 From the repository root, create the development environment and run the test
 suite:

@@ -12,7 +12,13 @@ from typing import Any, Literal, TypeGuard
 from pydantic import BaseModel, PydanticUserError
 from syntara_plugin.contracts import canonical_json_digest
 
-from .bindings import StepBinding, StepBindingError, StepBindings, StepTaxonomy
+from .bindings import (
+    StepBinding,
+    StepBindingError,
+    StepBindings,
+    StepCategory,
+    _thaw_json_document,
+)
 from .step import BaseStep
 
 __all__ = [
@@ -51,7 +57,7 @@ class DriftCode(StrEnum):
 
     BINDING_MISSING = "BINDING_MISSING"
     BINDING_UNDECLARED = "BINDING_UNDECLARED"
-    TAXONOMY_MISMATCH = "TAXONOMY_MISMATCH"
+    CATEGORY_MISMATCH = "CATEGORY_MISMATCH"
     MODEL_UNRESOLVED = "MODEL_UNRESOLVED"
     ENTRY_POINT_NOT_DECLARED = "ENTRY_POINT_NOT_DECLARED"
     ENTRY_POINT_MISMATCH = "ENTRY_POINT_MISMATCH"
@@ -69,7 +75,7 @@ class DriftCode(StrEnum):
     DEFAULT_MISMATCH = "DEFAULT_MISMATCH"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
     IDENTITY_INVALID = "IDENTITY_INVALID"
-    TAXONOMY_INVALID = "TAXONOMY_INVALID"
+    CATEGORY_INVALID = "CATEGORY_INVALID"
 
 
 @dataclass(frozen=True)
@@ -1444,7 +1450,7 @@ def compare_model_to_schema(
     if direction not in ("input", "output"):
         message = "direction must be 'input' or 'output'"
         raise ValueError(message)
-    declared_body, declared_defs = _normalize_schema(schema)
+    declared_body, declared_defs = _normalize_schema(_thaw_json_document(schema))
     try:
         model_body, model_defs = _normalize_schema(_model_schema(model, direction))
     except PydanticUserError as error:
@@ -1467,32 +1473,22 @@ def compare_model_to_schema(
     return tuple(comparison.issues)
 
 
-_TARGET_TAXONOMY: Mapping[str, StepTaxonomy] = {
-    "Action": StepTaxonomy.ACTION,
-    "Task": StepTaxonomy.TASK,
-    "Workflow": StepTaxonomy.WORKFLOW,
-    "Trigger": StepTaxonomy.TRIGGER,
+_TARGET_CATEGORY: Mapping[str, StepCategory] = {
+    "Action": StepCategory.ACTION,
+    "Control": StepCategory.CONTROL,
+    "Trigger": StepCategory.TRIGGER,
 }
 
 
-def _target_taxonomy(target: Mapping[str, Any]) -> StepTaxonomy | None:
-    """Return the step taxonomy a target declares, when it can be determined.
+def _target_category(target: Mapping[str, Any]) -> StepCategory | None:
+    """Return the step category derived from a target's concrete kind.
 
-    The umbrella Step contract carries the taxonomy as target metadata; the
-    current Action/Trigger manifests encode it in the kind name. An unknown
-    encoding returns None so the taxonomy check is skipped rather than
-    guessed.
+    Unknown or malformed kinds return ``None`` so the caller can produce a
+    stable diagnostic.
     """
 
-    declared = target.get("taxonomy")
-    if declared is None:
-        return _TARGET_TAXONOMY.get(str(target.get("kind")))
-    if isinstance(declared, str):
-        try:
-            return StepTaxonomy(declared)
-        except ValueError:
-            return None
-    return None
+    kind = target.get("kind")
+    return _TARGET_CATEGORY.get(kind) if isinstance(kind, str) else None
 
 
 def _step_class(step: type[BaseStep[Any, Any]] | BaseStep[Any, Any]) -> type[BaseStep[Any, Any]]:
@@ -1532,7 +1528,7 @@ def check_step_contract(
 ) -> DriftReport:
     """Validate one typed step directly against declared schemas.
 
-    Task, Workflow, and Trigger owners that author their own declared schemas
+    Control and Trigger owners that author their own declared schemas
     call this instead of going through a compiled descriptor. The report
     records the version (when known) and the canonical digests of the declared
     schemas that were checked.
@@ -1542,6 +1538,8 @@ def check_step_contract(
     if not isinstance(input_schema, Mapping) or not isinstance(output_schema, Mapping):
         message = "input_schema and output_schema must be JSON Schema mappings"
         raise TypeError(message)
+    input_schema = _thaw_json_document(input_schema)
+    output_schema = _thaw_json_document(output_schema)
     try:
         input_model = step_class.input_model()
         output_model = step_class.output_model()
@@ -1706,32 +1704,29 @@ def _identity_issues(identity: str | None, binding: StepBinding) -> list[DriftIs
     return []
 
 
-def _taxonomy_issues(target: Mapping[str, Any]) -> list[DriftIssue]:
-    """Report a declared taxonomy that is malformed or unknown."""
+def _category_issues(target: Mapping[str, Any]) -> list[DriftIssue]:
+    """Report an unknown kind or a stale duplicated category field."""
 
-    declared = target.get("taxonomy")
-    if declared is None or not isinstance(declared, str):
-        if declared is None:
-            return []
+    if "category" in target:
         return [
             DriftIssue(
-                DriftCode.TAXONOMY_INVALID,
+                DriftCode.CATEGORY_INVALID,
                 DriftSeverity.ERROR,
                 "binding",
                 "",
-                "the compiled target declares a malformed taxonomy",
-                "declare the taxonomy as one of action, task, workflow, or trigger.",
+                "the compiled target must derive category from kind",
+                "remove the duplicated category field from the compiled target.",
             )
         ]
-    if _target_taxonomy(target) is None:
+    if _target_category(target) is None:
         return [
             DriftIssue(
-                DriftCode.TAXONOMY_INVALID,
+                DriftCode.CATEGORY_INVALID,
                 DriftSeverity.ERROR,
                 "binding",
                 "",
-                f"the compiled target declares an unknown taxonomy {declared!r}",
-                "declare the taxonomy as one of action, task, workflow, or trigger.",
+                f"the compiled target declares an unknown kind {target.get('kind')!r}",
+                "declare the kind as Action, Control, or Trigger.",
             )
         ]
     return []
@@ -1745,16 +1740,25 @@ def check_target_binding(
 ) -> DriftReport:
     """Validate one compiled target against its bound Python implementation.
 
-    The target must be a Python-implemented (``custom-workload``) entry from a
-    compiled plugin descriptor, matched to the binding by step identity. The
-    report carries the target's version and the canonical digests of the
-    declared schemas that were checked.
+    The target must be either a custom-runner entry or a direct Control/Trigger
+    entry from a compiled plugin descriptor, matched to the binding by step
+    identity. The report carries the target's version and the canonical
+    digests of the declared schemas that were checked.
     """
 
     runtime = target.get("runtime")
     runtime = runtime if isinstance(runtime, Mapping) else {}
-    if runtime.get("kind") != "custom-workload":
-        message = "only custom-workload targets can be checked against Python bindings"
+    runtime_kind = runtime.get("kind")
+    target_kind = target.get("kind")
+    direct_binding_target = target_kind in {"Control", "Trigger"} and "runtime" not in target
+    if runtime_kind == "platform-runner":
+        message = (
+            "platform-runner targets cannot be checked against Python bindings; "
+            "use a custom-runner target"
+        )
+        raise ValueError(message)
+    if runtime_kind != "custom-runner" and not direct_binding_target:
+        message = "only custom-runner or direct Control/Trigger targets can be checked"
         raise ValueError(message)
     raw_identity = target.get("identity")
     identity = raw_identity if isinstance(raw_identity, str) and raw_identity else None
@@ -1762,18 +1766,30 @@ def check_target_binding(
     version = version if isinstance(version, str) else None
     issues: list[DriftIssue] = []
     issues.extend(_identity_issues(identity, binding))
-    issues.extend(_taxonomy_issues(target))
-    taxonomy = _target_taxonomy(target)
-    if taxonomy is not None and taxonomy != binding.descriptor.taxonomy:
+    issues.extend(_category_issues(target))
+    category = _target_category(target)
+    if category is not None and category != binding.descriptor.category:
         issues.append(
             DriftIssue(
-                DriftCode.TAXONOMY_MISMATCH,
+                DriftCode.CATEGORY_MISMATCH,
                 DriftSeverity.ERROR,
                 "binding",
                 "",
                 f"target kind {target.get('kind')} does not match the bound"
-                f" {binding.descriptor.taxonomy.value} step",
-                "bind a step of the taxonomy the target manifest declares.",
+                f" {binding.descriptor.category.value} step",
+                "bind a step of the category the target manifest declares.",
+            )
+        )
+    if isinstance(target_kind, str) and target_kind != binding.descriptor.kind.value:
+        issues.append(
+            DriftIssue(
+                DriftCode.CATEGORY_MISMATCH,
+                DriftSeverity.ERROR,
+                "binding",
+                "",
+                f"target kind {target_kind} does not match the bound"
+                f" {binding.descriptor.kind.value} Step type",
+                "bind an implementation of the concrete Step type the target declares.",
             )
         )
     step_class = type(binding.step)
@@ -1783,7 +1799,8 @@ def check_target_binding(
     except TypeError as error:
         issues.append(_model_unresolved_issue(step_class, error))
         return DriftReport(identity, version, None, None, tuple(issues))
-    issues.extend(_entry_point_issues(target, binding, entry_point_resolver))
+    if runtime_kind == "custom-runner":
+        issues.extend(_entry_point_issues(target, binding, entry_point_resolver))
     input_schema = target.get("input")
     output_schema = target.get("output")
     if not (isinstance(input_schema, Mapping) and isinstance(output_schema, Mapping)):
@@ -1799,6 +1816,8 @@ def check_target_binding(
             )
         )
         return DriftReport(identity, version, None, None, tuple(issues))
+    input_schema = _thaw_json_document(input_schema)
+    output_schema = _thaw_json_document(output_schema)
     issues.extend(compare_model_to_schema(input_model, input_schema, direction="input"))
     issues.extend(compare_model_to_schema(output_model, output_schema, direction="output"))
     return DriftReport(
@@ -1813,40 +1832,47 @@ def check_target_binding(
 def _collect_step_targets(
     descriptor: Mapping[str, Any],
 ) -> tuple[dict[str, Mapping[str, Any]], dict[str, Mapping[str, Any]]]:
-    """Return every declared step target and its Python-implemented subset.
+    """Return every declared step target and the subset checked against bindings.
 
     Execution is classified by the target's runtime shape, never by its
-    manifest kind name: any target whose runtime is ``custom-workload`` is a
+    manifest kind name: any target whose runtime is ``custom-runner`` is a
     Python implementation regardless of kind, targets with another runtime
-    kind are platform-run, and driver-based targets without a runtime (such
-    as compiled triggers) keep their bindings for direct SDK execution.
+    kind are platform-run. Directly supplied Control and Trigger targets
+    without a runtime remain eligible for in-process binding checks.
     """
 
     spec = descriptor.get("spec")
     spec = spec if isinstance(spec, Mapping) else {}
     targets = spec.get("targets")
     step_targets: dict[str, Mapping[str, Any]] = {}
-    python_targets: dict[str, Mapping[str, Any]] = {}
+    binding_targets: dict[str, Mapping[str, Any]] = {}
+    identities: set[str] = set()
     for target in targets if isinstance(targets, list) else []:
         if not isinstance(target, Mapping):
             continue
         identity = target.get("identity")
         if not isinstance(identity, str):
             continue
+        if identity in identities:
+            message = f"compiled descriptor contains duplicate target identity {identity!r}"
+            raise ValueError(message)
+        identities.add(identity)
         runtime = target.get("runtime")
         if not isinstance(runtime, Mapping):
-            if str(target.get("kind")) not in _TARGET_TAXONOMY:
+            if str(target.get("kind")) not in _TARGET_CATEGORY:
                 continue
             step_targets[identity] = target
+            if target.get("kind") in {"Control", "Trigger"}:
+                binding_targets[identity] = target
             continue
         step_targets[identity] = target
-        if runtime.get("kind") == "custom-workload":
-            python_targets[identity] = target
-    return step_targets, python_targets
+        if runtime.get("kind") == "custom-runner":
+            binding_targets[identity] = target
+    return step_targets, binding_targets
 
 
 def _missing_binding_report(identity: str, target: Mapping[str, Any]) -> DriftReport:
-    """Build the report for a Python-implemented target with no binding."""
+    """Build the report for an executable target with no binding."""
 
     version = target.get("version")
     return DriftReport(
@@ -1860,7 +1886,7 @@ def _missing_binding_report(identity: str, target: Mapping[str, Any]) -> DriftRe
                 DriftSeverity.ERROR,
                 "binding",
                 "",
-                "the descriptor declares a Python-implemented target with no binding",
+                "the descriptor declares an executable target with no binding",
                 f"bind a BaseStep implementation for step identity {identity}.",
             ),
         ),
@@ -1869,19 +1895,19 @@ def _missing_binding_report(identity: str, target: Mapping[str, Any]) -> DriftRe
 
 def _undeclared_binding_reports(
     bindings: StepBindings,
-    python_targets: Mapping[str, Mapping[str, Any]],
+    binding_targets: Mapping[str, Mapping[str, Any]],
     step_targets: Mapping[str, Mapping[str, Any]],
 ) -> list[DriftReport]:
-    """Report bindings that no Python-implemented target can ever dispatch."""
+    """Report bindings that no executable target can ever dispatch."""
 
     reports: list[DriftReport] = []
     for identity in bindings.step_identities:
-        if identity in python_targets:
+        if identity in binding_targets:
             continue
         matched = step_targets.get(identity)
         if matched is not None and not isinstance(matched.get("runtime"), Mapping):
-            # Driver-based targets such as compiled triggers carry no Python
-            # runtime slot; their bindings serve direct SDK execution only.
+            # Unknown non-executable targets carry no runtime slot and do not
+            # participate in binding validation.
             continue
         reports.append(
             DriftReport(
@@ -1895,8 +1921,8 @@ def _undeclared_binding_reports(
                         DriftSeverity.WARNING,
                         "binding",
                         "",
-                        "the binding matches no Python-implemented target in the descriptor",
-                        f"declare a custom-workload target for {identity} or remove the binding.",
+                        "the binding matches no executable target in the descriptor",
+                        f"declare a supported target for {identity} or remove the binding.",
                     ),
                 ),
             )
@@ -1910,20 +1936,21 @@ def check_plugin_bindings(
     *,
     entry_point_resolver: EntryPointResolver | None = None,
 ) -> tuple[DriftReport, ...]:
-    """Validate every Python-implemented target of a compiled descriptor.
+    """Validate every executable target of a compiled descriptor.
 
-    Platform-runner targets and platform-managed triggers are skipped because
-    they have no Python implementation to check. Bindings whose identity
-    matches no Python-implemented target are reported as undeclared. Reports
-    are returned in a deterministic order, one per checked or reported target.
+    Platform-runner targets are skipped because they have no Python
+    implementation to check. Direct Control and Trigger targets are checked
+    with their implementation-derived schemas. Bindings whose identity matches
+    no executable target are reported as undeclared. Reports are returned in a
+    deterministic order, one per checked or reported target.
     """
 
     if not isinstance(descriptor, Mapping):
         message = "descriptor must be a compiled plugin descriptor mapping"
         raise TypeError(message)
-    step_targets, python_targets = _collect_step_targets(descriptor)
+    step_targets, binding_targets = _collect_step_targets(descriptor)
     reports: list[DriftReport] = []
-    for identity, target in sorted(python_targets.items()):
+    for identity, target in sorted(binding_targets.items()):
         try:
             binding = bindings.binding(identity)
         except StepBindingError:
@@ -1932,7 +1959,7 @@ def check_plugin_bindings(
         reports.append(
             check_target_binding(target, binding, entry_point_resolver=entry_point_resolver)
         )
-    reports.extend(_undeclared_binding_reports(bindings, python_targets, step_targets))
+    reports.extend(_undeclared_binding_reports(bindings, binding_targets, step_targets))
     return tuple(reports)
 
 

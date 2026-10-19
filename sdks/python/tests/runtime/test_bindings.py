@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
+import sys
+from collections.abc import Mapping
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -11,17 +13,18 @@ from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
     BaseStep,
+    ControlStep,
     ExecutionContext,
     InstalledActionManifest,
     StepBinding,
     StepBindingError,
     StepBindings,
+    StepCategory,
     StepDescriptor,
     StepExecutor,
-    StepTaxonomy,
-    TaskStep,
+    StepKind,
     TriggerStep,
-    WorkflowStep,
+    to_json_document,
 )
 
 
@@ -34,11 +37,22 @@ class EchoOutput(BaseModel):
     invocation_id: str
 
 
+def _plain_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json(item) for item in value]
+    return value
+
+
 def _make_step(base: type[BaseStep[Any, Any]]) -> BaseStep[EchoInput, EchoOutput]:
     class Step(base[EchoInput, EchoOutput]):  # type: ignore[valid-type]
         def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
             return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
 
+    if issubclass(base, ActionStep):
+        Step.__module__ = "steps"
+        Step.__qualname__ = "Echo"
     return Step()
 
 
@@ -50,6 +64,7 @@ def _manifest(
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Action",
         "spec": {
+            "runtime": {"kind": "custom-runner", "entryPoint": "steps:Echo"},
             "input": {"kind": "inline", "value": input_schema},
             "output": {
                 "kind": "inline",
@@ -71,28 +86,26 @@ def _installed_action(
 
 
 @pytest.mark.parametrize(
-    ("base", "taxonomy"),
+    ("base", "kind", "category"),
     [
-        (ActionStep, StepTaxonomy.ACTION),
-        (TaskStep, StepTaxonomy.TASK),
-        (WorkflowStep, StepTaxonomy.WORKFLOW),
-        (TriggerStep, StepTaxonomy.TRIGGER),
+        (ActionStep, StepKind.ACTION, StepCategory.ACTION),
+        (ControlStep, StepKind.CONTROL, StepCategory.CONTROL),
+        (TriggerStep, StepKind.TRIGGER, StepCategory.TRIGGER),
     ],
 )
-def test_bind_and_resolve_all_four_taxonomies(
-    base: type[BaseStep[Any, Any]], taxonomy: StepTaxonomy
+def test_bind_and_resolve_all_step_categories(
+    base: type[BaseStep[Any, Any]], kind: StepKind, category: StepCategory
 ) -> None:
     bindings = StepBindings()
     step = _make_step(base)
     descriptor = (
-        StepDescriptor.for_installed_action(
-            step, _installed_action(EchoInput.model_json_schema())
-        )
-        if taxonomy is StepTaxonomy.ACTION
+        StepDescriptor.for_installed_action(step, _installed_action(EchoInput.model_json_schema()))
+        if kind is StepKind.ACTION
         else StepDescriptor.for_step("acme.plugin.echo", step)
     )
 
-    assert descriptor.taxonomy is taxonomy
+    assert descriptor.kind is kind
+    assert descriptor.category is category
     bindings.bind(descriptor, step)
     assert bindings.resolve("acme.plugin.echo") is step
     assert bindings.step_identities == ("acme.plugin.echo",)
@@ -100,7 +113,7 @@ def test_bind_and_resolve_all_four_taxonomies(
 
 def test_binding_retains_the_descriptor_and_implementation() -> None:
     bindings = StepBindings()
-    step = _make_step(TaskStep)
+    step = _make_step(ControlStep)
     descriptor = StepDescriptor.for_step("acme.plugin.echo", step)
     bindings.bind(descriptor, step)
 
@@ -112,11 +125,11 @@ def test_binding_retains_the_descriptor_and_implementation() -> None:
 
 
 def test_descriptor_for_step_derives_pydantic_schemas() -> None:
-    step = _make_step(TaskStep)
+    step = _make_step(ControlStep)
     descriptor = StepDescriptor.for_step("acme.plugin.echo", step)
 
-    assert descriptor.input_schema == EchoInput.model_json_schema()
-    assert descriptor.output_schema == EchoOutput.model_json_schema()
+    assert _plain_json(descriptor.input_schema) == EchoInput.model_json_schema()
+    assert _plain_json(descriptor.output_schema) == EchoOutput.model_json_schema()
 
 
 def test_installed_action_descriptor_uses_the_manifest_schema() -> None:
@@ -138,10 +151,80 @@ def test_installed_action_descriptor_uses_the_manifest_schema() -> None:
     installed_action = _installed_action(manifest_schema, output_schema)
     descriptor = StepDescriptor.for_installed_action(step, installed_action)
 
-    assert descriptor.input_schema == manifest_schema
+    assert _plain_json(descriptor.input_schema) == manifest_schema
     assert descriptor.input_schema_source == "manifest"
-    assert installed_action.output_schema == output_schema
-    assert descriptor.output_schema == output_schema
+    assert _plain_json(installed_action.output_schema) == output_schema
+    assert _plain_json(descriptor.output_schema) == output_schema
+
+
+def test_installed_action_rejects_a_mismatched_implementation_before_execution() -> None:
+    class MismatchedAction(ActionStep[EchoInput, EchoOutput]):
+        def __init__(self) -> None:
+            self.run_calls = 0
+
+        def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+            self.run_calls += 1
+            return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
+
+    installed_action = _installed_action(
+        EchoInput.model_json_schema(), EchoOutput.model_json_schema()
+    )
+    matching_step = _make_step(ActionStep)
+    descriptor = StepDescriptor.for_installed_action(matching_step, installed_action)
+    mismatched_step = MismatchedAction()
+
+    with pytest.raises(StepBindingError, match="entry point"):
+        StepDescriptor.for_installed_action(mismatched_step, installed_action)
+
+    with pytest.raises(StepBindingError, match="entry point"):
+        StepExecutor(StepBinding(descriptor, mismatched_step))
+
+    assert mismatched_step.run_calls == 0
+
+
+def test_installed_action_accepts_a_loaded_reexported_entry_point() -> None:
+    step = _make_step(ActionStep)
+    module = ModuleType("acme_reexport")
+    module.Echo = type(step)
+    sys.modules["acme_reexport"] = module
+    try:
+        manifest = _manifest(EchoInput.model_json_schema())
+        manifest["spec"]["runtime"]["entryPoint"] = "acme_reexport:Echo"
+        installed_action = InstalledActionManifest.from_manifest(
+            "acme.plugin.echo", manifest, {}
+        )
+
+        descriptor = StepDescriptor.for_installed_action(step, installed_action)
+
+        assert descriptor.input_schema_source == "manifest"
+    finally:
+        del sys.modules["acme_reexport"]
+
+
+def test_immutable_documents_have_a_supported_json_export() -> None:
+    installed_action = _installed_action(EchoInput.model_json_schema())
+
+    exported = to_json_document(installed_action.document)
+
+    assert json.loads(json.dumps(exported)) == _plain_json(installed_action.document)
+
+
+def test_descriptor_rejects_mutable_non_json_schema_values() -> None:
+    with pytest.raises(TypeError, match="JSON-compatible"):
+        StepDescriptor(
+            step_identity="acme.plugin.echo",
+            kind=StepKind.CONTROL,
+            input_schema={"type": "object", "x-value": bytearray(b"secret")},
+            output_schema={"type": "object"},
+        )
+
+
+def test_installed_platform_action_cannot_be_bound_to_python() -> None:
+    manifest = _manifest(EchoInput.model_json_schema())
+    manifest["spec"]["runtime"] = {"kind": "platform-runner", "driver": "http.v1"}
+
+    with pytest.raises(StepBindingError, match="custom-runner"):
+        InstalledActionManifest.from_manifest("acme.plugin.echo", manifest, {})
 
 
 def test_installed_action_manifest_resolves_an_asset_backed_schema() -> None:
@@ -159,9 +242,11 @@ def test_installed_action_manifest_resolves_an_asset_backed_schema() -> None:
         {"schemas/input.json": input_schema},
     )
 
-    assert installed_action.input_schema == input_schema
+    assert _plain_json(installed_action.input_schema) == input_schema
     assert (
-        StepDescriptor.for_installed_action(_make_step(ActionStep), installed_action).input_schema
+        _plain_json(
+            StepDescriptor.for_installed_action(_make_step(ActionStep), installed_action).input_schema
+        )
         == input_schema
     )
 
@@ -191,18 +276,16 @@ def test_installed_action_documents_and_schemas_are_immutable() -> None:
             "properties": {"message": {"type": "string"}},
         },
     )
-    descriptor = StepDescriptor.for_installed_action(
-        _make_step(ActionStep), installed_action
-    )
+    descriptor = StepDescriptor.for_installed_action(_make_step(ActionStep), installed_action)
 
-    input_snapshot = json.loads(json.dumps(descriptor.input_schema))
-    output_snapshot = json.loads(json.dumps(descriptor.output_schema))
-    document_snapshot = json.loads(json.dumps(installed_action.document))
+    input_snapshot = _plain_json(descriptor.input_schema)
+    output_snapshot = _plain_json(descriptor.output_schema)
+    document_snapshot = _plain_json(installed_action.document)
 
     def assert_unchanged() -> None:
-        assert descriptor.input_schema == input_snapshot
-        assert descriptor.output_schema == output_snapshot
-        assert installed_action.document == document_snapshot
+        assert _plain_json(descriptor.input_schema) == input_snapshot
+        assert _plain_json(descriptor.output_schema) == output_snapshot
+        assert _plain_json(installed_action.document) == document_snapshot
 
     with pytest.raises(TypeError):
         installed_action.input_schema["type"] = "array"
@@ -211,7 +294,7 @@ def test_installed_action_documents_and_schemas_are_immutable() -> None:
         installed_action.input_schema["required"][0] = "changed"
     assert_unchanged()
     with pytest.raises(TypeError):
-        descriptor.input_schema["required"].append("changed")
+        descriptor.input_schema["required"][0] = "changed"
     assert_unchanged()
     with pytest.raises(TypeError):
         installed_action.document["spec"]["input"]["value"] = {}
@@ -238,26 +321,48 @@ def test_installed_action_documents_and_schemas_are_immutable() -> None:
         descriptor.output_schema["required"] *= 2
     assert_unchanged()
 
+    with pytest.raises(TypeError):
+        dict.__setitem__(descriptor.input_schema, "title", "changed")
+    assert_unchanged()
+    with pytest.raises(TypeError):
+        dict.__ior__(descriptor.input_schema, {"title": "changed"})
+    assert_unchanged()
+    with pytest.raises(TypeError):
+        list.__iadd__(descriptor.input_schema["required"], ["other"])
+    assert_unchanged()
 
-def test_mutation_through_base_mapping_methods_fails_closed_at_execution() -> None:
+
+def test_base_mapping_mutation_is_rejected() -> None:
     step = _make_step(ActionStep)
     installed_action = _installed_action(EchoInput.model_json_schema())
     descriptor = StepDescriptor.for_installed_action(step, installed_action)
 
-    dict.__setitem__(descriptor.input_schema, "required", [])
-    binding = StepBinding(descriptor, step)
-
-    with pytest.raises(StepBindingError, match="unchanged installed contract"):
-        StepExecutor(binding)
+    with pytest.raises(TypeError):
+        dict.__setitem__(descriptor.input_schema, "required", [])
 
 
-def test_mutated_installed_schema_cannot_be_rebound() -> None:
+def test_base_list_mutation_is_rejected() -> None:
     step = _make_step(ActionStep)
     installed_action = _installed_action(EchoInput.model_json_schema())
-    dict.__setitem__(installed_action.input_schema, "required", [])
+    descriptor = StepDescriptor.for_installed_action(step, installed_action)
 
-    with pytest.raises(StepBindingError, match="changed after installation"):
-        StepDescriptor.for_installed_action(step, installed_action)
+    with pytest.raises(TypeError):
+        list.__setitem__(descriptor.input_schema["required"], 0, "changed")
+
+
+def test_installed_schema_cannot_be_mutated() -> None:
+    installed_action = _installed_action(EchoInput.model_json_schema())
+    with pytest.raises(TypeError):
+        dict.__setitem__(installed_action.input_schema, "required", [])
+
+
+def test_installed_action_entry_point_cannot_be_mutated() -> None:
+    installed_action = _installed_action(EchoInput.model_json_schema())
+    runtime = installed_action.document["spec"]["runtime"]
+    assert isinstance(runtime, Mapping)
+
+    with pytest.raises(TypeError):
+        dict.__setitem__(runtime, "entryPoint", "steps:Other")
 
 
 def test_descriptor_schema_freezes_mutable_values_nested_in_tuples() -> None:
@@ -270,32 +375,24 @@ def test_descriptor_schema_freezes_mutable_values_nested_in_tuples() -> None:
             }
         ),
     )
-    def snapshot(value: object) -> object:
-        if isinstance(value, dict):
-            return {key: snapshot(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [snapshot(item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(snapshot(item) for item in value)
-        return value
 
-    schema_snapshot = snapshot(descriptor.input_schema)
+    schema_snapshot = _plain_json(descriptor.input_schema)
 
     assert isinstance(descriptor.input_schema["x-syntara-nested"], tuple)
     with pytest.raises(TypeError):
-        descriptor.input_schema["x-syntara-nested"][0]["values"].append("changed")
+        descriptor.input_schema["x-syntara-nested"][0]["values"][0] = "changed"
 
-    assert descriptor.input_schema == schema_snapshot
+    assert _plain_json(descriptor.input_schema) == schema_snapshot
 
 
 def test_every_descriptor_schema_is_deeply_immutable() -> None:
-    descriptor = StepDescriptor.for_step("acme.plugin.echo", _make_step(TaskStep))
-    input_snapshot = json.loads(json.dumps(descriptor.input_schema))
-    output_snapshot = json.loads(json.dumps(descriptor.output_schema))
+    descriptor = StepDescriptor.for_step("acme.plugin.echo", _make_step(ControlStep))
+    input_snapshot = _plain_json(descriptor.input_schema)
+    output_snapshot = _plain_json(descriptor.output_schema)
 
     def assert_unchanged() -> None:
-        assert descriptor.input_schema == input_snapshot
-        assert descriptor.output_schema == output_snapshot
+        assert _plain_json(descriptor.input_schema) == input_snapshot
+        assert _plain_json(descriptor.output_schema) == output_snapshot
 
     with pytest.raises(TypeError):
         descriptor.input_schema |= {"title": "changed"}
@@ -318,7 +415,7 @@ def test_every_descriptor_schema_is_deeply_immutable() -> None:
 
 
 def test_installed_action_descriptor_rejects_a_non_action_step() -> None:
-    step = _make_step(TaskStep)
+    step = _make_step(ControlStep)
     installed_action = _installed_action(EchoInput.model_json_schema())
 
     with pytest.raises(StepBindingError, match="ActionStep"):
@@ -346,7 +443,7 @@ def test_installed_action_descriptor_accepts_resolvable_schema_references() -> N
         _installed_action(input_schema),
     )
 
-    assert descriptor.input_schema == input_schema
+    assert _plain_json(descriptor.input_schema) == input_schema
 
 
 def test_installed_action_descriptor_rejects_a_dangling_schema_reference() -> None:
@@ -383,7 +480,7 @@ def test_installed_action_descriptor_rejects_nested_dangling_references() -> Non
 
 def test_resolved_step_executes_directly_without_container_invocation() -> None:
     bindings = StepBindings()
-    step = _make_step(TaskStep)
+    step = _make_step(ControlStep)
     bindings.bind(StepDescriptor.for_step("acme.plugin.echo", step), step)
 
     context = ExecutionContext(invocation_id="invoke-1")
@@ -394,7 +491,7 @@ def test_resolved_step_executes_directly_without_container_invocation() -> None:
 
 def test_duplicate_identity_is_rejected() -> None:
     bindings = StepBindings()
-    step = _make_step(TaskStep)
+    step = _make_step(ControlStep)
     descriptor = StepDescriptor.for_step("acme.plugin.echo", step)
     bindings.bind(descriptor, step)
 
@@ -409,18 +506,18 @@ def test_malformed_identity_is_rejected() -> None:
     with pytest.raises(StepBindingError, match="step_identity"):
         StepDescriptor(
             step_identity="not a valid identity",
-            taxonomy=StepTaxonomy.ACTION,
+            kind=StepKind.ACTION,
             input_schema=input_schema,
             output_schema=output_schema,
         )
 
 
-def test_taxonomy_mismatch_is_rejected() -> None:
+def test_kind_mismatch_is_rejected() -> None:
     bindings = StepBindings()
-    step = _make_step(TaskStep)
+    step = _make_step(ControlStep)
     descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
-        taxonomy=StepTaxonomy.ACTION,
+        kind=StepKind.ACTION,
         input_schema=EchoInput.model_json_schema(),
         output_schema=EchoOutput.model_json_schema(),
     )
@@ -429,25 +526,26 @@ def test_taxonomy_mismatch_is_rejected() -> None:
         bindings.bind(descriptor, step)
 
 
-def test_taxonomy_strings_are_normalized() -> None:
+def test_kind_strings_are_normalized_and_category_is_derived() -> None:
     descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
-        taxonomy="task",
+        kind="Control",
         input_schema=EchoInput.model_json_schema(),
         output_schema=EchoOutput.model_json_schema(),
     )
 
-    assert descriptor.taxonomy is StepTaxonomy.TASK
+    assert descriptor.kind is StepKind.CONTROL
+    assert descriptor.category is StepCategory.CONTROL
 
 
-def test_invalid_taxonomy_is_rejected() -> None:
+def test_invalid_kind_is_rejected() -> None:
     input_schema = EchoInput.model_json_schema()
     output_schema = EchoOutput.model_json_schema()
 
-    with pytest.raises(StepBindingError, match="valid step taxonomy"):
+    with pytest.raises(StepBindingError, match="valid concrete Step kind"):
         StepDescriptor(
             step_identity="acme.plugin.echo",
-            taxonomy="not-a-taxonomy",
+            kind="not-a-kind",
             input_schema=input_schema,
             output_schema=output_schema,
         )
@@ -460,7 +558,7 @@ def test_callers_cannot_mark_a_plain_action_descriptor_as_manifest_trusted() -> 
     with pytest.raises(StepBindingError, match="for_installed_action"):
         StepDescriptor(
             step_identity="acme.plugin.echo",
-            taxonomy=StepTaxonomy.ACTION,
+            kind=StepKind.ACTION,
             input_schema=input_schema,
             output_schema=output_schema,
             input_schema_source="manifest",
@@ -484,7 +582,7 @@ def test_binding_and_execution_reject_a_duck_typed_action_descriptor() -> None:
     step = _make_step(ActionStep)
     fake_descriptor = SimpleNamespace(
         step_identity="acme.plugin.echo",
-        taxonomy=StepTaxonomy.ACTION,
+        kind=StepKind.ACTION,
         input_schema={"type": "object"},
         output_schema=EchoOutput.model_json_schema(),
         require_executable_contract=lambda: None,
@@ -507,7 +605,7 @@ def test_binding_and_execution_reject_an_action_descriptor_subclass() -> None:
     step = _make_step(ActionStep)
     forged_descriptor = ForgedDescriptor(
         step_identity="acme.plugin.echo",
-        taxonomy=StepTaxonomy.ACTION,
+        kind=StepKind.ACTION,
         input_schema={"type": "object"},
         output_schema=EchoOutput.model_json_schema(),
     )
@@ -550,7 +648,7 @@ def test_installed_action_execution_requires_factory_provenance() -> None:
 
     forged_descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
-        taxonomy=StepTaxonomy.ACTION,
+        kind=StepKind.ACTION,
         input_schema=EchoInput.model_json_schema(),
         output_schema=EchoOutput.model_json_schema(),
     )
@@ -567,7 +665,7 @@ def test_platform_managed_driver_is_rejected_as_a_python_implementation() -> Non
     bindings = StepBindings()
     descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
-        taxonomy=StepTaxonomy.ACTION,
+        kind=StepKind.ACTION,
         input_schema=EchoInput.model_json_schema(),
         output_schema=EchoOutput.model_json_schema(),
     )

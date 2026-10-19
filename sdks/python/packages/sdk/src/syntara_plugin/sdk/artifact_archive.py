@@ -11,7 +11,7 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from syntara_plugin.contracts import load_bundle
+from syntara_plugin.contracts import canonical_json_digest, load_bundle, validate_document
 
 from .artifact import (
     OCI_ARTIFACT_TYPE,
@@ -20,6 +20,7 @@ from .artifact import (
     OCI_PLUGIN_MANIFEST_MEDIA_TYPE,
     PluginArtifact,
 )
+from .descriptor_schemas import materialized_schemas
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, OciDescriptor, canonical_json_bytes
 
 OCI_LAYOUT_VERSION = "1.0.0"
@@ -105,10 +106,8 @@ def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlo
         raise ArtifactArchiveError("plugin artifact config does not bind its plugin descriptor")
 
     descriptor_document = _json_mapping(descriptor.content, "plugin descriptor")
-    if (
-        descriptor_document.get("apiVersion") != "syntara.io/v1alpha1"
-        or descriptor_document.get("kind") != "PluginDescriptor"
-    ):
+    contract_errors = validate_document(load_bundle(), "plugin_descriptor", descriptor_document)
+    if contract_errors:
         raise ArtifactArchiveError("plugin descriptor does not satisfy the supported contract")
     metadata = descriptor_document.get("metadata")
     specification = descriptor_document.get("spec")
@@ -125,6 +124,8 @@ def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlo
     workloads = specification.get("workloads")
     if not isinstance(targets, list) or not targets or not isinstance(workloads, Mapping):
         raise ArtifactArchiveError("plugin descriptor does not satisfy the supported contract")
+    _verify_unique_target_identities(targets)
+    _verify_schema_digests(targets)
     if config_document.get("assetIndex") != asset_index:
         raise ArtifactArchiveError("plugin artifact config asset index does not match its descriptor")
     documentation = specification.get("documentation")
@@ -137,6 +138,40 @@ def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlo
     ):
         raise ArtifactArchiveError("plugin descriptor documentation does not match its asset inventory")
     _verify_content_bundle(bundle.content, asset_index)
+
+
+def _verify_schema_digests(targets: list[object]) -> None:
+    """Verify descriptor digests bind each compiled schema to its exact JSON value."""
+
+    for target in targets:
+        if not isinstance(target, Mapping):
+            raise ArtifactArchiveError("plugin descriptor target is invalid")
+        digests = target.get("schemaDigests")
+        if not isinstance(digests, Mapping):
+            raise ArtifactArchiveError("plugin descriptor target schema digests are invalid")
+        schemas = materialized_schemas(target)
+        if set(digests) != set(schemas):
+            raise ArtifactArchiveError(
+                "plugin descriptor schema digests do not match its materialized schemas"
+            )
+        for field_name, value in schemas.items():
+            if digests.get(field_name) != canonical_json_digest(value):
+                raise ArtifactArchiveError(
+                    f"plugin descriptor {field_name} schema digest does not match its schema"
+                )
+
+
+def _verify_unique_target_identities(targets: list[object]) -> None:
+    """Reject descriptors whose targets collide across concrete Step types."""
+
+    identities: set[str] = set()
+    for target in targets:
+        if not isinstance(target, Mapping) or not isinstance(target.get("identity"), str):
+            raise ArtifactArchiveError("plugin descriptor target is invalid")
+        identity = target["identity"]
+        if identity in identities:
+            raise ArtifactArchiveError("plugin descriptor contains duplicate target identities")
+        identities.add(identity)
 
 
 def _verify_content_bundle(content: bytes, asset_index: Mapping[str, Any]) -> None:

@@ -15,9 +15,15 @@ from typing import Any, Literal, cast
 
 import yaml
 from jsonschema import Draft202012Validator, SchemaError
-from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
+from syntara_plugin.contracts import (
+    ContractBundle,
+    load_bundle,
+    validate_document,
+)
 from yaml.constructor import ConstructorError
 from yaml.tokens import AliasToken, AnchorToken
+
+from .descriptor_schemas import schema_digests
 
 DEFAULT_CONTAINER_ABI = "syntara.container/v1alpha1"
 DEFAULT_PROVIDER_ABI = "syntara.provider/v1alpha1"
@@ -308,6 +314,7 @@ def _compile(
         require_image_bindings=require_image_bindings,
     )
     _validate_connection_contracts(canonical_targets, diagnostics)
+    _validate_unique_target_identities(canonical_targets, diagnostics)
     if diagnostics:
         raise CompilationError(diagnostics)
     descriptor_spec: dict[str, object] = {
@@ -324,6 +331,17 @@ def _compile(
         "metadata": _ordered(plugin.document["metadata"]),
         "spec": descriptor_spec,
     }
+    for message in validate_document(bundle, "plugin_descriptor", descriptor):
+        diagnostics.append(
+            _diagnostic(
+                "DESCRIPTOR_INVALID",
+                message,
+                PLUGIN_MANIFEST_FILENAME,
+                "Correct the source manifests so the compiled descriptor satisfies its contract.",
+            )
+        )
+    if diagnostics:
+        raise CompilationError(diagnostics)
     return CompilationResult(
         descriptor=cast(Mapping[str, Any], _ordered(descriptor)),
         assets={key: assets[key] for key in sorted(assets)},
@@ -344,6 +362,7 @@ def _normalize_target(
     spec = document.get("spec")
     if not isinstance(spec, Mapping) or kind not in {
         "Action",
+        "Control",
         "CredentialRecipe",
         "IntegrationType",
         "Trigger",
@@ -366,12 +385,15 @@ def _normalize_target(
     )
     if kind == "Action":
         _normalize_action(target, spec, plugin, context)
+    elif kind == "Control":
+        _normalize_control(target, spec, plugin, context)
     elif kind == "Trigger":
-        _normalize_trigger(target, spec, context)
+        _normalize_trigger(target, spec, plugin, context)
     elif kind == "IntegrationType":
         _normalize_integration_type(target, spec, context)
     else:
         _normalize_credential_recipe(target, spec, context)
+    _record_schema_digests(target)
     return cast(dict[str, Any], _ordered(target))
 
 
@@ -393,18 +415,21 @@ def _normalize_action(
 ) -> None:
     runtime = _normalize_action_runtime(spec.get("runtime"), plugin, context)
     target["runtime"] = _ordered(runtime)
-    for field_name in ("input", "output", "error"):
+    for field_name in ("input", "output"):
         target[field_name] = _target_document_source(spec.get(field_name), field_name, context)
-    integration_type = spec.get("integrationType")
-    if integration_type is not None:
-        target["integrationType"] = integration_type
+    if "error" in spec:
+        target["error"] = _target_document_source(spec.get("error"), "error", context)
+    for field_name in ("domain", "integrationType"):
+        value = spec.get(field_name)
+        if value is not None:
+            target[field_name] = value
 
 
 def _normalize_action_runtime(
     raw_runtime: object, plugin: Mapping[str, Any], context: _NormalizationContext
 ) -> dict[str, Any]:
     runtime = dict(raw_runtime) if isinstance(raw_runtime, Mapping) else {}
-    if runtime.get("kind") == "custom-workload":
+    if runtime.get("kind") == "custom-runner":
         plugin_spec = plugin.get("spec", {})
         workload = plugin_spec.get("workload", {}) if isinstance(plugin_spec, Mapping) else {}
         runtime["workload"] = workload.get("image") if isinstance(workload, Mapping) else None
@@ -412,6 +437,22 @@ def _normalize_action_runtime(
     elif runtime.get("driver") == "http.v1":
         _normalize_http_operation(runtime, context)
     return runtime
+
+
+def _normalize_control(
+    target: dict[str, Any],
+    spec: Mapping[str, Any],
+    plugin: Mapping[str, Any],
+    context: _NormalizationContext,
+) -> None:
+    """Normalize control metadata and its selected runner."""
+
+    target["invocation"] = _ordered(spec.get("invocation"))
+    target["runtime"] = _ordered(_normalize_step_runtime(spec.get("runtime"), plugin))
+    for field_name in ("input", "output"):
+        target[field_name] = _target_document_source(spec.get(field_name), field_name, context)
+    if "error" in spec:
+        target["error"] = _target_document_source(spec.get("error"), "error", context)
 
 
 def _normalize_http_operation(runtime: dict[str, Any], context: _NormalizationContext) -> None:
@@ -431,12 +472,32 @@ def _normalize_http_operation(runtime: dict[str, Any], context: _NormalizationCo
 
 
 def _normalize_trigger(
-    target: dict[str, Any], spec: Mapping[str, Any], context: _NormalizationContext
+    target: dict[str, Any],
+    spec: Mapping[str, Any],
+    plugin: Mapping[str, Any],
+    context: _NormalizationContext,
 ) -> None:
     target["driver"] = spec.get("driver")
+    target["runtime"] = _ordered(_normalize_step_runtime(spec.get("runtime"), plugin))
     target["configuration"] = _target_document_source(
         spec.get("configuration"), "configuration", context
     )
+    for field_name in ("input", "output"):
+        target[field_name] = _target_document_source(spec.get(field_name), field_name, context)
+    if "error" in spec:
+        target["error"] = _target_document_source(spec.get("error"), "error", context)
+
+
+def _normalize_step_runtime(raw_runtime: object, plugin: Mapping[str, Any]) -> dict[str, Any]:
+    """Materialize the shared runner metadata for non-Action Step types."""
+
+    runtime = dict(raw_runtime) if isinstance(raw_runtime, Mapping) else {}
+    if runtime.get("kind") == "custom-runner":
+        plugin_spec = plugin.get("spec", {})
+        workload = plugin_spec.get("workload", {}) if isinstance(plugin_spec, Mapping) else {}
+        runtime["workload"] = workload.get("image") if isinstance(workload, Mapping) else None
+        runtime["abi"] = DEFAULT_CONTAINER_ABI
+    return runtime
 
 
 def _normalize_integration_type(
@@ -463,6 +524,37 @@ def _normalize_credential_recipe(
     output = spec.get("output")
     if output is not None:
         target["output"] = _target_document_source(output, "output", context)
+
+
+def _record_schema_digests(target: dict[str, Any]) -> None:
+    """Attach canonical digests for every materialized schema in a target."""
+
+    digests = schema_digests(target)
+    if digests:
+        target["schemaDigests"] = digests
+
+
+def _validate_unique_target_identities(
+    targets: Sequence[Mapping[str, Any]], diagnostics: list[Diagnostic]
+) -> None:
+    """Reject identities shared by any compiled targets, regardless of kind."""
+
+    identities: dict[str, str] = {}
+    for target in targets:
+        identity = target.get("identity")
+        path = target.get("sourcePath", PLUGIN_MANIFEST_FILENAME)
+        if not isinstance(identity, str) or not isinstance(path, str):
+            continue
+        previous = identities.setdefault(identity, path)
+        if previous != path:
+            diagnostics.append(
+                _diagnostic(
+                    "COMPILED_IDENTITY_DUPLICATE",
+                    f"Compiled identity {identity!r} is declared by both {previous!r} and {path!r}.",
+                    path,
+                    "Give every target a unique metadata.name, regardless of its Step type.",
+                )
+            )
 
 
 def _target_document_source(
@@ -723,7 +815,7 @@ def _validate_bindings(
     required: set[str] = set()
     if any(
         isinstance(target.get("runtime"), Mapping)
-        and target["runtime"].get("kind") == "custom-workload"
+        and target["runtime"].get("kind") == "custom-runner"
         for target in targets
     ):
         workload = plugin.get("spec", {}).get("workload")
@@ -731,7 +823,7 @@ def _validate_bindings(
             diagnostics.append(
                 _diagnostic(
                     "WORKLOAD_MISSING",
-                    "A custom-workload action requires one root workload binding.",
+                    "A custom-runner step requires one root workload binding.",
                     PLUGIN_MANIFEST_FILENAME,
                     "Add spec.workload.image to the root manifest.",
                 )
@@ -959,11 +1051,18 @@ def _validate_contract(
     locations: Mapping[str, SourceLocation],
     diagnostics: list[Diagnostic],
 ) -> None:
-    if kind not in {"plugin", "action", "credential_recipe", "integration", "trigger"}:
+    if kind not in {
+        "plugin",
+        "action",
+        "control",
+        "credential_recipe",
+        "integration",
+        "trigger",
+    }:
         diagnostics.append(
             _diagnostic(
                 "TARGET_KIND_INVALID",
-                "Target kind must be Action, Trigger, IntegrationType, or CredentialRecipe.",
+                "Target kind must be Action, Control, Trigger, IntegrationType, or CredentialRecipe.",
                 file,
                 "Use one supported target kind.",
             )
@@ -971,7 +1070,17 @@ def _validate_contract(
         return
     for message in validate_document(
         bundle,
-        cast(Literal["plugin", "action", "credential_recipe", "integration", "trigger"], kind),
+        cast(
+            Literal[
+                "plugin",
+                "action",
+                "control",
+                "credential_recipe",
+                "integration",
+                "trigger",
+            ],
+            kind,
+        ),
         document,
     ):
         path = message.partition(":")[0].replace(".", "/")
@@ -989,6 +1098,7 @@ def _validate_contract(
 def _contract_kind(document: Mapping[str, Any]) -> str:
     return {
         "Action": "action",
+        "Control": "control",
         "CredentialRecipe": "credential_recipe",
         "IntegrationType": "integration",
         "Trigger": "trigger",

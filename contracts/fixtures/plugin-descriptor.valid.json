@@ -1,0 +1,118 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "PluginDescriptor",
+  "metadata": {
+    "namespace": "acme",
+    "name": "issue-tools",
+    "version": "0.1.0",
+    "displayName": "Issue tools",
+    "description": "Creates GitHub issues."
+  },
+  "spec": {
+    "assets": {
+      "docs/README.md": {
+        "canonicalDigest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
+        "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
+        "mediaType": "text/markdown",
+        "references": ["plugin.yaml#/spec/documentation"],
+        "size": 14
+      }
+    },
+    "contractBundleDigest": "sha256:ea688406ce7c11690975998ccfbef52c4e374db7d61fc3d081dcd6f0854b0873",
+    "documentation": {
+      "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
+      "path": "docs/README.md"
+    },
+    "targets": [
+      {
+        "identity": "acme.issue-tools.create-issue",
+        "input": {"type": "object"},
+        "kind": "Action",
+        "metadata": {
+          "description": "Creates one issue.",
+          "displayName": "Create issue",
+          "name": "create-issue"
+        },
+        "output": {"type": "object"},
+        "runtime": {
+          "abi": "syntara.container/v1alpha1",
+          "entryPoint": "issue_tools.actions:CreateIssue",
+          "kind": "custom-runner",
+          "workload": "plugin-workload"
+        },
+        "schemaDigests": {
+          "input": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0",
+          "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
+        },
+        "sourcePath": "steps/create-issue.yaml",
+        "version": "0.1.0"
+      },
+      {
+        "identity": "acme.issue-tools.invoke-deploy",
+        "input": {"type": "object"},
+        "invocation": {
+          "kind": "workflow-invocation",
+          "workflow": "acme.issue-tools.deploy"
+        },
+        "kind": "Control",
+        "metadata": {
+          "description": "Invokes a deployment workflow.",
+          "displayName": "Invoke deploy",
+          "name": "invoke-deploy"
+        },
+        "output": {"type": "object"},
+        "runtime": {
+          "abi": "syntara.container/v1alpha1",
+          "entryPoint": "issue_tools.controls:Deploy",
+          "kind": "custom-runner",
+          "workload": "plugin-workload"
+        },
+        "schemaDigests": {
+          "input": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0",
+          "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
+        },
+        "sourcePath": "controls/invoke.yaml",
+        "version": "0.1.0"
+      },
+      {
+        "configuration": {
+          "properties": {"secret": {"type": "string"}},
+          "type": "object"
+        },
+        "driver": "webhook.v1",
+        "identity": "acme.issue-tools.issue-opened",
+        "input": {
+          "properties": {"event": {"type": "string"}},
+          "type": "object"
+        },
+        "kind": "Trigger",
+        "metadata": {
+          "description": "Receives issue-opened events.",
+          "displayName": "Issue opened",
+          "name": "issue-opened"
+        },
+        "output": {
+          "properties": {"runId": {"type": "string"}},
+          "type": "object"
+        },
+        "runtime": {
+          "driver": "webhook.v1",
+          "kind": "platform-runner"
+        },
+        "schemaDigests": {
+          "configuration": "sha256:92e67cff91a408841b959c2dd0e50899511f5d40000f99b6b82711950584930e",
+          "input": "sha256:490c96a852d2c8aa607cfb05219316ace43cff8a2763c14e39b50e5962271d15",
+          "output": "sha256:9165019f477995f6b0f38b7225ae22d3aee26feabba71afb8a2552918ebce43a"
+        },
+        "sourcePath": "triggers/issue-opened.yaml",
+        "version": "0.1.0"
+      }
+    ],
+    "workloads": {
+      "plugin-workload": {
+        "abi": "syntara.container/v1alpha1",
+        "image": "quay.io/acme/issue-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+}

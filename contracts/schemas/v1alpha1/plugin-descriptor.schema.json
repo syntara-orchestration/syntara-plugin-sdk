@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.syntara.io/v1alpha1/plugin-descriptor.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "syntara.io/v1alpha1"},
+    "kind": {"const": "PluginDescriptor"},
+    "metadata": {"$ref": "common.schema.json#/$defs/metadata"},
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assets", "contractBundleDigest", "targets", "workloads"],
+      "properties": {
+        "assets": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/asset"}
+        },
+        "contractBundleDigest": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+        "documentation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["digest", "path"],
+          "properties": {
+            "digest": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+            "path": {"type": "string"}
+          }
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"oneOf": [
+            {"$ref": "#/$defs/actionTarget"},
+            {"$ref": "#/$defs/controlTarget"},
+            {"$ref": "#/$defs/triggerTarget"},
+            {"$ref": "#/$defs/integrationTarget"},
+            {"$ref": "#/$defs/credentialTarget"}
+          ]}
+        },
+        "workloads": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/workload"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonicalDigest", "digest", "mediaType", "references", "size"],
+      "properties": {
+        "canonicalDigest": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+        "digest": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+        "mediaType": {"type": "string"},
+        "references": {"type": "array", "items": {"type": "string"}},
+        "size": {"type": "integer", "minimum": 0}
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["abi", "image"],
+      "properties": {
+        "abi": {"enum": ["syntara.container/v1alpha1", "syntara.provider/v1alpha1"]},
+        "image": {"type": ["string", "null"]},
+        "provider": {"$ref": "common.schema.json#/$defs/identifier"}
+      }
+    },
+    "schema": {"type": "object"},
+    "schemaDigests": {
+      "type": "object",
+      "additionalProperties": {"$ref": "common.schema.json#/$defs/sha256Digest"}
+    },
+    "targetBase": {
+      "type": "object",
+      "required": ["identity", "metadata", "sourcePath", "version"],
+      "properties": {
+        "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+        "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+        "sourcePath": {"type": "string"},
+        "version": {"type": "string"}
+      }
+    },
+    "customRunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["abi", "entryPoint", "kind", "workload"],
+      "properties": {
+        "abi": {"const": "syntara.container/v1alpha1"},
+        "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
+        "kind": {"const": "custom-runner"},
+        "workload": {"$ref": "common.schema.json#/$defs/identifier"}
+      }
+    },
+    "managedRunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "kind"],
+      "properties": {
+        "driver": {"$ref": "step.schema.json#/$defs/driver"},
+        "kind": {"const": "platform-runner"}
+      }
+    },
+    "compiledHttpOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path"],
+      "properties": {
+        "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^/(?!/)(?!.*(?:^|/)\\.\\.?/)[A-Za-z0-9._~!$&'()*+,;=:@{}\\-/]*$"
+        },
+        "requestMap": {"$ref": "http-operation.schema.json#/$defs/mapping"},
+        "responseMap": {"$ref": "http-operation.schema.json#/$defs/mapping"}
+      }
+    },
+    "actionRuntime": {
+      "oneOf": [
+        {"allOf": [
+          {"$ref": "#/$defs/customRunner"},
+          {"type": "object", "properties": {}}
+        ]},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["driver", "kind"],
+          "properties": {
+            "driver": {"$ref": "step.schema.json#/$defs/driver"},
+            "kind": {"const": "platform-runner"},
+            "operation": {"$ref": "#/$defs/compiledHttpOperation"}
+          },
+          "allOf": [
+            {"if": {"properties": {"driver": {"const": "http.v1"}}}, "then": {"required": ["operation"]}},
+            {"if": {"required": ["operation"]}, "then": {"properties": {"driver": {"const": "http.v1"}}}}
+          ]
+        }
+      ]
+    },
+    "runnerRuntime": {
+      "oneOf": [
+        {"$ref": "#/$defs/customRunner"},
+        {"$ref": "#/$defs/managedRunner"}
+      ]
+    },
+    "workflowInvocation": {"$ref": "step.schema.json#/$defs/workflowInvocation"},
+    "actionTarget": {
+      "allOf": [
+        {"$ref": "#/$defs/targetBase"},
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": ["kind", "input", "output", "runtime", "schemaDigests"],
+          "properties": {
+            "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+            "sourcePath": {"type": "string"},
+            "version": {"type": "string"},
+            "kind": {"const": "Action"},
+            "error": {"$ref": "#/$defs/schema"},
+            "domain": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "input": {"$ref": "#/$defs/schema"},
+            "integrationType": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "output": {"$ref": "#/$defs/schema"},
+            "runtime": {"$ref": "#/$defs/actionRuntime"},
+            "schemaDigests": {
+              "allOf": [
+                {"$ref": "#/$defs/schemaDigests"},
+                {"required": ["input", "output"]}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "controlTarget": {
+      "allOf": [
+        {"$ref": "#/$defs/targetBase"},
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": ["kind", "input", "invocation", "output", "runtime", "schemaDigests"],
+          "properties": {
+            "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+            "sourcePath": {"type": "string"},
+            "version": {"type": "string"},
+            "kind": {"const": "Control"},
+            "error": {"$ref": "#/$defs/schema"},
+            "input": {"$ref": "#/$defs/schema"},
+            "invocation": {"$ref": "#/$defs/workflowInvocation"},
+            "output": {"$ref": "#/$defs/schema"},
+            "runtime": {"$ref": "#/$defs/runnerRuntime"},
+            "schemaDigests": {
+              "allOf": [
+                {"$ref": "#/$defs/schemaDigests"},
+                {"required": ["input", "output"]}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "triggerTarget": {
+      "allOf": [
+        {"$ref": "#/$defs/targetBase"},
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": ["kind", "configuration", "driver", "input", "output", "runtime", "schemaDigests"],
+          "properties": {
+            "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+            "sourcePath": {"type": "string"},
+            "version": {"type": "string"},
+            "kind": {"const": "Trigger"},
+            "error": {"$ref": "#/$defs/schema"},
+            "configuration": {"$ref": "#/$defs/schema"},
+            "driver": {"$ref": "step.schema.json#/$defs/driver"},
+            "input": {"$ref": "#/$defs/schema"},
+            "output": {"$ref": "#/$defs/schema"},
+            "runtime": {"$ref": "#/$defs/runnerRuntime"},
+            "schemaDigests": {
+              "allOf": [
+                {"$ref": "#/$defs/schemaDigests"},
+                {"required": ["configuration", "input", "output"]}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "integrationTarget": {
+      "allOf": [
+        {"$ref": "#/$defs/targetBase"},
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": ["configuration", "credentialTypes", "endpointKinds", "id", "kind", "schemaDigests"],
+          "properties": {
+            "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+            "sourcePath": {"type": "string"},
+            "version": {"type": "string"},
+            "configuration": {"$ref": "#/$defs/schema"},
+            "credentialTypes": {"type": "array"},
+            "endpointKinds": {"type": "array"},
+            "id": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "kind": {"const": "IntegrationType"},
+            "schemaDigests": {"allOf": [{"$ref": "#/$defs/schemaDigests"}, {"required": ["configuration"]}]}
+          }
+        }
+      ]
+    },
+    "credentialTarget": {
+      "allOf": [
+        {"$ref": "#/$defs/targetBase"},
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": ["credentialSchema", "id", "integrationType", "issuance", "kind", "schemaDigests", "secretFields"],
+          "properties": {
+            "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+            "sourcePath": {"type": "string"},
+            "version": {"type": "string"},
+            "credentialSchema": {"$ref": "#/$defs/schema"},
+            "id": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "integrationType": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+            "issuance": {"type": "object"},
+            "kind": {"const": "CredentialRecipe"},
+            "output": {"$ref": "#/$defs/schema"},
+            "schemaDigests": {"allOf": [{"$ref": "#/$defs/schemaDigests"}, {"required": ["credentialSchema"]}]},
+            "secretFields": {"type": "array"}
+          }
+        }
+      ]
+    }
+  }
+}

@@ -56,7 +56,7 @@ catalog:
 | --- | --- |
 | `origin` | Registry URL including scheme and optional port. |
 | `artifactRepository` | Repository for the plugin metadata OCI artifact. This becomes the catalog entry’s `artifactRepository`. |
-| `workloadRepository` | Repository for an author-owned custom-workload image. |
+| `workloadRepository` | Repository for an author-owned custom-runner image. |
 | `catalogRepository` | Repository for the catalog-index OCI artifact. |
 | `username` | Registry username. Passwords never belong in this file. |
 | `authFile` | Local path to a Docker- or Podman-compatible `auth.json` file with an inline Basic credential. The path may be relative to the settings file; the credential is read only at publication time. |

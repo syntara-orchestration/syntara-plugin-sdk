@@ -45,9 +45,9 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish \
 
 The command verifies the local archive first, uploads its immutable blobs, advances the configured catalog index, and reports immutable references for both. It does not recompile the source. Production registries require HTTPS; HTTP is allowed only for an explicit loopback development registry. Set `publish.updateCatalog: false` (or pass `--no-update-catalog`) only when staging a release that must not yet be discoverable.
 
-## Optional custom-workload image build
+## Optional custom-runner image build
 
-For a plugin containing an action with `runtime.kind: custom-workload`, the developer-preview flow can build and push the author-owned image, use the registry-returned digest in the metadata archive, and publish the archive:
+For a plugin containing an action with `runtime.kind: custom-runner`, the developer-preview flow can build and push the author-owned image, use the registry-returned digest in the metadata archive, and publish the archive:
 
 ```sh
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin build \
@@ -60,7 +60,7 @@ This performs three OCI publications:
 2. The SDK publishes the plugin metadata archive to `registry.artifactRepository`.
 3. The SDK creates or advances the configured catalog index so Syntara can discover the release.
 
-The feature does not yet prove custom-workload execution in the Execution Plane, secret delivery, signing, or production egress policy. See [ADR 0006](../.sdlc/adrs/0006-deferred-custom-workload-build-ux.md).
+The feature does not yet prove custom-runner execution in the Execution Plane, secret delivery, signing, or production egress policy. See [ADR 0006](../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md).
 
 ## Administer or recover a catalog
 

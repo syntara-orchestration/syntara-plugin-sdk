@@ -1,4 +1,4 @@
-"""Small, explicit Podman adapter for custom-workload authoring previews."""
+"""Small, explicit Podman adapter for custom-runner authoring previews."""
 
 from __future__ import annotations
 

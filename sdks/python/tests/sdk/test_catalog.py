@@ -49,7 +49,7 @@ def _index() -> dict[str, object]:
                     "artifactRepository": "syntara/plugins/aap",
                     "artifactDigest": "sha256:" + "3" * 64,
                     "documentationDigest": "sha256:" + "4" * 64,
-                    "runtimeOwnerships": ["custom-workload"],
+                    "runtimeOwnerships": ["custom-runner"],
                 },
             ],
         },
@@ -95,6 +95,27 @@ def test_catalog_index_artifact_is_deterministic_and_has_a_complete_oci_envelope
     assert first.catalog_index.descriptor.digest == (
         "sha256:" + sha256(first.catalog_index.content).hexdigest()
     )
+
+
+def test_catalog_index_accepts_a_plugin_without_runner_ownership() -> None:
+    index = _index()
+    index["spec"]["entries"] = [
+        {
+            "namespace": "syntara",
+            "name": "control-only",
+            "version": "1.0.0",
+            "artifactRepository": "syntara/plugins/control-only",
+            "artifactDigest": "sha256:" + "1" * 64,
+            "documentationDigest": "sha256:" + "2" * 64,
+            "runtimeOwnerships": [],
+        }
+    ]
+
+    artifact = build_catalog_index_artifact(index)
+
+    assert json.loads(artifact.catalog_index.content)["spec"]["entries"][0][
+        "runtimeOwnerships"
+    ] == []
 
 
 @pytest.mark.parametrize(
@@ -164,7 +185,7 @@ def test_merge_catalog_entry_creates_then_extends_an_append_only_index() -> None
         "expiresAt": "2026-10-15T12:00:00Z",
     }
 
-    echo = {**github, "name": "local-echo", "runtimeOwnerships": ["custom-workload"]}
+    echo = {**github, "name": "local-echo", "runtimeOwnerships": ["custom-runner"]}
     extended, idempotent = merge_catalog_entry(
         current=initial,
         current_manifest_digest="sha256:" + "c" * 64,
@@ -270,7 +291,7 @@ def test_recover_catalog_entry_continues_the_accepted_chain_and_preserves_entrie
         "artifactRepository": "syntara/plugins/local-echo",
         "artifactDigest": "sha256:" + "c" * 64,
         "documentationDigest": "sha256:" + "d" * 64,
-        "runtimeOwnerships": ["custom-workload", "platform-runner"],
+        "runtimeOwnerships": ["custom-runner", "platform-runner"],
     }
 
     recovered = recover_catalog_entry(

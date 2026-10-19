@@ -17,33 +17,65 @@ Every plugin inventory and target document starts with this envelope.
 | `metadata.displayName` | Short UI label. |
 | `metadata.description` | User-facing explanation of the plugin or target. |
 
+## Terms and execution model
+
+A **Step type** is a concrete catalog capability such as **HTTP Request**,
+**Create GitHub Issue**, or **Launch AAP Job Template**. Every Step type has
+one lowercase **category**: `action`, `control`, or `trigger`. Action Step
+types cover domain integrations, API calls, scripts, and data manipulation;
+`Control` maps to `control`; and `Trigger` maps to `trigger`. Category states
+the capability's architectural role; it does not choose its execution owner.
+A **Runner** is either Syntara's `platform-runner` or an author-owned
+`custom-runner`. **Execution** is the invocation of the selected Step type
+through that runner or, for control and ingress Step types, through the
+platform control plane.
+
+```text
+Step type -> Category -> Runner -> Execution
+Launch AAP Job Template -> action -> platform-runner -> aap.v1 launches the selected job template
+HTTP Request -> action -> platform-runner -> http.v1 sends the configured request
+Create GitHub Issue -> action -> custom-runner -> the pinned runner invokes the typed implementation
+Launch production inventory sync -> control -> platform control plane -> invokes the selected workflow
+Pull request webhook -> trigger -> platform control plane -> webhook ingress delivers the event
+```
+
+Use a Control Step type for orchestration behavior in the control plane, such
+as invoking a workflow or composing execution flow. A Control Step type is
+not a generic label for every catalog capability.
+`spec.invocation.kind: orchestration` identifies control-flow metadata; a
+Control Step type that invokes a named workflow uses
+`spec.invocation.kind: workflow-invocation` and
+`spec.invocation.workflow`. Category is unrelated to a terminal failure's
+`error_code` classification.
+
 ## `kind: Plugin`
 
 Schema: [`plugin.schema.json`](../contracts/schemas/v1alpha1/plugin.schema.json). This is the release inventory at `plugin.yaml`.
 
 | Key | Meaning |
 | --- | --- |
-| `spec.targets` | Required list of contained YAML target paths. These are the actions, triggers, integration types, and credential recipes included in the release. |
+| `spec.targets` | Required list of contained YAML target paths. These are Step types, integration types, and credential recipes included in the release. |
 | `spec.documentation.path` | Required contained UTF-8 Markdown file published with the plugin. |
-| `spec.workload.image` | Optional logical image ID shared by `custom-workload` actions. It is bound to an immutable container digest during build. |
+| `spec.workload.image` | Optional logical image ID shared by `custom-runner` Step types. It is bound to an immutable container digest during build. |
 | `spec.providers` | Optional declarative form-provider image definitions. Each item has an `id` and a logical `image` ID. |
 
 ## `kind: Action`
 
-Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json). An Action is a workflow step type.
+Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json). An `Action` Step type (category `action`) performs a domain operation or integration.
 
 | Key | Meaning |
 | --- | --- |
-| `spec.runtime.kind` | Required execution owner: `platform-runner` or `custom-workload`. |
-| `spec.runtime.driver` | Required for `platform-runner`; names an approved versioned driver, such as `http.v1`. Forbidden for `custom-workload`. |
-| `spec.runtime.operation` | Required for `http.v1`; declares an inert HTTP method, relative path, and optional mappings. Forbidden for `custom-workload`. |
-| `spec.runtime.entryPoint` | Required for `custom-workload`; a `module:Class` handle for the action implementation inside the digest-pinned workload image. It is an implementation identity, not a placement decision: Syntara policy may execute it in process or delegate it to the Execution Plane. |
-| `spec.integrationType` | Optional qualified integration type required by the action. A workflow selects an instance of this type, not raw credentials. |
+| `spec.runtime.kind` | Required execution owner: `platform-runner` or `custom-runner`. |
+| `spec.runtime.driver` | Required for `platform-runner`; names an approved versioned driver, such as `http.v1`. Forbidden for `custom-runner`. |
+| `spec.runtime.operation` | Required for `http.v1`; declares an inert HTTP method, relative path, and optional mappings. Forbidden for `custom-runner`. |
+| `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the Step implementation inside the digest-pinned runner image. It is an implementation identity, not a placement decision: Syntara policy may run it in the selected host execution path or delegate it to the Execution Plane. |
+| `spec.domain` | Optional qualified domain identifier that groups an Action Step type independently of its runner. |
+| `spec.integrationType` | Optional qualified integration type required by the Action Step type. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |
 | `spec.output` | Required output JSON Schema source. |
-| `spec.error` | Optional error JSON Schema source. The SDK-owned `ErrorMessage` fields on the terminal output envelope are the validated error contract at the execution boundary; an author-declared `spec.error` document is not validated as a structured step error payload there. Making the field optional is backward compatible: installed manifests that already declare it remain valid. |
+| `spec.error` | Optional error JSON Schema source for consumers that publish a declared Step type error shape. Runtime terminal failures still use the SDK-owned error envelope. |
 
-Custom-workload actions implement `spec.runtime.entryPoint` with the typed
+Custom-runner Step types implement `spec.runtime.entryPoint` with the typed
 Python API; see [Typed Python steps](runtime-and-oci.md#typed-python-steps).
 
 ### `http.v1` operation
@@ -58,6 +90,18 @@ Schema: [`http-operation.schema.json`](../contracts/schemas/v1alpha1/http-operat
 | `responseMap` | Optional mapping from response fields to the action output. |
 
 The plugin never declares an origin, authorization header, secret, command, or container image for a `platform-runner` action. Syntara resolves those pieces after installation.
+
+## `kind: Control`
+
+Schema: [`control.schema.json`](../contracts/schemas/v1alpha1/control.schema.json). A `Control` Step category represents orchestration behavior and uses the same runner declaration as every other executable Step type.
+
+`spec.invocation.kind: orchestration` identifies control-flow metadata. Use
+`workflow-invocation` together with `spec.invocation.workflow` for a Control
+Step type that invokes a named workflow. `spec.runtime` selects the approved
+`platform-runner` or `custom-runner`; `entryPoint` identifies a custom-runner
+implementation and `driver` identifies a platform runner. Control contracts
+define public `input` and `output` schemas and may optionally declare an
+`error` schema. Runtime terminal failures use the SDK-owned error envelope.
 
 ## `kind: IntegrationType`
 
@@ -85,15 +129,34 @@ Schema: [`credential-recipe.schema.json`](../contracts/schemas/v1alpha1/credenti
 | `spec.issuance.pkce` | Must be `true` for OAuth authorization-code issuance. |
 | `spec.issuance.audience` | Required token-exchange audience for `jwt-token-exchange.v1`. |
 
-## Triggers
+## `kind: Trigger`
 
 | Kind | Schema | Key fields |
 | --- | --- | --- |
-| `Trigger` | [`trigger.schema.json`](../contracts/schemas/v1alpha1/trigger.schema.json) | `spec.driver`, `spec.configuration`, `spec.output` |
+| `Trigger` | [`trigger.schema.json`](../contracts/schemas/v1alpha1/trigger.schema.json) | `spec.driver`, `spec.runtime`, `spec.configuration`, `spec.input`, `spec.output`, optional `spec.error` |
 | `TriggerDriver` | [`trigger-driver.schema.json`](../contracts/schemas/v1alpha1/trigger-driver.schema.json) | `spec.id`, `spec.transport`, `spec.events` |
 | `TriggerEventMapping` | [`trigger-event-mapping.schema.json`](../contracts/schemas/v1alpha1/trigger-event-mapping.schema.json) | `spec.driver`, `spec.event`, `spec.configuration`, `spec.output` |
 
-`Trigger.driver` chooses a versioned platform driver. `TriggerDriver.transport` is one of `webhook`, `schedule`, `event-source`, or `poll`. An event mapping declares the configuration and output shape for one driver event.
+`Trigger` refers to the Step category `trigger`. `Trigger.driver` chooses a versioned platform
+ingress driver, while `spec.runtime` selects the runner that implements the
+Step type. `spec.configuration` is driver-owned setup and is not runtime
+input. `spec.input` and `spec.output` are the public event and result
+contracts; neither schema is an alias for another. `spec.error` is optional and
+describes a declared error shape when a Step type exposes one. Runtime terminal
+failures use the SDK-owned error envelope.
+`TriggerDriver.transport` is one of
+`webhook`, `schedule`, `event-source`, or `poll`.
+
+## Compiled `PluginDescriptor`
+
+The compiler emits a strict
+[`plugin-descriptor.schema.json`](../contracts/schemas/v1alpha1/plugin-descriptor.schema.json)
+document. Each compiled executable target carries its canonical `kind`, plus
+`schemaDigests` for every materialized schema.
+The digest is the canonical JSON SHA-256 of that resolved schema. Consumers
+must reject unknown fields, an unknown or unsupported `kind`, duplicate target
+identities, or a schema
+whose digest does not match its content.
 
 ## Schema sources
 
@@ -124,8 +187,8 @@ properties:
 ```
 
 Descriptions are documentation only: they do not change validation or expose
-credentials. Apply the same pattern to action `input`, `output`, and `error`,
-as well as integration `configuration` and credential schemas.
+credentials. Apply the same pattern to Step type `input`, `output`, and
+optional `error`, as well as integration `configuration` and credential schemas.
 
 ## More contracts
 

@@ -13,7 +13,7 @@ from syntara_plugin.runtime import (
     SchemaDriftError,
     StepBindings,
     StepDescriptor,
-    StepTaxonomy,
+    StepKind,
     TriggerStep,
     validate_plugin_bindings,
 )
@@ -86,10 +86,9 @@ def _action(
             "description": "Creates one issue.",
         },
         "spec": {
-            "runtime": {"kind": "custom-workload", "entryPoint": entry_point},
+            "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
             "input": {"kind": "inline", "value": input_schema or INPUT_SCHEMA},
             "output": {"kind": "inline", "value": output_schema or OUTPUT_SCHEMA},
-            "error": {"kind": "inline", "value": {"type": "object"}},
         },
     }
 
@@ -107,7 +106,7 @@ def _bindings() -> StepBindings:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.create-issue",
-            StepTaxonomy.ACTION,
+            StepKind.ACTION,
             CreateIssueInput.model_json_schema(),
             CreateIssueOutput.model_json_schema(),
         ),
@@ -247,8 +246,10 @@ def _trigger() -> dict[str, object]:
         },
         "spec": {
             "driver": "webhook.v1",
+            "runtime": {"kind": "custom-runner", "entryPoint": f"{__name__}:IssueOpenedTrigger"},
             "configuration": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": IssueOpenedInput.model_json_schema()},
+            "output": {"kind": "inline", "value": IssueOpenedOutput.model_json_schema()},
         },
     }
 
@@ -273,7 +274,7 @@ def test_compiled_trigger_binding_is_not_undeclared() -> None:
     bindings.bind(
         StepDescriptor(
             "acme.issue-tools.issue-opened",
-            StepTaxonomy.TRIGGER,
+            StepKind.TRIGGER,
             IssueOpenedInput.model_json_schema(),
             IssueOpenedOutput.model_json_schema(),
         ),
@@ -284,6 +285,11 @@ def test_compiled_trigger_binding_is_not_undeclared() -> None:
         target for target in result.descriptor["spec"]["targets"] if target.get("kind") == "Trigger"
     ]
     assert compiled_trigger
-    assert "runtime" not in compiled_trigger[0]
+    assert compiled_trigger[0]["runtime"] == {
+        "abi": "syntara.container/v1alpha1",
+        "entryPoint": f"{__name__}:IssueOpenedTrigger",
+        "kind": "custom-runner",
+        "workload": "plugin-workload",
+    }
 
     validate_plugin_bindings(result.descriptor, bindings, strict=True)

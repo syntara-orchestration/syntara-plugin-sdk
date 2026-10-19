@@ -7,24 +7,21 @@
   "properties": {
     "apiVersion": {"const": "syntara.io/v1alpha1"},
     "kind": {"const": "Action"},
-    "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+    "metadata": {"$ref": "step.schema.json#/$defs/stepMetadata"},
     "spec": {
       "type": "object",
       "additionalProperties": false,
       "required": ["runtime", "input", "output"],
       "properties": {
+        "domain": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
         "runtime": {
           "type": "object",
           "additionalProperties": false,
           "required": ["kind"],
           "properties": {
-            "kind": {"enum": ["platform-runner", "custom-workload"]},
-            "entryPoint": {
-              "type": "string",
-              "description": "Python module:Class implementation identifier, resolved only from the immutable installed workload image and step revision.",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$"
-            },
-            "driver": {"type": "string", "pattern": "^[a-z][a-z0-9-]*\\.v[1-9][0-9]*$"},
+            "kind": {"enum": ["platform-runner", "custom-runner"]},
+            "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
+            "driver": {"$ref": "step.schema.json#/$defs/driver"},
             "operation": {"$ref": "http-operation.schema.json#/$defs/operation"}
           },
           "allOf": [
@@ -33,7 +30,7 @@
               "then": {"required": ["driver"]}
             },
             {
-              "if": {"properties": {"kind": {"const": "custom-workload"}}},
+              "if": {"properties": {"kind": {"const": "custom-runner"}}},
               "then": {
                 "required": ["entryPoint"],
                 "not": {

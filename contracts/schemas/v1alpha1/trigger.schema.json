@@ -7,15 +7,18 @@
   "properties": {
     "apiVersion": {"const": "syntara.io/v1alpha1"},
     "kind": {"const": "Trigger"},
-    "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
+    "metadata": {"$ref": "step.schema.json#/$defs/stepMetadata"},
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["driver", "configuration", "output"],
+      "required": ["driver", "runtime", "configuration", "input", "output"],
       "properties": {
-        "driver": {"type": "string", "pattern": "^[a-z][a-z0-9-]*\\.v[0-9]+$"},
+        "driver": {"$ref": "step.schema.json#/$defs/driver"},
+        "runtime": {"$ref": "step.schema.json#/$defs/runner"},
         "configuration": {"$ref": "common.schema.json#/$defs/documentSource"},
-        "output": {"$ref": "common.schema.json#/$defs/documentSource"}
+        "input": {"$ref": "common.schema.json#/$defs/documentSource"},
+        "output": {"$ref": "common.schema.json#/$defs/documentSource"},
+        "error": {"$ref": "common.schema.json#/$defs/documentSource"}
       }
     }
   }

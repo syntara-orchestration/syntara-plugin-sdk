@@ -1,0 +1,14 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Trigger",
+  "metadata": {
+    "name": "issue-opened",
+    "displayName": "Issue opened",
+    "description": "Receives issue-opened events."
+  },
+  "spec": {
+    "driver": "webhook.v1",
+    "input": {"kind": "inline", "value": {"type": "object"}},
+    "output": {"kind": "inline", "value": {"type": "object"}}
+  }
+}

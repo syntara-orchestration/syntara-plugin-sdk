@@ -95,7 +95,9 @@ def test_archive_reader_rejects_a_self_consistent_archive_with_unbound_config(
     )
     manifest_document = json.loads(artifact.manifest.content)
     manifest_document["config"] = config.descriptor.as_dict()
-    manifest = OciBlob.create(canonical_json_bytes(manifest_document), OCI_IMAGE_MANIFEST_MEDIA_TYPE)
+    manifest = OciBlob.create(
+        canonical_json_bytes(manifest_document), OCI_IMAGE_MANIFEST_MEDIA_TYPE
+    )
     malformed = type(artifact)(
         config=config,
         plugin_manifest=artifact.plugin_manifest,
@@ -106,4 +108,71 @@ def test_archive_reader_rejects_a_self_consistent_archive_with_unbound_config(
     write_plugin_artifact_archive(malformed, archive)
 
     with pytest.raises(ArtifactArchiveError, match="does not bind its plugin descriptor"):
+        read_plugin_artifact_archive(archive)
+
+
+def test_archive_reader_rejects_a_descriptor_schema_digest_that_does_not_bind_its_schema(
+    tmp_path: Path,
+) -> None:
+    """A rebuilt OCI graph still cannot replace a schema without its canonical digest."""
+    artifact = _artifact(tmp_path)
+    descriptor_document = json.loads(artifact.plugin_manifest.content)
+    descriptor_document["spec"]["targets"][0]["input"]["type"] = "array"
+    descriptor = OciBlob.create(
+        canonical_json_bytes(descriptor_document), artifact.plugin_manifest.descriptor.media_type
+    )
+    config_document = json.loads(artifact.config.content)
+    config_document["pluginDescriptorDigest"] = descriptor.descriptor.digest
+    config = OciBlob.create(
+        canonical_json_bytes(config_document), artifact.config.descriptor.media_type
+    )
+    manifest_document = json.loads(artifact.manifest.content)
+    manifest_document["config"] = config.descriptor.as_dict()
+    manifest_document["layers"][0] = descriptor.descriptor.as_dict()
+    manifest = OciBlob.create(
+        canonical_json_bytes(manifest_document), OCI_IMAGE_MANIFEST_MEDIA_TYPE
+    )
+    tampered = type(artifact)(
+        config=config,
+        plugin_manifest=descriptor,
+        content_bundle=artifact.content_bundle,
+        manifest=manifest,
+    )
+    archive = tmp_path / "schema-digest-tampered.oci.tar"
+    write_plugin_artifact_archive(tampered, archive)
+
+    with pytest.raises(ArtifactArchiveError, match="schema digest does not match"):
+        read_plugin_artifact_archive(archive)
+
+
+def test_archive_reader_rejects_duplicate_compiled_target_identities(tmp_path: Path) -> None:
+    """An OCI-consistent descriptor cannot reuse an identity across Step types."""
+
+    artifact = _artifact(tmp_path)
+    descriptor_document = json.loads(artifact.plugin_manifest.content)
+    descriptor_document["spec"]["targets"].append(dict(descriptor_document["spec"]["targets"][0]))
+    descriptor = OciBlob.create(
+        canonical_json_bytes(descriptor_document), artifact.plugin_manifest.descriptor.media_type
+    )
+    config_document = json.loads(artifact.config.content)
+    config_document["pluginDescriptorDigest"] = descriptor.descriptor.digest
+    config = OciBlob.create(
+        canonical_json_bytes(config_document), artifact.config.descriptor.media_type
+    )
+    manifest_document = json.loads(artifact.manifest.content)
+    manifest_document["config"] = config.descriptor.as_dict()
+    manifest_document["layers"][0] = descriptor.descriptor.as_dict()
+    manifest = OciBlob.create(
+        canonical_json_bytes(manifest_document), OCI_IMAGE_MANIFEST_MEDIA_TYPE
+    )
+    tampered = type(artifact)(
+        config=config,
+        plugin_manifest=descriptor,
+        content_bundle=artifact.content_bundle,
+        manifest=manifest,
+    )
+    archive = tmp_path / "duplicate-identity.oci.tar"
+    write_plugin_artifact_archive(tampered, archive)
+
+    with pytest.raises(ArtifactArchiveError, match="duplicate target identities"):
         read_plugin_artifact_archive(archive)
