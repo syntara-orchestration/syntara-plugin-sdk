@@ -1,0 +1,41 @@
+ARG BUILDER_IMAGE=registry.access.redhat.com/ubi9/python-312@sha256:e6a10c3150624fbfd33dbd7721ef99ce7a1001b417d64427ad58515ab8044121
+ARG RUNTIME_BASE_IMAGE=registry.access.redhat.com/ubi9/python-312@sha256:e6a10c3150624fbfd33dbd7721ef99ce7a1001b417d64427ad58515ab8044121
+ARG PIP_FIND_LINKS=""
+
+FROM ${BUILDER_IMAGE} AS builder
+USER 0
+RUN command -v uv >/dev/null 2>&1 || pip install --no-cache-dir uv==0.12.3
+WORKDIR /build
+COPY pyproject.toml uv.lock ./
+COPY contracts ./contracts
+COPY sdks/python/packages/contracts ./sdks/python/packages/contracts
+COPY sdks/python/packages/sdk ./sdks/python/packages/sdk
+COPY sdks/python/packages/runtime ./sdks/python/packages/runtime
+RUN python3.12 -m venv /opt/syntara/.venv \
+    && if [ -n "$PIP_FIND_LINKS" ]; then \
+        UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
+            --locked --no-dev --no-editable --package syntara-plugin-runtime \
+            --offline --no-index --find-links "$PIP_FIND_LINKS"; \
+    else \
+        UV_PROJECT_ENVIRONMENT=/opt/syntara/.venv uv sync \
+            --locked --no-dev --no-editable --package syntara-plugin-runtime; \
+    fi
+
+FROM ${RUNTIME_BASE_IMAGE}
+USER 0
+COPY --from=builder /opt/syntara/.venv /opt/syntara/.venv
+COPY LICENSE /licenses/LICENSE
+RUN ln -sf /usr/bin/python3.12 /opt/syntara/.venv/bin/python \
+    && ln -sf /usr/bin/python3.12 /opt/syntara/.venv/bin/python3 \
+    && /opt/syntara/.venv/bin/pip --version \
+    && chmod -R a+rX /opt/syntara /licenses
+ENV PATH="/opt/syntara/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+LABEL org.opencontainers.image.title="Syntara Plugin Runtime" \
+    org.opencontainers.image.description="Base gRPC runtime for Syntara step containers" \
+    org.opencontainers.image.source="https://github.com/syntara-orchestration/syntara-step-sdk" \
+    org.opencontainers.image.licenses="Apache-2.0"
+USER 1001
+EXPOSE 50051
+ENTRYPOINT ["/opt/syntara/.venv/bin/python", "-m", "syntara_plugin.runtime.server"]

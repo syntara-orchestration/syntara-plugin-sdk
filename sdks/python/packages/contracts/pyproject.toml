@@ -23,6 +23,9 @@ classifiers = [
   "Typing :: Typed",
 ]
 
+[project.scripts]
+syntara-plugin-runtime-server = "syntara_plugin.runtime.server:main"
+
 [project.urls]
 Homepage = "https://github.com/syntara-orchestration/syntara-plugin-sdk"
 Repository = "https://github.com/syntara-orchestration/syntara-plugin-sdk"

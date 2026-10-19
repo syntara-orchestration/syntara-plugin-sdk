@@ -1,0 +1,15 @@
+*
+!pyproject.toml
+!uv.lock
+!LICENSE
+!contracts
+!contracts/**
+!sdks
+!sdks/python
+!sdks/python/packages
+!sdks/python/packages/contracts
+!sdks/python/packages/contracts/**
+!sdks/python/packages/sdk
+!sdks/python/packages/sdk/**
+!sdks/python/packages/runtime
+!sdks/python/packages/runtime/**

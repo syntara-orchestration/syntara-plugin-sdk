@@ -60,6 +60,44 @@ that mount read-only in the workload container, and send only the file path to
 the plugin. The plugin never receives broker credentials or a Kubernetes API
 identity.
 
+### SDK runtime base image
+
+The SDK repository builds one reusable Python runtime base image from
+[`containers/runtime/Containerfile`](../containers/runtime/Containerfile). A
+derived step image installs its step package, sets
+`SYNTARA_RUNTIME_BINDINGS_FACTORY=module:factory`, and inherits the
+runtime server entrypoint. Install the derived package into the inherited
+virtualenv with `/opt/syntara/.venv/bin/pip`, then set the factory. The named
+factory must take no arguments and return a non-empty `StepBindings` object.
+
+The server listens on `127.0.0.1:50051` by default. Override the address with
+`SYNTARA_RUNTIME_GRPC_ADDRESS`; every non-loopback listener requires mutual
+TLS. Supply all three of `SYNTARA_RUNTIME_GRPC_TLS_CERT`,
+`SYNTARA_RUNTIME_GRPC_TLS_KEY`, and `SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA` when
+TLS is enabled. These values are mounted file paths, never PEM data or private
+key contents.
+
+Build the base image locally from the repository root:
+
+```sh
+make runtime-image \
+  RUNTIME_IMAGE=quay.io/example/syntara-plugin-runtime \
+  RUNTIME_IMAGE_TAG=v0.1.0 \
+  RUNTIME_IMAGE_PLATFORM=linux/amd64
+```
+
+`runtime-image-archive` additionally writes an OCI archive under `dist/`. The
+logical image name is `syntara-plugin-runtime`; release tags combine the SDK
+version with the container ABI version. Downstream consumers and derived images
+must record the published `repository@sha256:...` digest, never a mutable tag.
+Official publication is owned by the Konflux component; local Make targets are
+for verification only. The Konflux build supplies separate authenticated
+builder and runtime base images. The builder uses the pinned Red Hat
+`uv-builder-rhel9` image, while the final image uses the pinned UBI Python
+runtime image. Konflux also passes `PIP_FIND_LINKS` to the prefetched
+dependency directory, allowing `uv sync` to run with `--offline`, `--no-index`,
+and `--find-links`.
+
 ## Typed Python steps
 
 Custom-runner authors implement steps with the typed Python API in
