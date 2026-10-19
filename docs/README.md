@@ -9,6 +9,7 @@ Choose the guide that matches what you are doing.
 | Configure a plugin, publish an artifact, or update a catalog | [User guide](user-guide.md) |
 | Understand every YAML manifest field | [Plugin language reference](plugin-language.md) |
 | Configure `syntara-plugin.yaml` | [Build settings reference](build-settings.md) |
+| Test step implementations locally | [Testing reference](testing.md) |
 | Contribute to the SDK or change a contract | [Developer guide](developer-guide.md) |
 | Understand the OCI artifact and container ABI boundaries | [Runtime and OCI model](runtime-and-oci.md) |
 
@@ -31,3 +32,4 @@ The accepted design decisions live in [`../.sdlc/adrs`](../.sdlc/adrs):
 - [Plugin publication boundaries](../.sdlc/adrs/0004-bounded-plugin-artifact-publication.md)
 - [Generic container request hash](../.sdlc/adrs/0005-generic-container-request-hash.md)
 - [Custom-runner preview scope](../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md)
+- [SDK local test harness](../.sdlc/adrs/0007-sdk-testing-harness.md)

@@ -16,7 +16,7 @@ suite:
 uv venv
 source .venv/bin/activate
 uv sync --all-groups --active --inexact
-python -m pytest sdks/python/tests -q
+python -m pytest sdks/python/tests examples -q
 ```
 
 Run the CLI from the checkout after syncing the environment:
@@ -37,6 +37,7 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
 | [`sdks/python/packages/sdk`](../sdks/python/packages/sdk) | Authoring compiler, CLI, packaging, registry, catalog, and settings behavior. |
 | [`sdks/python/packages/runtime`](../sdks/python/packages/runtime) | In-container runtime implementation. |
 | [`sdks/python/packages/contracts`](../sdks/python/packages/contracts) | Python package that ships the contract bundle. |
+| [`sdks/python/packages/testing`](../sdks/python/packages/testing) | Local pytest harness and fixtures for step authors. |
 | [`sdks/python/tests`](../sdks/python/tests) | Unit and CLI contract tests. |
 | [`examples`](../examples) | End-user examples that must remain runnable. |
 

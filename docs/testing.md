@@ -1,0 +1,131 @@
+# Testing reference
+
+The `syntara-plugin-testing` package gives step authors a local pytest harness:
+validate declared contracts and execute Python Action, Task, Workflow, and
+Trigger implementations through the shared SDK executor, without running AO,
+EP, or a cluster.
+
+Install it alongside the SDK:
+
+```sh
+pip install syntara-plugin-testing
+```
+
+Everything below is also available as plain importable functions; the pytest
+fixtures are thin wrappers over them.
+
+## The four fixtures
+
+Installing the package registers a pytest plugin (the `pytest11` entry point),
+so these fixtures are available in any test session with no conftest wiring.
+Their names are public API.
+
+| Fixture | Backed by | Use |
+| --- | --- | --- |
+| `manifest_validator` | `syntara_plugin.contracts` canonical bundle | `manifest_validator(document, kind=...)` raises `ManifestValidationError` on invalid documents; `.check(...)` returns diagnostics; `bundle=` accepts a step-type owner's canonical bundle. |
+| `compile_manifest` | `syntara_plugin.sdk` compiler | `compile_manifest(path_or_plugin, targets=None, ...)` compiles a workspace (path to `plugin.yaml` or its directory) or an in-memory `Plugin` model; path compiles default to `require_image_bindings=False` because local tests build no images. |
+| `mock_execution_context` | `ExecutionContext` | `mock_execution_context(invocation_id=..., workflow_run_id=..., runtime_context=..., cancelled=False)` builds one locally approved context: valid, free of real credentials, authorized only for local test execution. |
+| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for Task, Workflow, and Trigger steps (implementation-derived descriptor, verified with `check_step_contract`); `bind_action(entry_point, workspace=...)` for Actions (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
+
+Action steps execute only through an installed manifest: the SDK's
+`require_executable_contract` provenance gate rejects fabricated descriptors,
+so `bind_action` is the only path to an executable Action binding. Binding an
+Action with `bind` is allowed for drift checks but is not executable.
+
+## Invocation helpers
+
+```python
+from syntara_plugin.testing import invoke_step, invoke_step_in_container
+
+outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
+```
+
+- `invoke_step` runs the direct path: `validate_step_inputs` (taxonomy
+  dispatched), the typed `run()` hook, execution-time output-schema
+  validation, and `StandardOutputWrapper` construction. No
+  `ContainerInvocation`, no gRPC server.
+- `invoke_step_in_container` runs the same registered implementation over a
+  real in-process gRPC server on `127.0.0.1` through the container adapter.
+  Authors never construct a `ContainerInvocation`.
+- Both accept a `StepBinding`, a step class or instance, or a
+  `module:Class` entry point, and return a `StepOutcome`.
+
+`StepOutcome` normalizes both paths: `.ok`, `.status`, `.status_message`,
+`.output`, `.error` (code/message/retryable), `.run_calls` (business-hook spy),
+`.raised` (executor or business exception), `.transport`, and `.raw`.
+Executor-level failures (`StepExecutionError`, business exceptions) are
+captured in `.raised` so both transports compare uniformly. Assert outcomes
+through these accessors only; never through raw wrapper fields.
+
+`assert_outcomes_equivalent(direct, container)` asserts the two SDK paths
+agree on success, status, output, and error envelope (digests deliberately
+excluded; raised failures compare their failure codes when both carry one).
+
+## Sample payloads and secret redaction
+
+`syntara_plugin.testing.payloads` ships the seven contract categories as
+`PayloadCase` data: valid, missing-required, wrong-type, invalid-enum,
+schema-invalid output, deliberate failure, and sensitive credential
+references, with `ReferenceTaskStep`, `FailingReferenceStep`, and
+`schema_violating_binding()` as the matching stand-ins.
+
+```python
+from syntara_plugin.testing import secret_sentinel, assert_no_secrets
+
+token = secret_sentinel()
+outcome = invoke_step(binding, {"title": "x", "api_token": token}, context=ctx)
+assert_no_secrets(outcome, [token], caplog=caplog)
+```
+
+`assert_no_secrets` scans the status message, error message, raised exception,
+serialized output, raw envelope, and the pytest log capture.
+
+## Conformance in one call
+
+```python
+from syntara_plugin.testing import check_step_conformance
+
+report = check_step_conformance(
+    binding,
+    valid_cases=[{"title": "Broken build"}],
+    invalid_cases=[{}, {"title": "x", "priority": "urgent"}],
+    context=ctx,
+)
+assert report.passed, report.failures
+```
+
+The check proves the ticket's three properties: invalid input blocks the
+business hook, valid input reaches it exactly once, and the direct and
+container paths yield equivalent outcomes.
+
+## Chaining steps
+
+`chain_steps(bindings, inputs, seams=[...])` executes steps sequentially with
+explicit output-to-input seams and fails fast naming the broken link.
+`check_seam_compatible(source, target)` statically proves the seam with the
+same drift engine used for manifests. This is deliberately not a workflow
+engine: no branching, parallelism, fan-in, retries, or persistence. When a
+chain needs control flow, implement it as a `WorkflowStep.run()` and test the
+step.
+
+## Generated tests
+
+`syntara-plugin test-init` scaffolds a test module per custom-workload Action
+target from the compiled manifest and its schemas: the entry point, one valid
+case, derived invalid cases, and the standard property tests. Generated files
+refuse silent overwrite (`--force` to regenerate) and are deterministic.
+
+```sh
+syntara-plugin test-init path/to/plugin.yaml
+pytest tests -q
+```
+
+## A runnable example
+
+[`../examples/python-steps`](../examples/python-steps) contains one step per
+taxonomy class and a test suite using everything above. Run it from the
+repository root:
+
+```sh
+uv run --no-sync pytest examples/python-steps/tests -q
+```

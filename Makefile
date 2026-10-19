@@ -1,10 +1,13 @@
-.PHONY: install test lint check generate-container-protocol
+.PHONY: install test test-examples lint check generate-container-protocol
 
 install:
 	uv sync --locked --all-groups
 
 test:
-	uv run --no-sync pytest sdks/python/tests -q
+	uv run --no-sync pytest sdks/python/tests examples -q
+
+test-examples:
+	uv run --no-sync pytest examples -q
 
 lint:
 	uv run --no-sync pre-commit run ruff --all-files
