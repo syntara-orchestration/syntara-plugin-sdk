@@ -63,7 +63,7 @@ jobs:
       - name: Smoke-test the release wheels outside the workspace
         run: |
           uv venv --clear .venv-release
-          uv pip install --python .venv-release/bin/python \
+          uv pip install --no-build --python .venv-release/bin/python \
             --find-links release-dist/contracts \
             --find-links release-dist/runtime \
             --find-links release-dist/sdk \

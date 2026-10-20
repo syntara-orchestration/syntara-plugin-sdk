@@ -55,7 +55,7 @@ jobs:
           PY
           )"
           uv venv --clear .venv-release
-          uv pip install --python .venv-release/bin/python --find-links dist \
+          uv pip install --no-build --python .venv-release/bin/python --find-links dist \
             "syntara-plugin-sdk==$sdk_version"
           .venv-release/bin/syntara-plugin --help
           .venv-release/bin/python - <<'PY'
