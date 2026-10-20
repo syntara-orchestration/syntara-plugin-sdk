@@ -32,10 +32,10 @@ platform control plane.
 
 ```text
 Step type -> Category -> Runner -> Execution
-Launch AAP Job Template -> action -> platform-runner -> aap.v1 launches the selected job template
-HTTP Request -> action -> platform-runner -> http.v1 sends the configured request
+Launch AAP Job Template -> action -> platform-runner (aap.v1) -> launches the selected job template
+HTTP Request -> action -> platform-runner (http.v1) -> sends the configured request
 Create GitHub Issue -> action -> custom-runner -> the pinned runner invokes the typed implementation
-Launch production inventory sync -> control -> platform-runner (<driver>) -> invokes the selected workflow in the control plane
+Launch production inventory sync -> control -> platform-runner (workflow.v1) -> invokes the selected workflow in the control plane
 Pull request webhook -> trigger -> platform-runner (webhook.v1) -> webhook ingress delivers the event in the control plane
 ```
 
