@@ -17,6 +17,8 @@ from syntara_plugin.contracts import (
 from syntara_plugin.runtime import ContractBundle as RuntimeContractBundle
 from syntara_plugin.sdk import ContractBundle as SdkContractBundle
 
+from .helpers import step_document, target_metadata
+
 
 def _metadata() -> dict[str, str]:
     return {
@@ -101,15 +103,10 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
             "targets": ["actions/create-issue.yaml", "triggers/pull-request.yaml"],
         },
     }
-    action = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Action",
-        "metadata": {
-            "name": "create-issue",
-            "displayName": "Create issue",
-            "description": "Creates GitHub issues.",
-        },
-        "spec": {
+    action = step_document(
+        "Action",
+        target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
+        {
             "runtime": {
                 "kind": "platform-runner",
                 "driver": "http.v1",
@@ -123,23 +120,18 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
             "input": {"kind": "asset", "path": "schemas/create-issue.input.json"},
             "output": {"kind": "inline", "value": {"type": "object"}},
         },
-    }
-    trigger = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Trigger",
-        "metadata": {
-            "name": "pull-request",
-            "displayName": "Pull request",
-            "description": "Receives pull requests.",
-        },
-        "spec": {
+    )
+    trigger = step_document(
+        "Trigger",
+        target_metadata("pull-request", "Pull request", "Receives pull requests."),
+        {
             "driver": "webhook.v1",
             "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
             "configuration": {"kind": "inline", "value": {"type": "object"}},
             "input": {"kind": "inline", "value": {"type": "object"}},
             "output": {"kind": "asset", "path": "schemas/pull-request.output.json"},
         },
-    }
+    )
 
     assert validate_document(bundle, "plugin", plugin) == []
     assert validate_document(bundle, "action", action) == []
@@ -151,20 +143,15 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
 
 def test_custom_runner_action_requires_a_stable_python_entry_point() -> None:
     bundle = load_bundle()
-    action = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Action",
-        "metadata": {
-            "name": "create-issue",
-            "displayName": "Create issue",
-            "description": "Creates GitHub issues.",
-        },
-        "spec": {
+    action = step_document(
+        "Action",
+        target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
+        {
             "runtime": {"kind": "custom-runner"},
             "input": {"kind": "inline", "value": {"type": "object"}},
             "output": {"kind": "inline", "value": {"type": "object"}},
         },
-    }
+    )
 
     assert "entryPoint" in " ".join(validate_document(bundle, "action", action))
     action["spec"]["runtime"]["entryPoint"] = "github.actions:CreateIssue"
@@ -174,46 +161,31 @@ def test_custom_runner_action_requires_a_stable_python_entry_point() -> None:
 def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
     bundle = load_bundle()
     source = {"kind": "inline", "value": {"type": "object"}}
-    action = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Action",
-        "metadata": {
-            "name": "create-issue",
-            "displayName": "Create issue",
-            "description": "Creates GitHub issues.",
-        },
-        "spec": {
+    action = step_document(
+        "Action",
+        target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
+        {
             "runtime": {"kind": "custom-runner", "entryPoint": "github.actions:CreateIssue"},
             "input": source,
             "output": source,
             "error": source,
         },
-    }
-    control = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Control",
-        "metadata": {
-            "name": "control",
-            "displayName": "Control",
-            "description": "Runs control flow.",
-        },
-        "spec": {
+    )
+    control = step_document(
+        "Control",
+        target_metadata("control", "Control", "Runs control flow."),
+        {
             "invocation": {"kind": "orchestration"},
             "runtime": {"kind": "custom-runner", "entryPoint": "flows:Control"},
             "input": source,
             "output": source,
             "error": source,
         },
-    }
-    trigger = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Trigger",
-        "metadata": {
-            "name": "trigger",
-            "displayName": "Trigger",
-            "description": "Receives events.",
-        },
-        "spec": {
+    )
+    trigger = step_document(
+        "Trigger",
+        target_metadata("trigger", "Trigger", "Receives events."),
+        {
             "driver": "webhook.v1",
             "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
             "configuration": source,
@@ -221,7 +193,7 @@ def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
             "output": source,
             "error": source,
         },
-    }
+    )
 
     documents = (("action", action), ("control", control), ("trigger", trigger))
     for kind, document in documents:
@@ -237,22 +209,20 @@ def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantic
         "displayName": "Example",
         "description": "One category-specific Step type.",
     }
-    control = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Control",
-        "metadata": metadata,
-        "spec": {
+    control = step_document(
+        "Control",
+        metadata,
+        {
             "invocation": {"kind": "workflow-invocation", "workflow": "acme.release.deploy"},
             "runtime": {"kind": "custom-runner", "entryPoint": "flows:Deploy"},
             "input": source,
             "output": source,
         },
-    }
-    trigger = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Trigger",
-        "metadata": metadata,
-        "spec": {
+    )
+    trigger = step_document(
+        "Trigger",
+        metadata,
+        {
             "driver": "webhook.v1",
             "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
             "configuration": {
@@ -268,7 +238,7 @@ def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantic
                 "value": {"type": "object", "properties": {"runId": {"type": "string"}}},
             },
         },
-    }
+    )
 
     assert validate_document(bundle, "control", control) == []
     assert validate_document(bundle, "trigger", trigger) == []

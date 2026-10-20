@@ -4,6 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from contracts.helpers import step_document, target_metadata
 from syntara_plugin.contracts import canonical_json_digest, load_bundle, validate_document
 from syntara_plugin.sdk import (
     BuildRequest,
@@ -37,15 +38,10 @@ def _plugin(target: str = "steps/create-issue/manifest.yaml") -> dict[str, objec
 
 
 def _action(source: dict[str, object]) -> dict[str, object]:
-    return {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Action",
-        "metadata": {
-            "name": "create-issue",
-            "displayName": "Create issue",
-            "description": "Creates one issue.",
-        },
-        "spec": {
+    return step_document(
+        "Action",
+        target_metadata("create-issue", "Create issue", "Creates one issue."),
+        {
             "runtime": {
                 "kind": "custom-runner",
                 "entryPoint": "issue_tools.actions:CreateIssue",
@@ -53,19 +49,14 @@ def _action(source: dict[str, object]) -> dict[str, object]:
             "input": source,
             "output": {"kind": "inline", "value": {"type": "object"}},
         },
-    }
+    )
 
 
 def _control() -> dict[str, object]:
-    return {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Control",
-        "metadata": {
-            "name": "invoke-deploy",
-            "displayName": "Invoke deploy",
-            "description": "Invokes a deployment workflow.",
-        },
-        "spec": {
+    return step_document(
+        "Control",
+        target_metadata("invoke-deploy", "Invoke deploy", "Invokes a deployment workflow."),
+        {
             "invocation": {"kind": "workflow-invocation", "workflow": "acme.issue-tools.deploy"},
             "runtime": {
                 "kind": "custom-runner",
@@ -74,19 +65,14 @@ def _control() -> dict[str, object]:
             "input": {"kind": "inline", "value": {"type": "object"}},
             "output": {"kind": "inline", "value": {"type": "object"}},
         },
-    }
+    )
 
 
 def _trigger() -> dict[str, object]:
-    return {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Trigger",
-        "metadata": {
-            "name": "issue-opened",
-            "displayName": "Issue opened",
-            "description": "Receives issue-opened events.",
-        },
-        "spec": {
+    return step_document(
+        "Trigger",
+        target_metadata("issue-opened", "Issue opened", "Receives issue-opened events."),
+        {
             "driver": "webhook.v1",
             "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
             "configuration": {
@@ -102,7 +88,7 @@ def _trigger() -> dict[str, object]:
                 "value": {"type": "object", "properties": {"runId": {"type": "string"}}},
             },
         },
-    }
+    )
 
 
 def _typed_plugin(document: dict[str, object]) -> Plugin:
