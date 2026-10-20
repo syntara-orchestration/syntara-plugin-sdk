@@ -50,10 +50,10 @@ jobs:
           python-version: "3.12"
       - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
       - run: uv build --all-packages --out-dir dist
-      - run: uv run --no-sync twine check --strict dist/*
+      - run: uv run --no-sync --no-build twine check --strict dist/*
       - name: Smoke-test the published dependency metadata
         run: |
-          sdk_version="$(uv run --no-sync python - <<'PY'
+          sdk_version="$(uv run --no-sync --no-build python - <<'PY'
           import tomllib
           from pathlib import Path
 

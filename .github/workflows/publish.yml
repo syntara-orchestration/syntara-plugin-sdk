@@ -61,7 +61,7 @@ jobs:
       - run: uv build --package syntara-plugin-contracts --out-dir release-dist/contracts
       - run: uv build --package syntara-plugin-runtime --out-dir release-dist/runtime
       - run: uv build --package syntara-plugin-sdk --out-dir release-dist/sdk
-      - run: uv run --no-sync twine check --strict release-dist/*/*
+      - run: uv run --no-sync --no-build twine check --strict release-dist/*/*
       - name: Smoke-test the release wheels outside the workspace
         run: |
           uv venv --clear .venv-release
