@@ -15,7 +15,9 @@ from .canonical import (
     canonical_json_digest,
     container_workload_request_digest,
 )
+from .descriptor import materialized_schemas, schema_digests
 from .fixtures import FixtureBundle, fixture_content_digest, load_fixture_bundle
+from .image import is_digest_image_reference
 
 __all__ = [
     "CatalogCheckpoint",
@@ -30,6 +32,9 @@ __all__ = [
     "fixture_content_digest",
     "load_bundle",
     "load_fixture_bundle",
+    "materialized_schemas",
+    "schema_digests",
+    "is_digest_image_reference",
     "validate_catalog_index",
     "validate_document",
 ]

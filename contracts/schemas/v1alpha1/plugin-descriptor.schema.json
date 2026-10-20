@@ -64,7 +64,7 @@
       "required": ["abi", "image"],
       "properties": {
         "abi": {"enum": ["syntara.container/v1alpha1", "syntara.provider/v1alpha1"]},
-        "image": {"type": ["string", "null"]},
+        "image": {"$ref": "common.schema.json#/$defs/digestImageReference"},
         "provider": {"$ref": "common.schema.json#/$defs/identifier"}
       }
     },

@@ -179,3 +179,49 @@ def test_archive_reader_rejects_duplicate_compiled_target_identities(tmp_path: P
 
     with pytest.raises(ArtifactArchiveError, match="duplicate target identities"):
         read_plugin_artifact_archive(archive)
+
+
+@pytest.mark.parametrize("image", ["quay.io/acme/runner:latest", None])
+def test_archive_reader_rejects_unpinned_workload_images(
+    tmp_path: Path, image: str | None
+) -> None:
+    """Published workload descriptors cannot use tags or null image references."""
+
+    artifact = _artifact(tmp_path)
+
+    def add_invalid_workload(document: dict[str, Any]) -> None:
+        document["spec"]["workloads"] = {
+            "runner": {"abi": "syntara.container/v1alpha1", "image": image}
+        }
+
+    archive = _archive_with_descriptor_mutation(
+        artifact, tmp_path, "unpinned-workload.oci.tar", add_invalid_workload
+    )
+
+    with pytest.raises(ArtifactArchiveError, match="pinned to a sha256 digest"):
+        read_plugin_artifact_archive(archive)
+
+
+def test_archive_reader_rejects_a_custom_runner_without_a_workload_entry(
+    tmp_path: Path,
+) -> None:
+    """Every custom-runner target must resolve its published workload metadata."""
+
+    artifact = _artifact(tmp_path)
+
+    def remove_referenced_workload(document: dict[str, Any]) -> None:
+        target = document["spec"]["targets"][0]
+        target["runtime"] = {
+            "abi": "syntara.container/v1alpha1",
+            "entryPoint": "example.x:Request",
+            "kind": "custom-runner",
+            "workload": "runner",
+        }
+        document["spec"]["workloads"] = {}
+
+    archive = _archive_with_descriptor_mutation(
+        artifact, tmp_path, "missing-workload.oci.tar", remove_referenced_workload
+    )
+
+    with pytest.raises(ArtifactArchiveError, match="references a missing workload"):
+        read_plugin_artifact_archive(archive)

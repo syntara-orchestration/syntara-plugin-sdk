@@ -12,18 +12,21 @@ from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
     ANY_STEP_REVISION,
     ActionStep,
+    BaseStep,
     ContainerClient,
     ContainerInvocation,
     ContainerInvocationError,
     ContainerResult,
+    ControlStep,
     FailureCode,
-    InstalledActionManifest,
+    InstalledStepManifest,
     StepBindings,
     StepDescriptor,
     StepRegistry,
+    TriggerStep,
     add_container_runtime_service,
-    container_action_for_step,
     container_step_for_bindings,
+    container_step_for_installed_manifest,
     step_registry_from_bindings,
 )
 
@@ -40,6 +43,26 @@ class EchoOutput(BaseModel):
 
 
 class ActionEchoStep(ActionStep[EchoInput, EchoOutput]):
+    def run(self, inputs: EchoInput, context: Any) -> EchoOutput:
+        return EchoOutput(
+            message=inputs.message,
+            invocation_id=context.invocation_id,
+            workflow_run_id=context.workflow_run_id,
+            cancelled=context.cancelled,
+        )
+
+
+class ControlEchoStep(ControlStep[EchoInput, EchoOutput]):
+    def run(self, inputs: EchoInput, context: Any) -> EchoOutput:
+        return EchoOutput(
+            message=inputs.message,
+            invocation_id=context.invocation_id,
+            workflow_run_id=context.workflow_run_id,
+            cancelled=context.cancelled,
+        )
+
+
+class TriggerEchoStep(TriggerStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: Any) -> EchoOutput:
         return EchoOutput(
             message=inputs.message,
@@ -120,17 +143,24 @@ def _bulk_input_schema() -> dict[str, object]:
     }
 
 
-def _installed_action(
+def _installed_step(
     step_identity: str,
     input_schema: dict[str, object],
     output_schema: dict[str, object] | None = None,
-    step_class: type[ActionStep[Any, Any]] = ActionEchoStep,
-) -> InstalledActionManifest:
-    return InstalledActionManifest.from_manifest(
+    step_class: type[BaseStep[Any, Any]] = ActionEchoStep,
+) -> InstalledStepManifest:
+    kind = (
+        "Action"
+        if issubclass(step_class, ActionStep)
+        else "Control"
+        if issubclass(step_class, ControlStep)
+        else "Trigger"
+    )
+    return InstalledStepManifest.from_manifest(
         step_identity,
         {
             "apiVersion": "syntara.io/v1alpha1",
-            "kind": "Action",
+            "kind": kind,
             "spec": {
                 "runtime": {
                     "kind": "custom-runner",
@@ -154,9 +184,24 @@ def _bind_step(
     input_schema: dict[str, object],
 ) -> None:
     bindings.bind(
-        StepDescriptor.for_installed_action(
+        StepDescriptor.for_installed_step(
             step,
-            _installed_action(step_identity, input_schema, step_class=type(step)),
+            _installed_step(step_identity, input_schema, step_class=type(step)),
+        ),
+        step,
+    )
+
+
+def _bind_generic_step(
+    bindings: StepBindings,
+    step_identity: str,
+    step: BaseStep[Any, Any],
+    input_schema: dict[str, object],
+) -> None:
+    bindings.bind(
+        StepDescriptor.for_installed_step(
+            step,
+            _installed_step(step_identity, input_schema, step_class=type(step)),
         ),
         step,
     )
@@ -180,9 +225,9 @@ def _invocation(
 
 
 def test_container_handler_executes_a_typed_step() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
@@ -200,9 +245,9 @@ def test_container_handler_executes_a_typed_step() -> None:
 
 
 def test_matching_runtime_context_digest_is_accepted() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
@@ -214,9 +259,9 @@ def test_matching_runtime_context_digest_is_accepted() -> None:
 
 
 def test_mismatched_runtime_context_digest_is_an_abi_violation() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
@@ -230,9 +275,9 @@ def test_mismatched_runtime_context_digest_is_an_abi_violation() -> None:
 
 
 def test_output_violating_the_manifest_schema_is_an_abi_violation() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo",
             _echo_input_schema(),
             output_schema={"type": "object", "required": ["absent_field"]},
@@ -248,9 +293,9 @@ def test_output_violating_the_manifest_schema_is_an_abi_violation() -> None:
 
 
 def test_output_violating_a_format_assertion_is_an_abi_violation() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo",
             _echo_input_schema(),
             output_schema={
@@ -270,9 +315,9 @@ def test_output_violating_a_format_assertion_is_an_abi_violation() -> None:
 
 def test_oversized_output_is_externalized_through_the_object_store() -> None:
     store = RecordingObjectStore()
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         HugeStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.huge", _echo_input_schema(), step_class=HugeStep
         ),
         object_store=store,
@@ -290,9 +335,9 @@ def test_oversized_output_is_externalized_through_the_object_store() -> None:
 
 
 def test_oversized_output_without_an_object_store_is_an_abi_violation() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         HugeStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.huge", _echo_input_schema(), step_class=HugeStep
         ),
     )
@@ -307,9 +352,9 @@ def test_oversized_output_without_an_object_store_is_an_abi_violation() -> None:
 
 def test_object_store_returning_an_invalid_reference_is_an_abi_violation() -> None:
     store = RecordingObjectStore(reference="not a valid identity!!")
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         HugeStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.huge", _echo_input_schema(), step_class=HugeStep
         ),
         object_store=store,
@@ -325,9 +370,9 @@ def test_object_store_returning_an_invalid_reference_is_an_abi_violation() -> No
 
 def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
     store = RecordingObjectStore(reference="object-store:huge-1")
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         HugeStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.huge", _echo_input_schema(), step_class=HugeStep
         ),
         object_store=store,
@@ -351,9 +396,9 @@ def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
 
 
 def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
@@ -366,23 +411,23 @@ def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
     assert raised.value.outcome == "not_started"
 
 
-def test_container_action_rejects_a_non_step_implementation() -> None:
+def test_container_step_rejects_a_non_step_implementation() -> None:
     not_a_step = _expected_digest()
-    installed_action = _installed_action(
+    installed_step = _installed_step(
         "acme.plugin.echo", _echo_input_schema()
     )
 
     with pytest.raises(TypeError, match="BaseStep"):
-        container_action_for_step(
+        container_step_for_installed_manifest(
             not_a_step,  # type: ignore[arg-type]
-            installed_action=installed_action,
+            installed_step=installed_step,
         )
 
 
 def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
@@ -399,9 +444,9 @@ def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
 
 
 def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         BulkStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.bulk", _bulk_input_schema(), step_class=BulkStep
         ),
     )
@@ -418,9 +463,9 @@ def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
 
 
 def test_small_validation_failures_report_every_stable_code() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action("acme.plugin.echo", _echo_input_schema()),
+        installed_step=_installed_step("acme.plugin.echo", _echo_input_schema()),
     )
     invocation = _invocation(inputs={"message": 42})
 
@@ -431,9 +476,9 @@ def test_small_validation_failures_report_every_stable_code() -> None:
 
 
 def test_undeclared_output_model_is_an_abi_violation() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         LeakyStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo", _echo_input_schema(), step_class=LeakyStep
         ),
     )
@@ -447,9 +492,9 @@ def test_undeclared_output_model_is_an_abi_violation() -> None:
 
 
 def test_cancellation_flows_from_the_invocation_to_the_step_context() -> None:
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         ActionEchoStep(),
-        installed_action=_installed_action(
+        installed_step=_installed_step(
             "acme.plugin.echo", _echo_input_schema()
         ),
     )
@@ -503,12 +548,23 @@ def test_step_registry_from_bindings_rejects_an_empty_registry() -> None:
         step_registry_from_bindings(bindings)
 
 
-def test_typed_steps_dispatch_end_to_end_over_the_container_abi() -> None:
+@pytest.mark.parametrize(
+    ("step_class", "step_identity"),
+    [
+        (ActionEchoStep, "acme.plugin.action-echo"),
+        (ControlEchoStep, "acme.plugin.control-echo"),
+        (TriggerEchoStep, "acme.plugin.trigger-echo"),
+    ],
+    ids=["action", "control", "trigger"],
+)
+def test_typed_steps_dispatch_end_to_end_over_the_container_abi(
+    step_class: type[BaseStep[Any, Any]], step_identity: str
+) -> None:
     """The container adapter, typed bindings, and gRPC service compose."""
 
     bindings = StepBindings()
-    step = ActionEchoStep()
-    _bind_step(bindings, "acme.plugin.echo", step, _echo_input_schema())
+    step = step_class()
+    _bind_generic_step(bindings, step_identity, step, _echo_input_schema())
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
     add_container_runtime_service(server, step_registry_from_bindings(bindings))
@@ -517,8 +573,8 @@ def test_typed_steps_dispatch_end_to_end_over_the_container_abi() -> None:
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     try:
         client = ContainerClient(channel)
-        assert client.health() == ("acme.plugin.echo",)
-        result = client.execute(_invocation())
+        assert client.health() == (step_identity,)
+        result = client.execute(_invocation(step_identity))
     finally:
         channel.close()
         server.stop(grace=0).wait()

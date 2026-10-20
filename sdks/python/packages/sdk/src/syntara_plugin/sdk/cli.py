@@ -680,15 +680,8 @@ def _compile_workspace(arguments: argparse.Namespace) -> int:
         print(result.canonical_json().decode("utf-8"))
         return 0
     payload = {"ok": True, "digest": result.digest, "assetCount": len(result.assets)}
-    workloads = result.descriptor.get("spec", {}).get("workloads", {})
-    if arguments.command == "validate" and isinstance(workloads, Mapping):
-        deferred_bindings = sorted(
-            identifier
-            for identifier, workload in workloads.items()
-            if isinstance(workload, Mapping) and workload.get("image") is None
-        )
-        if deferred_bindings:
-            payload["deferredImageBindings"] = deferred_bindings
+    if arguments.command == "validate" and result.deferred_image_bindings:
+        payload["deferredImageBindings"] = list(result.deferred_image_bindings)
     if arguments.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     else:

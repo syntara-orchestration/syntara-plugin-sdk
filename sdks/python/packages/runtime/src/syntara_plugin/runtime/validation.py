@@ -7,8 +7,6 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from .bindings import StepKind
-
 _MAX_VALIDATION_ERRORS = 10
 _MAX_VALIDATION_DETAILS_LENGTH = 2_000
 _MAX_LOCATION_LENGTH = 128
@@ -23,23 +21,23 @@ class StepInputValidationError(ValueError):
 
 
 def validate_step_inputs(
-    kind: StepKind,
     inputs: object,
     input_schema: Mapping[str, Any],
     input_model: type[BaseModel],
+    input_schema_source: str,
 ) -> BaseModel:
-    """Select the concrete Step type's input-contract validator."""
+    """Select validation from the trusted descriptor's schema source."""
 
-    if kind is StepKind.ACTION:
-        # Delayed to keep the Action-specific dependency outside generic execution.
-        from .action_validation import validate_action_inputs
+    if input_schema_source == "manifest":
+        # Delayed to keep manifest validation outside generic execution.
+        from .manifest_validation import validate_manifest_inputs
 
-        return validate_action_inputs(inputs, input_schema, input_model)
+        return validate_manifest_inputs(inputs, input_schema, input_model)
     return _validate_model_inputs(inputs, input_model)
 
 
 def _validate_model_inputs(inputs: object, input_model: type[BaseModel]) -> BaseModel:
-    """Retain registered Pydantic validation semantics for non-Action Step types."""
+    """Retain registered Pydantic semantics for implementation-derived inputs."""
 
     try:
         return input_model.model_validate(inputs)

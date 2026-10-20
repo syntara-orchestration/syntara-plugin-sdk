@@ -22,6 +22,7 @@ from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .artifact import OCI_ARTIFACT_TYPE, PluginArtifact
+from .artifact_archive import ArtifactArchiveError, _verify_plugin_contents
 from .catalog import (
     OCI_CATALOG_INDEX_ARTIFACT_TYPE,
     OCI_CATALOG_INDEX_CONFIG_MEDIA_TYPE,
@@ -538,6 +539,10 @@ def _validate_plugin_artifact(artifact: PluginArtifact) -> None:
         ]
     ):
         raise CatalogIndexPublicationError("ARTIFACT_MANIFEST_INVALID")
+    try:
+        _verify_plugin_contents(artifact.config, artifact.plugin_manifest, artifact.content_bundle)
+    except ArtifactArchiveError as error:
+        raise CatalogIndexPublicationError("ARTIFACT_CONTENT_INVALID") from error
 
 
 def _json_mapping(content: bytes, failure_code: str) -> Mapping[str, Any]:

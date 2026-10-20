@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,7 @@ from syntara_plugin.sdk import (
     CatalogIndexPublicationTarget,
     CatalogIndexPublisher,
     OciRegistryResponse,
+    PluginArtifact,
     PluginArtifactPublicationTarget,
     PluginArtifactPublisher,
     RegistryCredentials,
@@ -22,6 +24,7 @@ from syntara_plugin.sdk import (
     build_plugin_artifact,
     compile_workspace,
 )
+from syntara_plugin.sdk.oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, canonical_json_bytes
 
 
 class _Transport:
@@ -134,6 +137,30 @@ spec:
 """
     )
     return build_plugin_artifact(compile_workspace(BuildRequest(root)))
+
+
+def _artifact_with_workload_image(artifact: PluginArtifact, image: object) -> PluginArtifact:
+    """Rebuild an OCI graph with a caller-supplied workload image value."""
+
+    descriptor_document = json.loads(artifact.plugin_manifest.content)
+    descriptor_document.setdefault("spec", {})["workloads"] = {
+        "runner": {"abi": "syntara.container/v1alpha1", "image": image}
+    }
+    descriptor = OciBlob.create(
+        canonical_json_bytes(descriptor_document), artifact.plugin_manifest.descriptor.media_type
+    )
+    config_document = json.loads(artifact.config.content)
+    config_document["pluginDescriptorDigest"] = descriptor.descriptor.digest
+    config = OciBlob.create(
+        canonical_json_bytes(config_document), artifact.config.descriptor.media_type
+    )
+    manifest_document = json.loads(artifact.manifest.content)
+    manifest_document["config"] = config.descriptor.as_dict()
+    manifest_document["layers"][0] = descriptor.descriptor.as_dict()
+    manifest = OciBlob.create(
+        canonical_json_bytes(manifest_document), OCI_IMAGE_MANIFEST_MEDIA_TYPE
+    )
+    return PluginArtifact(config, descriptor, artifact.content_bundle, manifest)
 
 
 def test_publisher_uploads_immutable_blobs_before_advancing_the_configured_channel() -> None:
@@ -343,6 +370,27 @@ def test_plugin_publisher_uploads_all_plugin_payload_blobs_before_advancing_chan
         == "http://localhost:8443/v2/syntara/plugins/github/manifests/0.1.0"
     )
     assert transport.requests[-1][3] == artifact.manifest.content
+
+
+@pytest.mark.parametrize("image", ["quay.io/acme/runner:latest", None])
+def test_plugin_publisher_rejects_an_unpinned_workload_before_upload(
+    tmp_path: Path, image: str | None
+) -> None:
+    artifact = _artifact_with_workload_image(_plugin_artifact(tmp_path), image)
+    transport = _Transport([])
+
+    with pytest.raises(CatalogIndexPublicationError, match="ARTIFACT_CONTENT_INVALID"):
+        PluginArtifactPublisher(
+            PluginArtifactPublicationTarget(
+                registry_origin="http://localhost:8443",
+                repository="syntara/plugins/github",
+                channel="0.1.0",
+                allow_insecure_loopback_http=True,
+            ),
+            transport=transport,
+        ).publish(artifact)
+
+    assert transport.requests == []
 
 
 @pytest.mark.parametrize(

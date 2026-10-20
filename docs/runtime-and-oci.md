@@ -152,10 +152,10 @@ for step in (ActionEcho(), ControlEcho(), TriggerEcho()):
 
 `StepDescriptor` associates a declared step identity with its concrete Step
 kind and `StepCategory`. An implementation-derived descriptor uses the step's
-Pydantic schemas for authoring and schema-drift validation. An installed Action
-descriptor instead derives both its input and output schemas from the
-manifest's resolved `spec.input` and `spec.output`; Control and Trigger
-descriptors currently retain their implementation-derived schemas.
+Pydantic schemas for authoring and schema-drift validation. An installed
+custom-runner descriptor instead derives both its input and output schemas
+from the installed manifest's resolved `spec.input` and `spec.output` for
+Actions, Controls, and Triggers.
 `StepDescriptor.for_step()` creates implementation descriptors, and
 `StepBindings` retains each descriptor-and-implementation pair:
 
@@ -178,16 +178,17 @@ local SDK lookup table, not the platform registration database; mapping an
 installed step revision to a declared identity belongs to the registry-binding
 story.
 Pydantic models are implementation types, not replacement manifests. For an
-installed Action, the canonical manifest schema is the execution contract;
-comparing implementation schemas with source manifests is owned by the
-schema-drift validation story. Control and Trigger currently execute against
-their registered Pydantic input models.
+installed custom-runner Step, the canonical installed manifest schema is the
+execution contract; comparing implementation schemas with source manifests is
+owned by the schema-drift validation story. A Trigger's executor input is its
+registered `spec.input` schema; `spec.configuration` remains separate driver
+configuration and is not reinterpreted as invocation input.
 
-For an installed Action, first resolve its manifest with
-`InstalledActionManifest.from_manifest()`. Inline and asset-backed `spec.input`
+For an installed custom-runner Step, first resolve its manifest with
+`InstalledStepManifest.from_manifest()`. Inline and asset-backed `spec.input`
 and `spec.output` document sources are supported, and the manifest and resolved
 schemas are stored recursively as immutable JSON documents. Pass that object to
-`StepDescriptor.for_installed_action()`; both the descriptor's input and output
+`StepDescriptor.for_installed_step()`; both the descriptor's input and output
 schemas are manifest-sourced and cannot be replaced by a caller-supplied schema.
 The exposed documents are immutable mappings/sequences; call the runtime
 `to_json_document()` helper when a mutable plain-JSON export is required for
@@ -205,7 +206,7 @@ Pydantic model in strict mode, and invokes the implementation hook once:
 ```python
 from syntara_plugin.runtime import (
     ExecutionContext,
-    InstalledActionManifest,
+    InstalledStepManifest,
     StepBindings,
     StepDescriptor,
     StepExecutor,
@@ -213,10 +214,10 @@ from syntara_plugin.runtime import (
 
 bindings = StepBindings()
 step = EchoStep()
-installed_action = InstalledActionManifest.from_manifest(
+installed_step = InstalledStepManifest.from_manifest(
     "acme.plugin.echo", installed_manifest, installed_assets
 )
-descriptor = StepDescriptor.for_installed_action(step, installed_action)
+descriptor = StepDescriptor.for_installed_step(step, installed_step)
 bindings.bind(descriptor, step)
 executor = StepExecutor(bindings.binding("acme.plugin.echo"))
 result = executor.execute(
@@ -225,18 +226,14 @@ result = executor.execute(
 ```
 
 `from_manifest()` is the installation/bootstrap handoff for an installed
-Action. The component loading the installed plugin metadata must supply an
+custom-runner Step. The component loading the installed plugin metadata must supply an
 authorized document. The SDK runtime cannot independently verify remote or
 cryptographic provenance, but it records opaque provenance for the exact
 factory-created manifest and descriptor objects. `StepBindings` accepts
-implementation-derived Action descriptors for authoring validation, while
-`StepExecutor` and container dispatch reject them for execution. At present,
-Action is the only Step type with an installed-manifest execution contract, so
-an Action can execute only through the factory-created identity and canonical
-manifest-schema binding. This describes the current contract boundary; it is
-not a design statement that other categories must remain
-implementation-derived. Control and Trigger currently retain their registered
-Pydantic contracts.
+implementation-derived descriptors for authoring validation, while
+`StepExecutor` and container dispatch reject them for execution. All three
+supported custom-runner Step kinds execute only through the factory-created
+identity and canonical installed-schema binding.
 
 `StepExecutor` is the owner of the runtime-local `StandardOutputWrapper` and
 `ErrorMessage` result types. Invalid input returns that wrapper with a nonzero
@@ -244,15 +241,16 @@ status and a safe `ErrorMessage`; the implementation hook is not called. JSON Sc
 `default` values are annotations, so the registered Pydantic model supplies the
 actual default. Enums must match exactly, and unknown fields are rejected only
 when the manifest schema forbids them. Pydantic runs in strict mode after JSON
-Schema validation so coercion cannot accept a value that the published Action
+Schema validation so coercion cannot accept a value that the published Step
 contract rejects.
 
-Control and Trigger execution uses each step's registered Pydantic input
-model directly. Those Step types retain normal Pydantic coercion, defaults, and
-model configuration; in particular, a Trigger's executor input is its registered
-model rather than driver configuration. Every Step type passes through the same
-`StepExecutor`, which invokes the hook only after its applicable validation
-completes successfully.
+Control and Trigger execution uses the installed `spec.input` contract. The
+registered Pydantic model still supplies the typed object, defaults, and model
+configuration; in particular, a Trigger's executor input is its registered
+input contract rather than driver configuration. Every supported custom-runner
+Step type passes through the same `StepExecutor`, which validates against the
+installed schema, constructs the registered Pydantic model, and invokes the
+hook only after validation completes successfully.
 
 The current container adapter mapping is provisional: it maps that same wrapper
 onto the terminal `Result` envelope pending the canonical wrapper and terminal-
@@ -264,9 +262,9 @@ and must carry a safe `error_code` failure classification and `error_message`;
 the separate `Failure` event is reserved for protocol or runtime failures where
 no valid outcome exists. Direct Python and container execution share the same
 validation behavior and hook-call guarantees, but their current result
-representations are not the final canonical wrapper contract. Actions are the
-only category that currently requires manifest-sourced input schemas; Control
-and Trigger bindings retain their implementation-derived schemas.
+representations are not the final canonical wrapper contract. Platform-runner
+Steps remain declarative and are not bound to a Python implementation by this
+runtime path.
 
 The eventual mapping is expected to carry the canonical
 `StandardOutputWrapper` shape directly. Until that work lands, the flattened

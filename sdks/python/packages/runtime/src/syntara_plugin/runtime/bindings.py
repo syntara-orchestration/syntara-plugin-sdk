@@ -22,6 +22,9 @@ from syntara_plugin.contracts import canonical_json_digest
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+_ENTRY_POINT = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$"
+)
 
 
 def _freeze_json_document(value: Any) -> Any:
@@ -40,17 +43,22 @@ def _freeze_json_document(value: Any) -> Any:
     raise TypeError("JSON documents may contain only JSON-compatible values")
 
 
-def _validate_schema_references(schema: Mapping[str, Any]) -> None:
+def _validate_schema_references(
+    schema: Mapping[str, Any], schema_name: Literal["input_schema", "output_schema"]
+) -> None:
     resource = Resource.from_contents(
         _thaw_json_document(schema), default_specification=DRAFT202012
     )
     _validate_resource_references(
         resource,
         Registry().resolver_with_root(resource),
+        schema_name,
     )
 
 
-def _validate_resource_references(resource: Resource[Any], resolver: Any) -> None:
+def _validate_resource_references(
+    resource: Resource[Any], resolver: Any, schema_name: Literal["input_schema", "output_schema"]
+) -> None:
     contents = resource.contents
     if not isinstance(contents, Mapping):
         return
@@ -61,15 +69,13 @@ def _validate_resource_references(resource: Resource[Any], resolver: Any) -> Non
         try:
             resolver.lookup(reference)
         except Unresolvable as error:
-            message = (
-                f"manifest input_schema contains an unresolvable {keyword}: "
-                f"{reference}"
-            )
+            message = f"manifest {schema_name} contains an unresolvable {keyword}: {reference}"
             raise StepBindingError(message) from error
     for subresource in resource.subresources():
         _validate_resource_references(
             subresource,
             resolver.in_subresource(subresource),
+            schema_name,
         )
     definitions = contents.get("$defs")
     if not isinstance(definitions, Mapping):
@@ -84,6 +90,7 @@ def _validate_resource_references(resource: Resource[Any], resolver: Any) -> Non
         _validate_resource_references(
             definition_resource,
             resolver.in_subresource(definition_resource),
+            schema_name,
         )
 
 
@@ -108,11 +115,12 @@ class StepBindingError(ValueError):
 
 
 @dataclass(frozen=True)
-class _InstalledActionProvenance:
+class _InstalledStepProvenance:
     """The canonical contract retained for a manifest resolved at installation."""
 
-    manifest_ref: ReferenceType[InstalledActionManifest]
+    manifest_ref: ReferenceType[InstalledStepManifest]
     step_identity: str
+    kind: StepKind
     entry_point: str
     input_schema: Mapping[str, Any]
     input_schema_digest: str
@@ -121,11 +129,13 @@ class _InstalledActionProvenance:
 
 
 @dataclass(frozen=True)
-class _InstalledActionDescriptorProvenance:
+class _InstalledStepDescriptorProvenance:
     """The canonical contract bound by the trusted descriptor factory."""
 
     descriptor_ref: ReferenceType[StepDescriptor]
     step_identity: str
+    kind: StepKind
+    input_schema_source: Literal["manifest"]
     entry_point: str
     input_schema: Mapping[str, Any]
     input_schema_digest: str
@@ -168,11 +178,11 @@ def _loaded_entry_point(entry_point: str) -> type[Any] | None:
     return found if isinstance(found, type) else None
 
 
-def _require_installed_action_entry_point(
+def _require_installed_step_entry_point(
     entry_point: str,
     step: BaseStep[Any, Any],
 ) -> None:
-    """Reject an Action implementation that differs from its installed manifest."""
+    """Reject an implementation that differs from its installed manifest."""
 
     actual = _step_entry_point(step)
     loaded = _loaded_entry_point(entry_point)
@@ -186,8 +196,8 @@ def _require_installed_action_entry_point(
     ):
         return
     message = (
-        f"installed Action entry point {entry_point!r} does not match "
-        f"the supplied ActionStep class {actual!r}"
+        f"installed Step entry point {entry_point!r} does not match "
+        f"the supplied step class {actual!r}"
     )
     raise StepBindingError(message)
 
@@ -209,44 +219,44 @@ def to_json_document(value: Mapping[str, Any]) -> dict[str, Any]:
     return thawed
 
 
-_INSTALLED_ACTION_PROVENANCE: list[_InstalledActionProvenance] = []
-_INSTALLED_ACTION_DESCRIPTOR_PROVENANCE: list[_InstalledActionDescriptorProvenance] = []
+_INSTALLED_STEP_PROVENANCE: list[_InstalledStepProvenance] = []
+_INSTALLED_STEP_DESCRIPTOR_PROVENANCE: list[_InstalledStepDescriptorProvenance] = []
 
 
-def _installed_action_provenance(
-    installed_action: InstalledActionManifest,
-) -> _InstalledActionProvenance | None:
+def _installed_step_provenance(
+    installed_step: InstalledStepManifest,
+) -> _InstalledStepProvenance | None:
     """Return provenance only for a manifest resolved by the installer."""
 
-    _INSTALLED_ACTION_PROVENANCE[:] = [
+    _INSTALLED_STEP_PROVENANCE[:] = [
         provenance
-        for provenance in _INSTALLED_ACTION_PROVENANCE
+        for provenance in _INSTALLED_STEP_PROVENANCE
         if provenance.manifest_ref() is not None
     ]
     return next(
         (
             provenance
-            for provenance in _INSTALLED_ACTION_PROVENANCE
-            if provenance.manifest_ref() is installed_action
+            for provenance in _INSTALLED_STEP_PROVENANCE
+            if provenance.manifest_ref() is installed_step
         ),
         None,
     )
 
 
-def _installed_action_descriptor_provenance(
+def _installed_step_descriptor_provenance(
     descriptor: StepDescriptor,
-) -> _InstalledActionDescriptorProvenance | None:
+) -> _InstalledStepDescriptorProvenance | None:
     """Return provenance only for a descriptor created by the trusted factory."""
 
-    _INSTALLED_ACTION_DESCRIPTOR_PROVENANCE[:] = [
+    _INSTALLED_STEP_DESCRIPTOR_PROVENANCE[:] = [
         provenance
-        for provenance in _INSTALLED_ACTION_DESCRIPTOR_PROVENANCE
+        for provenance in _INSTALLED_STEP_DESCRIPTOR_PROVENANCE
         if provenance.descriptor_ref() is not None
     ]
     return next(
         (
             provenance
-            for provenance in _INSTALLED_ACTION_DESCRIPTOR_PROVENANCE
+            for provenance in _INSTALLED_STEP_DESCRIPTOR_PROVENANCE
             if provenance.descriptor_ref() is descriptor
         ),
         None,
@@ -290,9 +300,9 @@ def validate_step_binding(
 ) -> None:
     """Validate a descriptor's structural association with an implementation.
 
-    This deliberately permits implementation-derived Action descriptors for
-    authoring and contract-drift validation. Runtime execution additionally
-    requires the installed Action contract; see
+    This deliberately permits implementation-derived descriptors for authoring
+    and contract-drift validation. Runtime execution additionally requires the
+    installed custom-runner contract; see
     :func:`validate_executable_step_binding`.
     """
 
@@ -328,8 +338,9 @@ def validate_executable_step_binding(
     """Validate a binding at an execution boundary.
 
     ``StepBinding`` is directly constructible and may not have come through
-    ``StepBindings.bind``. In addition to structural validation, Action
-    execution requires the exact descriptor created for an installed manifest.
+    ``StepBindings.bind``. In addition to structural validation, executable
+    custom-runner steps require the exact descriptor created for an installed
+    manifest.
     """
 
     validate_step_binding(descriptor, step)
@@ -345,7 +356,7 @@ def _resolve_document_source(
 
     source = specification.get(field_name)
     if not isinstance(source, Mapping):
-        message = f"Action manifest must contain a {field_name} document source"
+        message = f"Step manifest must contain a {field_name} document source"
         raise StepBindingError(message)
     source_kind = source.get("kind")
     if source_kind == "inline":
@@ -353,31 +364,32 @@ def _resolve_document_source(
     elif source_kind == "asset":
         path = source.get("path")
         if not isinstance(path, str) or path not in assets:
-            message = f"Action {field_name} asset must be supplied by the installed binding"
+            message = f"Step {field_name} asset must be supplied by the installed binding"
             raise StepBindingError(message)
         schema = assets[path]
     else:
-        message = f"Action {field_name} must use an inline or asset document source"
+        message = f"Step {field_name} must use an inline or asset document source"
         raise StepBindingError(message)
     if not isinstance(schema, Mapping):
-        message = f"resolved Action {field_name} schema must be a JSON object"
+        message = f"resolved Step {field_name} schema must be a JSON object"
         raise StepBindingError(message)
     return schema
 
 
 @dataclass(frozen=True)
-class InstalledActionManifest:
-    """An installed Action manifest and its resolved input and output schemas.
+class InstalledStepManifest:
+    """An installed custom-runner Step manifest and its resolved schemas.
 
-    ``from_manifest`` is the SDK's local installation/bootstrap boundary. Its
-    caller is responsible for obtaining an authorized installed document; an
-    in-process SDK cannot independently establish remote or cryptographic
-    provenance. The factory retains opaque provenance for the exact returned
-    object so equivalent caller-created objects cannot be substituted into an
-    executable Action binding.
+    ``from_manifest`` is the SDK's installation/bootstrap boundary. Its caller
+    is responsible for obtaining an authorized installed document; the SDK
+    cannot independently establish remote or cryptographic provenance. The
+    factory retains opaque provenance for the exact returned object so
+    equivalent caller-created objects cannot be substituted into an executable
+    Step binding.
     """
 
     step_identity: str = field(init=False)
+    kind: StepKind = field(init=False)
     document: Mapping[str, Any] = field(init=False)
     input_schema: Mapping[str, Any] = field(init=False)
     output_schema: Mapping[str, Any] = field(init=False)
@@ -388,7 +400,7 @@ class InstalledActionManifest:
         step_identity: str,
         manifest: Mapping[str, Any],
         assets: Mapping[str, Mapping[str, Any]],
-    ) -> InstalledActionManifest:
+    ) -> InstalledStepManifest:
         """Resolve the canonical schemas declared by ``spec.input`` and ``spec.output``."""
 
         if not _IDENTITY.fullmatch(step_identity):
@@ -397,43 +409,47 @@ class InstalledActionManifest:
         if not isinstance(manifest, Mapping):
             message = "manifest must be a JSON object"
             raise StepBindingError(message)
-        if (
-            manifest.get("apiVersion") != "syntara.io/v1alpha1"
-            or manifest.get("kind") != "Action"
-        ):
-            message = "manifest must be a syntara.io/v1alpha1 Action document"
+        if manifest.get("apiVersion") != "syntara.io/v1alpha1":
+            message = "manifest must be a syntara.io/v1alpha1 Step document"
             raise StepBindingError(message)
+        try:
+            kind = StepKind(manifest.get("kind"))
+        except (TypeError, ValueError):
+            message = "manifest kind must be Action, Control, or Trigger"
+            raise StepBindingError(message) from None
         specification = manifest.get("spec")
         if not isinstance(specification, Mapping):
-            message = "Action manifest must contain a spec object"
+            message = "Step manifest must contain a spec object"
             raise StepBindingError(message)
         runtime = specification.get("runtime")
         if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
-            message = "installed Action bindings require a custom-runner implementation"
+            message = "installed Step bindings require a custom-runner implementation"
             raise StepBindingError(message)
         entry_point = runtime.get("entryPoint")
-        if not isinstance(entry_point, str) or not entry_point:
-            message = "installed Action bindings require a runtime entryPoint"
+        if not isinstance(entry_point, str) or _ENTRY_POINT.fullmatch(entry_point) is None:
+            message = "installed Step bindings require a valid runtime entryPoint"
             raise StepBindingError(message)
         input_schema = _resolve_document_source(specification, "input", assets)
         output_schema = _resolve_document_source(specification, "output", assets)
-        installed_action = InstalledActionManifest()
-        object.__setattr__(installed_action, "step_identity", step_identity)
-        object.__setattr__(installed_action, "document", _freeze_json_document(manifest))
-        object.__setattr__(installed_action, "input_schema", _freeze_json_document(input_schema))
-        object.__setattr__(installed_action, "output_schema", _freeze_json_document(output_schema))
-        _INSTALLED_ACTION_PROVENANCE.append(
-            _InstalledActionProvenance(
-                manifest_ref=ref(installed_action),
-                step_identity=installed_action.step_identity,
+        installed_step = InstalledStepManifest()
+        object.__setattr__(installed_step, "step_identity", step_identity)
+        object.__setattr__(installed_step, "kind", kind)
+        object.__setattr__(installed_step, "document", _freeze_json_document(manifest))
+        object.__setattr__(installed_step, "input_schema", _freeze_json_document(input_schema))
+        object.__setattr__(installed_step, "output_schema", _freeze_json_document(output_schema))
+        _INSTALLED_STEP_PROVENANCE.append(
+            _InstalledStepProvenance(
+                manifest_ref=ref(installed_step),
+                step_identity=installed_step.step_identity,
+                kind=installed_step.kind,
                 entry_point=entry_point,
-                input_schema=installed_action.input_schema,
+                input_schema=installed_step.input_schema,
                 input_schema_digest=_schema_digest(input_schema),
-                output_schema=installed_action.output_schema,
+                output_schema=installed_step.output_schema,
                 output_schema_digest=_schema_digest(output_schema),
             )
         )
-        return installed_action
+        return installed_step
 
 
 @dataclass(frozen=True)
@@ -441,11 +457,9 @@ class StepDescriptor:
     """Declared identity and schemas associated with a Python implementation.
 
     The input and output schemas describe the typed Python contract of one
-    implementation. They are implementation types derived from Pydantic models
-    and are not replacement manifests. Installed Actions are the exception: the
-    trusted factory binds their canonical input schema. Schema-drift comparison
-    between implementation schemas and source manifests is owned by a separate
-    story.
+    implementation. They are implementation-derived for authoring descriptors.
+    Installed custom-runner Steps are the executable exception: the trusted
+    factory binds their canonical schemas from the installed descriptor.
     """
 
     step_identity: str
@@ -459,7 +473,7 @@ class StepDescriptor:
         if not isinstance(self.kind, StepKind):
             try:
                 object.__setattr__(self, "kind", StepKind(self.kind))
-            except ValueError:
+            except (TypeError, ValueError):
                 message = "kind must be a valid concrete Step kind"
                 raise StepBindingError(message) from None
 
@@ -475,7 +489,7 @@ class StepDescriptor:
         if self.input_schema_source != "implementation":
             message = (
                 "manifest-sourced descriptors must be created with "
-                "StepDescriptor.for_installed_action"
+                "StepDescriptor.for_installed_step"
             )
             raise StepBindingError(message)
         object.__setattr__(self, "input_schema", _freeze_json_document(self.input_schema))
@@ -488,13 +502,15 @@ class StepDescriptor:
         return _category_for_kind(self.kind)
 
     @property
-    def is_installed_action(self) -> bool:
-        """Whether this descriptor was created from a trusted installed Action."""
+    def is_installed_step(self) -> bool:
+        """Whether this descriptor came from a trusted installed Step."""
 
-        provenance = _installed_action_descriptor_provenance(self)
+        provenance = _installed_step_descriptor_provenance(self)
         return (
             provenance is not None
             and self.step_identity == provenance.step_identity
+            and self.kind is provenance.kind
+            and self.input_schema_source == provenance.input_schema_source
             and self.input_schema is provenance.input_schema
             and _schema_matches_digest(self.input_schema, provenance.input_schema_digest)
             and self.output_schema is provenance.output_schema
@@ -504,12 +520,12 @@ class StepDescriptor:
     def require_executable_contract(self, step: BaseStep[Any, Any]) -> None:
         """Reject bindings that cannot establish their required input contract."""
 
-        if self.kind is not StepKind.ACTION:
-            return
-        provenance = _installed_action_descriptor_provenance(self)
+        provenance = _installed_step_descriptor_provenance(self)
         if (
             provenance is None
             or self.step_identity != provenance.step_identity
+            or self.kind is not provenance.kind
+            or self.input_schema_source != provenance.input_schema_source
             or self.input_schema is not provenance.input_schema
             or not _schema_matches_digest(self.input_schema, provenance.input_schema_digest)
             or self.output_schema is not provenance.output_schema
@@ -517,7 +533,7 @@ class StepDescriptor:
         ):
             message = "the descriptor was not created from an unchanged installed contract"
             raise StepBindingError(message)
-        _require_installed_action_entry_point(provenance.entry_point, step)
+        _require_installed_step_entry_point(provenance.entry_point, step)
 
     @classmethod
     def for_step(cls, step_identity: str, step: BaseStep[Any, Any]) -> StepDescriptor:
@@ -532,67 +548,75 @@ class StepDescriptor:
         )
 
     @classmethod
-    def for_installed_action(
+    def for_installed_step(
         cls,
         step: BaseStep[Any, Any],
-        installed_action: InstalledActionManifest,
+        installed_step: InstalledStepManifest,
     ) -> StepDescriptor:
-        """Build the trusted descriptor for one installed Action revision.
+        """Build the trusted descriptor for one installed custom-runner Step.
 
         ``input_schema`` and ``output_schema`` must be the canonical schemas
-        resolved from the installed Action manifest. They are intentionally never
+        resolved from the installed Step manifest. They are intentionally never
         derived from the implementation's Pydantic model.
         """
 
         if not isinstance(step, BaseStep):
-            message = "installed Action bindings require a BaseStep implementation"
+            message = "installed Step bindings require a BaseStep implementation"
             raise TypeError(message)
-        if type(installed_action) is not InstalledActionManifest:
-            message = "installed Action bindings require an exact InstalledActionManifest"
+        if type(installed_step) is not InstalledStepManifest:
+            message = "installed Step bindings require an exact InstalledStepManifest"
             raise TypeError(message)
-        provenance = _installed_action_provenance(installed_action)
+        provenance = _installed_step_provenance(installed_step)
         if provenance is None:
-            message = "installed Action bindings require a verified installed manifest"
+            message = "installed Step bindings require a verified installed manifest"
             raise StepBindingError(message)
-        specification = installed_action.document.get("spec")
+        specification = installed_step.document.get("spec")
         runtime = specification.get("runtime") if isinstance(specification, Mapping) else None
         if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
-            message = "installed Action bindings require a custom-runner runtime"
+            message = "installed Step bindings require a custom-runner runtime"
             raise StepBindingError(message)
         if runtime.get("entryPoint") != provenance.entry_point:
-            message = "the installed Action entry point was changed after installation"
+            message = "the installed Step entry point was changed after installation"
             raise StepBindingError(message)
         if not _schema_matches_digest(
-            installed_action.input_schema, provenance.input_schema_digest
+            installed_step.input_schema, provenance.input_schema_digest
         ) or not _schema_matches_digest(
-            installed_action.output_schema, provenance.output_schema_digest
+            installed_step.output_schema, provenance.output_schema_digest
         ):
-            message = "the installed Action schema was changed after installation"
+            message = "the installed Step schema was changed after installation"
             raise StepBindingError(message)
         kind, _ = _step_kind_and_category(type(step))
-        if kind is not StepKind.ACTION:
-            message = "installed Action bindings require an ActionStep implementation"
+        if kind is not installed_step.kind:
+            message = (
+                f"installed manifest kind {installed_step.kind.value!r} does not match "
+                f"the supplied Step implementation kind {kind.value!r}"
+            )
             raise StepBindingError(message)
-        _require_installed_action_entry_point(provenance.entry_point, step)
+        _require_installed_step_entry_point(provenance.entry_point, step)
         descriptor = StepDescriptor(
             step_identity=provenance.step_identity,
-            kind=StepKind.ACTION,
+            kind=kind,
             input_schema=provenance.input_schema,
             output_schema=provenance.output_schema,
         )
-        try:
-            Draft202012Validator.check_schema(_thaw_json_document(descriptor.input_schema))
-            _validate_schema_references(descriptor.input_schema)
-            Draft202012Validator.check_schema(_thaw_json_document(descriptor.output_schema))
-            _validate_schema_references(descriptor.output_schema)
-        except SchemaError as error:
-            message = "manifest input_schema must be a valid JSON Schema"
-            raise StepBindingError(message) from error
+        schemas: tuple[tuple[Literal["input_schema", "output_schema"], Mapping[str, Any]], ...] = (
+            ("input_schema", descriptor.input_schema),
+            ("output_schema", descriptor.output_schema),
+        )
+        for schema_name, schema in schemas:
+            try:
+                Draft202012Validator.check_schema(_thaw_json_document(schema))
+            except SchemaError as error:
+                message = f"manifest {schema_name} must be a valid JSON Schema"
+                raise StepBindingError(message) from error
+            _validate_schema_references(schema, schema_name)
         object.__setattr__(descriptor, "input_schema_source", "manifest")
-        _INSTALLED_ACTION_DESCRIPTOR_PROVENANCE.append(
-            _InstalledActionDescriptorProvenance(
+        _INSTALLED_STEP_DESCRIPTOR_PROVENANCE.append(
+            _InstalledStepDescriptorProvenance(
                 descriptor_ref=ref(descriptor),
                 step_identity=descriptor.step_identity,
+                kind=descriptor.kind,
+                input_schema_source="manifest",
                 entry_point=provenance.entry_point,
                 input_schema=descriptor.input_schema,
                 input_schema_digest=provenance.input_schema_digest,
@@ -614,7 +638,7 @@ class StepBinding:
 class StepBindings:
     """Maps declared step identities to typed Python implementations.
 
-    This is an in-process lookup table for direct SDK execution and local
+    This is an SDK-local lookup table for direct execution and local
     container dispatch. It is deliberately not the Automation Orchestrator's
     plugin or step registration database. Mapping an immutable installed step
     revision to one of these declared identities is owned by the separate SDK

@@ -1,4 +1,4 @@
-"""Installed-Action input validation kept outside the generic executor."""
+"""Installed-manifest input validation kept outside the generic executor."""
 
 from __future__ import annotations
 
@@ -19,22 +19,22 @@ from .validation import (
 )
 
 
-class ActionInputValidationError(StepInputValidationError):
-    """An invalid Action input with a caller-safe diagnostic message."""
+class ManifestInputValidationError(StepInputValidationError):
+    """Invalid installed-manifest input with a caller-safe diagnostic message."""
 
 
-def validate_action_inputs(
+def validate_manifest_inputs(
     inputs: object,
     input_schema: Mapping[str, Any],
     input_model: type[BaseModel],
 ) -> BaseModel:
-    """Validate raw Action input and construct its registered Pydantic model."""
+    """Validate raw input against an installed schema and model."""
 
     if not isinstance(inputs, Mapping):
-        raise ActionInputValidationError("input: must be a JSON object")
+        raise ManifestInputValidationError("input: must be a JSON object")
     payload = dict(inputs)
     if not _is_json_compatible(payload):
-        raise ActionInputValidationError("input: must contain only JSON-compatible values")
+        raise ManifestInputValidationError("input: must contain only JSON-compatible values")
 
     schema_validator = Draft202012Validator(
         _thaw_json_document(input_schema), format_checker=FormatChecker()
@@ -45,11 +45,11 @@ def validate_action_inputs(
             key=lambda error: (tuple(error.schema_path), str(error.validator)),
         )
     except Exception as error:
-        raise ActionInputValidationError(
+        raise ManifestInputValidationError(
             "The installed input schema could not be evaluated."
         ) from error
     if schema_errors:
-        raise ActionInputValidationError(
+        raise ManifestInputValidationError(
             "The input failed schema validation: "
             + format_validation_details([_schema_error_detail(error) for error in schema_errors])
         )
@@ -57,15 +57,15 @@ def validate_action_inputs(
     try:
         # Validate in Pydantic's JSON mode: the manifest contract describes
         # JSON values, so standard representations such as date-time strings
-        # must remain valid while Python-side coercion stays disabled.
+        # remain valid while Python-side coercion stays disabled.
         payload_json = json.dumps(payload, allow_nan=False, separators=(",", ":"))
         return input_model.model_validate_json(payload_json, strict=True)
     except ValidationError as error:
-        raise ActionInputValidationError(
+        raise ManifestInputValidationError(
             "The input failed model validation: " + _pydantic_details(error)
         ) from error
     except Exception as error:
-        raise ActionInputValidationError("The input failed model construction.") from error
+        raise ManifestInputValidationError("The input failed model construction.") from error
 
 
 def _pydantic_details(error: ValidationError) -> str:
@@ -84,9 +84,7 @@ def _schema_error_detail(error: JsonSchemaValidationError) -> str:
             missing_keys = [key for key in error.validator_value if key not in error.instance]
         else:
             missing_keys = list(error.validator_value)
-        missing = format_validation_location(
-            ", ".join(str(key) for key in missing_keys)
-        )
+        missing = format_validation_location(", ".join(str(key) for key in missing_keys))
         return f"{location}: required ({missing})"
     return f"{location}: {error.validator}"
 

@@ -15,12 +15,13 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
     ActionStep,
+    BaseStep,
     ContainerInvocation,
     ContainerInvocationError,
     ControlStep,
     ExecutionContext,
     FailureCode,
-    InstalledActionManifest,
+    InstalledStepManifest,
     StandardOutputWrapper,
     StepBinding,
     StepBindingError,
@@ -28,9 +29,10 @@ from syntara_plugin.runtime import (
     StepDescriptor,
     StepExecutionError,
     StepExecutor,
+    StepKind,
     TriggerStep,
-    container_action_for_step,
     container_step_for_binding,
+    container_step_for_installed_manifest,
 )
 
 
@@ -139,7 +141,20 @@ class UnexpectedControlOutput(BaseModel):
 
 
 class InvalidOutputControlStep(ControlStep[ExampleInput, ControlExampleOutput]):
+    def __init__(self) -> None:
+        self.run_calls = 0
+
     def run(self, inputs: ExampleInput, context: Any) -> ControlExampleOutput:
+        self.run_calls += 1
+        return UnexpectedControlOutput(value="not-the-registered-output")  # type: ignore[return-value]
+
+
+class InvalidOutputTriggerStep(TriggerStep[ExampleInput, ControlExampleOutput]):
+    def __init__(self) -> None:
+        self.run_calls = 0
+
+    def run(self, inputs: ExampleInput, context: Any) -> ControlExampleOutput:
+        self.run_calls += 1
         return UnexpectedControlOutput(value="not-the-registered-output")  # type: ignore[return-value]
 
 
@@ -184,14 +199,23 @@ def _input_schema() -> dict[str, object]:
     }
 
 
-def _installed_action(
+def _installed_step(
     input_schema: dict[str, object],
     output_schema: dict[str, object] | None = None,
-    step_class: type[ActionStep[Any, Any]] = ExampleStep,
-) -> InstalledActionManifest:
+    step_class: type[BaseStep[Any, Any]] = ExampleStep,
+    step_identity: str = "acme.plugin.example",
+    configuration_schema: dict[str, object] | None = None,
+) -> InstalledStepManifest:
+    kind = (
+        StepKind.ACTION
+        if issubclass(step_class, ActionStep)
+        else StepKind.CONTROL
+        if issubclass(step_class, ControlStep)
+        else StepKind.TRIGGER
+    )
     manifest = {
         "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Action",
+        "kind": kind.value,
         "metadata": {
             "name": "example",
             "displayName": "Example",
@@ -206,18 +230,43 @@ def _installed_action(
             "output": {"kind": "inline", "value": output_schema if output_schema is not None else {}},
         },
     }
-    return InstalledActionManifest.from_manifest(
-        "acme.plugin.example", manifest, {}
+    if configuration_schema is not None:
+        manifest["spec"]["configuration"] = {
+            "kind": "inline",
+            "value": configuration_schema,
+        }
+    return InstalledStepManifest.from_manifest(
+        step_identity, manifest, {}
     )
 
 
 def _bind(step: ExampleStep, output_schema: dict[str, object] | None = None) -> StepBindings:
     bindings = StepBindings()
-    descriptor = StepDescriptor.for_installed_action(
-        step, _installed_action(_input_schema(), output_schema)
+    descriptor = StepDescriptor.for_installed_step(
+        step, _installed_step(_input_schema(), output_schema, step_class=type(step))
     )
     bindings.bind(descriptor, step)
     return bindings
+
+
+def _bind_installed(
+    bindings: StepBindings,
+    identity: str,
+    step: BaseStep[Any, Any],
+    *,
+    input_schema: dict[str, object] | None = None,
+    output_schema: dict[str, object] | None = None,
+) -> None:
+    descriptor = StepDescriptor.for_installed_step(
+        step,
+        _installed_step(
+            input_schema if input_schema is not None else _input_schema(),
+            output_schema if output_schema is not None else step.output_model().model_json_schema(),
+            step_class=type(step),
+            step_identity=identity,
+        ),
+    )
+    bindings.bind(descriptor, step)
 
 
 def _executor(step: ExampleStep, output_schema: dict[str, object] | None = None) -> StepExecutor:
@@ -312,12 +361,12 @@ def test_non_json_payloads_are_rejected_before_model_construction() -> None:
     assert step.run_calls == 0
 
 
-def test_action_validation_uses_strict_json_mode_for_json_representations() -> None:
+def test_manifest_validation_uses_strict_json_mode_for_json_representations() -> None:
     step = DateTimeActionStep()
     bindings = StepBindings()
-    descriptor = StepDescriptor.for_installed_action(
+    descriptor = StepDescriptor.for_installed_step(
         step,
-        _installed_action(DateTimeInput.model_json_schema(), step_class=DateTimeActionStep),
+        _installed_step(DateTimeInput.model_json_schema(), step_class=DateTimeActionStep),
     )
     bindings.bind(descriptor, step)
 
@@ -335,7 +384,7 @@ def test_action_format_constraints_are_enforced_before_the_hook() -> None:
     schema = _input_schema()
     schema["properties"]["message"]["format"] = "email"  # type: ignore[index]
     bindings = StepBindings()
-    descriptor = StepDescriptor.for_installed_action(step, _installed_action(schema))
+    descriptor = StepDescriptor.for_installed_step(step, _installed_step(schema))
     bindings.bind(descriptor, step)
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
@@ -354,8 +403,8 @@ def test_model_construction_error_is_a_safe_invalid_input() -> None:
     schema["properties"]["mode"] = {"type": "string"}
     bindings = StepBindings()
     bindings.bind(
-        StepDescriptor.for_installed_action(
-            step, _installed_action(schema, step_class=FailingModelStep)
+        StepDescriptor.for_installed_step(
+            step, _installed_step(schema, step_class=FailingModelStep)
         ),
         step,
     )
@@ -388,9 +437,9 @@ def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
     )
 
     direct_wrapper = _executor(direct_step).execute({"message": "hello"}, _context())
-    container_handler = container_action_for_step(
+    container_handler = container_step_for_installed_manifest(
         container_step,
-        installed_action=_installed_action(_input_schema()),
+        installed_step=_installed_step(_input_schema()),
     )
     container_result = container_handler(_container_invocation({"message": "hello"}))
 
@@ -408,10 +457,15 @@ def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
     assert container_step.run_calls == 0
 
 
-def test_non_action_validation_escapes_control_characters_in_field_names() -> None:
+def test_manifest_validation_reports_control_characters_safely() -> None:
     step = ConfiguredControlStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.control", step), step)
+    _bind_installed(
+        bindings,
+        "acme.plugin.control",
+        step,
+        input_schema=ConfiguredControlInput.model_json_schema(),
+    )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.control")).execute(
         {"message": "hello", "bad\nfield": "value"}, _context()
@@ -419,7 +473,7 @@ def test_non_action_validation_escapes_control_characters_in_field_names() -> No
 
     assert wrapper.status != 0
     assert wrapper.error is not None
-    assert "bad\\u000afield" in wrapper.error.message
+    assert "additionalProperties" in wrapper.error.message
     assert "bad\nfield" not in wrapper.error.message
     assert step.run_calls == 0
 
@@ -430,9 +484,9 @@ def test_schema_evaluation_failure_is_a_safe_invalid_input(
     direct_step = ExampleStep()
     container_step = ExampleStep()
     executor = _executor(direct_step)
-    container_handler = container_action_for_step(
+    container_handler = container_step_for_installed_manifest(
         container_step,
-        installed_action=_installed_action(_input_schema()),
+        installed_step=_installed_step(_input_schema()),
     )
 
     def fail_schema_evaluation(*_args: object, **_kwargs: object) -> object:
@@ -467,9 +521,9 @@ def test_supported_action_adapter_maps_the_invalid_input_wrapper_to_the_envelope
     invalid_input = {"message": "hello", "count": "3"}
 
     direct_wrapper = _executor(direct_step).execute(invalid_input, _context())
-    container_handler = container_action_for_step(
+    container_handler = container_step_for_installed_manifest(
         container_step,
-        installed_action=_installed_action(_input_schema()),
+        installed_step=_installed_step(_input_schema()),
     )
     container_result = container_handler(_container_invocation(invalid_input))
 
@@ -491,9 +545,9 @@ def test_supported_action_adapter_preserves_success_payload_and_digest() -> None
     valid_input = {"message": "hello", "count": 3, "mode": "slow"}
 
     direct_wrapper = _executor(direct_step, output_schema).execute(valid_input, _context())
-    container_handler = container_action_for_step(
+    container_handler = container_step_for_installed_manifest(
         container_step,
-        installed_action=_installed_action(_input_schema(), output_schema),
+        installed_step=_installed_step(_input_schema(), output_schema),
     )
     container_result = container_handler(_container_invocation(valid_input))
 
@@ -504,11 +558,11 @@ def test_supported_action_adapter_preserves_success_payload_and_digest() -> None
     assert container_step.run_calls == 1
 
 
-def test_container_action_rejects_a_mismatched_installed_identity() -> None:
+def test_container_step_rejects_a_mismatched_installed_identity() -> None:
     step = ExampleStep()
-    handler = container_action_for_step(
+    handler = container_step_for_installed_manifest(
         step,
-        installed_action=_installed_action(_input_schema()),
+        installed_step=_installed_step(_input_schema()),
     )
     invocation = _container_invocation(
         {"message": "hello"}, step_revision_id="acme.plugin.other"
@@ -544,8 +598,8 @@ def test_container_execution_rejects_an_implementation_derived_action_binding() 
 def test_direct_mismatched_binding_is_rejected_before_any_typed_hook_runs() -> None:
     action_step = ExampleStep()
     control_step = ControlExampleStep()
-    descriptor = StepDescriptor.for_installed_action(
-        action_step, _installed_action(_input_schema())
+    descriptor = StepDescriptor.for_installed_step(
+        action_step, _installed_step(_input_schema())
     )
     binding = StepBinding(descriptor, control_step)
 
@@ -570,22 +624,22 @@ def test_same_category_action_entry_point_mismatch_is_rejected_before_hooks(
     installed_step_type: type[ActionStep[Any, Any]],
     supplied_step_type: type[ActionStep[Any, Any]],
 ) -> None:
-    installed_step = installed_step_type()
+    installed_implementation = installed_step_type()
     supplied_step = supplied_step_type()
-    installed_action = _installed_action(
-        installed_step.input_model().model_json_schema(),
+    installed_step = _installed_step(
+        installed_implementation.input_model().model_json_schema(),
         step_class=installed_step_type,
     )
-    descriptor = StepDescriptor.for_installed_action(
-        installed_step, installed_action
+    descriptor = StepDescriptor.for_installed_step(
+        installed_implementation, installed_step
     )
     binding = StepBinding(descriptor, supplied_step)
 
     with pytest.raises(StepBindingError, match="entry point"):
-        StepDescriptor.for_installed_action(supplied_step, installed_action)
+        StepDescriptor.for_installed_step(supplied_step, installed_step)
 
     with pytest.raises(StepBindingError, match="entry point"):
-        container_action_for_step(supplied_step, installed_action=installed_action)
+        container_step_for_installed_manifest(supplied_step, installed_step=installed_step)
 
     with pytest.raises(StepBindingError, match="entry point"):
         StepExecutor(binding)
@@ -593,14 +647,14 @@ def test_same_category_action_entry_point_mismatch_is_rejected_before_hooks(
     with pytest.raises(StepBindingError, match="entry point"):
         container_step_for_binding(binding)
 
-    assert installed_step.run_calls == 0
+    assert installed_implementation.run_calls == 0
     assert supplied_step.run_calls == 0
 
 
-def test_non_action_category_retains_implementation_schema_compatibility() -> None:
+def test_control_manifest_execution_preserves_typed_output() -> None:
     step = ControlExampleStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.example", step), step)
+    _bind_installed(bindings, "acme.plugin.example", step)
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
         {"message": "hello", "count": 3, "mode": "slow"}, _context()
@@ -621,12 +675,12 @@ def test_non_action_category_retains_implementation_schema_compatibility() -> No
     [ControlExampleStep, TriggerExampleStep],
     ids=["control", "trigger"],
 )
-def test_non_action_categories_use_registered_pydantic_models(
+def test_control_and_trigger_execution_uses_registered_models(
     step_factory: type[ControlExampleStep | TriggerExampleStep],
 ) -> None:
     step = step_factory()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.example", step), step)
+    _bind_installed(bindings, "acme.plugin.example", step)
     executor = StepExecutor(bindings.binding("acme.plugin.example"))
 
     missing = executor.execute({}, _context())
@@ -643,7 +697,7 @@ def test_non_action_categories_use_registered_pydantic_models(
     assert invalid.error.code == FailureCode.INVALID_INPUT.value
     assert step.run_calls == 0
 
-    valid = executor.execute({"message": "hello", "count": "3"}, _context())
+    valid = executor.execute({"message": "hello", "count": 3}, _context())
 
     assert valid.status == 0
     assert valid.output == {
@@ -661,12 +715,58 @@ def test_non_action_categories_use_registered_pydantic_models(
     [ControlExampleStep, TriggerExampleStep],
     ids=["control", "trigger"],
 )
-def test_non_action_executor_propagates_the_complete_context(
+def test_control_and_trigger_manifest_constraints_reject_values_pydantic_would_accept(
+    step_factory: type[ControlExampleStep | TriggerExampleStep],
+) -> None:
+    input_schema = _input_schema()
+    properties = input_schema["properties"]
+    assert isinstance(properties, dict)
+    properties["message"] = {"type": "string", "minLength": 3}
+    inputs = {"message": "x"}
+
+    direct_step = step_factory()
+    direct_bindings = StepBindings()
+    _bind_installed(
+        direct_bindings,
+        "acme.plugin.direct",
+        direct_step,
+        input_schema=input_schema,
+    )
+    direct_result = StepExecutor(direct_bindings.binding("acme.plugin.direct")).execute(
+        inputs, _context()
+    )
+
+    container_step = step_factory()
+    container_bindings = StepBindings()
+    _bind_installed(
+        container_bindings,
+        "acme.plugin.container",
+        container_step,
+        input_schema=input_schema,
+    )
+    container_result = container_step_for_binding(
+        container_bindings.binding("acme.plugin.container")
+    )(_container_invocation(inputs, step_revision_id="acme.plugin.container"))
+
+    assert direct_result.error is not None
+    assert direct_result.error.code == FailureCode.INVALID_INPUT.value
+    assert container_result.error_code == FailureCode.INVALID_INPUT.value
+    assert direct_step.run_calls == 0
+    assert container_step.run_calls == 0
+
+
+@pytest.mark.parametrize(
+    "step_factory",
+    [ControlExampleStep, TriggerExampleStep],
+    ids=["control", "trigger"],
+)
+def test_control_and_trigger_executor_propagates_the_complete_context(
     step_factory: type[ControlExampleStep | TriggerExampleStep],
 ) -> None:
     step = step_factory()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.example", step), step)
+    identity = "acme.plugin.control" if isinstance(step, ControlExampleStep) else "acme.plugin.trigger"
+    _bind_installed(bindings, identity, step)
     cancellation = Event()
     cancellation.set()
     runtime_context = {"environment": "test", "requestId": "request-1"}
@@ -677,7 +777,7 @@ def test_non_action_executor_propagates_the_complete_context(
         cancellation=cancellation,
     )
 
-    wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
+    wrapper = StepExecutor(bindings.binding(identity)).execute(
         {"message": "hello"}, context
     )
 
@@ -690,19 +790,24 @@ def test_non_action_executor_propagates_the_complete_context(
 @pytest.mark.parametrize(
     ("inputs", "error_type"),
     [
-        ({"message": 7}, "string_type"),
-        ({"message": "hello", "mode": "other"}, "literal_error"),
-        ({"message": "hello", "unexpected": "value"}, "extra_forbidden"),
+        ({"message": 7}, "type"),
+        ({"message": "hello", "mode": "other"}, "enum"),
+        ({"message": "hello", "unexpected": "value"}, "additionalProperties"),
         ({"message": "hello", "count": 0, "mode": "slow"}, "value_error"),
     ],
     ids=["native-type", "enum", "extra", "model"],
 )
-def test_non_action_uses_registered_pydantic_model_failures(
+def test_control_execution_uses_registered_pydantic_model_failures(
     inputs: dict[str, object], error_type: str
 ) -> None:
     step = ConfiguredControlStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.configured", step), step)
+    _bind_installed(
+        bindings,
+        "acme.plugin.configured",
+        step,
+        input_schema=ConfiguredControlInput.model_json_schema(),
+    )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.configured")).execute(
         inputs, _context()
@@ -715,13 +820,18 @@ def test_non_action_uses_registered_pydantic_model_failures(
     assert step.run_calls == 0
 
 
-def test_non_action_uses_its_pydantic_model_configuration() -> None:
+def test_control_execution_preserves_its_pydantic_model_configuration() -> None:
     step = ConfiguredControlStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.configured", step), step)
+    _bind_installed(
+        bindings,
+        "acme.plugin.configured",
+        step,
+        input_schema=ConfiguredControlInput.model_json_schema(),
+    )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.configured")).execute(
-        {"message": "hello", "count": "3"}, _context()
+        {"message": "hello", "count": 3}, _context()
     )
 
     assert wrapper.status == 0
@@ -737,7 +847,19 @@ def test_non_action_uses_its_pydantic_model_configuration() -> None:
 def test_trigger_executor_uses_its_registered_model_not_manifest_configuration() -> None:
     step = TriggerExampleStep()
     bindings = StepBindings()
-    descriptor = StepDescriptor.for_step("acme.plugin.trigger", step)
+    descriptor = StepDescriptor.for_installed_step(
+        step,
+        _installed_step(
+            _input_schema(),
+            step_class=type(step),
+            step_identity="acme.plugin.trigger",
+            configuration_schema={
+                "type": "object",
+                "required": ["event_type"],
+                "properties": {"event_type": {"const": "issue.opened"}},
+            },
+        ),
+    )
     bindings.bind(descriptor, step)
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.trigger")).execute(
@@ -763,18 +885,35 @@ def test_trigger_executor_uses_its_registered_model_not_manifest_configuration()
     assert step.run_calls == 1
 
 
-def test_non_action_output_validation_uses_generic_step_wording() -> None:
-    step = InvalidOutputControlStep()
-    bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.control", step), step)
-    binding = bindings.binding("acme.plugin.control")
-    executor = StepExecutor(binding)
-    context = _context()
+@pytest.mark.parametrize(
+    ("step_factory", "identity"),
+    [
+        (InvalidOutputControlStep, "acme.plugin.control"),
+        (InvalidOutputTriggerStep, "acme.plugin.trigger"),
+    ],
+    ids=["control", "trigger"],
+)
+def test_control_and_trigger_output_validation_is_shared_by_direct_and_container_execution(
+    step_factory: type[InvalidOutputControlStep | InvalidOutputTriggerStep], identity: str
+) -> None:
+    direct_step = step_factory()
+    direct_bindings = StepBindings()
+    _bind_installed(direct_bindings, identity, direct_step)
 
-    with pytest.raises(StepExecutionError, match="plugin step") as raised:
-        executor.execute({"message": "hello"}, context)
+    with pytest.raises(StepExecutionError, match="plugin step") as direct_error:
+        StepExecutor(direct_bindings.binding(identity)).execute({"message": "hello"}, _context())
 
-    assert "action" not in str(raised.value).lower()
+    container_step = step_factory()
+    container_bindings = StepBindings()
+    _bind_installed(container_bindings, identity, container_step)
+    with pytest.raises(ContainerInvocationError, match="invalid response"):
+        container_step_for_binding(container_bindings.binding(identity))(
+            _container_invocation({"message": "hello"}, step_revision_id=identity)
+        )
+
+    assert "action" not in str(direct_error.value).lower()
+    assert direct_step.run_calls == 1
+    assert container_step.run_calls == 1
 
 
 def test_supported_control_adapter_preserves_success_payload_and_digest() -> None:
@@ -782,13 +921,9 @@ def test_supported_control_adapter_preserves_success_payload_and_digest() -> Non
     container_step = ControlExampleStep()
     direct_bindings = StepBindings()
     container_bindings = StepBindings()
-    direct_bindings.bind(
-        StepDescriptor.for_step("acme.plugin.control", direct_step), direct_step
-    )
-    container_bindings.bind(
-        StepDescriptor.for_step("acme.plugin.control", container_step), container_step
-    )
-    inputs = {"message": "hello", "count": "3"}
+    _bind_installed(direct_bindings, "acme.plugin.control", direct_step)
+    _bind_installed(container_bindings, "acme.plugin.control", container_step)
+    inputs = {"message": "hello", "count": 3}
 
     direct_wrapper = StepExecutor(direct_bindings.binding("acme.plugin.control")).execute(
         inputs, _context()
@@ -814,13 +949,9 @@ def test_supported_trigger_adapter_preserves_success_payload_and_digest() -> Non
     container_step = TriggerExampleStep()
     direct_bindings = StepBindings()
     container_bindings = StepBindings()
-    direct_bindings.bind(
-        StepDescriptor.for_step("acme.plugin.trigger", direct_step), direct_step
-    )
-    container_bindings.bind(
-        StepDescriptor.for_step("acme.plugin.trigger", container_step), container_step
-    )
-    inputs = {"message": "hello", "count": "3"}
+    _bind_installed(direct_bindings, "acme.plugin.trigger", direct_step)
+    _bind_installed(container_bindings, "acme.plugin.trigger", container_step)
+    inputs = {"message": "hello", "count": 3}
 
     direct_wrapper = StepExecutor(direct_bindings.binding("acme.plugin.trigger")).execute(
         inputs, _context()
@@ -841,7 +972,7 @@ def test_supported_trigger_adapter_preserves_success_payload_and_digest() -> Non
 def test_supported_control_adapter_maps_the_invalid_input_wrapper_to_the_envelope() -> None:
     step = ControlExampleStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.control", step), step)
+    _bind_installed(bindings, "acme.plugin.control", step)
 
     result = container_step_for_binding(bindings.binding("acme.plugin.control"))(
         _container_invocation({"message": 42}, step_revision_id="acme.plugin.control")
@@ -859,7 +990,7 @@ def test_supported_control_adapter_maps_the_invalid_input_wrapper_to_the_envelop
 def test_supported_trigger_adapter_maps_invalid_input_to_the_envelope() -> None:
     step = TriggerExampleStep()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.trigger", step), step)
+    _bind_installed(bindings, "acme.plugin.trigger", step)
 
     result = container_step_for_binding(bindings.binding("acme.plugin.trigger"))(
         _container_invocation({"message": 42}, step_revision_id="acme.plugin.trigger")
@@ -874,17 +1005,27 @@ def test_supported_trigger_adapter_maps_invalid_input_to_the_envelope() -> None:
     assert step.run_calls == 0
 
 
-def test_supported_control_adapter_propagates_the_complete_context() -> None:
-    step = ControlExampleStep()
+@pytest.mark.parametrize(
+    ("step_factory", "identity"),
+    [
+        (ControlExampleStep, "acme.plugin.control"),
+        (TriggerExampleStep, "acme.plugin.trigger"),
+    ],
+    ids=["control", "trigger"],
+)
+def test_supported_non_action_adapter_propagates_the_complete_context(
+    step_factory: type[ControlExampleStep | TriggerExampleStep], identity: str
+) -> None:
+    step = step_factory()
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("acme.plugin.control", step), step)
+    _bind_installed(bindings, identity, step)
     cancellation = Event()
     cancellation.set()
     runtime_context = {"environment": "test", "requestId": "request-1"}
     invocation = ContainerInvocation(
         invocation_id="invoke-1",
         workflow_run_id="run-1",
-        step_revision_id="acme.plugin.control",
+        step_revision_id=identity,
         inputs={"message": "hello"},
         credential_file_paths={},
         timeout_seconds=30,
@@ -892,9 +1033,7 @@ def test_supported_control_adapter_propagates_the_complete_context() -> None:
         cancellation=cancellation,
     )
 
-    result = container_step_for_binding(bindings.binding("acme.plugin.control"))(
-        invocation
-    )
+    result = container_step_for_binding(bindings.binding(identity))(invocation)
 
     assert result.output is not None
     assert step.last_context is not None
@@ -963,7 +1102,7 @@ def test_importing_the_runtime_does_not_require_grpc() -> None:
             "ErrorMessage",
             "StepBindings",
             "StepDescriptor",
-            "InstalledActionManifest",
+            "InstalledStepManifest",
         ):
             assert getattr(runtime, name) is not None, name
         assert "grpc" not in [m for m in sys.modules if sys.modules[m] is not None]

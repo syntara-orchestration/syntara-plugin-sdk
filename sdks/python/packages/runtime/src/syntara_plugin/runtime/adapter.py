@@ -10,7 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, canonical_json_digest
 
 from .bindings import (
-    InstalledActionManifest,
+    InstalledStepManifest,
     StepBinding,
     StepBindingError,
     StepBindings,
@@ -177,8 +177,7 @@ def container_step_for_binding(
     """Wrap one typed step as a container handler.
 
     The handler validates the invocation's raw JSON inputs against the installed
-    Action manifest schema for Actions or the implementation-derived schema for
-    other categories, constructs the registered Pydantic model, executes the
+    manifest schema for a custom-runner Step, constructs the registered Pydantic model, executes the
     step through the shared executor, and converts the typed output into a
     ``ContainerResult``. The wrapper's business result and status fields map
     onto the terminal ``Result`` envelope, and the output schema digest is the
@@ -224,15 +223,15 @@ def container_step_for_binding(
     return handler
 
 
-def container_action_for_step(
+def container_step_for_installed_manifest(
     step: BaseStep[Any, Any],
     *,
-    installed_action: InstalledActionManifest,
+    installed_step: InstalledStepManifest,
     object_store: ResultObjectStore | None = None,
 ) -> ContainerStepHandler:
-    """Wrap one Action step with its trusted installed identity and schema."""
+    """Wrap one custom-runner Step with its trusted installed identity and schema."""
 
-    descriptor = StepDescriptor.for_installed_action(step, installed_action)
+    descriptor = StepDescriptor.for_installed_step(step, installed_step)
     return container_step_for_binding(StepBinding(descriptor, step), object_store=object_store)
 
 

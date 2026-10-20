@@ -6,6 +6,11 @@
     "fieldIdentifier": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"},
     "qualifiedIdentifier": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}(?:\\.[a-z][a-z0-9-]{0,62})+$"},
     "sha256Digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "digestImageReference": {
+      "type": "string",
+      "maxLength": 327,
+      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*(?::[1-9][0-9]{0,4})?/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*@sha256:[a-f0-9]{64}$(?![\\s\\S])"
+    },
     "rfc3339Timestamp": {"type": "string", "format": "date-time"},
     "repository": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"},
     "opaqueReference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},

@@ -18,12 +18,11 @@ from jsonschema import Draft202012Validator, SchemaError
 from syntara_plugin.contracts import (
     ContractBundle,
     load_bundle,
+    schema_digests,
     validate_document,
 )
 from yaml.constructor import ConstructorError
 from yaml.tokens import AliasToken, AnchorToken
-
-from .descriptor_schemas import schema_digests
 
 DEFAULT_CONTAINER_ABI = "syntara.container/v1alpha1"
 DEFAULT_PROVIDER_ABI = "syntara.provider/v1alpha1"
@@ -148,6 +147,7 @@ class CompilationResult:
     descriptor: Mapping[str, Any]
     assets: Mapping[str, CompiledAsset]
     diagnostics: tuple[Diagnostic, ...] = ()
+    deferred_image_bindings: tuple[str, ...] = ()
 
     @property
     def digest(self) -> str:
@@ -312,6 +312,13 @@ def _compile(
     return CompilationResult(
         descriptor=cast(Mapping[str, Any], _ordered(descriptor)),
         assets={key: assets[key] for key in sorted(assets)},
+        deferred_image_bindings=tuple(
+            sorted(
+                identifier
+                for identifier in _required_image_bindings(plugin.document, canonical_targets)
+                if identifier not in image_bindings
+            )
+        ),
     )
 
 
@@ -837,15 +844,19 @@ def _canonical_workloads(
     workload = plugin.get("spec", {}).get("workload")
     if isinstance(workload, Mapping):
         identifier = str(workload.get("image"))
-        result[identifier] = {"image": bindings.get(identifier), "abi": DEFAULT_CONTAINER_ABI}
+        image = bindings.get(identifier)
+        if image is not None:
+            result[identifier] = {"image": image, "abi": DEFAULT_CONTAINER_ABI}
     for provider in plugin.get("spec", {}).get("providers", []):
         if isinstance(provider, Mapping):
             identifier = str(provider["image"])
-            result[identifier] = {
-                "image": bindings.get(identifier),
-                "abi": DEFAULT_PROVIDER_ABI,
-                "provider": str(provider["id"]),
-            }
+            image = bindings.get(identifier)
+            if image is not None:
+                result[identifier] = {
+                    "image": image,
+                    "abi": DEFAULT_PROVIDER_ABI,
+                    "provider": str(provider["id"]),
+                }
     return {key: result[key] for key in sorted(result)}
 
 
@@ -857,27 +868,22 @@ def _validate_bindings(
     *,
     require_image_bindings: bool,
 ) -> None:
-    required: set[str] = set()
-    if any(
+    has_custom_runner = any(
         isinstance(target.get("runtime"), Mapping)
         and target["runtime"].get("kind") == "custom-runner"
         for target in targets
-    ):
-        workload = plugin.get("spec", {}).get("workload")
-        if not isinstance(workload, Mapping):
-            diagnostics.append(
-                _diagnostic(
-                    "WORKLOAD_MISSING",
-                    "A custom-runner step requires one root workload binding.",
-                    PLUGIN_MANIFEST_FILENAME,
-                    "Add spec.workload.image to the root manifest.",
-                )
+    )
+    workload = plugin.get("spec", {}).get("workload")
+    if has_custom_runner and not isinstance(workload, Mapping):
+        diagnostics.append(
+            _diagnostic(
+                "WORKLOAD_MISSING",
+                "A custom-runner step requires one root workload binding.",
+                PLUGIN_MANIFEST_FILENAME,
+                "Add spec.workload.image to the root manifest.",
             )
-        else:
-            required.add(str(workload.get("image")))
-    for provider in plugin.get("spec", {}).get("providers", []):
-        if isinstance(provider, Mapping):
-            required.add(str(provider.get("image")))
+        )
+    required = _required_image_bindings(plugin, targets)
     for identifier in sorted(required):
         image = bindings.get(identifier)
         if image is None and require_image_bindings:
@@ -898,6 +904,26 @@ def _validate_bindings(
                     "Resolve the image to an immutable sha256 digest before compilation.",
                 )
             )
+
+
+def _required_image_bindings(
+    plugin: Mapping[str, Any], targets: Sequence[Mapping[str, Any]]
+) -> set[str]:
+    """Return logical workload identifiers required by custom-runner targets."""
+
+    required: set[str] = set()
+    if any(
+        isinstance(target.get("runtime"), Mapping)
+        and target["runtime"].get("kind") == "custom-runner"
+        for target in targets
+    ):
+        workload = plugin.get("spec", {}).get("workload")
+        if isinstance(workload, Mapping):
+            required.add(str(workload.get("image")))
+    for provider in plugin.get("spec", {}).get("providers", []):
+        if isinstance(provider, Mapping):
+            required.add(str(provider.get("image")))
+    return required
 
 
 def _validate_connection_contracts(

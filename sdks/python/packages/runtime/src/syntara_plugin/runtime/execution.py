@@ -51,10 +51,10 @@ class StepExecutor:
 
         try:
             validated_inputs = validate_step_inputs(
-                self._binding.descriptor.kind,
                 inputs,
                 self._binding.descriptor.input_schema,
                 self._binding.step.input_model(),
+                self._binding.descriptor.input_schema_source,
             )
         except StepInputValidationError as error:
             return StandardOutputWrapper.failure(
