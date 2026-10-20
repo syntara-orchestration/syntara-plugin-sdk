@@ -256,7 +256,7 @@ completes successfully.
 
 The current container adapter mapping is provisional: it maps that same wrapper
 onto the terminal `Result` envelope pending the canonical wrapper and terminal-
-failure normalization tracked by AAP-95402. The business output and the four
+failure normalization tracked by a separate ticket. The business output and the four
 wrapper status/error fields currently travel as sibling protobuf fields
 (`status_code`, `status_message`, `error_code`, `error_message`, `retryable`).
 A completed step with a nonzero `status_code` remains a valid terminal `Result`
@@ -268,7 +268,7 @@ representations are not the final canonical wrapper contract. Actions are the
 only category that currently requires manifest-sourced input schemas; Control
 and Trigger bindings retain their implementation-derived schemas.
 
-The eventual AAP-95402 mapping is expected to carry the canonical
+The eventual mapping is expected to carry the canonical
 `StandardOutputWrapper` shape directly. Until that work lands, the flattened
 mapping above remains the compatibility behavior for this SDK revision.
 
