@@ -1,9 +1,4 @@
-.PHONY: install test test-examples lint check generate-container-protocol runtime-image runtime-image-archive
-
-CONTAINER_ENGINE ?= podman
-RUNTIME_IMAGE ?= syntara-plugin-runtime
-RUNTIME_IMAGE_TAG ?= dev
-RUNTIME_IMAGE_PLATFORM ?= linux/amd64
+.PHONY: install test test-examples test-integration lint check generate-container-protocol
 
 install:
 	uv sync --locked --all-groups
@@ -13,6 +8,9 @@ test:
 
 test-examples:
 	uv run --no-sync pytest examples -q
+
+test-integration:
+	SYNTARA_RUNTIME_IMAGE_TESTS=1 uv run --no-sync pytest -m integration -q
 
 lint:
 	uv run --no-sync pre-commit run ruff --all-files
@@ -26,18 +24,3 @@ generate-container-protocol:
 		--python_out=sdks/python/packages/contracts/src \
 		--grpc_python_out=sdks/python/packages/contracts/src \
 		contracts/proto/syntara_plugin/runtime/protocol/container.proto
-
-runtime-image:
-	$(CONTAINER_ENGINE) build \
-		--format oci \
-		--platform $(RUNTIME_IMAGE_PLATFORM) \
-		--file containers/runtime/Containerfile \
-		--tag $(RUNTIME_IMAGE):$(RUNTIME_IMAGE_TAG) \
-		.
-
-runtime-image-archive:
-	$(MAKE) runtime-image
-	@mkdir -p dist
-	$(CONTAINER_ENGINE) save \
-		--output dist/$(RUNTIME_IMAGE)-$(RUNTIME_IMAGE_PLATFORM).tar \
-		$(RUNTIME_IMAGE):$(RUNTIME_IMAGE_TAG)

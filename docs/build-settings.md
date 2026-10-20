@@ -81,6 +81,10 @@ catalog:
 | `platform` | Explicit target platform, such as `linux/amd64` or `linux/arm64`. |
 | `imageId` | Logical workload image ID declared by `plugin.yaml`. |
 
+`build.workload` builds the plugin's one runner image and binds its immutable
+reference while compiling the final plugin artifact. A plugin cannot declare
+multiple workload images.
+
 ## `publish` and `catalog`
 
 | Key | Meaning |

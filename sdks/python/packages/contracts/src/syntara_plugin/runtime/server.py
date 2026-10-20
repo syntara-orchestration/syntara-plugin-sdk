@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import os
 import signal
 from collections.abc import AsyncIterator, Mapping
@@ -26,7 +27,7 @@ from .container import (
 )
 from .protocol import container_pb2, container_pb2_grpc
 
-_BINDINGS_FACTORY = "SYNTARA_RUNTIME_BINDINGS_FACTORY"
+_RUNTIME_CONFIG = "SYNTARA_RUNTIME_CONFIG"
 _GRPC_ADDRESS = "SYNTARA_RUNTIME_GRPC_ADDRESS"
 _TLS_CERTIFICATE = "SYNTARA_RUNTIME_GRPC_TLS_CERT"
 _TLS_KEY = "SYNTARA_RUNTIME_GRPC_TLS_KEY"
@@ -36,11 +37,11 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class RuntimeServerError(RuntimeError):
-    """Raised when the runtime image cannot start its gRPC server."""
+    """Raised when the runtime adapter cannot start its gRPC server."""
 
 
 class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
-    """Async gRPC implementation used by the SDK runtime base image."""
+    """Async gRPC implementation used by the Python runtime adapter."""
 
     def __init__(self, steps: StepRegistry) -> None:
         self._steps = steps
@@ -124,13 +125,44 @@ class RuntimeServerConfig:
 
 def load_runtime_server_config(
     environ: Mapping[str, str] = os.environ,
+    *,
+    config_path: Path | None = None,
 ) -> RuntimeServerConfig:
-    """Read and validate the runtime image's environment contract."""
+    """Read the language-neutral runtime config and this adapter's settings."""
 
-    bindings_factory = environ.get(_BINDINGS_FACTORY, "").strip()
-    if not bindings_factory:
-        message = f"{_BINDINGS_FACTORY} must name a module:factory function"
+    selected_path = config_path
+    if selected_path is None:
+        raw_path = environ.get(_RUNTIME_CONFIG, "").strip()
+        if not raw_path:
+            message = f"{_RUNTIME_CONFIG} must name a runtime config JSON file"
+            raise RuntimeServerError(message)
+        selected_path = Path(raw_path)
+    try:
+        document = json.loads(selected_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        message = f"could not read a valid runtime config: {selected_path}"
+        raise RuntimeServerError(message) from error
+    if not isinstance(document, Mapping):
+        message = "runtime config must be a JSON object"
         raise RuntimeServerError(message)
+    if set(document) != {"abi", "language", "adapter"}:
+        message = "runtime config requires exactly abi, language, and adapter"
+        raise RuntimeServerError(message)
+    if document["abi"] != CONTAINER_ABI:
+        message = f"runtime config ABI must be {CONTAINER_ABI}"
+        raise RuntimeServerError(message)
+    if document["language"] != "python":
+        message = "this runtime adapter supports language=python only"
+        raise RuntimeServerError(message)
+    adapter = document["adapter"]
+    if not isinstance(adapter, Mapping) or set(adapter) != {"bindingsFactory"}:
+        message = "the Python runtime adapter requires exactly bindingsFactory"
+        raise RuntimeServerError(message)
+    bindings_factory = adapter["bindingsFactory"]
+    if not isinstance(bindings_factory, str) or not bindings_factory.strip():
+        message = "adapter bindingsFactory must name a module:factory function"
+        raise RuntimeServerError(message)
+    bindings_factory = bindings_factory.strip()
     address = environ.get(_GRPC_ADDRESS, _DEFAULT_ADDRESS).strip()
     host, port = _split_address(address)
     if not host or not port.isdigit() or not 1 <= int(port) <= 65_535:
@@ -212,7 +244,7 @@ async def serve_runtime(config: RuntimeServerConfig) -> None:
 
 
 def main() -> None:
-    """Console entrypoint used by the SDK runtime base image."""
+    """Console entrypoint used by a final Python workload image."""
 
     asyncio.run(serve_runtime(load_runtime_server_config()))
 

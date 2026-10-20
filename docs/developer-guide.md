@@ -8,6 +8,8 @@ with the [getting-started guide](getting-started.md) instead.
 - Python 3.12 or newer
 - [uv](https://docs.astral.sh/uv/)
 - Podman only when exercising a custom-runner image build
+- Podman, OpenSSL, registry network access, and PyPI access only for the
+  opt-in runtime-image integration test
 
 From the repository root, create the development environment and run the test
 suite:
@@ -27,12 +29,17 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
   --settings examples/hello-world/syntara-plugin.yaml
 ```
 
-Build the shared runtime base image when changing the server bootstrap or image
-contract:
+Run the opt-in runtime-image integration test when changing the container
+bootstrap or image contract:
 
 ```sh
-make runtime-image
+make test-integration
 ```
+
+The test builds a temporary image from the pinned UBI Python base, installs the
+SDK runtime and a sample step from local wheels, starts the server with mutual
+TLS, and invokes the sample step over gRPC. It does not require the backend,
+Kubernetes, or the Execution Plane.
 
 ## Repository map
 
@@ -41,7 +48,6 @@ make runtime-image
 | [`contracts/schemas/v1alpha1`](../contracts/schemas/v1alpha1) | Normative plugin, catalog, and runtime JSON Schemas. |
 | [`contracts/proto`](../contracts/proto) | Versioned container/runtime protobuf ABI. |
 | [`contracts/fixtures`](../contracts/fixtures) | Cross-language conformance fixtures. |
-| [`containers/runtime`](../containers/runtime) | Reusable OCI base image for derived step containers. |
 | [`sdks/python/packages/sdk`](../sdks/python/packages/sdk) | Authoring compiler, CLI, packaging, registry, catalog, settings behavior, and the local testing harness (`syntara_plugin.testing`). |
 | [`sdks/python/packages/contracts`](../sdks/python/packages/contracts) | Shared contracts distribution used by the SDK and Execution Plane. |
 | [`sdks/python/tests`](../sdks/python/tests) | Unit and CLI contract tests. |

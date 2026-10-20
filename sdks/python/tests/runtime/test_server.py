@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
+import json
 import socket
 import subprocess
 import threading
@@ -81,6 +81,25 @@ def create_cancellation_bindings() -> StepBindings:
     bindings = StepBindings()
     bindings.bind(StepDescriptor.for_step("smoke.cancellation.v1", step), step)
     return bindings
+
+
+def write_runtime_config(
+    tmp_path: Path,
+    *,
+    abi: str = "syntara.container/v1alpha1",
+    language: str = "python",
+    adapter: object | None = None,
+) -> Path:
+    document = {
+        "abi": abi,
+        "language": language,
+        "adapter": adapter
+        if adapter is not None
+        else {"bindingsFactory": "example:create"},
+    }
+    path = tmp_path / "runtime.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
 
 
 def not_bindings() -> object:
@@ -340,10 +359,13 @@ def test_runtime_server_serves_health_and_steps_over_mutual_tls(
     asyncio.run(scenario())
 
 
-def test_runtime_server_configuration_accepts_an_uppercase_loopback_host() -> None:
+def test_runtime_server_configuration_accepts_an_uppercase_loopback_host(
+    tmp_path: Path,
+) -> None:
+    config_path = write_runtime_config(tmp_path)
     config = load_runtime_server_config(
         {
-            "SYNTARA_RUNTIME_BINDINGS_FACTORY": "example:create",
+            "SYNTARA_RUNTIME_CONFIG": str(config_path),
             "SYNTARA_RUNTIME_GRPC_ADDRESS": "LOCALHOST:50051",
         }
     )
@@ -354,49 +376,76 @@ def test_runtime_server_configuration_accepts_an_uppercase_loopback_host() -> No
 @pytest.mark.parametrize("address", ["::1", "grpc://localhost:50051"])
 def test_runtime_server_configuration_rejects_non_host_port_addresses(
     address: str,
+    tmp_path: Path,
 ) -> None:
+    config_path = write_runtime_config(tmp_path)
     with pytest.raises(RuntimeServerError, match="host:port"):
         load_runtime_server_config(
             {
-                "SYNTARA_RUNTIME_BINDINGS_FACTORY": "example:create",
+                "SYNTARA_RUNTIME_CONFIG": str(config_path),
                 "SYNTARA_RUNTIME_GRPC_ADDRESS": address,
             }
         )
 
 
-def test_runtime_server_configuration_requires_a_bindings_factory() -> None:
-    with pytest.raises(RuntimeServerError, match="BINDINGS_FACTORY"):
+def test_runtime_server_configuration_requires_a_config_path() -> None:
+    with pytest.raises(RuntimeServerError, match="RUNTIME_CONFIG"):
         load_runtime_server_config({})
 
 
-def test_runtime_server_configuration_rejects_an_invalid_address() -> None:
+def test_runtime_server_configuration_rejects_an_invalid_address(
+    tmp_path: Path,
+) -> None:
+    config_path = write_runtime_config(tmp_path)
     with pytest.raises(RuntimeServerError, match="host:port"):
         load_runtime_server_config(
             {
-                "SYNTARA_RUNTIME_BINDINGS_FACTORY": "example:create",
+                "SYNTARA_RUNTIME_CONFIG": str(config_path),
                 "SYNTARA_RUNTIME_GRPC_ADDRESS": "localhost:not-a-port",
             }
         )
 
 
-def test_non_loopback_runtime_listener_requires_mutual_tls() -> None:
+def test_non_loopback_runtime_listener_requires_mutual_tls(tmp_path: Path) -> None:
+    config_path = write_runtime_config(tmp_path)
     with pytest.raises(RuntimeServerError, match="mutual TLS"):
         load_runtime_server_config(
             {
-                "SYNTARA_RUNTIME_BINDINGS_FACTORY": "example:create",
+                "SYNTARA_RUNTIME_CONFIG": str(config_path),
                 "SYNTARA_RUNTIME_GRPC_ADDRESS": "0.0.0.0:50051",
             }
         )
 
 
-def test_runtime_tls_material_must_be_complete() -> None:
+def test_runtime_tls_material_must_be_complete(tmp_path: Path) -> None:
+    config_path = write_runtime_config(tmp_path)
     with pytest.raises(RuntimeServerError, match="certificate, key, and client CA"):
         load_runtime_server_config(
             {
-                "SYNTARA_RUNTIME_BINDINGS_FACTORY": "example:create",
+                "SYNTARA_RUNTIME_CONFIG": str(config_path),
                 "SYNTARA_RUNTIME_GRPC_TLS_CERT": "/tmp/tls.crt",
             }
         )
+
+
+def test_runtime_config_rejects_the_wrong_abi(tmp_path: Path) -> None:
+    config_path = write_runtime_config(tmp_path, abi="syntara.container/v0")
+    with pytest.raises(RuntimeServerError, match="ABI"):
+        load_runtime_server_config(config_path=config_path)
+
+
+def test_runtime_config_rejects_a_language_not_supported_by_this_adapter(
+    tmp_path: Path,
+) -> None:
+    config_path = write_runtime_config(tmp_path, language="node")
+    with pytest.raises(RuntimeServerError, match="language=python"):
+        load_runtime_server_config(config_path=config_path)
+
+
+def test_runtime_config_rejects_an_invalid_python_adapter(tmp_path: Path) -> None:
+    config_path = write_runtime_config(tmp_path, adapter={"factory": "example:create"})
+    with pytest.raises(RuntimeServerError, match="bindingsFactory"):
+        load_runtime_server_config(config_path=config_path)
 
 
 def test_runtime_bindings_factory_must_use_module_syntax() -> None:
@@ -412,59 +461,3 @@ def test_runtime_bindings_factory_must_return_step_bindings() -> None:
 def test_runtime_bindings_factory_must_register_a_step() -> None:
     with pytest.raises(RuntimeServerError, match="at least one step"):
         load_runtime_bindings(f"{__name__}:empty_bindings")
-
-
-def test_runtime_image_contract_stays_minimal_and_runs_the_server_entrypoint() -> None:
-    repository_root = Path(__file__).resolve().parents[4]
-    containerfile = (repository_root / "containers/runtime/Containerfile").read_text(
-        encoding="utf-8"
-    )
-    ignored = (repository_root / ".containerignore").read_text(encoding="utf-8")
-    makefile = (repository_root / "Makefile").read_text(encoding="utf-8")
-
-    assert "uv sync" in containerfile
-    assert containerfile.count("uv sync") == 1
-    assert "--locked" in containerfile
-    assert "--no-dev" in containerfile
-    assert "--no-editable" in containerfile
-    assert containerfile.count("ARG PIP_FIND_LINKS") == 2
-    assert containerfile.count("--no-build-package") == 12
-    assert containerfile.count('"$@"') == 2
-    assert re.search(r"--no-build(?:\s|$)", containerfile) is None
-    for package in (
-        "annotated-types",
-        "attrs",
-        "grpcio",
-        "jsonschema",
-        "jsonschema-specifications",
-        "protobuf",
-        "pydantic",
-        "pydantic-core",
-        "referencing",
-        "rpds-py",
-        "typing-extensions",
-        "typing-inspection",
-    ):
-        assert f"--no-build-package {package}" in containerfile
-    assert "--package syntara-plugin-runtime" in containerfile
-    assert (
-        "command -v uv >/dev/null 2>&1 || "
-        "pip install --no-cache-dir --only-binary :all: uv==0.12.3"
-    ) in containerfile
-    assert "ARG BUILDER_IMAGE=" in containerfile
-    assert "ARG RUNTIME_BASE_IMAGE=" in containerfile
-    assert "FROM ${BUILDER_IMAGE} AS builder" in containerfile
-    assert "FROM ${RUNTIME_BASE_IMAGE}" in containerfile
-    assert "COPY sdks/python/packages ./sdks/python/packages" in containerfile
-    assert "--offline --no-index --find-links" in containerfile
-    assert "/opt/syntara/.venv/bin/pip --version" in containerfile
-    assert "USER 1001" in containerfile
-    assert "https://github.com/syntara-orchestration/syntara-plugin-sdk" in containerfile
-    assert (
-        'ENTRYPOINT ["/opt/syntara/.venv/bin/python", "-m", '
-        '"syntara_plugin.runtime.server"]' in containerfile
-    )
-    assert ignored.splitlines()[0] == "*"
-    assert "!contracts/**" in ignored
-    assert "!sdks/python/packages/**" in ignored
-    assert "@mkdir -p dist" in makefile

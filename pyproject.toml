@@ -29,6 +29,9 @@ members = ["sdks/python/packages/*"]
 [tool.pytest.ini_options]
 testpaths = ["sdks/python/tests"]
 addopts = "-ra --strict-markers"
+markers = [
+  "integration: tests requiring Podman, OpenSSL, and registry network access",
+]
 
 [tool.ruff]
 line-length = 100
