@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
+from typing import Any
 
 import grpc
 
@@ -130,58 +131,9 @@ def load_runtime_server_config(
 ) -> RuntimeServerConfig:
     """Read the language-neutral runtime config and this adapter's settings."""
 
-    selected_path = config_path
-    if selected_path is None:
-        raw_path = environ.get(_RUNTIME_CONFIG, "").strip()
-        if not raw_path:
-            message = f"{_RUNTIME_CONFIG} must name a runtime config JSON file"
-            raise RuntimeServerError(message)
-        selected_path = Path(raw_path)
-    try:
-        document = json.loads(selected_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        message = f"could not read a valid runtime config: {selected_path}"
-        raise RuntimeServerError(message) from error
-    if not isinstance(document, Mapping):
-        message = "runtime config must be a JSON object"
-        raise RuntimeServerError(message)
-    if set(document) != {"abi", "language", "adapter"}:
-        message = "runtime config requires exactly abi, language, and adapter"
-        raise RuntimeServerError(message)
-    if document["abi"] != CONTAINER_ABI:
-        message = f"runtime config ABI must be {CONTAINER_ABI}"
-        raise RuntimeServerError(message)
-    if document["language"] != "python":
-        message = "this runtime adapter supports language=python only"
-        raise RuntimeServerError(message)
-    adapter = document["adapter"]
-    if not isinstance(adapter, Mapping) or set(adapter) != {"bindingsFactory"}:
-        message = "the Python runtime adapter requires exactly bindingsFactory"
-        raise RuntimeServerError(message)
-    bindings_factory = adapter["bindingsFactory"]
-    if not isinstance(bindings_factory, str) or not bindings_factory.strip():
-        message = "adapter bindingsFactory must name a module:factory function"
-        raise RuntimeServerError(message)
-    bindings_factory = bindings_factory.strip()
-    address = environ.get(_GRPC_ADDRESS, _DEFAULT_ADDRESS).strip()
-    host, port = _split_address(address)
-    if not host or not port.isdigit() or not 1 <= int(port) <= 65_535:
-        message = f"{_GRPC_ADDRESS} must be a host:port TCP address"
-        raise RuntimeServerError(message)
-
-    certificate = _optional_path(environ.get(_TLS_CERTIFICATE))
-    key = _optional_path(environ.get(_TLS_KEY))
-    client_ca = _optional_path(environ.get(_TLS_CLIENT_CA))
-    supplied_tls = (certificate, key, client_ca)
-    if any(value is not None for value in supplied_tls) and not all(
-        value is not None for value in supplied_tls
-    ):
-        message = "runtime gRPC TLS requires certificate, key, and client CA paths"
-        raise RuntimeServerError(message)
-    normalized_host = host.removeprefix("[").removesuffix("]").casefold()
-    if normalized_host not in _LOOPBACK_HOSTS and certificate is None:
-        message = "non-loopback runtime gRPC listeners require mutual TLS"
-        raise RuntimeServerError(message)
+    document = _runtime_document(environ, config_path)
+    bindings_factory = _bindings_factory(document)
+    address, certificate, key, client_ca = _listener_settings(environ)
     return RuntimeServerConfig(bindings_factory, address, certificate, key, client_ca)
 
 
@@ -247,6 +199,74 @@ def main() -> None:
     """Console entrypoint used by a final Python workload image."""
 
     asyncio.run(serve_runtime(load_runtime_server_config()))
+
+
+def _runtime_document(
+    environ: Mapping[str, str],
+    config_path: Path | None,
+) -> Mapping[str, Any]:
+    path = config_path
+    if path is None:
+        raw_path = environ.get(_RUNTIME_CONFIG, "").strip()
+        if not raw_path:
+            message = f"{_RUNTIME_CONFIG} must name a runtime config JSON file"
+            raise RuntimeServerError(message)
+        path = Path(raw_path)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        message = f"could not read a valid runtime config: {path}"
+        raise RuntimeServerError(message) from error
+    if not isinstance(document, Mapping):
+        message = "runtime config must be a JSON object"
+        raise RuntimeServerError(message)
+    return document
+
+
+def _bindings_factory(document: Mapping[str, Any]) -> str:
+    if set(document) != {"abi", "language", "adapter"}:
+        message = "runtime config requires exactly abi, language, and adapter"
+        raise RuntimeServerError(message)
+    if document["abi"] != CONTAINER_ABI:
+        message = f"runtime config ABI must be {CONTAINER_ABI}"
+        raise RuntimeServerError(message)
+    if document["language"] != "python":
+        message = "this runtime adapter supports language=python only"
+        raise RuntimeServerError(message)
+    adapter = document["adapter"]
+    if not isinstance(adapter, Mapping) or set(adapter) != {"bindingsFactory"}:
+        message = "the Python runtime adapter requires exactly bindingsFactory"
+        raise RuntimeServerError(message)
+    bindings_factory = adapter["bindingsFactory"]
+    if not isinstance(bindings_factory, str) or not bindings_factory.strip():
+        message = "adapter bindingsFactory must name a module:factory function"
+        raise RuntimeServerError(message)
+    return bindings_factory.strip()
+
+
+def _listener_settings(
+    environ: Mapping[str, str],
+) -> tuple[str, Path | None, Path | None, Path | None]:
+    address = environ.get(_GRPC_ADDRESS, _DEFAULT_ADDRESS).strip()
+    host, port = _split_address(address)
+    if not host or not port.isdigit() or not 1 <= int(port) <= 65_535:
+        message = f"{_GRPC_ADDRESS} must be a host:port TCP address"
+        raise RuntimeServerError(message)
+
+    certificate = _optional_path(environ.get(_TLS_CERTIFICATE))
+    key = _optional_path(environ.get(_TLS_KEY))
+    client_ca = _optional_path(environ.get(_TLS_CLIENT_CA))
+    supplied_tls = (certificate, key, client_ca)
+    if any(value is not None for value in supplied_tls) and not all(
+        value is not None for value in supplied_tls
+    ):
+        message = "runtime gRPC TLS requires certificate, key, and client CA paths"
+        raise RuntimeServerError(message)
+    normalized_host = host.removeprefix("[").removesuffix("]").casefold()
+    if normalized_host not in _LOOPBACK_HOSTS and certificate is None:
+        message = "non-loopback runtime gRPC listeners require mutual TLS"
+        raise RuntimeServerError(message)
+    return address, certificate, key, client_ca
 
 
 def _split_address(address: str) -> tuple[str, str]:
