@@ -27,19 +27,18 @@ types cover domain integrations, API calls, scripts, and data manipulation;
 the capability's architectural role; it does not choose its execution owner.
 A **Runner** is either Syntara's `platform-runner` or an author-owned
 `custom-runner`. **Execution** is the invocation of the selected Step type
-through that runner or, for control and ingress Step types, through the
-platform control plane.
+through that runner.
 
 ```text
 Step type -> Category -> Runner -> Execution
 Launch AAP Job Template -> action -> platform-runner -> aap.v1 launches the selected job template
 HTTP Request -> action -> platform-runner -> http.v1 sends the configured request
 Create GitHub Issue -> action -> custom-runner -> the pinned runner invokes the typed implementation
-Launch production inventory sync -> control -> platform control plane -> invokes the selected workflow
-Pull request webhook -> trigger -> platform control plane -> webhook ingress delivers the event
+Launch production inventory sync -> control -> platform-runner (<driver>) -> invokes the selected workflow
+Pull request webhook -> trigger -> platform-runner (webhook.v1) -> webhook ingress delivers the event
 ```
 
-Use a Control Step type for orchestration behavior in the control plane, such
+Use a Control Step type for orchestration behavior, such
 as invoking a workflow or composing execution flow. A Control Step type is
 not a generic label for every catalog capability.
 `spec.invocation.kind: orchestration` identifies control-flow metadata; a
@@ -68,7 +67,7 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.runtime.kind` | Required execution owner: `platform-runner` or `custom-runner`. |
 | `spec.runtime.driver` | Required for `platform-runner`; names an approved versioned driver, such as `http.v1`. Forbidden for `custom-runner`. |
 | `spec.runtime.operation` | Required for `http.v1`; declares an inert HTTP method, relative path, and optional mappings. Forbidden for `custom-runner`. |
-| `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the Step implementation inside the digest-pinned runner image. It is an implementation identity, not a placement decision: Syntara policy may run it in the selected host execution path or delegate it to the Execution Plane. |
+| `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the Step implementation inside the digest-pinned runner image. |
 | `spec.domain` | Optional qualified domain identifier that groups an Action Step type independently of its runner. |
 | `spec.integrationType` | Optional qualified integration type required by the Action Step type. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |

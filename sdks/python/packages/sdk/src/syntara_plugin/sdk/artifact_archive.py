@@ -12,11 +12,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from syntara_plugin.contracts import (
-    is_digest_image_reference,
     load_bundle,
-    materialized_schemas,
-    schema_digests,
     validate_document,
+    validate_plugin_descriptor_semantics,
 )
 
 from .artifact import (
@@ -111,20 +109,22 @@ def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlo
         raise ArtifactArchiveError("plugin artifact config does not bind its plugin descriptor")
 
     descriptor_document = _json_mapping(descriptor.content, "plugin descriptor")
-    specification = descriptor_document.get("spec")
-    if isinstance(specification, Mapping):
-        workloads = specification.get("workloads")
-        if isinstance(workloads, Mapping):
-            _verify_workload_images(workloads)
-    contract_errors = validate_document(load_bundle(), "plugin_descriptor", descriptor_document)
+    contract_bundle = load_bundle()
+    semantic_errors = validate_plugin_descriptor_semantics(descriptor_document)
+    if semantic_errors:
+        raise ArtifactArchiveError(
+            "plugin descriptor semantic validation failed: " + "; ".join(semantic_errors)
+        )
+    contract_errors = validate_document(contract_bundle, "plugin_descriptor", descriptor_document)
     if contract_errors:
         raise ArtifactArchiveError("plugin descriptor does not satisfy the supported contract")
     metadata = descriptor_document.get("metadata")
+    specification = descriptor_document.get("spec")
     if not isinstance(metadata, Mapping) or not isinstance(specification, Mapping):
         raise ArtifactArchiveError("plugin descriptor must contain metadata and spec objects")
     if not all(isinstance(metadata.get(key), str) and metadata[key] for key in ("namespace", "name", "version")):
         raise ArtifactArchiveError("plugin descriptor metadata is incomplete")
-    if specification.get("contractBundleDigest") != load_bundle().digest:
+    if specification.get("contractBundleDigest") != contract_bundle.digest:
         raise ArtifactArchiveError("plugin descriptor was compiled against an unsupported contract bundle")
     asset_index = specification.get("assets")
     if not isinstance(asset_index, Mapping):
@@ -133,9 +133,6 @@ def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlo
     workloads = specification.get("workloads")
     if not isinstance(targets, list) or not targets or not isinstance(workloads, Mapping):
         raise ArtifactArchiveError("plugin descriptor does not satisfy the supported contract")
-    _verify_unique_target_identities(targets)
-    _verify_custom_runner_workloads(targets, workloads)
-    _verify_schema_digests(targets)
     if config_document.get("assetIndex") != asset_index:
         raise ArtifactArchiveError("plugin artifact config asset index does not match its descriptor")
     documentation = specification.get("documentation")
@@ -148,75 +145,6 @@ def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlo
     ):
         raise ArtifactArchiveError("plugin descriptor documentation does not match its asset inventory")
     _verify_content_bundle(bundle.content, asset_index)
-
-
-def _verify_workload_images(workloads: Mapping[str, Any]) -> None:
-    """Require every published workload to use an immutable image reference."""
-
-    for workload_id, workload in workloads.items():
-        image = workload.get("image") if isinstance(workload, Mapping) else None
-        if not is_digest_image_reference(image):
-            raise ArtifactArchiveError(
-                f"plugin descriptor workload {workload_id!r} image must be pinned to a sha256 digest"
-            )
-
-
-def _verify_custom_runner_workloads(
-    targets: list[object], workloads: Mapping[str, Any]
-) -> None:
-    """Require each custom-runner target to resolve a pinned container workload."""
-
-    for target in targets:
-        if not isinstance(target, Mapping):
-            continue
-        runtime = target.get("runtime")
-        if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
-            continue
-        workload_id = runtime.get("workload")
-        workload = workloads.get(workload_id) if isinstance(workload_id, str) else None
-        if not isinstance(workload, Mapping):
-            raise ArtifactArchiveError(
-                "plugin descriptor custom-runner target references a missing workload"
-            )
-        if workload.get("abi") != "syntara.container/v1alpha1":
-            raise ArtifactArchiveError(
-                "plugin descriptor custom-runner target workload has an invalid ABI"
-            )
-
-
-def _verify_schema_digests(targets: list[object]) -> None:
-    """Verify descriptor digests bind each compiled schema to its exact JSON value."""
-
-    for target in targets:
-        if not isinstance(target, Mapping):
-            raise ArtifactArchiveError("plugin descriptor target is invalid")
-        digests = target.get("schemaDigests")
-        if not isinstance(digests, Mapping):
-            raise ArtifactArchiveError("plugin descriptor target schema digests are invalid")
-        schemas = materialized_schemas(target)
-        if set(digests) != set(schemas):
-            raise ArtifactArchiveError(
-                "plugin descriptor schema digests do not match its materialized schemas"
-            )
-        expected_digests = schema_digests(target)
-        for field_name in schemas:
-            if digests.get(field_name) != expected_digests[field_name]:
-                raise ArtifactArchiveError(
-                    f"plugin descriptor {field_name} schema digest does not match its schema"
-                )
-
-
-def _verify_unique_target_identities(targets: list[object]) -> None:
-    """Reject descriptors whose targets collide across concrete Step types."""
-
-    identities: set[str] = set()
-    for target in targets:
-        if not isinstance(target, Mapping) or not isinstance(target.get("identity"), str):
-            raise ArtifactArchiveError("plugin descriptor target is invalid")
-        identity = target["identity"]
-        if identity in identities:
-            raise ArtifactArchiveError("plugin descriptor contains duplicate target identities")
-        identities.add(identity)
 
 
 def _verify_content_bundle(content: bytes, asset_index: Mapping[str, Any]) -> None:

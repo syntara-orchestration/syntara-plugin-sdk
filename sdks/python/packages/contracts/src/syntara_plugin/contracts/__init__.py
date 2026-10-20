@@ -15,7 +15,11 @@ from .canonical import (
     canonical_json_digest,
     container_workload_request_digest,
 )
-from .descriptor import materialized_schemas, schema_digests
+from .descriptor import (
+    materialized_schemas,
+    schema_digests,
+    validate_plugin_descriptor_semantics,
+)
 from .fixtures import FixtureBundle, fixture_content_digest, load_fixture_bundle
 from .image import is_digest_image_reference
 
@@ -34,6 +38,7 @@ __all__ = [
     "load_fixture_bundle",
     "materialized_schemas",
     "schema_digests",
+    "validate_plugin_descriptor_semantics",
     "is_digest_image_reference",
     "validate_catalog_index",
     "validate_document",

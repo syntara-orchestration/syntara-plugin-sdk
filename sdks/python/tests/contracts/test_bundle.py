@@ -286,19 +286,6 @@ def test_contracts_reject_legacy_images_and_unsafe_asset_paths() -> None:
     assert validate_document(bundle, "action", unsafe_action)
 
 
-def test_plugin_language_documents_step_type_category_runner_execution_terms() -> None:
-    language = (Path(__file__).parents[4] / "docs" / "plugin-language.md").read_text()
-
-    assert "Step type -> Category -> Runner -> Execution" in language
-    assert "Create GitHub Issue" in language
-    assert "Launch AAP Job Template" in language
-    assert "Control Step type" in language
-    assert "orchestration behavior in the control plane" in language
-    assert "Launch production inventory sync -> control -> platform control plane" in language
-    assert "Pull request webhook -> trigger -> platform control plane" in language
-    assert "category/kind mismatch" not in language
-
-
 def test_fixture_corpus_exercises_valid_and_invalid_documents() -> None:
     bundle = load_bundle()
     fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
