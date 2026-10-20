@@ -12,7 +12,7 @@ from .invocation import StepOutcome
 if TYPE_CHECKING:
     # Only the annotation needs pytest; the function core stays importable
     # without it, and any object with a ``text`` attribute works at runtime.
-    from pytest import LogCaptureFixture
+    import pytest
 
 
 class SecretLeakError(AssertionError):
@@ -87,7 +87,7 @@ def assert_no_secrets(
     value: StepOutcome | str,
     sentinels: Iterable[str],
     *,
-    caplog: LogCaptureFixture | None = None,
+    caplog: pytest.LogCaptureFixture | None = None,
 ) -> None:
     """Fail when any sentinel secret appears in an outcome or captured logs.
 
