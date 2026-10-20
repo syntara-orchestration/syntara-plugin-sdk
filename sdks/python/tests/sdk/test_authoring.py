@@ -240,6 +240,44 @@ def test_platform_runner_action_requires_and_preserves_its_versioned_driver() ->
     assert result.descriptor["spec"]["workloads"] == {}
 
 
+def test_platform_runner_trigger_requires_and_preserves_matching_driver() -> None:
+    plugin = _plugin("triggers/issue-opened.yaml")
+    plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
+        "targets": ["triggers/issue-opened.yaml"],
+    }
+    trigger = _trigger()
+
+    result = compile_model(
+        _typed_plugin(plugin),
+        [Target("triggers/issue-opened.yaml", trigger)],
+    )
+
+    compiled_trigger = result.descriptor["spec"]["targets"][0]
+    assert compiled_trigger["driver"] == "webhook.v1"
+    assert compiled_trigger["runtime"]["driver"] == "webhook.v1"
+
+
+def test_platform_runner_trigger_with_mismatched_drivers_is_rejected() -> None:
+    plugin = _plugin("triggers/issue-opened.yaml")
+    plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
+        "targets": ["triggers/issue-opened.yaml"],
+    }
+    trigger = _trigger()
+    specification = trigger["spec"]
+    assert isinstance(specification, dict)
+    specification["driver"] = "schedule.v1"
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(plugin),
+            [Target("triggers/issue-opened.yaml", trigger)],
+        )
+
+    assert "TRIGGER_DRIVER_MISMATCH" in {item.code for item in error.value.diagnostics}
+
+
 def test_compiler_emits_kind_and_deterministic_schema_digests_for_all_step_categories() -> None:
     plugin = _plugin()
     specification = plugin["spec"]

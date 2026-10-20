@@ -502,6 +502,20 @@ def _normalize_trigger(
     plugin: Mapping[str, Any],
     context: _NormalizationContext,
 ) -> None:
+    runtime = spec.get("runtime")
+    if (
+        isinstance(runtime, Mapping)
+        and runtime.get("kind") == "platform-runner"
+        and runtime.get("driver") != spec.get("driver")
+    ):
+        context.diagnostics.append(
+            _diagnostic(
+                "TRIGGER_DRIVER_MISMATCH",
+                "Trigger spec.driver must match runtime.driver for a platform-runner.",
+                context.path,
+                "Use the same versioned driver in spec.driver and spec.runtime.driver.",
+            )
+        )
     target["driver"] = spec.get("driver")
     target["runtime"] = _ordered(_normalize_step_runtime(spec.get("runtime"), plugin))
     target["configuration"] = _target_document_source(

@@ -175,7 +175,15 @@ def _require_installed_action_entry_point(
     """Reject an Action implementation that differs from its installed manifest."""
 
     actual = _step_entry_point(step)
-    if entry_point == actual or _loaded_entry_point(entry_point) is type(step):
+    loaded = _loaded_entry_point(entry_point)
+    if loaded is type(step):
+        return
+    module_name, separator, _ = entry_point.partition(":")
+    if (
+        loaded is None
+        and (not separator or module_name not in sys.modules)
+        and entry_point == actual
+    ):
         return
     message = (
         f"installed Action entry point {entry_point!r} does not match "

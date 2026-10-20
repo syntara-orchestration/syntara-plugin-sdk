@@ -976,6 +976,32 @@ def test_catalog_entry_records_all_runtime_ownerships() -> None:
     assert entry["runtimeOwnerships"] == ["custom-runner", "platform-runner"]
 
 
+@pytest.mark.parametrize(
+    ("kind", "runtime_kind"),
+    [("Control", "custom-runner"), ("Trigger", "platform-runner")],
+)
+def test_catalog_entry_includes_control_and_trigger_runtime_ownership(
+    kind: str, runtime_kind: str
+) -> None:
+    descriptor = {
+        "metadata": {"namespace": "example", "name": "mixed", "version": "0.1.0"},
+        "spec": {
+            "documentation": {"digest": "sha256:" + "d" * 64},
+            "targets": [
+                {"kind": kind, "identity": "example.step", "runtime": {"kind": runtime_kind}}
+            ],
+        },
+    }
+    artifact = SimpleNamespace(
+        digest="sha256:" + "a" * 64,
+        plugin_manifest=SimpleNamespace(content=json.dumps(descriptor).encode("utf-8")),
+    )
+
+    entry = _catalog_entry(artifact, "acme/plugins/mixed")
+
+    assert entry["runtimeOwnerships"] == [runtime_kind]
+
+
 @pytest.mark.parametrize("kind", ["Control", "Trigger"])
 def test_catalog_entry_supports_plugins_without_runner_targets(kind: str) -> None:
     descriptor = {

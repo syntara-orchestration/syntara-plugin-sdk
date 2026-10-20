@@ -202,6 +202,63 @@ def test_installed_action_accepts_a_loaded_reexported_entry_point() -> None:
         del sys.modules["acme_reexport"]
 
 
+def test_installed_action_accepts_a_loaded_current_entry_point(monkeypatch: pytest.MonkeyPatch) -> None:
+    step = _make_step(ActionStep)
+    module = ModuleType("steps")
+    module.Echo = type(step)
+    monkeypatch.setitem(sys.modules, "steps", module)
+
+    installed_action = _installed_action(EchoInput.model_json_schema())
+
+    descriptor = StepDescriptor.for_installed_action(step, installed_action)
+
+    assert descriptor.input_schema_source == "manifest"
+
+
+def test_installed_action_accepts_matching_entry_point_when_module_is_unloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    step = _make_step(ActionStep)
+    monkeypatch.delitem(sys.modules, "steps", raising=False)
+
+    installed_action = _installed_action(EchoInput.model_json_schema())
+
+    descriptor = StepDescriptor.for_installed_action(step, installed_action)
+
+    assert descriptor.input_schema_source == "manifest"
+
+
+def test_installed_action_rejects_unresolved_entry_point_in_loaded_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    step = _make_step(ActionStep)
+    monkeypatch.setitem(sys.modules, "steps", ModuleType("steps"))
+    installed_action = _installed_action(EchoInput.model_json_schema())
+
+    with pytest.raises(StepBindingError, match="entry point"):
+        StepDescriptor.for_installed_action(step, installed_action)
+
+
+def test_installed_action_rejects_a_stale_class_after_module_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_step = _make_step(ActionStep)
+
+    class ReloadedEcho(ActionStep[EchoInput, EchoOutput]):
+        def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+            return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
+
+    ReloadedEcho.__module__ = "steps"
+    ReloadedEcho.__qualname__ = "Echo"
+    module = ModuleType("steps")
+    module.Echo = ReloadedEcho
+    monkeypatch.setitem(sys.modules, "steps", module)
+    installed_action = _installed_action(EchoInput.model_json_schema())
+
+    with pytest.raises(StepBindingError, match="entry point"):
+        StepDescriptor.for_installed_action(stale_step, installed_action)
+
+
 def test_immutable_documents_have_a_supported_json_export() -> None:
     installed_action = _installed_action(EchoInput.model_json_schema())
 
