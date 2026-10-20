@@ -106,3 +106,33 @@ def test_conformance_without_context_compares_identical_contexts() -> None:
         invalid_cases=[{"value": 12345}],
     )
     assert report.passed, report.failures
+
+
+def test_conformance_details_never_echo_secret_values() -> None:
+    """Failure details carry safe metadata, never raw exception text."""
+
+    from syntara_plugin.testing import secret_sentinel
+
+    token = secret_sentinel()
+
+    class LooseInput(BaseModel):
+        model_config = {"extra": "allow"}
+        title: str = "x"
+
+    class NeverOutput(BaseModel):
+        value: str = "unreachable"
+
+    class BoomTask(TaskStep[LooseInput, NeverOutput]):
+        def run(self, inputs: LooseInput, context: ExecutionContext) -> NeverOutput:
+            raise RuntimeError(f"token={token}")
+
+    bindings = StepBindings()
+    step = BoomTask()
+    bindings.bind(StepDescriptor.for_step("testing.conformance.boom", step), step)
+    report = check_valid_reaches_hook_once(
+        bindings.binding("testing.conformance.boom"), valid_cases=[{"title": "x"}]
+    )
+    assert not report.passed
+    for failure in report.failures:
+        assert token not in failure.detail
+        assert "RuntimeError" in failure.detail

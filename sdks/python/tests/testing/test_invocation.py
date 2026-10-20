@@ -200,3 +200,82 @@ def test_non_transportable_invocations_are_rejected_on_both_paths() -> None:
         invoke_step(step, {"title": "x"}, context=context)
     with pytest.raises(HarnessUsageError, match="JSON-compatible"):
         invoke_step_in_container(step, {"title": "x"}, context=context)
+
+
+def test_both_paths_deliver_json_normalized_inputs() -> None:
+    """Tuples and non-string keys arrive as JSON-native values on both paths."""
+
+    from syntara_plugin.testing import assert_outcomes_equivalent, invoke_step_in_container
+
+    class LooseInput(BaseModel):
+        model_config = {"extra": "allow"}
+        title: str = "x"
+
+    class SeenOutput(BaseModel):
+        kind: str
+
+    class ObserveTask(TaskStep[LooseInput, SeenOutput]):
+        def run(self, inputs: LooseInput, context: ExecutionContext) -> SeenOutput:
+            extra = inputs.model_extra or {}
+            first = next(iter(extra.values()), None)
+            return SeenOutput(kind=type(first).__name__)
+
+    step = ObserveTask()
+    context = build_execution_context(invocation_id="json-parity")
+    inputs = {"title": "x", "value": (1, 2)}
+    direct = invoke_step(step, inputs, context=context)
+    container = invoke_step_in_container(step, inputs, context=context)
+    assert direct.output == {"kind": "list"}
+    assert_outcomes_equivalent(direct, container)
+
+
+def test_runtime_context_mutation_does_not_leak_between_paths() -> None:
+    """Each path receives its own copy of the runtime context data."""
+
+    from syntara_plugin.testing import invoke_step_in_container
+
+    class LooseInput(BaseModel):
+        model_config = {"extra": "allow"}
+        title: str = "x"
+
+    class ItemsOutput(BaseModel):
+        items: list
+
+    class MutateTask(TaskStep[LooseInput, ItemsOutput]):
+        def run(self, inputs: LooseInput, context: ExecutionContext) -> ItemsOutput:
+            context.runtime_context["items"].append("mutated-by-step")
+            return ItemsOutput(items=list(context.runtime_context["items"]))
+
+    context = build_execution_context(
+        invocation_id="ctx-isolation", runtime_context={"items": ["original"]}
+    )
+    direct = invoke_step(MutateTask(), {}, context=context)
+    assert direct.output == {"items": ["original", "mutated-by-step"]}
+    assert context.runtime_context["items"] == ["original"]
+    container = invoke_step_in_container(MutateTask(), {}, context=context)
+    assert container.output == {"items": ["original", "mutated-by-step"]}
+
+
+def test_system_exit_is_normalized_on_both_paths() -> None:
+    """A step calling sys.exit becomes a raised outcome on each path."""
+
+    from syntara_plugin.testing import assert_outcomes_equivalent, invoke_step_in_container
+
+    class LooseInput(BaseModel):
+        model_config = {"extra": "allow"}
+        title: str = "x"
+
+    class NeverOutput(BaseModel):
+        value: str = "unreachable"
+
+    class ExitingTask(TaskStep[LooseInput, NeverOutput]):
+        def run(self, inputs: LooseInput, context: ExecutionContext) -> NeverOutput:
+            raise SystemExit(3)
+
+    step = ExitingTask()
+    context = build_execution_context(invocation_id="sysexit-parity")
+    direct = invoke_step(step, {}, context=context)
+    container = invoke_step_in_container(step, {}, context=context)
+    assert isinstance(direct.raised, SystemExit)
+    assert not direct.ok
+    assert_outcomes_equivalent(direct, container)

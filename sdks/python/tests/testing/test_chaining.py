@@ -17,7 +17,6 @@ from syntara_plugin.testing import (
     check_seam_compatible,
     identity_seam,
 )
-from syntara_plugin.testing.payloads import FailingReferenceStep
 
 
 class UpperInput(BaseModel):
@@ -119,12 +118,17 @@ def test_chain_gives_each_link_its_own_invocation_id() -> None:
 
 
 def test_chain_fails_fast_naming_the_broken_link() -> None:
+    class FailingVowelsTask(TaskStep[CountVowelsInput, CountVowelsOutput]):
+        def run(self, inputs: CountVowelsInput, context: ExecutionContext) -> CountVowelsOutput:
+            raise RuntimeError("middle link failed")
+
+    bindings = [
+        _bind(UpperTask, "chain.upper"),
+        _bind(FailingVowelsTask, "chain.failing"),
+        _bind(CountVowelsTask, "chain.count"),
+    ]
     outcome = chain_steps(
-        [
-            _bind(UpperTask, "chain.upper"),
-            _bind(FailingReferenceStep, "chain.failing"),
-            _bind(CountVowelsTask, "chain.count"),
-        ],
+        bindings,
         {"text": "hello"},
         seams=[identity_seam, identity_seam],
     )
@@ -133,6 +137,7 @@ def test_chain_fails_fast_naming_the_broken_link() -> None:
     assert outcome.failed_step_identity == "chain.failing"
     assert outcome.output is None
     assert len(outcome.links) == 2
+    assert not outcome.seam_issues
 
 
 def test_chain_rejects_empty_bindings() -> None:
@@ -162,3 +167,49 @@ def test_check_seam_compatible_detects_missing_required_fields() -> None:
     report = check_seam_compatible(source, target)
     assert not report.passed()
     assert report.errors
+
+
+def test_seam_output_validation_names_the_seam_and_blocks_the_target() -> None:
+    """A seam returning schema-invalid values fails before the target runs."""
+
+    class LooseInput(BaseModel):
+        title: str = "x"
+
+    class IntOutput(BaseModel):
+        value: int
+
+    class SourceTask(TaskStep[LooseInput, IntOutput]):
+        def run(self, inputs: LooseInput, context: ExecutionContext) -> IntOutput:
+            return IntOutput(value=1)
+
+    class IntInput(BaseModel):
+        value: int
+
+    class TargetTask(TaskStep[IntInput, IntOutput]):
+        def run(self, inputs: IntInput, context: ExecutionContext) -> IntOutput:
+            return IntOutput(value=inputs.value)
+
+    bindings = StepBindings()
+    source_step, target_step = SourceTask(), TargetTask()
+    bindings.bind(StepDescriptor.for_step("chain.json.source", source_step), source_step)
+    bindings.bind(StepDescriptor.for_step("chain.json.target", target_step), target_step)
+    source = bindings.binding("chain.json.source")
+    target = bindings.binding("chain.json.target")
+
+    # The declared contracts fit, so the static check passes...
+    assert check_seam_compatible(source, target).passed()
+    # ...but a seam returning the wrong type is caught at execution time,
+    # named as a seam failure, and never reaches the target's hook.
+    outcome = chain_steps(
+        [source, target],
+        {"title": "x"},
+        context=None,
+        seams=[lambda output: {"value": "not-an-integer"}],
+    )
+    assert not outcome.ok
+    assert outcome.failed_link == 1
+    assert outcome.seam_issues
+    assert any("type" in issue for issue in outcome.seam_issues)
+    # The target link is never appended: the seam failure precedes it.
+    assert len(outcome.links) == 1
+    assert outcome.links[-1].run_calls == 1

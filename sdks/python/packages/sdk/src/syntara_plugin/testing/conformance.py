@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from syntara_plugin.runtime import FailureCode, StepBinding
 
 from .context_builder import build_execution_context
-from .equivalence import assert_outcomes_equivalent
+from .equivalence import _describe, _error_brief, assert_outcomes_equivalent
 from .invocation import invoke_step, invoke_step_in_container
 from .payloads import Expectation, PayloadCase
 
@@ -21,7 +21,13 @@ Case = PayloadCase | Mapping[str, Any]
 
 @dataclass(frozen=True)
 class ConformanceFailure:
-    """One property violation found for one payload case."""
+    """One property violation found for one payload case.
+
+    The detail carries safe metadata only (outcome categories, exception
+    types, run counts); raw error messages and exception representations are
+    never included, so a secret-bearing failure cannot leak through the
+    report.
+    """
 
     case: str
     check: str
@@ -65,7 +71,7 @@ def check_invalid_blocks_hook(
         if outcome.raised is not None or outcome.ok or outcome.error is None:
             problems.append(
                 f"expected an INVALID_INPUT failure, got ok={outcome.ok}, "
-                f"error={outcome.error}, raised={outcome.raised}"
+                f"error={_error_brief(outcome.error)}, raised={_describe(outcome.raised)}"
             )
         elif outcome.error.code != FailureCode.INVALID_INPUT.value:
             problems.append(f"expected INVALID_INPUT code, got {outcome.error.code}")
@@ -90,9 +96,9 @@ def check_valid_reaches_hook_once(
         outcome = invoke_step(binding, payload.inputs, context=context)
         problems: list[str] = []
         if outcome.raised is not None:
-            problems.append(f"raised {outcome.raised!r}")
+            problems.append(f"raised {_describe(outcome.raised)}")
         if not outcome.ok:
-            problems.append(f"ok={outcome.ok}, error={outcome.error}")
+            problems.append(f"ok={outcome.ok}, error={_error_brief(outcome.error)}")
         if outcome.run_calls != 1:
             problems.append(f"business hook ran {outcome.run_calls} times, expected 1")
         if problems:

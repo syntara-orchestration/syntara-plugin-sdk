@@ -15,6 +15,7 @@ import grpc
 from syntara_plugin.runtime import (
     BaseStep,
     ErrorMessage,
+    ExecutionContext,
     FailureCode,
     StandardOutputWrapper,
     StepBinding,
@@ -41,8 +42,6 @@ from .loader import StepTarget, default_step_identity, resolve_step
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from syntara_plugin.runtime import ExecutionContext
-
 Transport = Literal["direct", "container"]
 
 # The container ABI's transport limits, enforced up front on both paths so a
@@ -52,42 +51,60 @@ _MIN_TIMEOUT_SECONDS = 1
 _MAX_TIMEOUT_SECONDS = 86_400
 
 
-def _require_encodable(value: Mapping[str, Any], field: str) -> None:
-    """Reject values the container ABI's request encoding would refuse."""
+def _json_round_trip(value: Mapping[str, Any], field: str) -> dict[str, Any]:
+    """Normalize one mapping through JSON and check the transport limits.
+
+    The round trip makes both execution paths deliver identical JSON-native
+    values: tuples arrive as lists and non-string mapping keys as strings,
+    exactly as the container ABI decodes them, instead of the direct path
+    observing the original Python objects. It also hands each path its own
+    copy, so a step mutating nested runtime-context data on one path cannot
+    leak into the other.
+    """
 
     try:
-        encoded = json.dumps(
-            value, allow_nan=False, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
+        encoded = json.dumps(value, allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError) as error:
         message = (
             f"{field} must contain only JSON-compatible values so both execution "
             "paths accept it"
         )
         raise HarnessUsageError(message) from error
-    if len(encoded) > _MAX_INVOCATION_JSON_BYTES:
+    if len(encoded.encode("utf-8")) > _MAX_INVOCATION_JSON_BYTES:
         message = (
             f"{field} is too large for the container ABI ({len(encoded)} encoded "
             f"bytes, limit {_MAX_INVOCATION_JSON_BYTES}); reduce the payload"
         )
         raise HarnessUsageError(message)
+    normalized: dict[str, Any] = json.loads(encoded)
+    return normalized
 
 
-def _require_transportable(inputs: Mapping[str, Any], context: ExecutionContext) -> None:
-    """Hold one invocation to what the container ABI can transport.
+def _prepare_invocation(
+    inputs: Mapping[str, Any], context: ExecutionContext
+) -> tuple[dict[str, Any], ExecutionContext]:
+    """Normalize one invocation so both paths deliver identical values.
 
-    Inputs must be a JSON object and both the inputs and the runtime context
-    must encode within the ABI's inline limit; non-object inputs would be
-    coerced or rejected inconsistently between the two paths, and oversized or
-    non-JSON payloads crash the container request encoding with raw
-    ValueErrors while the direct path proceeds.
+    Inputs must be a JSON object; both the inputs and the runtime context are
+    normalized through one JSON round trip, giving each path an isolated
+    JSON-native copy. Non-object inputs would be coerced or rejected
+    inconsistently between the two paths, and oversized or non-JSON payloads
+    crash the container request encoding with raw ValueErrors while the
+    direct path proceeds.
     """
 
     if not isinstance(inputs, Mapping):
         message = "inputs must be a JSON object (mapping) so both execution paths accept it"
         raise HarnessUsageError(message)
-    _require_encodable(inputs, "inputs")
-    _require_encodable(context.runtime_context, "runtime context")
+    normalized_inputs = _json_round_trip(inputs, "inputs")
+    normalized_runtime = _json_round_trip(context.runtime_context, "runtime context")
+    prepared = ExecutionContext(
+        invocation_id=context.invocation_id,
+        workflow_run_id=context.workflow_run_id,
+        runtime_context=normalized_runtime,
+        cancellation=context.cancellation,
+    )
+    return normalized_inputs, prepared
 
 
 def _require_timeout(timeout_seconds: int) -> None:
@@ -249,8 +266,10 @@ def invoke_step(
         target: A ``StepBinding``, a step class or instance, or a ``module:Class``
             entry point. Action steps must arrive as bindings produced by
             ``StepBindingsFactory.bind_action``.
-        inputs: Raw JSON-style input mapping; must be a JSON object encodable
-            within the container ABI's 1 MiB limit, on both paths.
+        inputs: Raw input mapping; must be a JSON object encodable within the
+            container ABI's 1 MiB limit. Both paths deliver the JSON-normalized
+            form (tuples as lists, non-string keys as strings), each through
+            its own copy.
         context: Execution context; a locally approved one is built when omitted.
     """
 
@@ -259,16 +278,20 @@ def invoke_step(
     if context is None:
         context = build_execution_context()
     context = normalize_run_id(context)
-    _require_transportable(inputs, context)
+    inputs, context = _prepare_invocation(inputs, context)
     # Construct outside the catch so harness-usage errors stay loud on both
     # paths instead of being normalized into a quiet failed outcome.
     executor = StepExecutor(binding)
     with _counting_run(binding.step) as spy:
         try:
             wrapper = executor.execute(inputs, context)
-        except Exception as error:
-            # StepExecutionError and business exceptions normalize into
-            # ``raised`` so both transports compare uniformly.
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            # StepExecutionError, business exceptions, and non-Exception
+            # BaseExceptions such as SystemExit normalize into ``raised`` so
+            # both transports compare uniformly; KeyboardInterrupt stays a
+            # genuine control-flow interrupt.
             return _raised_outcome(spy, error, "direct")
     return StepOutcome(
         ok=wrapper.status == 0,
@@ -310,8 +333,9 @@ def invoke_step_in_container(
     Args:
         target: A ``StepBinding``, a step class or instance, or a ``module:Class``
             entry point, with the same Action rule as :func:`invoke_step`.
-        inputs: Raw JSON-style input mapping; must be a JSON object encodable
-            within the container ABI's 1 MiB limit, on both paths.
+        inputs: Raw input mapping; must be a JSON object encodable within the
+            container ABI's 1 MiB limit. Both paths deliver the JSON-normalized
+            form, each through its own copy.
         context: Execution context supplying identifiers and runtime context.
         timeout_seconds: Container invocation timeout in seconds, within the
             ABI's supported 1..86400 range; a step that ignores cancellation
@@ -325,7 +349,7 @@ def invoke_step_in_container(
     if context is None:
         context = build_execution_context()
     context = normalize_run_id(context)
-    _require_transportable(inputs, context)
+    inputs, context = _prepare_invocation(inputs, context)
     bounded_handler = _BoundedHandler(
         container_step_for_binding(binding), timeout_seconds
     )
@@ -345,10 +369,10 @@ def invoke_step_in_container(
             invocation_id=context.invocation_id,
             workflow_run_id=workflow_run_id,
             step_revision_id=binding.descriptor.step_identity,
-            inputs=dict(inputs),
+            inputs=inputs,
             credential_file_paths={},
             timeout_seconds=timeout_seconds,
-            runtime_context=dict(context.runtime_context),
+            runtime_context=context.runtime_context,
         )
         with _counting_run(binding.step) as spy:
             try:

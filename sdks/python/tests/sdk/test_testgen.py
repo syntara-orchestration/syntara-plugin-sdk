@@ -481,3 +481,15 @@ class CountReportStep(ActionStep[CountInput, CountOutput]):
     generate_step_tests(pytester.path / "plugin.yaml")
     result = pytester.runpytest_subprocess("tests")
     result.assert_outcomes(passed=1, skipped=2, failed=0)
+
+
+def test_generated_assertion_messages_never_echo_payloads(tmp_path: Path) -> None:
+    """Assertion messages use stable text, so secrets in cases cannot leak."""
+
+    workspace = _write_workspace(tmp_path / "gen")
+    generate_step_tests(workspace / "plugin.yaml")
+    content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
+    assert "assert not outcome.ok, inputs" not in content
+    assert 'assert not outcome.ok, "an invalid case was accepted"' in content
+    assert 'assert outcome.run_calls == 0, "the business hook ran for an invalid case"' in content
+    assert 'assert outcome.ok, f"valid case failed (status={outcome.status})"' in content

@@ -64,7 +64,7 @@ INVALID_CASES = [
 {valid_guard}def test_valid_input_reaches_the_hook_once(mock_execution_context, step_bindings):
     binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
     outcome = invoke_step(binding, VALID_CASES[0], context=mock_execution_context())
-    assert outcome.ok, outcome.error
+    assert outcome.ok, f"valid case failed (status={{outcome.status}})"
     assert outcome.run_calls == 1
 
 
@@ -72,8 +72,8 @@ INVALID_CASES = [
     binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
     for inputs in INVALID_CASES:
         outcome = invoke_step(binding, inputs, context=mock_execution_context())
-        assert not outcome.ok, inputs
-        assert outcome.run_calls == 0, inputs
+        assert not outcome.ok, "an invalid case was accepted"
+        assert outcome.run_calls == 0, "the business hook ran for an invalid case"
 
 
 {valid_guard}def test_direct_and_container_paths_are_equivalent(mock_execution_context, step_bindings):

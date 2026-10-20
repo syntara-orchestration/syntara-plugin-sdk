@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from jsonschema import Draft202012Validator
 from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import DriftReport, StepBinding, compare_model_to_schema
 
@@ -25,12 +26,15 @@ def identity_seam(output: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def check_seam_compatible(source: StepBinding, target: StepBinding) -> DriftReport:
-    """Statically prove every value the source can emit satisfies the target input.
+    """Statically prove the declared contracts fit across one seam.
 
     The check reuses the model-versus-schema drift engine with the ``output``
     direction: it fails when the source's output model can emit a value the
-    target's declared input schema would reject. Run it before chaining so a
-    seam mismatch is caught without executing either step.
+    target's declared input schema would reject. It validates the declared
+    contracts only; the seam transform itself is not inspected here.
+    :func:`chain_steps` validates each seam's actual output against the
+    target's input schema at execution time and fails fast naming the seam,
+    so a mismatched transform never reaches the target's business hook.
     """
 
     issues = compare_model_to_schema(
@@ -49,14 +53,38 @@ def check_seam_compatible(source: StepBinding, target: StepBinding) -> DriftRepo
     )
 
 
+def _seam_issues(seam_output: Mapping[str, Any], target: StepBinding) -> tuple[str, ...]:
+    """Validate one seam's output against the target's declared input schema.
+
+    Reports the failing validator and location only; jsonschema messages
+    include the offending value, which could carry a secret sentinel.
+    """
+
+    errors = sorted(
+        Draft202012Validator(target.descriptor.input_schema).iter_errors(seam_output),
+        key=lambda error: list(error.path),
+    )
+    return tuple(
+        f"{list(error.path) or ['<root>']}: failed {error.validator} validation"
+        for error in errors
+    )
+
+
 @dataclass(frozen=True)
 class ChainOutcome:
-    """The per-link outcomes of one sequential chain execution."""
+    """The per-link outcomes of one sequential chain execution.
+
+    When a seam's output fails the next link's declared input schema,
+    ``failed_link`` names the link that could not run and ``seam_issues``
+    carries the schema violations (validator and location only, never the
+    offending values).
+    """
 
     links: tuple[StepOutcome, ...]
     output: Mapping[str, Any] | None
     failed_link: int | None
     failed_step_identity: str | None
+    seam_issues: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -125,4 +153,13 @@ def chain_steps(
             # the optional type for the seam, which requires a Mapping.
             assert outcome.output is not None
             current = resolved_seams[index](outcome.output)
+            seam_issues = _seam_issues(current, bindings[index + 1])
+            if seam_issues:
+                return ChainOutcome(
+                    tuple(outcomes),
+                    None,
+                    index + 1,
+                    bindings[index + 1].descriptor.step_identity,
+                    seam_issues,
+                )
     return ChainOutcome(tuple(outcomes), outcomes[-1].output, None, None)
