@@ -5,11 +5,10 @@ name = "syntara-plugin-sdk-workspace"
 version = "0.1.0"
 description = "Development workspace for the Syntara Plugin SDK distributions"
 requires-python = ">=3.12"
-dependencies = ["syntara-plugin-sdk>=0.1.0", "syntara-plugin-testing>=0.1.0"]
+dependencies = ["syntara-plugin-sdk[testing]>=0.1.0"]
 
 [tool.uv.sources]
 syntara-plugin-sdk = { workspace = true }
-syntara-plugin-testing = { workspace = true }
 
 [dependency-groups]
 dev = [

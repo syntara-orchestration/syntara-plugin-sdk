@@ -53,7 +53,7 @@ from .payloads import (
     ReferenceTaskStep,
     schema_violating_binding,
 )
-from .redaction import assert_no_secrets, secret_sentinel
+from .redaction import SecretLeakError, assert_no_secrets, secret_sentinel
 
 __all__ = [
     "ConformanceFailure",
@@ -95,4 +95,5 @@ __all__ = [
     "resolve_step",
     "schema_violating_binding",
     "secret_sentinel",
+    "SecretLeakError",
 ]

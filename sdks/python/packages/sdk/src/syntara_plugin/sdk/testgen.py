@@ -5,8 +5,7 @@ The generator compiles the workspace through the same canonical compiler the
 Action target. The generated file is the checklist: valid input reaches the
 business hook once, every invalid case blocks it, and the direct and
 container-adapter paths yield equivalent outcomes. Generated code imports the
-``syntara-plugin-testing`` package; this module never imports it, so the sdk
-package keeps no dependency on the testing package.
+``syntara_plugin.testing`` subpackage shipped inside this distribution.
 
 A generated suite never fails on first run. Business-independent tests (the
 derived invalid-input cases) run immediately; the valid-input and equivalence

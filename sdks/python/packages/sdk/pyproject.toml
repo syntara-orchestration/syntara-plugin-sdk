@@ -1,13 +1,21 @@
 [project]
 name = "syntara-plugin-sdk"
 version = "0.1.0"
-description = "Authoring SDK for Syntara plugins"
+description = "Authoring SDK for Syntara plugins, including the local test harness"
 requires-python = ">=3.12"
 dependencies = [
   "PyYAML>=6.0",
   "syntara-plugin-contracts>=0.1.0",
   "syntara-plugin-runtime>=0.1.0",
 ]
+
+[project.optional-dependencies]
+testing = [
+  "pytest>=8.0",
+]
+
+[project.entry-points.pytest11]
+syntara_plugin_testing = "syntara_plugin.testing.plugin"
 
 [tool.uv.sources]
 syntara-plugin-contracts = { workspace = true }

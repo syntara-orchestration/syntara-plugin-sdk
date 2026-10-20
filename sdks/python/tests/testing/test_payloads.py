@@ -86,14 +86,14 @@ def test_assert_no_secrets_passes_on_a_clean_outcome() -> None:
 def test_assert_no_secrets_fails_when_output_contains_the_sentinel() -> None:
     token = secret_sentinel()
     outcome = invoke_step(ReferenceTaskStep(), {"title": token})
-    with pytest.raises(pytest.fail.Exception, match="leaked"):
+    with pytest.raises(AssertionError, match="leaked"):
         assert_no_secrets(outcome, [token])
 
 
 def test_leak_report_does_not_echo_the_sentinel_value() -> None:
     token = secret_sentinel()
     outcome = invoke_step(ReferenceTaskStep(), {"title": token})
-    with pytest.raises(pytest.fail.Exception) as raised:
+    with pytest.raises(AssertionError) as raised:
         assert_no_secrets(outcome, [token])
     message = str(raised.value)
     assert token not in message
@@ -111,7 +111,7 @@ def test_assert_no_secrets_fails_when_the_error_message_contains_the_sentinel() 
             )
 
     outcome = invoke_step(LeakyStep(), {"title": "x"})
-    with pytest.raises(pytest.fail.Exception, match="leaked"):
+    with pytest.raises(AssertionError, match="leaked"):
         assert_no_secrets(outcome, [token])
 
 
@@ -119,14 +119,14 @@ def test_assert_no_secrets_scans_captured_logs(caplog: pytest.LogCaptureFixture)
     token = secret_sentinel()
     with caplog.at_level(logging.INFO):
         logging.getLogger("syntara-plugin-testing-test").info("handling %s", token)
-    with pytest.raises(pytest.fail.Exception, match="leaked"):
+    with pytest.raises(AssertionError, match="leaked"):
         assert_no_secrets("clean text", [token], caplog=caplog)
     assert_no_secrets("clean text", [secret_sentinel()], caplog=caplog)
 
 
 def test_assert_no_secrets_accepts_plain_text() -> None:
     assert_no_secrets("a clean message", [secret_sentinel()])
-    with pytest.raises(pytest.fail.Exception):
+    with pytest.raises(AssertionError):
         assert_no_secrets(f"a message with {FIXED_SECRET_SENTINEL} inside", [FIXED_SECRET_SENTINEL])
 
 
@@ -178,6 +178,6 @@ def test_assert_no_secrets_scans_exception_chains() -> None:
     context = build_execution_context(invocation_id="chain-redaction")
     for step in (CauseStep(), ContextStep(), NotesStep(), OpaqueArgsStep()):
         outcome = invoke_step(step, {}, context=context)
-        with pytest.raises(pytest.fail.Exception, match="leaked") as raised:
+        with pytest.raises(AssertionError, match="leaked") as raised:
             assert_no_secrets(outcome, [token])
         assert token not in str(raised.value)

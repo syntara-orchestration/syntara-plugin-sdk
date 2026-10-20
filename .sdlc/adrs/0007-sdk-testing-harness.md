@@ -1,6 +1,7 @@
 # ADR 0007: SDK local test harness
 
-- Status: Accepted
+- Status: Accepted (the package-layout decision is superseded by ADR 0008;
+  the remaining decisions still stand)
 - Date: 2026-10-19
 
 ## Context

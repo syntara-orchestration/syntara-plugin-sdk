@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-import pytest
-
 from .invocation import StepOutcome
+
+if TYPE_CHECKING:
+    # Only the annotation needs pytest; the function core stays importable
+    # without it, and any object with a ``text`` attribute works at runtime.
+    from pytest import LogCaptureFixture
+
+
+class SecretLeakError(AssertionError):
+    """Raised when a sentinel secret appears where it must not."""
 
 
 def secret_sentinel(prefix: str = "syntara-test-secret-") -> str:
@@ -79,7 +87,7 @@ def assert_no_secrets(
     value: StepOutcome | str,
     sentinels: Iterable[str],
     *,
-    caplog: pytest.LogCaptureFixture | None = None,
+    caplog: LogCaptureFixture | None = None,
 ) -> None:
     """Fail when any sentinel secret appears in an outcome or captured logs.
 
@@ -96,7 +104,9 @@ def assert_no_secrets(
 
     The failure message never repeats the sentinel value: it names the
     sentinel by position and length and the location it leaked into, so CI
-    output cannot echo the secret through the report itself.
+    output cannot echo the secret through the report itself. Leaks raise
+    :class:`SecretLeakError`, an ``AssertionError`` subclass, so the helper
+    fails tests under any runner and the function core needs no pytest.
 
     Args:
         value: The outcome to scan, or an arbitrary text to check directly.
@@ -122,4 +132,6 @@ def assert_no_secrets(
             f"leaked into the {location}"
             for sentinel_index, location in leaks
         )
-        pytest.fail(f"secret sentinel leaked into the step outcome or logs: {locations}")
+        raise SecretLeakError(
+            f"secret sentinel leaked into the step outcome or logs: {locations}"
+        )

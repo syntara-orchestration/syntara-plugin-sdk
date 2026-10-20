@@ -1,15 +1,20 @@
 # Testing reference
 
-The `syntara-plugin-testing` package gives step authors a local pytest harness:
-validate declared contracts and execute Python Action, Task, Workflow, and
-Trigger implementations through the shared SDK executor, without running AO,
-EP, or a cluster.
+The SDK's testing harness gives step authors a local pytest suite: validate
+declared contracts and execute Python Action, Task, Workflow, and Trigger
+implementations through the shared SDK executor, without running AO, EP, or a
+cluster.
 
-Install it alongside the SDK:
+Install the SDK with the `testing` extra so pytest and the auto-loaded
+fixtures are available:
 
 ```sh
-pip install syntara-plugin-testing
+pip install "syntara-plugin-sdk[testing]"
 ```
+
+The function core (`invoke_step`, the factories, conformance, chaining,
+redaction) imports and runs without pytest; the extra only adds pytest and
+the auto-discovered fixtures.
 
 Everything below is also available as plain importable functions; the pytest
 fixtures are thin wrappers over them.
