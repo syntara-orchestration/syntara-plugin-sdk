@@ -372,19 +372,17 @@ def test_compiler_rejects_duplicate_compiled_identities_across_step_types() -> N
         "displayName": "Duplicate identity",
         "description": "Shares the Action identity.",
     }
+    typed_plugin = _typed_plugin(plugin)
+    targets = [
+        Target(
+            "steps/create-issue.yaml",
+            _action({"kind": "inline", "value": {"type": "object"}}),
+        ),
+        Target("steps/create-issue-copy.yaml", duplicate_action),
+    ]
 
     with pytest.raises(CompilationError, match="COMPILED_IDENTITY_DUPLICATE"):
-        compile_model(
-            _typed_plugin(plugin),
-            [
-                Target(
-                    "steps/create-issue.yaml",
-                    _action({"kind": "inline", "value": {"type": "object"}}),
-                ),
-                Target("steps/create-issue-copy.yaml", duplicate_action),
-            ],
-            image_bindings={"plugin-workload": DIGEST},
-        )
+        compile_model(typed_plugin, targets, image_bindings={"plugin-workload": DIGEST})
 
 
 def test_compiler_canonicalizes_connection_types_and_binds_an_action_to_them() -> None:

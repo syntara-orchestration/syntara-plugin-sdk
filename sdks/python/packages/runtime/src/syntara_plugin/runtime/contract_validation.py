@@ -1732,6 +1732,59 @@ def _category_issues(target: Mapping[str, Any]) -> list[DriftIssue]:
     return []
 
 
+def _binding_target_mode(target: Mapping[str, Any]) -> Literal["custom-runner", "direct"]:
+    """Return how a target can be checked against an in-process binding."""
+
+    runtime = target.get("runtime")
+    runtime = runtime if isinstance(runtime, Mapping) else {}
+    runtime_kind = runtime.get("kind")
+    if runtime_kind == "platform-runner":
+        raise ValueError(
+            "platform-runner targets cannot be checked against Python bindings; "
+            "use a custom-runner target"
+        )
+    if runtime_kind == "custom-runner":
+        return "custom-runner"
+    if target.get("kind") in {"Control", "Trigger"} and "runtime" not in target:
+        return "direct"
+    raise ValueError("only custom-runner or direct Control/Trigger targets can be checked")
+
+
+def _target_kind_issues(
+    target: Mapping[str, Any], binding: StepBinding
+) -> list[DriftIssue]:
+    """Report category and concrete kind mismatches for one target binding."""
+
+    issues = _category_issues(target)
+    category = _target_category(target)
+    if category is not None and category != binding.descriptor.category:
+        issues.append(
+            DriftIssue(
+                DriftCode.CATEGORY_MISMATCH,
+                DriftSeverity.ERROR,
+                "binding",
+                "",
+                f"target kind {target.get('kind')} does not match the bound"
+                f" {binding.descriptor.category.value} step",
+                "bind a step of the category the target manifest declares.",
+            )
+        )
+    target_kind = target.get("kind")
+    if isinstance(target_kind, str) and target_kind != binding.descriptor.kind.value:
+        issues.append(
+            DriftIssue(
+                DriftCode.CATEGORY_MISMATCH,
+                DriftSeverity.ERROR,
+                "binding",
+                "",
+                f"target kind {target_kind} does not match the bound"
+                f" {binding.descriptor.kind.value} Step type",
+                "bind an implementation of the concrete Step type the target declares.",
+            )
+        )
+    return issues
+
+
 def check_target_binding(
     target: Mapping[str, Any],
     binding: StepBinding,
@@ -1746,52 +1799,14 @@ def check_target_binding(
     digests of the declared schemas that were checked.
     """
 
-    runtime = target.get("runtime")
-    runtime = runtime if isinstance(runtime, Mapping) else {}
-    runtime_kind = runtime.get("kind")
-    target_kind = target.get("kind")
-    direct_binding_target = target_kind in {"Control", "Trigger"} and "runtime" not in target
-    if runtime_kind == "platform-runner":
-        message = (
-            "platform-runner targets cannot be checked against Python bindings; "
-            "use a custom-runner target"
-        )
-        raise ValueError(message)
-    if runtime_kind != "custom-runner" and not direct_binding_target:
-        message = "only custom-runner or direct Control/Trigger targets can be checked"
-        raise ValueError(message)
+    mode = _binding_target_mode(target)
     raw_identity = target.get("identity")
     identity = raw_identity if isinstance(raw_identity, str) and raw_identity else None
     version = target.get("version")
     version = version if isinstance(version, str) else None
     issues: list[DriftIssue] = []
     issues.extend(_identity_issues(identity, binding))
-    issues.extend(_category_issues(target))
-    category = _target_category(target)
-    if category is not None and category != binding.descriptor.category:
-        issues.append(
-            DriftIssue(
-                DriftCode.CATEGORY_MISMATCH,
-                DriftSeverity.ERROR,
-                "binding",
-                "",
-                f"target kind {target.get('kind')} does not match the bound"
-                f" {binding.descriptor.category.value} step",
-                "bind a step of the category the target manifest declares.",
-            )
-        )
-    if isinstance(target_kind, str) and target_kind != binding.descriptor.kind.value:
-        issues.append(
-            DriftIssue(
-                DriftCode.CATEGORY_MISMATCH,
-                DriftSeverity.ERROR,
-                "binding",
-                "",
-                f"target kind {target_kind} does not match the bound"
-                f" {binding.descriptor.kind.value} Step type",
-                "bind an implementation of the concrete Step type the target declares.",
-            )
-        )
+    issues.extend(_target_kind_issues(target, binding))
     step_class = type(binding.step)
     try:
         input_model = step_class.input_model()
@@ -1799,7 +1814,7 @@ def check_target_binding(
     except TypeError as error:
         issues.append(_model_unresolved_issue(step_class, error))
         return DriftReport(identity, version, None, None, tuple(issues))
-    if runtime_kind == "custom-runner":
+    if mode == "custom-runner":
         issues.extend(_entry_point_issues(target, binding, entry_point_resolver))
     input_schema = target.get("input")
     output_schema = target.get("output")
@@ -1857,18 +1872,23 @@ def _collect_step_targets(
             message = f"compiled descriptor contains duplicate target identity {identity!r}"
             raise ValueError(message)
         identities.add(identity)
-        runtime = target.get("runtime")
-        if not isinstance(runtime, Mapping):
-            if str(target.get("kind")) not in _TARGET_CATEGORY:
-                continue
+        include_target, include_binding = _classify_target(target)
+        if include_target:
             step_targets[identity] = target
-            if target.get("kind") in {"Control", "Trigger"}:
-                binding_targets[identity] = target
-            continue
-        step_targets[identity] = target
-        if runtime.get("kind") == "custom-runner":
+        if include_binding:
             binding_targets[identity] = target
     return step_targets, binding_targets
+
+
+def _classify_target(target: Mapping[str, Any]) -> tuple[bool, bool]:
+    """Return whether a target is executable and eligible for Python binding checks."""
+
+    runtime = target.get("runtime")
+    if isinstance(runtime, Mapping):
+        return True, runtime.get("kind") == "custom-runner"
+    if str(target.get("kind")) not in _TARGET_CATEGORY:
+        return False, False
+    return True, target.get("kind") in {"Control", "Trigger"}
 
 
 def _missing_binding_report(identity: str, target: Mapping[str, Any]) -> DriftReport:

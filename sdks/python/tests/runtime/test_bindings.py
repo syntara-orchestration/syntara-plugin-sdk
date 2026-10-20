@@ -172,12 +172,13 @@ def test_installed_action_rejects_a_mismatched_implementation_before_execution()
     matching_step = _make_step(ActionStep)
     descriptor = StepDescriptor.for_installed_action(matching_step, installed_action)
     mismatched_step = MismatchedAction()
+    mismatched_binding = StepBinding(descriptor, mismatched_step)
 
     with pytest.raises(StepBindingError, match="entry point"):
         StepDescriptor.for_installed_action(mismatched_step, installed_action)
 
     with pytest.raises(StepBindingError, match="entry point"):
-        StepExecutor(StepBinding(descriptor, mismatched_step))
+        StepExecutor(mismatched_binding)
 
     assert mismatched_step.run_calls == 0
 

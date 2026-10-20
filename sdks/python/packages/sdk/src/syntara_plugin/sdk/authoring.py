@@ -256,47 +256,14 @@ def _compile(
                 "Pass exactly the explicitly declared target manifests.",
             )
         )
-    canonical_targets: list[dict[str, Any]] = []
-    assets: dict[str, CompiledAsset] = {}
-    seen_casefold: dict[str, str] = {}
-    for target in targets:
-        kind = _contract_kind(target.document)
-        _validate_contract(
-            bundle, kind, target.document, target.path, target.locations, diagnostics
-        )
-        folded = _path_key(target.path)
-        previous = seen_casefold.setdefault(folded, target.path)
-        if previous != target.path:
-            diagnostics.append(
-                _diagnostic(
-                    "PATH_CASE_COLLISION",
-                    f"{target.path!r} collides with {previous!r} on case-insensitive filesystems.",
-                    target.path,
-                    "Use one uniquely cased path.",
-                )
-            )
-        if _contains_cycle(target.document):
-            diagnostics.append(
-                _diagnostic(
-                    "DOCUMENT_RECURSIVE",
-                    "YAML anchors may not create recursive documents.",
-                    target.path,
-                    _RECURSIVE_ALIAS_REMEDIATION,
-                )
-            )
-            continue
-        normalized = _normalize_target(
-            target.document,
-            target.path,
-            plugin.document,
-            bundle,
-            root_directory,
-            max_document_bytes,
-            assets,
-            diagnostics,
-        )
-        if normalized is not None:
-            canonical_targets.append(normalized)
+    canonical_targets, assets = _canonicalize_targets(
+        plugin,
+        targets,
+        bundle,
+        root_directory,
+        max_document_bytes,
+        diagnostics,
+    )
     documentation = _documentation_source(
         plugin.document,
         root_directory,
@@ -345,6 +312,69 @@ def _compile(
     return CompilationResult(
         descriptor=cast(Mapping[str, Any], _ordered(descriptor)),
         assets={key: assets[key] for key in sorted(assets)},
+    )
+
+
+def _canonicalize_targets(
+    plugin: Plugin,
+    targets: Sequence[Target],
+    bundle: ContractBundle,
+    root_directory: Path | None,
+    max_document_bytes: int,
+    diagnostics: list[Diagnostic],
+) -> tuple[list[dict[str, Any]], dict[str, CompiledAsset]]:
+    """Validate and normalize target documents in their declared order."""
+
+    canonical_targets: list[dict[str, Any]] = []
+    assets: dict[str, CompiledAsset] = {}
+    seen_casefold: dict[str, str] = {}
+    for target in targets:
+        kind = _contract_kind(target.document)
+        _validate_contract(
+            bundle, kind, target.document, target.path, target.locations, diagnostics
+        )
+        _report_path_case_collision(target.path, seen_casefold, diagnostics)
+        if _contains_cycle(target.document):
+            diagnostics.append(
+                _diagnostic(
+                    "DOCUMENT_RECURSIVE",
+                    "YAML anchors may not create recursive documents.",
+                    target.path,
+                    _RECURSIVE_ALIAS_REMEDIATION,
+                )
+            )
+            continue
+        normalized = _normalize_target(
+            target.document,
+            target.path,
+            plugin.document,
+            bundle,
+            root_directory,
+            max_document_bytes,
+            assets,
+            diagnostics,
+        )
+        if normalized is not None:
+            canonical_targets.append(normalized)
+    return canonical_targets, assets
+
+
+def _report_path_case_collision(
+    path: str, seen_casefold: dict[str, str], diagnostics: list[Diagnostic]
+) -> None:
+    """Report a target path that collides on a case-insensitive filesystem."""
+
+    folded = _path_key(path)
+    previous = seen_casefold.setdefault(folded, path)
+    if previous == path:
+        return
+    diagnostics.append(
+        _diagnostic(
+            "PATH_CASE_COLLISION",
+            f"{path!r} collides with {previous!r} on case-insensitive filesystems.",
+            path,
+            "Use one uniquely cased path.",
+        )
     )
 
 
@@ -428,13 +458,8 @@ def _normalize_action(
 def _normalize_action_runtime(
     raw_runtime: object, plugin: Mapping[str, Any], context: _NormalizationContext
 ) -> dict[str, Any]:
-    runtime = dict(raw_runtime) if isinstance(raw_runtime, Mapping) else {}
-    if runtime.get("kind") == "custom-runner":
-        plugin_spec = plugin.get("spec", {})
-        workload = plugin_spec.get("workload", {}) if isinstance(plugin_spec, Mapping) else {}
-        runtime["workload"] = workload.get("image") if isinstance(workload, Mapping) else None
-        runtime["abi"] = DEFAULT_CONTAINER_ABI
-    elif runtime.get("driver") == "http.v1":
+    runtime = _normalize_runner_runtime(raw_runtime, plugin)
+    if runtime.get("kind") != "custom-runner" and runtime.get("driver") == "http.v1":
         _normalize_http_operation(runtime, context)
     return runtime
 
@@ -490,6 +515,12 @@ def _normalize_trigger(
 
 def _normalize_step_runtime(raw_runtime: object, plugin: Mapping[str, Any]) -> dict[str, Any]:
     """Materialize the shared runner metadata for non-Action Step types."""
+
+    return _normalize_runner_runtime(raw_runtime, plugin)
+
+
+def _normalize_runner_runtime(raw_runtime: object, plugin: Mapping[str, Any]) -> dict[str, Any]:
+    """Materialize runner metadata shared by every executable Step type."""
 
     runtime = dict(raw_runtime) if isinstance(raw_runtime, Mapping) else {}
     if runtime.get("kind") == "custom-runner":
