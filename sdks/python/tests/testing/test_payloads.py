@@ -128,3 +128,56 @@ def test_assert_no_secrets_accepts_plain_text() -> None:
     assert_no_secrets("a clean message", [secret_sentinel()])
     with pytest.raises(pytest.fail.Exception):
         assert_no_secrets(f"a message with {FIXED_SECRET_SENTINEL} inside", [FIXED_SECRET_SENTINEL])
+
+
+def test_assert_no_secrets_scans_exception_chains() -> None:
+    """Secrets hidden in an exception's chain, args, or notes are caught."""
+
+    from pydantic import BaseModel
+    from syntara_plugin.runtime import ExecutionContext, TaskStep
+    from syntara_plugin.testing import build_execution_context
+
+    class ChainInput(BaseModel):
+        title: str = "x"
+
+    class ChainOutput(BaseModel):
+        summary: str = "y"
+
+    token = secret_sentinel()
+
+    class CauseStep(TaskStep[ChainInput, ChainOutput]):
+        def run(self, inputs: ChainInput, context: ExecutionContext) -> ChainOutput:
+            try:
+                raise ValueError(token)
+            except ValueError as error:
+                raise RuntimeError("safe failure") from error
+
+    class ContextStep(TaskStep[ChainInput, ChainOutput]):
+        def run(self, inputs: ChainInput, context: ExecutionContext) -> ChainOutput:
+            try:
+                raise ValueError(token)
+            except ValueError:
+                # ``from None`` suppresses the context from display but still
+                # records it on ``__context__``, which the scan must walk.
+                raise RuntimeError("safe failure") from None
+
+    class NotesStep(TaskStep[ChainInput, ChainOutput]):
+        def run(self, inputs: ChainInput, context: ExecutionContext) -> ChainOutput:
+            error = RuntimeError("safe failure")
+            error.add_note(f"token {token}")
+            raise error
+
+    class OpaqueError(RuntimeError):
+        def __repr__(self) -> str:
+            return "OpaqueError(<hidden>)"
+
+    class OpaqueArgsStep(TaskStep[ChainInput, ChainOutput]):
+        def run(self, inputs: ChainInput, context: ExecutionContext) -> ChainOutput:
+            raise OpaqueError("safe failure", token)
+
+    context = build_execution_context(invocation_id="chain-redaction")
+    for step in (CauseStep(), ContextStep(), NotesStep(), OpaqueArgsStep()):
+        outcome = invoke_step(step, {}, context=context)
+        with pytest.raises(pytest.fail.Exception, match="leaked") as raised:
+            assert_no_secrets(outcome, [token])
+        assert token not in str(raised.value)

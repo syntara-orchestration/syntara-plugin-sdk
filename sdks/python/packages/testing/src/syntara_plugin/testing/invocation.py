@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -43,6 +44,61 @@ if TYPE_CHECKING:
     from syntara_plugin.runtime import ExecutionContext
 
 Transport = Literal["direct", "container"]
+
+# The container ABI's transport limits, enforced up front on both paths so a
+# request that cannot be encoded never diverges between them.
+_MAX_INVOCATION_JSON_BYTES = 1_048_576
+_MIN_TIMEOUT_SECONDS = 1
+_MAX_TIMEOUT_SECONDS = 86_400
+
+
+def _require_encodable(value: Mapping[str, Any], field: str) -> None:
+    """Reject values the container ABI's request encoding would refuse."""
+
+    try:
+        encoded = json.dumps(
+            value, allow_nan=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        message = (
+            f"{field} must contain only JSON-compatible values so both execution "
+            "paths accept it"
+        )
+        raise HarnessUsageError(message) from error
+    if len(encoded) > _MAX_INVOCATION_JSON_BYTES:
+        message = (
+            f"{field} is too large for the container ABI ({len(encoded)} encoded "
+            f"bytes, limit {_MAX_INVOCATION_JSON_BYTES}); reduce the payload"
+        )
+        raise HarnessUsageError(message)
+
+
+def _require_transportable(inputs: Mapping[str, Any], context: ExecutionContext) -> None:
+    """Hold one invocation to what the container ABI can transport.
+
+    Inputs must be a JSON object and both the inputs and the runtime context
+    must encode within the ABI's inline limit; non-object inputs would be
+    coerced or rejected inconsistently between the two paths, and oversized or
+    non-JSON payloads crash the container request encoding with raw
+    ValueErrors while the direct path proceeds.
+    """
+
+    if not isinstance(inputs, Mapping):
+        message = "inputs must be a JSON object (mapping) so both execution paths accept it"
+        raise HarnessUsageError(message)
+    _require_encodable(inputs, "inputs")
+    _require_encodable(context.runtime_context, "runtime context")
+
+
+def _require_timeout(timeout_seconds: int) -> None:
+    """Reject timeout values outside the container ABI's supported range."""
+
+    if not _MIN_TIMEOUT_SECONDS <= timeout_seconds <= _MAX_TIMEOUT_SECONDS:
+        message = (
+            f"timeout_seconds must be between {_MIN_TIMEOUT_SECONDS} and "
+            f"{_MAX_TIMEOUT_SECONDS}, the container ABI's supported range"
+        )
+        raise HarnessUsageError(message)
 
 StepTargetOrBinding = StepTarget | StepBinding
 
@@ -193,7 +249,8 @@ def invoke_step(
         target: A ``StepBinding``, a step class or instance, or a ``module:Class``
             entry point. Action steps must arrive as bindings produced by
             ``StepBindingsFactory.bind_action``.
-        inputs: Raw JSON-style input mapping.
+        inputs: Raw JSON-style input mapping; must be a JSON object encodable
+            within the container ABI's 1 MiB limit, on both paths.
         context: Execution context; a locally approved one is built when omitted.
     """
 
@@ -202,6 +259,7 @@ def invoke_step(
     if context is None:
         context = build_execution_context()
     context = normalize_run_id(context)
+    _require_transportable(inputs, context)
     # Construct outside the catch so harness-usage errors stay loud on both
     # paths instead of being normalized into a quiet failed outcome.
     executor = StepExecutor(binding)
@@ -252,18 +310,22 @@ def invoke_step_in_container(
     Args:
         target: A ``StepBinding``, a step class or instance, or a ``module:Class``
             entry point, with the same Action rule as :func:`invoke_step`.
-        inputs: Raw JSON-style input mapping.
+        inputs: Raw JSON-style input mapping; must be a JSON object encodable
+            within the container ABI's 1 MiB limit, on both paths.
         context: Execution context supplying identifiers and runtime context.
-        timeout_seconds: Container invocation timeout in seconds; a step that
-            ignores cancellation cannot block the test session beyond this
-            timeout plus a short grace.
+        timeout_seconds: Container invocation timeout in seconds, within the
+            ABI's supported 1..86400 range; a step that ignores cancellation
+            cannot block the test session beyond this timeout plus a short
+            grace.
     """
 
     binding = _resolve_binding(target)
     _require_executable(binding)
+    _require_timeout(timeout_seconds)
     if context is None:
         context = build_execution_context()
     context = normalize_run_id(context)
+    _require_transportable(inputs, context)
     bounded_handler = _BoundedHandler(
         container_step_for_binding(binding), timeout_seconds
     )

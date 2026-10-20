@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from syntara_plugin.runtime import FailureCode, StepExecutionError
+from collections.abc import Mapping
+
+from syntara_plugin.runtime import ErrorMessage, FailureCode, StepExecutionError
 from syntara_plugin.runtime.container import ContainerInvocationError, ContainerRemoteError
 
 from .invocation import StepOutcome
@@ -28,6 +30,29 @@ def _failure_category(outcome: StepOutcome) -> FailureCode | None:
     return FailureCode.OUTCOME_UNKNOWN
 
 
+def _describe(value: object) -> str:
+    """Describe one compared value by type and size, never by content.
+
+    Equivalence failure messages must not echo field values: a differing
+    output or message may carry a secret sentinel, and the assertion text
+    reaches CI logs.
+    """
+
+    if value is None:
+        return "none"
+    if isinstance(value, Mapping):
+        return f"{type(value).__name__} with {len(value)} keys"
+    if isinstance(value, str):
+        return f"str of {len(value)} chars"
+    return type(value).__name__
+
+
+def _error_brief(error: ErrorMessage | None) -> str:
+    """Describe an error envelope by category only, never its message."""
+
+    return "none" if error is None else f"code {error.code}"
+
+
 def assert_outcomes_equivalent(direct: StepOutcome, container: StepOutcome) -> None:
     """Assert two outcomes of one invocation agree on the public contract.
 
@@ -37,6 +62,10 @@ def assert_outcomes_equivalent(direct: StepOutcome, container: StepOutcome) -> N
     both paths report a raised failure, the failure categories must match;
     direct-path exceptions are normalized onto the same category model the
     container path reports.
+
+    Failure messages identify the differing field with type and size metadata
+    only, never raw values, so a secret-bearing field cannot leak through the
+    assertion text into CI logs.
 
     Equivalence holds within the container ABI's inline result bound (1 MiB):
     above it the container path fails with ``ABI_VIOLATION`` because the
@@ -52,7 +81,10 @@ def assert_outcomes_equivalent(direct: StepOutcome, container: StepOutcome) -> N
         raise AssertionError(message)
     problems: list[str] = []
     if (direct.raised is None) != (container.raised is None):
-        problems.append(f"raised: direct={direct.raised!r} container={container.raised!r}")
+        problems.append(
+            f"raised differs: direct={_describe(direct.raised)} "
+            f"container={_describe(container.raised)}"
+        )
     if direct.raised is not None and container.raised is not None:
         direct_category = _failure_category(direct)
         container_category = _failure_category(container)
@@ -67,13 +99,19 @@ def assert_outcomes_equivalent(direct: StepOutcome, container: StepOutcome) -> N
             problems.append(f"status: direct={direct.status} container={container.status}")
         if direct.status_message != container.status_message:
             problems.append(
-                f"status_message: direct={direct.status_message!r} "
-                f"container={container.status_message!r}"
+                f"status_message differs: direct=({_describe(direct.status_message)}) "
+                f"container=({_describe(container.status_message)})"
             )
         if direct.output != container.output:
-            problems.append(f"output: direct={direct.output!r} container={container.output!r}")
+            problems.append(
+                f"output differs: direct=({_describe(direct.output)}) "
+                f"container=({_describe(container.output)})"
+            )
         if direct.error != container.error:
-            problems.append(f"error: direct={direct.error!r} container={container.error!r}")
+            problems.append(
+                f"error differs: direct={_error_brief(direct.error)} "
+                f"container={_error_brief(container.error)}"
+            )
     if direct.run_calls != container.run_calls:
         problems.append(f"run_calls: direct={direct.run_calls} container={container.run_calls}")
     if problems:

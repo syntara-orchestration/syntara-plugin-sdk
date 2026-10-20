@@ -134,6 +134,13 @@ target from the compiled manifest and its schemas: the entry point, one valid
 case, derived invalid cases, and the standard property tests. Generated files
 refuse silent overwrite (`--force` to regenerate) and are deterministic.
 
+A generated suite never fails on first run: the derived invalid-input test
+runs immediately, while the valid-input and equivalence tests are skipped
+until you replace the scaffolded placeholder with a business-valid payload
+(only the implementation's business rules can make a schema-valid placeholder
+business-valid). When the placeholder also violates the declared schema, the
+skip marker's TODO quotes the schema errors.
+
 ```sh
 syntara-plugin test-init path/to/plugin.yaml
 pytest tests -q

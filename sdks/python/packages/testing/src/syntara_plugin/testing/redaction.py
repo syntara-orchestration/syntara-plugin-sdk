@@ -17,6 +17,46 @@ def secret_sentinel(prefix: str = "syntara-test-secret-") -> str:
     return f"{prefix}{uuid4().hex}"
 
 
+def _safe_repr(value: object) -> str:
+    """Render one value defensively; a broken ``__repr__`` must not break scanning."""
+
+    try:
+        return repr(value)
+    except Exception:  # noqa: BLE001 - never let a custom repr raise past the scan
+        return f"<unrepresentable {type(value).__name__}>"
+
+
+def _safe_str(value: object) -> str:
+    """Render one value's str defensively."""
+
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001 - never let a custom __str__ raise past the scan
+        return f"<unprintable {type(value).__name__}>"
+
+
+def _exception_texts(error: BaseException, seen: set[int]) -> list[str]:
+    """Collect every text one exception and its chain carry.
+
+    Covers the message, args, notes, and the explicit (``__cause__``) and
+    implicit (``__context__``) chains; the visited set stops cycles, and each
+    value renders through safe repr/str so payloads hidden in a custom
+    ``__repr__`` that discards them are still scanned through ``args``.
+    """
+
+    if id(error) in seen:
+        return []
+    seen.add(id(error))
+    texts = [_safe_repr(error), _safe_str(error)]
+    texts.extend(_safe_repr(arg) for arg in error.args)
+    for note in getattr(error, "__notes__", None) or ():
+        texts.append(_safe_repr(note))
+    for chained in (error.__cause__, error.__context__):
+        if chained is not None:
+            texts.extend(_exception_texts(chained, seen))
+    return texts
+
+
 def _outcome_texts(outcome: StepOutcome) -> list[tuple[str, str]]:
     """Collect every caller-visible text an outcome could leak a secret into."""
 
@@ -26,7 +66,8 @@ def _outcome_texts(outcome: StepOutcome) -> list[tuple[str, str]]:
     if outcome.error is not None:
         texts.append(("error message", outcome.error.message))
     if outcome.raised is not None:
-        texts.append(("raised exception", repr(outcome.raised)))
+        for text in _exception_texts(outcome.raised, set()):
+            texts.append(("raised exception", text))
     if outcome.output is not None:
         texts.append(("business output", json.dumps(outcome.output, default=str, sort_keys=True)))
     if outcome.raw is not None:
@@ -42,9 +83,11 @@ def assert_no_secrets(
 ) -> None:
     """Fail when any sentinel secret appears in an outcome or captured logs.
 
-    Scans the outcome's status message, error message, raised exception,
-    serialized business output, raw envelope, and (when supplied) the pytest
-    ``caplog`` capture. Secrets must never appear in any of them.
+    Scans the outcome's status message, error message, raised exception
+    including its whole chain (message, args, notes, ``__cause__``, and
+    ``__context__``), serialized business output, raw envelope, and (when
+    supplied) the pytest ``caplog`` capture. Secrets must never appear in any
+    of them.
 
     When scanning logs, raise the capture level around the invocation first:
     pytest captures only records that pass the root logger's effective level,

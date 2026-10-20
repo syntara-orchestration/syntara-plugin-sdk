@@ -239,7 +239,10 @@ def test_generated_tests_pass_in_a_fresh_project(pytester: pytest.Pytester) -> N
     _write_workspace(pytester.path)
     generate_step_tests(pytester.path / "plugin.yaml")
     result = pytester.runpytest_subprocess("tests")
-    result.assert_outcomes(passed=3)
+    # The invalid-input test runs immediately; the placeholder-dependent
+    # valid-input and equivalence tests skip until the author supplies a
+    # business-valid payload, so a generated suite never fails on first run.
+    result.assert_outcomes(passed=1, skipped=2)
 
 
 def test_generated_tests_pass_from_a_nested_tests_dir(
@@ -248,7 +251,7 @@ def test_generated_tests_pass_from_a_nested_tests_dir(
     _write_workspace(pytester.path)
     generate_step_tests(pytester.path / "plugin.yaml", tests_dir=pytester.path / "tests/unit")
     result = pytester.runpytest_subprocess("tests/unit")
-    result.assert_outcomes(passed=3)
+    result.assert_outcomes(passed=1, skipped=2)
 
 
 def test_pattern_constrained_fields_skip_with_a_todo(tmp_path: Path) -> None:
@@ -265,7 +268,7 @@ def test_pattern_constrained_fields_skip_with_a_todo(tmp_path: Path) -> None:
     generate_step_tests(workspace / "plugin.yaml")
     content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
     assert "@pytest.mark.skip" in content
-    assert "TODO: replace VALID_CASES" in content
+    assert "TODO: replace the scaffolded VALID_CASES" in content
     assert "does not match" in content
 
 
@@ -282,8 +285,11 @@ def test_format_constrained_fields_get_valid_placeholders(tmp_path: Path) -> Non
     )
     generate_step_tests(workspace / "plugin.yaml")
     content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
-    assert "@pytest.mark.skip" not in content
+    # The skip marker is always present (business validity is the author's to
+    # confirm), but a format-satisfying placeholder carries no schema errors.
+    assert "@pytest.mark.skip" in content
     assert "'title': '2026-01-01T12:00:00Z'" in content
+    assert "schema validation reported" not in content
 
 
 def test_union_typed_fields_skip_valid_and_drop_accepted_wrong_types(
@@ -380,3 +386,98 @@ def test_relative_tests_dirs_resolve_against_the_workspace(tmp_path: Path) -> No
     # The generated paths must climb from the nested directory to the workspace.
     assert repr("../..") in module
     assert repr("../..") in conftest
+
+
+def test_business_invalid_placeholders_skip_instead_of_failing(
+    pytester: pytest.Pytester,
+) -> None:
+    """A schema-valid placeholder that violates a business invariant skips.
+
+    The generator cannot know business rules; the generated valid-input test
+    must not fail on first run when the scaffolded placeholder is
+    business-invalid (here: an implementation requiring count >= 10 while the
+    schema-valid placeholder is count = 1).
+    """
+
+    (pytester.path / "steps/count-report").mkdir(parents=True)
+    (pytester.path / "docs").mkdir()
+    (pytester.path / "count_report").mkdir()
+    (pytester.path / "plugin.yaml").write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: gen
+  name: business-plugin
+  version: 0.1.0
+  displayName: Business
+  description: Business invariant.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: business-workload
+  targets:
+    - steps/count-report/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    (pytester.path / "steps/count-report/manifest.yaml").write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: count-report
+  displayName: Count report
+  description: Reports a count.
+spec:
+  runtime:
+    kind: custom-workload
+    entryPoint: count_report:CountReportStep
+  input:
+    kind: inline
+    value:
+      type: object
+      properties:
+        count:
+          type: integer
+      required: [count]
+  output:
+    kind: inline
+    value:
+      type: object
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    (pytester.path / "docs/README.md").write_text("# Business\n", encoding="utf-8")
+    (pytester.path / "count_report/__init__.py").write_text(
+        '''"""A step whose business rules reject the scaffolded placeholder."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import ActionStep, ExecutionContext
+
+
+class CountInput(BaseModel):
+    count: int
+
+
+class CountOutput(BaseModel):
+    report: str
+
+
+class CountReportStep(ActionStep[CountInput, CountOutput]):
+    def run(self, inputs: CountInput, context: ExecutionContext) -> CountOutput:
+        if inputs.count < 10:
+            message = f"count must be at least 10, got {inputs.count}"
+            raise ValueError(message)
+        return CountOutput(report=f"counted {inputs.count}")
+''',
+        encoding="utf-8",
+    )
+    generate_step_tests(pytester.path / "plugin.yaml")
+    result = pytester.runpytest_subprocess("tests")
+    result.assert_outcomes(passed=1, skipped=2, failed=0)

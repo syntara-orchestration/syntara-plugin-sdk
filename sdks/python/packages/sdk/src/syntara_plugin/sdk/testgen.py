@@ -8,11 +8,13 @@ container-adapter paths yield equivalent outcomes. Generated code imports the
 ``syntara-plugin-testing`` package; this module never imports it, so the sdk
 package keeps no dependency on the testing package.
 
-The scaffolded valid case is validated against the compiled input schema
-before it is emitted. When no placeholder can satisfy a declared constraint
-(for example a ``pattern``), the generated valid tests carry a skip marker and
-a TODO listing the schema errors, so scaffolding never produces a suite that
-fails on first run.
+A generated suite never fails on first run. Business-independent tests (the
+derived invalid-input cases) run immediately; the valid-input and equivalence
+tests are skipped until the author replaces the scaffolded placeholder with a
+business-valid payload, because only the implementation's business rules can
+make a schema-valid placeholder business-valid. The scaffolded case is also
+validated against the compiled input schema, and any schema errors are
+quoted in the skip marker's TODO when no placeholder can satisfy them.
 """
 
 from __future__ import annotations
@@ -99,10 +101,11 @@ from pathlib import Path
 sys.path.insert(0, str((Path(__file__).resolve().parent / {workspace_relative!r}).resolve()))
 '''
 
-_SKIP_DECORATOR = '''# TODO: replace VALID_CASES with a real payload; the scaffolded placeholder
-# does not satisfy the declared input schema. Schema validation reported:
-{comment_lines}
-@pytest.mark.skip(reason="the scaffolded placeholder does not satisfy the input schema")
+_VALID_SKIP = '''# TODO: replace the scaffolded VALID_CASES with a business-valid payload,
+# then remove this skip. The placeholder is schema-valid, but only the
+# implementation's business rules can make it business-valid.
+{schema_note}
+@pytest.mark.skip(reason="scaffolded placeholder; replace VALID_CASES with a business-valid payload")
 '''
 
 _SKIP_NO_INVALID = '''# TODO: no invalid case could be derived from the declared input schema
@@ -259,12 +262,22 @@ def _render_cases(cases: list[dict[str, Any]]) -> str:
 
 
 def _skip_guard(valid_errors: list[str]) -> str:
-    """Render the skip decorator block when the placeholder fails the schema."""
+    """Render the replace-me skip marker for the placeholder-dependent tests.
 
-    if not valid_errors:
-        return ""
-    comment_lines = "\n".join(f"#   {error}" for error in valid_errors)
-    return _SKIP_DECORATOR.format(comment_lines=comment_lines)
+    The marker is always emitted: a schema-valid placeholder can still violate
+    business invariants, so the valid-input and equivalence tests stay skipped
+    until the author supplies a business-valid payload. Schema errors, when
+    present, are quoted in the TODO.
+    """
+
+    schema_note = ""
+    if valid_errors:
+        lines = "\n".join(f"#   {error}" for error in valid_errors)
+        schema_note = (
+            "# The placeholder also fails the declared input schema; schema\n"
+            "# validation reported:\n" + lines
+        )
+    return _VALID_SKIP.format(schema_note=schema_note)
 
 
 def _cases_from_schema(

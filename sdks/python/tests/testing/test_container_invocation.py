@@ -330,3 +330,37 @@ def test_equivalence_assertion_detects_different_outcomes() -> None:
     container = invoke_step_in_container(ReferenceTaskStep(), {"priority": "urgent"})
     with pytest.raises(AssertionError, match="outcomes differ"):
         assert_outcomes_equivalent(direct, container)
+
+
+def test_equivalence_failures_do_not_echo_secret_values() -> None:
+    """Differing secret-bearing fields are named, never echoed."""
+
+    from syntara_plugin.testing import StepOutcome, secret_sentinel
+
+    token = secret_sentinel()
+    direct = StepOutcome(
+        ok=True, status=0, status_message="Completed", output={"token": token},
+        error=None, run_calls=1, raised=None, transport="direct", raw=None,
+    )
+    container = StepOutcome(
+        ok=True, status=0, status_message="Completed", output={"token": "different"},
+        error=None, run_calls=1, raised=None, transport="container", raw=None,
+    )
+    with pytest.raises(AssertionError, match="output differs") as raised:
+        assert_outcomes_equivalent(direct, container)
+    message = str(raised.value)
+    assert token not in message
+    assert "dict with 1 keys" in message
+
+
+def test_invalid_timeout_values_are_rejected_with_guidance() -> None:
+    from syntara_plugin.testing import HarnessUsageError
+
+    step = ReferenceTaskStep()
+    context = build_execution_context(invocation_id="timeout-validation")
+    with pytest.raises(HarnessUsageError, match="timeout_seconds"):
+        invoke_step_in_container(step, {"title": "x"}, context=context, timeout_seconds=0)
+    with pytest.raises(HarnessUsageError, match="timeout_seconds"):
+        invoke_step_in_container(
+            step, {"title": "x"}, context=context, timeout_seconds=100_000
+        )

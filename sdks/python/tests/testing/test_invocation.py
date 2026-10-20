@@ -174,3 +174,29 @@ def test_raw_contexts_are_held_to_the_same_identity_rules() -> None:
         invoke_step(step, {"title": "x"}, context=oversized_invocation)
     with pytest.raises(HarnessUsageError, match="invocation_id"):
         invoke_step_in_container(step, {"title": "x"}, context=oversized_invocation)
+
+
+def test_non_transportable_invocations_are_rejected_on_both_paths() -> None:
+    """Inputs the container ABI cannot encode fail up front, on both paths."""
+
+    from syntara_plugin.testing import invoke_step_in_container
+
+    step = ReferenceTaskStep()
+    with pytest.raises(HarnessUsageError, match="JSON object"):
+        invoke_step(step, ["not", "a", "mapping"])
+    with pytest.raises(HarnessUsageError, match="JSON object"):
+        invoke_step_in_container(step, ["not", "a", "mapping"])
+
+    oversized = {"title": "x", "blob": "x" * 1_200_000}
+    with pytest.raises(HarnessUsageError, match="too large"):
+        invoke_step(step, oversized)
+    with pytest.raises(HarnessUsageError, match="too large"):
+        invoke_step_in_container(step, oversized)
+
+    context = build_execution_context(
+        invocation_id="json-probe", runtime_context={"probe": object()}
+    )
+    with pytest.raises(HarnessUsageError, match="JSON-compatible"):
+        invoke_step(step, {"title": "x"}, context=context)
+    with pytest.raises(HarnessUsageError, match="JSON-compatible"):
+        invoke_step_in_container(step, {"title": "x"}, context=context)
