@@ -1,14 +1,12 @@
 # Releasing the Python packages
 
-The repository publishes three Python packages as one versioned release train:
+The repository publishes two Python packages as one versioned release train:
 
 1. `syntara-plugin-contracts`
-2. `syntara-plugin-runtime`
-3. `syntara-plugin-sdk`
+2. `syntara-plugin-sdk`
 
-The runtime pins the matching contracts release and the SDK pins the matching
-runtime and contracts releases. This makes the protocol and contract bundle
-used by a released CLI explicit and reproducible.
+The contracts distribution contains the contract and runtime APIs and their
+dependencies. The SDK pins the matching contracts release.
 
 ## One-time PyPI and GitHub setup
 
@@ -37,16 +35,16 @@ publishers shortly before the first release and verify the names carefully.
 
 ## Release an alpha
 
-All four workspace project versions must match the release tag without its
+All three workspace project versions must match the release tag without its
 `v` prefix. For the first prerelease, the version is `0.1.0a1` and the GitHub
 release tag is `v0.1.0a1`.
 
 1. Merge the reviewed release preparation pull request into `devel`.
 2. Create a protected GitHub release from the merged commit using the matching
    `v<version>` tag. Mark an alpha or beta as a prerelease in GitHub.
-3. Approve the three `pypi` environment deployments when GitHub asks. The
+3. Approve the two `pypi` environment deployments when GitHub asks. The
    workflow builds and verifies all distributions once, then publishes the
-   contract package, runtime package, and SDK package in that order.
+   contracts package and SDK package in that order.
 4. Verify the package installation and its PyPI attestation:
 
    ```sh

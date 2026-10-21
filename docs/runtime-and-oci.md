@@ -45,7 +45,7 @@ The in-container plugin protocol is defined by
 The corresponding runtime work-item JSON shape is in
 [`runtime.schema.json`](../contracts/schemas/v1alpha1/runtime.schema.json).
 The Python helper implementation is in
-[`container.py`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/container.py).
+[`container.py`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/container.py).
 
 The ABI is the boundary between an Execution Plane launcher and an author
 workload. It carries invocation and workflow-run identities, step inputs,
@@ -63,7 +63,7 @@ identity.
 ## Typed Python steps
 
 Custom-runner authors implement steps with the typed Python API in
-[`syntara_plugin.runtime`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/).
+[`syntara_plugin.runtime`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/).
 `BaseStep[TInput, TOutput]` is bound to Pydantic v2 models and exposes one
 stable author-facing entrypoint, `execute(inputs, context)`. Subclasses
 implement `run()`; the shared dispatch boundary validates raw input and returns
@@ -91,7 +91,7 @@ separately.
 A step declares its data shape twice: the JSON Schemas in its manifest, which
 the platform renders and validates against, and the Pydantic models on its
 `BaseStep` subclass, which the code enforces. The
-[`contract_validation`](../sdks/python/packages/runtime/src/syntara_plugin/runtime/contract_validation.py)
+[`contract_validation`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/contract_validation.py)
 module compares the two before anything ships:
 
 ```python

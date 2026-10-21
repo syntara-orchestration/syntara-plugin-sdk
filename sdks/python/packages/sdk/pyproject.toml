@@ -8,7 +8,6 @@ requires-python = ">=3.12"
 dependencies = [
   "PyYAML>=6.0",
   "syntara-plugin-contracts==0.1.0a1",
-  "syntara-plugin-runtime==0.1.0a1",
 ]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
@@ -36,7 +35,6 @@ syntara_plugin_testing = "syntara_plugin.testing.plugin"
 
 [tool.uv.sources]
 syntara-plugin-contracts = { workspace = true }
-syntara-plugin-runtime = { workspace = true }
 
 [project.scripts]
 syntara-plugin = "syntara_plugin.sdk.cli:main"

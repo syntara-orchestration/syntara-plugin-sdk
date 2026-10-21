@@ -157,7 +157,7 @@ def test_both_runtime_ownership_classes_materialize_deterministically() -> None:
 
 
 def test_runtime_package_does_not_depend_on_sdk_implementation() -> None:
-    runtime_source = Path(__file__).parents[2] / "packages/runtime/src/syntara_plugin/runtime"
+    runtime_source = Path(__file__).parents[2] / "packages/contracts/src/syntara_plugin/runtime"
     assert "syntara_plugin.sdk" not in "\n".join(
         path.read_text() for path in runtime_source.glob("*.py")
     )

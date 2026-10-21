@@ -18,6 +18,6 @@ check:
 generate-container-protocol:
 	uv run --no-sync python -m grpc_tools.protoc \
 		--proto_path=contracts/proto \
-		--python_out=sdks/python/packages/runtime/src \
-		--grpc_python_out=sdks/python/packages/runtime/src \
+		--python_out=sdks/python/packages/contracts/src \
+		--grpc_python_out=sdks/python/packages/contracts/src \
 		contracts/proto/syntara_plugin/runtime/protocol/container.proto

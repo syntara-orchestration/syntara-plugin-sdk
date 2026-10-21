@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -29,6 +29,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           git fetch origin devel
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
           git merge-base --is-ancestor "$GITHUB_SHA" origin/devel
           python - <<'PY'
           import os
@@ -42,7 +43,6 @@ jobs:
           projects = [
               Path("pyproject.toml"),
               Path("sdks/python/packages/contracts/pyproject.toml"),
-              Path("sdks/python/packages/runtime/pyproject.toml"),
               Path("sdks/python/packages/sdk/pyproject.toml"),
           ]
           versions = {
@@ -53,13 +53,12 @@ jobs:
               detail = ", ".join(f"{path}: {value}" for path, value in versions.items())
               raise SystemExit(f"Release tag {tag!r} does not match package versions: {detail}")
           with Path(os.environ["GITHUB_ENV"]).open("a") as github_env:
-              github_env.write(f"RELEASE_VERSION={version}\\n")
+              github_env.write(f"RELEASE_VERSION={version}\n")
           PY
       - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
       - run: uv run --no-sync --no-build pytest sdks/python/tests -q
       - run: uv run --no-sync --no-build pre-commit run --all-files
       - run: uv build --package syntara-plugin-contracts --out-dir release-dist/contracts
-      - run: uv build --package syntara-plugin-runtime --out-dir release-dist/runtime
       - run: uv build --package syntara-plugin-sdk --out-dir release-dist/sdk
       - run: uv run --no-sync --no-build twine check --strict release-dist/*/*
       - name: Smoke-test the release wheels outside the workspace
@@ -67,7 +66,6 @@ jobs:
           uv venv --clear .venv-release
           uv pip install --no-build --python .venv-release/bin/python \
             --find-links release-dist/contracts \
-            --find-links release-dist/runtime \
             --find-links release-dist/sdk \
             "syntara-plugin-sdk==$RELEASE_VERSION"
           .venv-release/bin/syntara-plugin --help
@@ -84,12 +82,6 @@ jobs:
         with:
           name: contracts-distributions
           path: release-dist/contracts
-          if-no-files-found: error
-          retention-days: 5
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: runtime-distributions
-          path: release-dist/runtime
           if-no-files-found: error
           retention-days: 5
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -119,29 +111,9 @@ jobs:
           packages-dir: dist
           attestations: true
 
-  publish-runtime:
-    name: Publish syntara-plugin-runtime
-    needs: publish-contracts
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/syntara-plugin-runtime/
-    permissions:
-      actions: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: runtime-distributions
-          path: dist
-      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
-        with:
-          packages-dir: dist
-          attestations: true
-
   publish-sdk:
     name: Publish syntara-plugin-sdk
-    needs: publish-runtime
+    needs: publish-contracts
     runs-on: ubuntu-latest
     environment:
       name: pypi

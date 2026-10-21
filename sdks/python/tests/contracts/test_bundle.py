@@ -367,8 +367,8 @@ def test_control_plane_fixtures_are_readable_by_each_python_package_boundary() -
     )
 
     # Both package boundaries receive the same immutable contract bundle rather
-    # than language-local schema copies. The control plane itself is not part
-    # of the runtime package and therefore cannot execute from this fixture.
+    # than language-local schema copies. This fixture covers contract data only;
+    # it does not exercise control-plane behavior.
     assert RuntimeContractBundle is SdkContractBundle
     assert validate_document(bundle, "installed_identity", fixture) == []
 

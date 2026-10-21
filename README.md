@@ -10,7 +10,7 @@ The SDK gives plugin authors one public command: `syntara-plugin`.
 ## Start here
 
 The SDK is currently developed from source. Clone this repository and install
-its three Python packages in editable mode:
+its two Python packages in editable mode:
 
 ```sh
 git clone https://github.com/syntara-orchestration/syntara-plugin-sdk.git
@@ -19,7 +19,6 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install \
   --editable ./sdks/python/packages/contracts \
-  --editable ./sdks/python/packages/runtime \
   --editable ./sdks/python/packages/sdk
 ```
 
@@ -105,16 +104,16 @@ language implementations do not maintain private schema copies.
 
 ## Contributing
 
-The repository contains language-neutral contracts plus the Python SDK,
-runtime, and contract packages:
+The repository contains language-neutral contracts plus the Python SDK and
+contracts distribution. The shared contracts distribution provides the
+contract and runtime APIs used by both the SDK and Execution Plane:
 
 ```text
 contracts/                    # normative JSON Schema, fixtures, and protobuf ABI
 examples/                     # small author-facing plugin workspaces
 docs/                         # guides and language reference
 sdks/python/packages/sdk/     # syntara-plugin-sdk and CLI
-sdks/python/packages/runtime/ # workload runtime helpers
-sdks/python/packages/contracts/ # packaged contract bundle
+sdks/python/packages/contracts/ # shared contracts and runtime APIs
 sdks/python/tests/            # Python tests
 ```
 
