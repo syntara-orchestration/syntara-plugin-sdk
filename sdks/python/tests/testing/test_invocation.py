@@ -154,8 +154,9 @@ def test_unprovenanced_bindings_are_rejected_with_guidance() -> None:
     descriptor = StepDescriptor.for_step("unprovenanced.action", step)
     bindings = StepBindings()
     bindings.bind(descriptor, step)
+    binding = bindings.binding("unprovenanced.action")
     with pytest.raises(HarnessUsageError, match="installed manifest"):
-        invoke_step(bindings.binding("unprovenanced.action"), {"value": "x"})
+        invoke_step(binding, {"value": "x"})
 
 
 def test_credential_reference_input_does_not_leak_into_the_outcome() -> None:

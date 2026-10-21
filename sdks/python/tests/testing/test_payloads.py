@@ -230,5 +230,6 @@ def test_function_local_step_classes_are_rejected_with_guidance() -> None:
             return _ChainOutput(summary="unreachable")
 
     context = build_execution_context(invocation_id="local-class")
+    step = LocalStep()
     with pytest.raises(HarnessUsageError, match="module level"):
-        invoke_step(LocalStep(), {}, context=context)
+        invoke_step(step, {}, context=context)
