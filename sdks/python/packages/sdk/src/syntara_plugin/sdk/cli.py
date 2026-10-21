@@ -55,6 +55,7 @@ from .testgen import ScaffoldError, generate_step_tests
 from .workload import WorkloadBuildError, WorkloadBuildRequest, build_and_push_workload
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+_FIELD_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,127}$")
 _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MACHINE_READABLE_OUTPUT_HELP = "Print machine-readable output."
@@ -108,6 +109,12 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--name", help="Plugin name (default: final directory name).")
     init.add_argument("--version", default="0.1.0", help="Plugin SemVer version (default: 0.1.0).")
     init.add_argument("--action", default="request", help="Initial action name (default: request).")
+    init.add_argument(
+        "--optional-field",
+        action="append",
+        default=None,
+        help="Additional optional action input field (repeatable).",
+    )
 
     test_init = commands.add_parser(
         "test-init",
@@ -669,6 +676,14 @@ def _invalid_init_argument(arguments: argparse.Namespace, name: str) -> str | No
     ):
         if not pattern.fullmatch(value):
             return f"{label} is not valid: {value!r}"
+    fields = arguments.optional_field or []
+    if len(fields) != len(set(fields)):
+        return "optional fields must be unique"
+    for field in fields:
+        if field == "resource":
+            return "optional field 'resource' is already included"
+        if not _FIELD_IDENTIFIER.fullmatch(field):
+            return f"optional field is not valid: {field!r}"
     return None
 
 
@@ -687,7 +702,9 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
     (directory / action_path).write_text(
         _action_template(arguments.action, input_path), encoding="utf-8"
     )
-    (directory / input_path).write_text(_input_template(), encoding="utf-8")
+    (directory / input_path).write_text(
+        _input_template(arguments.optional_field or []), encoding="utf-8"
+    )
     (directory / "docs" / "README.md").write_text(
         _readme_template(name, arguments.action), encoding="utf-8"
     )
@@ -1444,20 +1461,24 @@ def _action_template(action: str, input_path: Path) -> str:
     )
 
 
-def _input_template() -> str:
+def _input_template(optional_fields: Sequence[str]) -> str:
     """Return one bounded input schema for the generated action."""
+    fields = ["resource", *optional_fields]
+    required = "  - resource\n"
+    properties = "".join(
+        f"  {field}:\n"
+        "    type: string\n"
+        "    minLength: 1\n"
+        "    maxLength: 128\n"
+        f"    description: {'Required' if field == 'resource' else 'Optional'} input field.\n"
+        for field in fields
+    )
     return (
         "type: object\n"
         "description: Inputs accepted by this action.\n"
         "additionalProperties: false\n"
-        "required:\n"
-        "  - resource\n"
-        "properties:\n"
-        "  resource:\n"
-        "    type: string\n"
-        "    minLength: 1\n"
-        "    maxLength: 128\n"
-        "    description: Provider resource identifier.\n"
+        f"required:\n{required}"
+        f"properties:\n{properties}"
     )
 
 

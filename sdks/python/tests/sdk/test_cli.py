@@ -69,6 +69,61 @@ def test_init_creates_a_compilable_workspace_and_validate_reports_its_digest(
     assert payload["assetCount"] == 2
 
 
+def test_init_accepts_additional_optional_fields_and_generates_a_valid_schema(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """CLI scaffolding turns optional-field options into schema declarations."""
+    workspace = tmp_path / "issue-tools"
+
+    assert (
+        main(
+            [
+                "init",
+                str(workspace),
+                "--optional-field",
+                "title",
+                "--optional-field",
+                "issue_count",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    schema = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert schema["required"] == ["resource"]
+    assert set(schema["properties"]) == {"resource", "title", "issue_count"}
+    assert schema["properties"]["title"]["description"] == "Optional input field."
+
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        (["title", "title"], "optional fields must be unique"),
+        (["resource"], "optional field 'resource' is already included"),
+        (["1-title"], "optional field is not valid"),
+    ],
+)
+def test_init_rejects_invalid_optional_fields(
+    tmp_path: Path, capsys, fields: list[str], message: str
+) -> None:
+    """Invalid or duplicate fields are rejected before files are written."""
+    workspace = tmp_path / "invalid-fields"
+    arguments = ["init", str(workspace)]
+    for field in fields:
+        arguments.extend(("--optional-field", field))
+
+    assert main(arguments) == 2
+    assert message in capsys.readouterr().err
+    assert not workspace.exists()
+
+
 def test_manifest_adjacent_settings_win_over_an_unrelated_cwd_settings_file(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
