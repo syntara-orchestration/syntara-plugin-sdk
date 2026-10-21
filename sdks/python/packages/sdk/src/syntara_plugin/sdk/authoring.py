@@ -868,13 +868,12 @@ def _validate_bindings(
     *,
     require_image_bindings: bool,
 ) -> None:
-    has_custom_runner = any(
+    workload_image = _root_workload_image(plugin)
+    if workload_image is None and any(
         isinstance(target.get("runtime"), Mapping)
         and target["runtime"].get("kind") == "custom-runner"
         for target in targets
-    )
-    workload = plugin.get("spec", {}).get("workload")
-    if has_custom_runner and not isinstance(workload, Mapping):
+    ):
         diagnostics.append(
             _diagnostic(
                 "WORKLOAD_MISSING",
@@ -883,7 +882,6 @@ def _validate_bindings(
                 "Add spec.workload.image to the root manifest.",
             )
         )
-    workload_image = _root_workload_image(plugin)
     if workload_image is not None and workload_image in _provider_image_ids(plugin):
         diagnostics.append(
             _diagnostic(
