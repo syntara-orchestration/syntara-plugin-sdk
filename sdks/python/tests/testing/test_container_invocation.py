@@ -22,7 +22,7 @@ from syntara_plugin.testing.payloads import (
 )
 
 
-class CrashingTask(ReferenceControlStep):
+class CrashingStep(ReferenceControlStep):
     def run(self, inputs: Any, context: Any) -> Any:
         raise RuntimeError("the business logic crashed")
 
@@ -157,8 +157,8 @@ def test_schema_invalid_outputs_are_equivalent_as_raised_failures() -> None:
 
 def test_business_crashes_are_equivalent_as_raised_failures() -> None:
     context = build_execution_context(invocation_id="equiv-crash")
-    direct = invoke_step(CrashingTask(), {"title": "x"}, context=context)
-    container = invoke_step_in_container(CrashingTask(), {"title": "x"}, context=context)
+    direct = invoke_step(CrashingStep(), {"title": "x"}, context=context)
+    container = invoke_step_in_container(CrashingStep(), {"title": "x"}, context=context)
     assert_outcomes_equivalent(direct, container)
 
 

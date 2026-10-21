@@ -25,7 +25,7 @@ class LocalOutput(BaseModel):
     result: str = "y"
 
 
-class LocalTask(ControlStep[LocalInput, LocalOutput]):
+class LocalStep(ControlStep[LocalInput, LocalOutput]):
     def run(self, inputs: LocalInput, context: ExecutionContext) -> LocalOutput:
         return LocalOutput(result=inputs.value)
 
@@ -57,8 +57,8 @@ def test_parse_entry_point_rejects_malformed_strings(entry_point: str) -> None:
 
 
 def test_load_step_class_imports_module_level_step() -> None:
-    step_class = load_step_class(f"{__name__}:LocalTask")
-    assert step_class is LocalTask
+    step_class = load_step_class(f"{__name__}:LocalStep")
+    assert step_class is LocalStep
 
 
 def test_load_step_class_rejects_missing_module() -> None:
@@ -77,17 +77,17 @@ def test_load_step_class_rejects_non_step_attribute() -> None:
 
 
 def test_entry_point_of_round_trips_through_load_step_class() -> None:
-    entry_point = entry_point_of(LocalTask)
-    assert entry_point == f"{__name__}:LocalTask"
-    assert load_step_class(entry_point) is LocalTask
+    entry_point = entry_point_of(LocalStep)
+    assert entry_point == f"{__name__}:LocalStep"
+    assert load_step_class(entry_point) is LocalStep
 
 
 def test_resolve_step_from_class_instance_and_entry_point() -> None:
-    from_class = resolve_step(LocalTask)
-    assert isinstance(from_class, LocalTask)
+    from_class = resolve_step(LocalStep)
+    assert isinstance(from_class, LocalStep)
     assert resolve_step(from_class) is from_class
-    from_entry_point = resolve_step(f"{__name__}:LocalTask")
-    assert isinstance(from_entry_point, LocalTask)
+    from_entry_point = resolve_step(f"{__name__}:LocalStep")
+    assert isinstance(from_entry_point, LocalStep)
 
 
 def test_resolve_step_rejects_non_step_objects() -> None:
