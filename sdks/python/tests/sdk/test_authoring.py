@@ -736,6 +736,71 @@ def test_custom_runner_accepts_digest_pinned_registry_reference_with_port(tmp_pa
     }
 
 
+def test_plugin_rejects_multiple_workload_images() -> None:
+    plugin = _plugin()
+    specification = plugin["spec"]
+    assert isinstance(specification, dict)
+    specification["workloads"] = {
+        "python-workload": {"language": "python"},
+        "node-workload": {"language": "node"},
+    }
+    del specification["workload"]
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(_typed_plugin(plugin), [])
+
+    assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
+
+
+def test_plugin_workload_does_not_declare_a_language() -> None:
+    plugin = _plugin()
+    specification = plugin["spec"]
+    assert isinstance(specification, dict)
+    specification["workload"] = {"image": "plugin-workload", "language": "python"}
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(_typed_plugin(plugin), [])
+
+    assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
+
+
+def test_custom_runner_action_requires_one_root_workload() -> None:
+    plugin = _plugin()
+    specification = plugin["spec"]
+    assert isinstance(specification, dict)
+    del specification["workload"]
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(plugin),
+            [
+                Target(
+                    "steps/create-issue/manifest.yaml",
+                    _action({"kind": "inline", "value": {"type": "object"}}),
+                )
+            ],
+        )
+
+    assert "WORKLOAD_MISSING" in {item.code for item in error.value.diagnostics}
+
+
+def test_action_does_not_select_a_workload() -> None:
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    specification = action["spec"]
+    assert isinstance(specification, dict)
+    runtime = specification["runtime"]
+    assert isinstance(runtime, dict)
+    runtime["workload"] = "plugin-workload"
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(_plugin()),
+            [Target("steps/create-issue/manifest.yaml", action)],
+        )
+
+    assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
+
+
 def test_rejects_case_collisions_archives_and_oversized_assets(tmp_path: Path) -> None:
     first = _action({"kind": "inline", "value": {"type": "object"}})
     second = {

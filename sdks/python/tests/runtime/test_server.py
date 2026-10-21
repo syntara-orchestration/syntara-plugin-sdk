@@ -87,12 +87,10 @@ def write_runtime_config(
     tmp_path: Path,
     *,
     abi: str = "syntara.container/v1alpha1",
-    language: str = "python",
     adapter: object | None = None,
 ) -> Path:
     document = {
         "abi": abi,
-        "language": language,
         "adapter": adapter
         if adapter is not None
         else {"bindingsFactory": "example:create"},
@@ -434,11 +432,14 @@ def test_runtime_config_rejects_the_wrong_abi(tmp_path: Path) -> None:
         load_runtime_server_config(config_path=config_path)
 
 
-def test_runtime_config_rejects_a_language_not_supported_by_this_adapter(
+def test_runtime_config_rejects_a_language_field(
     tmp_path: Path,
 ) -> None:
-    config_path = write_runtime_config(tmp_path, language="node")
-    with pytest.raises(RuntimeServerError, match="language=python"):
+    config_path = write_runtime_config(tmp_path)
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    document["language"] = "python"
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(RuntimeServerError, match="exactly abi and adapter"):
         load_runtime_server_config(config_path=config_path)
 
 

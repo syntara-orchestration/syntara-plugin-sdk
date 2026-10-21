@@ -224,14 +224,11 @@ def _runtime_document(
 
 
 def _bindings_factory(document: Mapping[str, Any]) -> str:
-    if set(document) != {"abi", "language", "adapter"}:
-        message = "runtime config requires exactly abi, language, and adapter"
+    if set(document) != {"abi", "adapter"}:
+        message = "runtime config requires exactly abi and adapter"
         raise RuntimeServerError(message)
     if document["abi"] != CONTAINER_ABI:
         message = f"runtime config ABI must be {CONTAINER_ABI}"
-        raise RuntimeServerError(message)
-    if document["language"] != "python":
-        message = "this runtime adapter supports language=python only"
         raise RuntimeServerError(message)
     adapter = document["adapter"]
     if not isinstance(adapter, Mapping) or set(adapter) != {"bindingsFactory"}:

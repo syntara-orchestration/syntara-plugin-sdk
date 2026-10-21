@@ -56,7 +56,7 @@ Kubernetes, or the Execution Plane.
 ## Change contracts deliberately
 
 The schemas and protobufs are the public SDK specification. Do not implement a
-private language-specific interpretation.
+private adapter-specific interpretation.
 
 When changing a contract:
 

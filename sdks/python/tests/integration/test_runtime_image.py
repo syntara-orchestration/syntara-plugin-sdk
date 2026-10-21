@@ -183,7 +183,6 @@ def _build_sample_wheel(context: Path, output: Path) -> None:
 def _write_runtime_config(context: Path) -> None:
     document = {
         "abi": "syntara.container/v1alpha1",
-        "language": "python",
         "adapter": {
             "bindingsFactory": "syntara_sample_step.runtime:create_bindings"
         },

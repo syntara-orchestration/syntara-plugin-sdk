@@ -56,7 +56,7 @@ Schema: [`plugin.schema.json`](../contracts/schemas/v1alpha1/plugin.schema.json)
 | --- | --- |
 | `spec.targets` | Required list of contained YAML target paths. These are Step types, integration types, and credential recipes included in the release. |
 | `spec.documentation.path` | Required contained UTF-8 Markdown file published with the plugin. |
-| `spec.workload.image` | Optional logical image ID shared by `custom-runner` Step types. It is bound to an immutable container digest during build. |
+| `spec.workload.image` | Optional logical image ID shared by every `custom-runner` Step type. A plugin has at most one runner image, which is bound to an immutable container digest during build. |
 | `spec.providers` | Optional declarative form-provider image definitions. Each item has an `id` and a logical `image` ID. |
 
 ## `kind: Action`
