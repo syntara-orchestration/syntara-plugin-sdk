@@ -20,7 +20,10 @@ from .adapter import step_registry_from_bindings
 from .bindings import StepBindings
 from .container import (
     INCOMPLETE_STEP_MESSAGE,
+    ContainerInvocation,
     ContainerInvocationError,
+    ContainerResult,
+    ContainerStepHandler,
     StepRegistry,
     failure_event,
     invocation_from_request,
@@ -60,7 +63,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             handler = self._steps.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
             context.add_done_callback(cancellation.set)
-            result = await asyncio.to_thread(handler, invocation)
+            result = await self._execute_step(handler, invocation)
             yield terminal_execution_event(invocation, result)
         except ContainerInvocationError as error:
             yield failure_event(invocation_id, error)
@@ -111,6 +114,31 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     def _unregister_invocation(self, invocation_id: str, cancellation: Event) -> None:
         if self._active.get(invocation_id) is cancellation:
             del self._active[invocation_id]
+
+    async def _execute_step(
+        self, handler: ContainerStepHandler, invocation: ContainerInvocation
+    ) -> ContainerResult:
+        task = asyncio.create_task(asyncio.to_thread(handler, invocation))
+        task.add_done_callback(_discard_step_result)
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(task), timeout=invocation.timeout_seconds
+            )
+        except TimeoutError:
+            if task.done():
+                return task.result()
+            invocation.cancellation.set()
+            raise ContainerInvocationError(
+                FailureCode.TIMEOUT,
+                "The plugin step exceeded its execution timeout.",
+                retryable=True,
+                outcome="not_completed",
+            ) from None
+
+
+def _discard_step_result(task: asyncio.Task[ContainerResult]) -> None:
+    if not task.cancelled():
+        task.exception()
 
 
 @dataclass(frozen=True)

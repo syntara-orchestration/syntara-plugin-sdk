@@ -22,7 +22,10 @@ from syntara_plugin.runtime import (
     StepDescriptor,
     TaskStep,
 )
+from syntara_plugin.runtime.adapter import step_registry_from_bindings
+from syntara_plugin.runtime.protocol import container_pb2
 from syntara_plugin.runtime.server import (
+    AsyncContainerRuntimeService,
     RuntimeServerConfig,
     RuntimeServerError,
     create_runtime_server,
@@ -61,6 +64,28 @@ class CancellationStep(TaskStep[EchoInput, EchoOutput]):
         return EchoOutput(message=inputs.message)
 
 
+class CooperativeTimeoutStep(TaskStep[EchoInput, EchoOutput]):
+    def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+        context.cancellation.wait(timeout=5)
+        return EchoOutput(message=inputs.message)
+
+
+class UncancellableTimeoutStep(TaskStep[EchoInput, EchoOutput]):
+    release = threading.Event()
+    finished = threading.Event()
+
+    def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+        del context
+        self.release.wait(timeout=5)
+        self.finished.set()
+        return EchoOutput(message=inputs.message)
+
+
+class FakeServicerContext:
+    def add_done_callback(self, callback: object) -> None:
+        del callback
+
+
 def create_bindings() -> StepBindings:
     step = EchoStep()
     bindings = StepBindings()
@@ -80,6 +105,20 @@ def create_cancellation_bindings() -> StepBindings:
     step = CancellationStep()
     bindings = StepBindings()
     bindings.bind(StepDescriptor.for_step("smoke.cancellation.v1", step), step)
+    return bindings
+
+
+def create_cooperative_timeout_bindings() -> StepBindings:
+    step = CooperativeTimeoutStep()
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_step("smoke.cooperative-timeout.v1", step), step)
+    return bindings
+
+
+def create_uncancellable_timeout_bindings() -> StepBindings:
+    step = UncancellableTimeoutStep()
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_step("smoke.uncancellable-timeout.v1", step), step)
     return bindings
 
 
@@ -142,6 +181,38 @@ def _cancellation_invocation() -> ContainerInvocation:
         timeout_seconds=30,
         runtime_context={},
     )
+
+
+def _timeout_invocation(step_revision_id: str) -> ContainerInvocation:
+    return ContainerInvocation(
+        invocation_id="invocation-1",
+        workflow_run_id="workflow-run-1",
+        step_revision_id=step_revision_id,
+        inputs={"message": "timeout"},
+        credential_file_paths={},
+        timeout_seconds=1,
+        runtime_context={},
+    )
+
+
+async def _service_events(
+    service: AsyncContainerRuntimeService,
+    invocation: ContainerInvocation,
+    *,
+    release: threading.Event | None = None,
+) -> list[container_pb2.ExecutionEvent]:
+    request = container_pb2.ExecuteRequest(
+        invocation_id=invocation.invocation_id,
+        workflow_run_id=invocation.workflow_run_id,
+        step_revision_id=invocation.step_revision_id,
+        runtime_abi="syntara.container/v1alpha1",
+        inputs_json=json.dumps({"message": invocation.inputs["message"]}).encode(),
+        timeout_seconds=invocation.timeout_seconds,
+    )
+    events = [event async for event in service.Execute(request, FakeServicerContext())]
+    if release is not None:
+        release.set()
+    return events
 
 
 def _run_openssl(*arguments: str) -> None:
@@ -313,6 +384,57 @@ def test_runtime_server_cancels_an_active_step() -> None:
         assert raised.value.outcome == "not_completed"
 
     asyncio.run(scenario())
+
+
+def test_runtime_server_times_out_a_cooperative_step() -> None:
+    service = AsyncContainerRuntimeService(
+        step_registry_from_bindings(create_cooperative_timeout_bindings())
+    )
+
+    events = asyncio.run(
+        _service_events(service, _timeout_invocation("smoke.cooperative-timeout.v1"))
+    )
+
+    assert len(events) == 1
+    assert events[0].WhichOneof("event") == "failure"
+    assert events[0].failure.code == FailureCode.TIMEOUT
+    assert events[0].failure.retryable is True
+    assert events[0].failure.outcome == "not_completed"
+    cancellation_response = asyncio.run(
+        service.Cancel(
+            container_pb2.CancelRequest(invocation_id="invocation-1"),
+            FakeServicerContext(),
+        )
+    )
+    assert cancellation_response.accepted is False
+
+
+def test_runtime_server_times_out_an_uncancellable_step() -> None:
+    service = AsyncContainerRuntimeService(
+        step_registry_from_bindings(create_uncancellable_timeout_bindings())
+    )
+
+    events = asyncio.run(
+        _service_events(
+            service,
+            _timeout_invocation("smoke.uncancellable-timeout.v1"),
+            release=UncancellableTimeoutStep.release,
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].WhichOneof("event") == "failure"
+    assert events[0].failure.code == FailureCode.TIMEOUT
+    assert events[0].failure.outcome == "not_completed"
+
+    assert UncancellableTimeoutStep.finished.wait(timeout=5)
+    cancellation_response = asyncio.run(
+        service.Cancel(
+            container_pb2.CancelRequest(invocation_id="invocation-1"),
+            FakeServicerContext(),
+        )
+    )
+    assert cancellation_response.accepted is False
 
 
 def test_runtime_server_serves_health_and_steps_over_mutual_tls(
