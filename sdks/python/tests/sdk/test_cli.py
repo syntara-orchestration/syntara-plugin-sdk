@@ -81,10 +81,10 @@ def test_init_accepts_additional_optional_fields_and_generates_a_valid_schema(
             [
                 "init",
                 str(workspace),
-                "--optional-field",
-                "title",
-                "--optional-field",
-                "issue_count",
+                "--optional-fields",
+                "title,issue_count",
+                "--optional-fields",
+                "assignee",
             ]
         )
         == 0
@@ -95,7 +95,7 @@ def test_init_accepts_additional_optional_fields_and_generates_a_valid_schema(
     )
 
     assert schema["required"] == ["resource"]
-    assert set(schema["properties"]) == {"resource", "title", "issue_count"}
+    assert set(schema["properties"]) == {"resource", "title", "issue_count", "assignee"}
     assert schema["properties"]["title"]["description"] == "Optional input field."
 
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
@@ -117,7 +117,7 @@ def test_init_rejects_invalid_optional_fields(
     workspace = tmp_path / "invalid-fields"
     arguments = ["init", str(workspace)]
     for field in fields:
-        arguments.extend(("--optional-field", field))
+        arguments.extend(("--optional-fields", field))
 
     assert main(arguments) == 2
     assert message in capsys.readouterr().err

@@ -110,10 +110,10 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--version", default="0.1.0", help="Plugin SemVer version (default: 0.1.0).")
     init.add_argument("--action", default="request", help="Initial action name (default: request).")
     init.add_argument(
-        "--optional-field",
+        "--optional-fields",
         action="append",
         default=None,
-        help="Additional optional action input field (repeatable).",
+        help="Comma-separated optional action input fields; option may be repeated.",
     )
 
     test_init = commands.add_parser(
@@ -676,7 +676,7 @@ def _invalid_init_argument(arguments: argparse.Namespace, name: str) -> str | No
     ):
         if not pattern.fullmatch(value):
             return f"{label} is not valid: {value!r}"
-    fields = arguments.optional_field or []
+    fields = _optional_fields(arguments)
     if len(fields) != len(set(fields)):
         return "optional fields must be unique"
     for field in fields:
@@ -685,6 +685,14 @@ def _invalid_init_argument(arguments: argparse.Namespace, name: str) -> str | No
         if not _FIELD_IDENTIFIER.fullmatch(field):
             return f"optional field is not valid: {field!r}"
     return None
+
+
+def _optional_fields(arguments: argparse.Namespace) -> list[str]:
+    return [
+        field.strip()
+        for value in arguments.optional_fields or []
+        for field in value.split(",")
+    ]
 
 
 def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) -> None:
@@ -703,7 +711,7 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
         _action_template(arguments.action, input_path), encoding="utf-8"
     )
     (directory / input_path).write_text(
-        _input_template(arguments.optional_field or []), encoding="utf-8"
+        _input_template(_optional_fields(arguments)), encoding="utf-8"
     )
     (directory / "docs" / "README.md").write_text(
         _readme_template(name, arguments.action), encoding="utf-8"

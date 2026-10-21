@@ -12,12 +12,13 @@ Install the released CLI or prepare an unreleased checkout by following
 ## Create your first plugin
 
 ```sh
-syntara-plugin init ./my-plugin --namespace acme --optional-field title
+syntara-plugin init ./my-plugin --namespace acme --optional-fields title
 cd ./my-plugin
 ```
 
-Repeat `--optional-field NAME` for each additional optional input field. The
-generated input schema always includes the built-in required `resource` field.
+Pass a comma-separated list to `--optional-fields` for each additional optional
+input field. The generated input schema always includes the built-in required
+`resource` field.
 
 The generated workspace contains:
 
