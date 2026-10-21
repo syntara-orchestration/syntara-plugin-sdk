@@ -5,7 +5,7 @@ metadata:
   name: python-steps
   version: 0.1.0
   displayName: Python steps
-  description: One example step for each taxonomy class.
+  description: One example step for each Syntara kind.
 spec:
   documentation:
     path: docs/README.md

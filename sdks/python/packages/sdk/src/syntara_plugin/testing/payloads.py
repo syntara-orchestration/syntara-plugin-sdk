@@ -59,14 +59,14 @@ class ReferenceOutput(BaseModel):
 
 
 class ReferenceControlStep(ControlStep[ReferenceInput, ReferenceOutput]):
-    """A representative Task implementation used by harness tests and examples."""
+    """A representative Control implementation used by harness tests and examples."""
 
     def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
         return ReferenceOutput(summary=f"processed {inputs.title}", priority=inputs.priority)
 
 
 class FailingReferenceStep(ControlStep[ReferenceInput, ReferenceOutput]):
-    """A Task that deliberately fails with a safe, retryable error."""
+    """A Control step that deliberately fails with a safe, retryable error."""
 
     def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
         raise ContainerInvocationError(

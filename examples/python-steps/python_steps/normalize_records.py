@@ -1,4 +1,4 @@
-"""An example Task step: normalize record names."""
+"""An example Control step: normalize record names."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class NormalizeRecordsOutput(BaseModel):
     count: int
 
 
-class NormalizeRecordsTask(ControlStep[NormalizeRecordsInput, NormalizeRecordsOutput]):
+class NormalizeRecordsStep(ControlStep[NormalizeRecordsInput, NormalizeRecordsOutput]):
     """Lowercase and trim every record name."""
 
     def run(

@@ -45,8 +45,9 @@ def mock_execution_context() -> Callable[..., ExecutionContext]:
 def step_bindings() -> StepBindingsFactory:
     """Factory fixture building drift-verified step bindings.
 
-    Use ``step_bindings.bind(step)`` for Task, Workflow, and Trigger steps and
-    ``step_bindings.bind_action(entry_point, workspace=...)`` for Actions.
+    Use ``step_bindings.bind(step)`` for any step (a locally installed
+    manifest) and ``step_bindings.bind_action(entry_point, workspace=...)``
+    for Actions compiled from a real workspace.
     """
 
     return StepBindingsFactory()

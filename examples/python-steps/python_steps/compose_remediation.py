@@ -1,9 +1,9 @@
-"""An example Workflow step: compose a remediation plan.
+"""An example Control step: compose a remediation plan.
 
-Workflow steps implement composition inside ``run()``: this example composes
+Control steps implement composition inside ``run()``: this example composes
 normalization and planning into one opaque operation, which is exactly the
 boundary the authoring guide discusses (combine operations inside one step or
-split them across workflow steps).
+split them across Control steps).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ class ComposeRemediationOutput(BaseModel):
     total: int
 
 
-class ComposeRemediationWorkflow(
+class ComposeRemediationStep(
     ControlStep[ComposeRemediationInput, ComposeRemediationOutput]
 ):
     """Normalize the records, then build one remediation action per record."""

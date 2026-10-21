@@ -27,7 +27,7 @@ class UpperOutput(BaseModel):
     upper: str
 
 
-class UpperTask(ControlStep[UpperInput, UpperOutput]):
+class UpperStep(ControlStep[UpperInput, UpperOutput]):
     def run(self, inputs: UpperInput, context: ExecutionContext) -> UpperOutput:
         return UpperOutput(upper=inputs.text.upper())
 
@@ -40,7 +40,7 @@ class CountVowelsOutput(BaseModel):
     vowel_count: int
 
 
-class CountVowelsTask(ControlStep[CountVowelsInput, CountVowelsOutput]):
+class CountVowelsStep(ControlStep[CountVowelsInput, CountVowelsOutput]):
     def run(self, inputs: CountVowelsInput, context: ExecutionContext) -> CountVowelsOutput:
         return CountVowelsOutput(
             vowel_count=sum(character in "AEIOU" for character in inputs.upper)
@@ -52,7 +52,7 @@ class StrictInput(BaseModel):
     mandatory_extra: str
 
 
-class StrictTask(ControlStep[StrictInput, CountVowelsOutput]):
+class StrictStep(ControlStep[StrictInput, CountVowelsOutput]):
     def run(self, inputs: StrictInput, context: ExecutionContext) -> CountVowelsOutput:
         return CountVowelsOutput(vowel_count=0)
 
@@ -66,7 +66,7 @@ class CaptureIdOutput(BaseModel):
     workflow_run_id: str
 
 
-class CaptureIdTask(ControlStep[CaptureIdInput, CaptureIdOutput]):
+class CaptureIdStep(ControlStep[CaptureIdInput, CaptureIdOutput]):
     def run(self, inputs: CaptureIdInput, context: ExecutionContext) -> CaptureIdOutput:
         return CaptureIdOutput(
             invocation_id=context.invocation_id,
@@ -83,7 +83,7 @@ def _bind(step: Any, identity: str) -> Any:
 
 def test_chain_executes_steps_sequentially_through_a_seam() -> None:
     outcome = chain_steps(
-        [_bind(UpperTask, "chain.upper"), _bind(CountVowelsTask, "chain.count")],
+        [_bind(UpperStep, "chain.upper"), _bind(CountVowelsStep, "chain.count")],
         {"text": "hello"},
         seams=[identity_seam],
     )
@@ -95,7 +95,7 @@ def test_chain_executes_steps_sequentially_through_a_seam() -> None:
 
 def test_chain_default_seam_passes_output_through() -> None:
     outcome = chain_steps(
-        [_bind(UpperTask, "chain.upper"), _bind(CountVowelsTask, "chain.count")],
+        [_bind(UpperStep, "chain.upper"), _bind(CountVowelsStep, "chain.count")],
         {"text": "queue"},
     )
     assert outcome.ok
@@ -104,7 +104,7 @@ def test_chain_default_seam_passes_output_through() -> None:
 
 def test_chain_gives_each_link_its_own_invocation_id() -> None:
     outcome = chain_steps(
-        [_bind(CaptureIdTask, "chain.id-one"), _bind(CaptureIdTask, "chain.id-two")],
+        [_bind(CaptureIdStep, "chain.id-one"), _bind(CaptureIdStep, "chain.id-two")],
         {"text": "x"},
         seams=[lambda output: {"text": str(output["invocation_id"])}],
     )
@@ -126,9 +126,9 @@ class _FailingVowelsStep(ControlStep[CountVowelsInput, CountVowelsOutput]):
 
 def test_chain_fails_fast_naming_the_broken_link() -> None:
     bindings = [
-        _bind(UpperTask, "chain.upper"),
+        _bind(UpperStep, "chain.upper"),
         _bind(_FailingVowelsStep, "chain.failing"),
-        _bind(CountVowelsTask, "chain.count"),
+        _bind(CountVowelsStep, "chain.count"),
     ]
     outcome = chain_steps(
         bindings,
@@ -150,23 +150,23 @@ def test_chain_rejects_empty_bindings() -> None:
 
 def test_chain_rejects_wrong_seam_counts() -> None:
     bindings = [
-        _bind(UpperTask, "chain.upper"),
-        _bind(CountVowelsTask, "chain.count"),
+        _bind(UpperStep, "chain.upper"),
+        _bind(CountVowelsStep, "chain.count"),
     ]
     with pytest.raises(ValueError, match="seams"):
         chain_steps(bindings, {"text": "hello"}, seams=[identity_seam, identity_seam])
 
 
 def test_check_seam_compatible_passes_for_matching_schemas() -> None:
-    source = _bind(UpperTask, "chain.upper")
-    target = _bind(CountVowelsTask, "chain.count")
+    source = _bind(UpperStep, "chain.upper")
+    target = _bind(CountVowelsStep, "chain.count")
     report = check_seam_compatible(source, target)
     assert report.passed(), report.issues
 
 
 def test_check_seam_compatible_detects_missing_required_fields() -> None:
-    source = _bind(UpperTask, "chain.upper")
-    target = _bind(StrictTask, "chain.strict")
+    source = _bind(UpperStep, "chain.upper")
+    target = _bind(StrictStep, "chain.strict")
     report = check_seam_compatible(source, target)
     assert not report.passed()
     assert report.errors

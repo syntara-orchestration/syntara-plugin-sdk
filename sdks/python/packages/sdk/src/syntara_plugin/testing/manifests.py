@@ -120,7 +120,7 @@ class ManifestValidator:
             message = (
                 f"kind {resolved!r} is not covered by the active bundle; kinds owned by "
                 "step-type repositories need their canonical bundle supplied with "
-                "bundle= (for example a Task or Workflow owner bundle)"
+                "bundle= (for example a Control or Trigger owner bundle)"
             )
             raise HarnessUsageError(message) from error
 

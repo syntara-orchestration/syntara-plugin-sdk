@@ -54,7 +54,7 @@ class NormalizeOutput(BaseModel):
     normalized: list[str]
 
 
-class NormalizeTask(ControlStep[NormalizeInput, NormalizeOutput]):
+class NormalizeStep(ControlStep[NormalizeInput, NormalizeOutput]):
     def run(self, inputs: NormalizeInput, context: ExecutionContext) -> NormalizeOutput:
         return NormalizeOutput(normalized=[item.lower() for item in inputs.records])
 
@@ -297,7 +297,7 @@ def test_bind_action_rejects_platform_runner_targets_selected_by_identity(
 
 def test_bind_task_builds_a_drift_verified_binding() -> None:
     factory = StepBindingsFactory()
-    binding = factory.bind(NormalizeTask)
+    binding = factory.bind(NormalizeStep)
     assert binding.descriptor.kind is StepKind.CONTROL
     assert factory.step_identities == (binding.descriptor.step_identity,)
     outcome = invoke_step(binding, {"records": ["Alpha", "Beta"]})
@@ -307,21 +307,21 @@ def test_bind_task_builds_a_drift_verified_binding() -> None:
 
 def test_bind_accepts_instances_and_entry_points() -> None:
     factory = StepBindingsFactory()
-    binding = factory.bind(NormalizeTask())
-    assert factory.resolve(f"{__name__}:NormalizeTask").descriptor is binding.descriptor
-    from_entry_point = StepBindingsFactory().bind(f"{__name__}:NormalizeTask")
+    binding = factory.bind(NormalizeStep())
+    assert factory.resolve(f"{__name__}:NormalizeStep").descriptor is binding.descriptor
+    from_entry_point = StepBindingsFactory().bind(f"{__name__}:NormalizeStep")
     assert from_entry_point.descriptor.kind is StepKind.CONTROL
     assert from_entry_point.descriptor.step_identity == binding.descriptor.step_identity
 
 
 def test_bind_supports_task_workflow_and_trigger_classes() -> None:
     factory = StepBindingsFactory()
-    for step, taxonomy in (
-        (NormalizeTask, StepKind.CONTROL),
+    for step, expected_kind in (
+        (NormalizeStep, StepKind.CONTROL),
         (EmitEventTrigger, StepKind.TRIGGER),
     ):
         binding = factory.bind(step)
-        assert binding.descriptor.kind is taxonomy
+        assert binding.descriptor.kind is expected_kind
 
 
 def test_bind_with_drifted_declared_schema_raises() -> None:
@@ -332,7 +332,7 @@ def test_bind_with_drifted_declared_schema_raises() -> None:
     }
     factory = StepBindingsFactory()
     with pytest.raises(SchemaDriftError):
-        factory.bind(NormalizeTask, input_schema=drifted)
+        factory.bind(NormalizeStep, input_schema=drifted)
 
 
 def test_bind_action_installs_the_compiled_manifest(tmp_path: Path) -> None:
@@ -396,7 +396,7 @@ def test_bind_action_fails_on_schema_drift(tmp_path: Path) -> None:
 def test_resolve_accepts_identities_containing_colons() -> None:
     factory = StepBindingsFactory()
     identity = "testing.greet-plugin:qualified-action"
-    binding = factory.bind(NormalizeTask, identity=identity)
+    binding = factory.bind(NormalizeStep, identity=identity)
     assert factory.resolve(identity).descriptor is binding.descriptor
 
 
@@ -406,7 +406,7 @@ def test_bind_action_fails_on_entry_point_drift(tmp_path: Path) -> None:
         _action_manifest(
             GreetInput.model_json_schema(),
             GreetOutput.model_json_schema(),
-            entry_point=f"{__name__}:NormalizeTask",
+            entry_point=f"{__name__}:NormalizeStep",
         ),
     )
     factory = StepBindingsFactory()
@@ -463,7 +463,7 @@ def test_reference_task_step_binds_directly() -> None:
 
 def test_declared_view_excludes_bindings_from_other_workspaces(tmp_path: Path) -> None:
     factory = StepBindingsFactory()
-    factory.bind(NormalizeTask)
+    factory.bind(NormalizeStep)
     factory.bind_action(GreetActionStep, workspace=_matching_workspace(tmp_path))
-    task_identity = f"{__name__}.{NormalizeTask.__qualname__}"
+    task_identity = f"{__name__}.{NormalizeStep.__qualname__}"
     assert set(factory.step_identities) == {task_identity, IDENTITY}

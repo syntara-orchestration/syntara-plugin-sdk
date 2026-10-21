@@ -111,7 +111,7 @@ def chain_steps(
     workflow engine: no branching, parallelism, fan-in, retries, or
     persistence. Orchestration belongs to the platform and to
     ``ControlStep.run`` implementations; when a chain needs control flow,
-    implement it as a Workflow step and test the step.
+    implement it as a Control step and test the step.
 
     Args:
         bindings: The step bindings to execute, in order.

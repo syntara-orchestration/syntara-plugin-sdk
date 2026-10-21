@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from python_steps.normalize_records import NormalizeRecordsTask
+from python_steps.normalize_records import NormalizeRecordsStep
 from syntara_plugin.testing import (
     assert_outcomes_equivalent,
     chain_steps,
@@ -16,7 +16,7 @@ from syntara_plugin.testing import (
 def test_task_executes_through_the_descriptor_path(
     mock_execution_context, step_bindings
 ) -> None:
-    binding = step_bindings.bind(NormalizeRecordsTask)
+    binding = step_bindings.bind(NormalizeRecordsStep)
     outcome = invoke_step(
         binding, {"records": ["  Alpha ", "Beta"]}, context=mock_execution_context()
     )
@@ -26,7 +26,7 @@ def test_task_executes_through_the_descriptor_path(
 
 
 def test_task_rejects_wrong_input_types(mock_execution_context, step_bindings) -> None:
-    binding = step_bindings.bind(NormalizeRecordsTask)
+    binding = step_bindings.bind(NormalizeRecordsStep)
     outcome = invoke_step(binding, {"records": "not-a-list"}, context=mock_execution_context())
     assert not outcome.ok
     assert outcome.run_calls == 0
@@ -35,7 +35,7 @@ def test_task_rejects_wrong_input_types(mock_execution_context, step_bindings) -
 def test_direct_and_container_paths_are_equivalent(
     mock_execution_context, step_bindings
 ) -> None:
-    binding = step_bindings.bind(NormalizeRecordsTask)
+    binding = step_bindings.bind(NormalizeRecordsStep)
     context = mock_execution_context(invocation_id="task-equivalence")
     inputs = {"records": ["Alpha"]}
     direct = invoke_step(binding, inputs, context=context)
@@ -46,8 +46,8 @@ def test_direct_and_container_paths_are_equivalent(
 def test_chained_tasks_pass_outputs_through_an_explicit_seam(
     mock_execution_context, step_bindings
 ) -> None:
-    first = step_bindings.bind(NormalizeRecordsTask, identity="example.python-steps.normalize-1")
-    second = step_bindings.bind(NormalizeRecordsTask, identity="example.python-steps.normalize-2")
+    first = step_bindings.bind(NormalizeRecordsStep, identity="example.python-steps.normalize-1")
+    second = step_bindings.bind(NormalizeRecordsStep, identity="example.python-steps.normalize-2")
     seam_report = check_seam_compatible(first, second)
     assert not seam_report.passed(), "normalize output is not directly normalize input"
 
@@ -64,7 +64,7 @@ def test_chained_tasks_pass_outputs_through_an_explicit_seam(
 def test_identity_seam_documented_default(mock_execution_context, step_bindings) -> None:
     """The identity seam only fits when schemas actually match; here they do not."""
 
-    binding = step_bindings.bind(NormalizeRecordsTask)
+    binding = step_bindings.bind(NormalizeRecordsStep)
     outcome = chain_steps(
         [binding, binding],
         {"records": ["Alpha"]},
