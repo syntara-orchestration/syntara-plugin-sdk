@@ -25,7 +25,7 @@ from syntara_plugin.runtime import (
     StepDescriptor,
 )
 from syntara_plugin.runtime.adapter import step_registry_from_bindings
-from syntara_plugin.runtime.protocol import container_pb2
+from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
 from syntara_plugin.runtime.server import (
     AsyncContainerRuntimeService,
     RuntimeServerConfig,
@@ -59,10 +59,12 @@ class BarrierStep(ActionStep[EchoInput, EchoOutput]):
 
 class CancellationStep(ActionStep[EchoInput, EchoOutput]):
     started = threading.Event()
+    cancelled = threading.Event()
 
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
         self.started.set()
-        context.cancellation.wait(timeout=5)
+        if context.cancellation.wait(timeout=5):
+            self.cancelled.set()
         return EchoOutput(message=inputs.message)
 
 
@@ -128,6 +130,7 @@ def create_barrier_bindings() -> StepBindings:
 
 def create_cancellation_bindings() -> StepBindings:
     CancellationStep.started = threading.Event()
+    CancellationStep.cancelled = threading.Event()
     return installed_action_bindings("smoke.cancellation.v1", CancellationStep())
 
 
@@ -396,6 +399,48 @@ def test_runtime_server_cancels_an_active_step() -> None:
 
         assert raised.value.code is FailureCode.CANCELLED
         assert raised.value.outcome == "not_completed"
+
+    asyncio.run(scenario())
+
+
+def test_runtime_server_cancels_step_when_client_disconnects() -> None:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+
+    async def scenario() -> None:
+        server = create_runtime_server(
+            RuntimeServerConfig(
+                bindings_factory=f"{__name__}:create_cancellation_bindings",
+                address=f"127.0.0.1:{port}",
+            )
+        )
+        await server.start()
+        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        try:
+            stub = container_pb2_grpc.ContainerServiceStub(channel)
+            invocation = _cancellation_invocation()
+            request = container_pb2.ExecuteRequest(
+                invocation_id=invocation.invocation_id,
+                workflow_run_id=invocation.workflow_run_id,
+                step_revision_id=invocation.step_revision_id,
+                runtime_abi="syntara.container/v1alpha1",
+                inputs_json=json.dumps({"message": "disconnect"}).encode(),
+                timeout_seconds=30,
+            )
+            call = stub.Execute(request)
+            execution = asyncio.create_task(asyncio.to_thread(list, call))
+            assert await asyncio.to_thread(CancellationStep.started.wait, 5)
+
+            call.cancel()
+            with pytest.raises(grpc.RpcError) as raised:
+                await execution
+
+            assert raised.value.code() is grpc.StatusCode.CANCELLED
+            assert await asyncio.to_thread(CancellationStep.cancelled.wait, 5)
+        finally:
+            channel.close()
+            await server.stop(grace=0)
 
     asyncio.run(scenario())
 

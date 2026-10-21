@@ -62,7 +62,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             invocation, cancellation = invocation_from_request(request)
             handler = self._steps.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
-            context.add_done_callback(cancellation.set)
+            context.add_done_callback(lambda _context: cancellation.set())
             result = await self._execute_step(handler, invocation)
             yield terminal_execution_event(invocation, result)
         except ContainerInvocationError as error:
