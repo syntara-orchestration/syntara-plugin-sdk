@@ -1,7 +1,7 @@
 # Testing reference
 
 The SDK's testing harness gives step authors a local pytest suite: validate
-declared contracts and execute Python Action, Task, Workflow, and Trigger
+declared contracts and execute Python Action, Control, and Trigger
 implementations through the shared SDK executor, without running AO, EP, or a
 cluster.
 
@@ -30,7 +30,7 @@ Their names are public API.
 | `manifest_validator` | `syntara_plugin.contracts` canonical bundle | `manifest_validator(document, kind=...)` raises `ManifestValidationError` on invalid documents; `.check(...)` returns diagnostics; `bundle=` accepts a step-type owner's canonical bundle. |
 | `compile_manifest` | `syntara_plugin.sdk` compiler | `compile_manifest(path_or_plugin, targets=None, ...)` compiles a workspace (path to `plugin.yaml` or its directory) or an in-memory `Plugin` model; path compiles default to `require_image_bindings=False` because local tests build no images. |
 | `mock_execution_context` | `ExecutionContext` | `mock_execution_context(invocation_id=..., workflow_run_id=..., runtime_context=..., cancelled=False)` builds one locally approved context: valid, free of real credentials, authorized only for local test execution. |
-| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for Task, Workflow, and Trigger steps (implementation-derived descriptor, verified with `check_step_contract`); `bind_action(entry_point, workspace=...)` for Actions (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
+| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for any step (a locally installed manifest verified with `check_step_contract`); `bind_action(entry_point, workspace=...)` for Actions (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
 
 Action steps execute only through an installed manifest: the SDK's
 `require_executable_contract` provenance gate rejects fabricated descriptors,
@@ -45,7 +45,7 @@ from syntara_plugin.testing import invoke_step, invoke_step_in_container
 outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
 ```
 
-- `invoke_step` runs the direct path: `validate_step_inputs` (taxonomy
+- `invoke_step` runs the direct path: `validate_step_inputs` (kind
   dispatched), the typed `run()` hook, execution-time output-schema
   validation, and `StandardOutputWrapper` construction. No
   `ContainerInvocation`, no gRPC server.
@@ -154,7 +154,7 @@ pytest tests -q
 ## A runnable example
 
 [`../examples/python-steps`](../examples/python-steps) contains one step per
-taxonomy class and a test suite using everything above. Run it from the
+category and a test suite using everything above. Run it from the
 repository root:
 
 ```sh
