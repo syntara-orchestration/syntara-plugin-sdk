@@ -60,6 +60,11 @@ def _make_step(base: type[BaseStep[Any, Any]]) -> BaseStep[EchoInput, EchoOutput
     else:
         Step.__module__ = "steps"
         Step.__qualname__ = "TriggerEcho"
+    # Synthetic classes need a resolvable module binding because installed
+    # entry points are verified against the exact loaded class, not just the
+    # class's mutable module and qualname strings.
+    module = sys.modules.setdefault(Step.__module__, ModuleType(Step.__module__))
+    setattr(module, Step.__qualname__, Step)
     return Step()
 
 
@@ -288,7 +293,7 @@ def test_installed_step_accepts_a_loaded_current_entry_point(monkeypatch: pytest
     assert descriptor.input_schema_source == "manifest"
 
 
-def test_installed_step_accepts_matching_entry_point_when_module_is_unloaded(
+def test_installed_step_rejects_matching_entry_point_when_module_is_unloaded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     step = _make_step(ActionStep)
@@ -296,9 +301,8 @@ def test_installed_step_accepts_matching_entry_point_when_module_is_unloaded(
 
     installed_step = _installed_step(EchoInput.model_json_schema())
 
-    descriptor = StepDescriptor.for_installed_step(step, installed_step)
-
-    assert descriptor.input_schema_source == "manifest"
+    with pytest.raises(StepBindingError, match="entry point"):
+        StepDescriptor.for_installed_step(step, installed_step)
 
 
 def test_installed_step_rejects_unresolved_entry_point_in_loaded_module(

@@ -188,13 +188,6 @@ def _require_installed_step_entry_point(
     loaded = _loaded_entry_point(entry_point)
     if loaded is type(step):
         return
-    module_name, separator, _ = entry_point.partition(":")
-    if (
-        loaded is None
-        and (not separator or module_name not in sys.modules)
-        and entry_point == actual
-    ):
-        return
     message = (
         f"installed Step entry point {entry_point!r} does not match "
         f"the supplied step class {actual!r}"
