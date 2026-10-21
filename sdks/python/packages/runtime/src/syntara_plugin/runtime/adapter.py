@@ -61,6 +61,7 @@ def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
         workflow_run_id=invocation.workflow_run_id,
         runtime_context=invocation.runtime_context,
         cancellation=invocation.cancellation,
+        max_output_bytes=invocation.max_output_bytes,
     )
 
 

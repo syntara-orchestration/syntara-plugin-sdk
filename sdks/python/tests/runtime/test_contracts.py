@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
 from syntara_plugin.runtime import (
     CONTAINER_ABI,
     PROVIDER_ABI,
@@ -80,6 +81,7 @@ def test_runtime_and_provider_positive_fixtures_conform() -> None:
             "secretFiles": [{"name": "token", "path": "/var/run/syntara/secrets/token"}],
         }
     ).valid
+
     assert harness.validate_provider(_provider_request()).valid
     assert harness.validate_provider(
         {
@@ -89,6 +91,20 @@ def test_runtime_and_provider_positive_fixtures_conform() -> None:
             "options": [{"label": "Acme", "value": "acme"}],
         }
     ).valid
+
+
+@pytest.mark.parametrize("budget", [1, 137, 1_048_576, 2_097_152, 4_294_967_295])
+def test_work_item_accepts_positive_uint32_capture_budgets(budget: int) -> None:
+    item = _work_item()
+    item["maxOutputBytes"] = budget
+    assert ConformanceHarness().validate_runtime(item).valid
+
+
+@pytest.mark.parametrize("budget", [False, True, 0, -1, 1.5, "1024", None, 4_294_967_296])
+def test_work_item_rejects_invalid_capture_budgets(budget: object) -> None:
+    item = _work_item()
+    item["maxOutputBytes"] = budget
+    assert not ConformanceHarness().validate_runtime(item).valid
 
 
 def test_malicious_runtime_and_provider_fixtures_are_rejected() -> None:

@@ -14,6 +14,7 @@ from typing import Any
 from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
 
 CONTAINER_ABI = "syntara.container/v1alpha1"
+MAX_OUTPUT_BYTES_CAPABILITY = "max_output_bytes.v1"
 PROVIDER_ABI = "syntara.provider/v1alpha1"
 
 

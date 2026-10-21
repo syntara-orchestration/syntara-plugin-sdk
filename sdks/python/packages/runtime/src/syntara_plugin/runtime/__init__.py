@@ -13,6 +13,7 @@ from syntara_plugin.contracts import ContractBundle
 
 from .abi import (
     CONTAINER_ABI,
+    MAX_OUTPUT_BYTES_CAPABILITY,
     PROVIDER_ABI,
     ConformanceHarness,
     ConformanceResult,
@@ -57,6 +58,7 @@ from .http import (
     load_http_runner_context,
     map_http_response,
 )
+from .limits import DEFAULT_MAX_OUTPUT_BYTES
 from .manifest_validation import ManifestInputValidationError
 from .outcome import ErrorMessage, StandardOutputWrapper
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
@@ -130,6 +132,8 @@ __all__ = [
     "ActionStep",
     "BaseStep",
     "CONTAINER_ABI",
+    "MAX_OUTPUT_BYTES_CAPABILITY",
+    "DEFAULT_MAX_OUTPUT_BYTES",
     "ConformanceHarness",
     "ConformanceResult",
     "ContainerClient",

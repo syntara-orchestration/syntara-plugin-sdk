@@ -69,6 +69,34 @@ The SDK is not released yet. Prefer a clear forward-only contract over a
 compatibility shim; removed configuration keys should fail validation rather
 than silently selecting legacy behavior.
 
+### Capture-budget rollout follow-ups
+
+The SDK owns one protobuf contract and validates/carries `max_output_bytes`.
+See [capture budgets and compatibility](runtime-and-oci.md#capture-budget-and-compatibility)
+for presence, hashing, capability negotiation, and transport semantics. This
+patch alone does not restore end-to-end script capture. Companion work:
+
+1. **EP:** restore `max_output_bytes` in
+   `src/execution_plane_client/commands/work.py::WorkloadInvocation`, forward
+   it from `src/execution_plane/workload.py` to `ContainerInvocation`, and
+   update helpers, OpenAPI, tests, the pinned SDK source/version, and lockfiles.
+   Enforce the Health capability before dispatch. Keep the SDK-owned
+   `ContainerService`; do not restore NodeService or vendor generated bindings.
+2. **AO:** preserve the operator-resolved byte value when migrating the EP
+   payload builder to its new command shape. The current setting resolves KiB
+   to bytes, defaults to 1 MiB, and applies independently to both streams. Its
+   operator UI minimum is not the generic protocol minimum.
+3. **Production script runner:** enforce bounded byte capture while reading
+   stdout and stderr, continue draining excess, handle UTF-8 boundaries, and
+   preserve exit/failure behavior and the output schema. Decide how combined
+   bounded output fits SDK and downstream delivery limits, including deliberate
+   failures with partial output. Optional object storage does not by itself
+   solve downstream retrieval or the adapter's inline-only partial failures.
+4. **EP test fixture:** replace unbounded `communicate()` capture and
+   `stdout[:10_000]`/`stderr[:10_000]` character slicing with bounded capture
+   before using that fixture to demonstrate enforcement. It is not the
+   production runner.
+
 ## Documentation and review checklist
 
 - Keep the root [README](../README.md) short and task-oriented.

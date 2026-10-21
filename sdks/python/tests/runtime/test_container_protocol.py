@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
 from threading import Event
 from typing import Any
 
@@ -9,6 +13,8 @@ import pytest
 from syntara_plugin.runtime import (
     ANY_STEP_REVISION,
     CONTAINER_ABI,
+    DEFAULT_MAX_OUTPUT_BYTES,
+    MAX_OUTPUT_BYTES_CAPABILITY,
     ContainerClient,
     ContainerInvocation,
     ContainerRemoteError,
@@ -89,6 +95,7 @@ def test_one_image_dispatches_the_selected_step_revision(
     assert result.output == {"issue": 42}
     assert set(calls) == {"create"}
     invocation = calls["create"]
+    assert invocation.max_output_bytes == DEFAULT_MAX_OUTPUT_BYTES
     assert invocation.workflow_run_id == "workflow-run-1"
     assert invocation.inputs == {"repository": "syntara-orchestration/syntara"}
     assert invocation.credential_file_paths == {
@@ -99,6 +106,138 @@ def test_one_image_dispatches_the_selected_step_revision(
         "operation": {"method": "POST", "path": "/issues"},
         "outputSchemaDigest": OUTPUT_SCHEMA_DIGEST,
     }
+
+
+@pytest.mark.parametrize("budget", [1, 137, 2_097_152, 4_294_967_295])
+def test_capture_budget_survives_generated_protobuf_and_real_grpc(
+    runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
+    budget: int,
+) -> None:
+    from syntara_plugin.runtime.container import _request_from_invocation
+
+    client, stub, calls = runtime
+    invocation = replace(_invocation("github.create-issue.v1"), max_output_bytes=budget)
+    request = _request_from_invocation(invocation)
+    decoded = container_pb2.ExecuteRequest.FromString(request.SerializeToString())
+    assert decoded.HasField("max_output_bytes")
+    assert decoded.max_output_bytes == budget
+    assert MAX_OUTPUT_BYTES_CAPABILITY in stub.Health(container_pb2.HealthRequest()).capabilities
+
+    assert client.execute(invocation).output == {"issue": 42}
+    assert calls["create"].max_output_bytes == budget
+
+
+def test_legacy_wire_omission_defaults_but_explicit_zero_never_starts_the_handler(
+    runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
+) -> None:
+    from syntara_plugin.runtime.container import _request_from_invocation
+
+    _client, stub, calls = runtime
+    request = _request_from_invocation(_invocation("github.create-issue.v1"))
+    request.ClearField("max_output_bytes")
+    assert not request.HasField("max_output_bytes")
+    assert tuple(stub.Execute(request))[0].WhichOneof("event") == "result"
+    assert calls["create"].max_output_bytes == DEFAULT_MAX_OUTPUT_BYTES
+
+    calls.clear()
+    request.max_output_bytes = 0
+    assert request.HasField("max_output_bytes")
+    events = tuple(stub.Execute(request))
+    assert len(events) == 1
+    assert events[0].failure.code == FailureCode.INVALID_INPUT.value
+    assert events[0].failure.outcome == "not_started"
+    assert not events[0].failure.retryable
+    assert calls == {}
+
+
+@pytest.mark.parametrize("budget", [-1, 4_294_967_296, 1.5, "1024"])
+def test_generated_uint32_binding_rejects_unrepresentable_budgets(budget: Any) -> None:
+    with pytest.raises((ValueError, TypeError)):
+        container_pb2.ExecuteRequest(max_output_bytes=budget)
+
+
+@pytest.mark.parametrize("budget", [False, True, 0, -1, 1.0, 1.5, "1024", None, 4_294_967_296])
+def test_python_invocations_reject_invalid_capture_budgets(budget: Any) -> None:
+    with pytest.raises(ValueError, match="max_output_bytes"):
+        replace(_invocation("github.create-issue.v1"), max_output_bytes=budget)
+
+
+def test_bindings_match_the_canonical_proto(tmp_path: Path) -> None:
+    root = Path(__file__).parents[4]
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "grpc_tools.protoc",
+            f"--proto_path={root / 'contracts/proto'}",
+            f"--python_out={tmp_path}",
+            f"--grpc_python_out={tmp_path}",
+            "syntara_plugin/runtime/protocol/container.proto",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    for name in ("container_pb2.py", "container_pb2_grpc.py"):
+        generated = tmp_path / "syntara_plugin/runtime/protocol" / name
+        checked_in = Path(container_pb2.__file__).with_name(name)
+        assert generated.read_bytes() == checked_in.read_bytes()
+
+
+def test_invocation_keeps_existing_positional_arguments() -> None:
+    cancellation = Event()
+    invocation = ContainerInvocation("i", "w", "s", {}, {}, 30, {"key": "value"}, cancellation)
+    assert invocation.runtime_context == {"key": "value"}
+    assert invocation.cancellation is cancellation
+    assert invocation.max_output_bytes == DEFAULT_MAX_OUTPUT_BYTES
+
+
+@pytest.mark.parametrize("capabilities", [[], ["unknown.v1"], [MAX_OUTPUT_BYTES_CAPABILITY]])
+def test_client_negotiates_before_dispatch_and_never_replays(capabilities: list[str]) -> None:
+    calls: list[str] = []
+
+    class Peer(container_pb2_grpc.ContainerServiceServicer):
+        def Health(
+            self, request: container_pb2.HealthRequest, context: grpc.ServicerContext
+        ) -> container_pb2.HealthResponse:
+            calls.append("health")
+            # Empty capabilities models the old server's Health wire response.
+            return container_pb2.HealthResponse(
+                ready=True,
+                runtime_abi=CONTAINER_ABI,
+                step_revision_ids=["github.create-issue.v1"],
+                capabilities=capabilities,
+            )
+
+        def Execute(
+            self, request: container_pb2.ExecuteRequest, context: grpc.ServicerContext
+        ) -> None:
+            calls.append("execute")
+            context.abort(grpc.StatusCode.UNAVAILABLE, "connection lost after dispatch")
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    container_pb2_grpc.add_ContainerServiceServicer_to_server(Peer(), server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    try:
+        client = ContainerClient(channel)
+        with pytest.raises(ContainerRemoteError) as raised:
+            client.execute(replace(_invocation("github.create-issue.v1"), max_output_bytes=137))
+        if MAX_OUTPUT_BYTES_CAPABILITY in capabilities:
+            assert calls == ["health", "execute"]
+            assert raised.value.source == "transport"
+        else:
+            assert calls == ["health"]
+            assert raised.value.code is FailureCode.ABI_VIOLATION
+            assert raised.value.source == "protocol"
+            assert raised.value.outcome == "not_started"
+            assert not raised.value.retryable
+            with pytest.raises(ContainerRemoteError):
+                client.health()
+            assert calls == ["health", "health"]
+    finally:
+        channel.close()
+        server.stop(grace=0).wait()
 
 
 def test_nonstandard_json_numbers_are_rejected_at_the_container_boundary(

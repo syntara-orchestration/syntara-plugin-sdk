@@ -60,6 +60,64 @@ that mount read-only in the workload container, and send only the file path to
 the plugin. The plugin never receives broker credentials or a Kubernetes API
 identity.
 
+### Capture budget and compatibility
+
+`ExecuteRequest.max_output_bytes`, `ContainerInvocation.max_output_bytes`, and
+`ExecutionContext.max_output_bytes` carry one invocation's capture budget in
+bytes. The Python fields are keyword-only, preserving existing positional
+arguments. Valid budgets are integers from 1 through 4,294,967,295 (uint32);
+Python booleans, floats, strings, zero, negatives, and overflow are rejected.
+An omitted protobuf field or Python argument resolves to
+`DEFAULT_MAX_OUTPUT_BYTES = 1_048_576`; an explicitly supplied zero is invalid,
+never unlimited. Invalid wire budgets produce `INVALID_INPUT` with
+`outcome="not_started"` before the handler runs. Valid values, including values
+above 1 MiB, reach the handler and typed step unchanged.
+
+For script runners, this is a **per-stream byte capture budget**, applied
+independently to stdout and stderr while reading subprocess pipes. Retain at
+most the budget from each stream and keep draining/discarding excess until exit
+or timeout. Handle incomplete UTF-8 sequences deliberately; character slicing
+does not count bytes. The SDK validates and carries the budget; it does not
+implement subprocess capture. Checking an already buffered result cannot bound
+capture memory or prove runner enforcement.
+
+This budget is separate from the SDK's existing 1 MiB encoded inline JSON bound
+and from EP/API/Temporal delivery limits. Two captured streams plus metadata
+and JSON escaping can exceed the inline bound. The SDK does not clamp capture
+budgets, raise transport bounds, or truncate arbitrary business JSON, which
+could break the declared output schema. Oversized successful business results
+are externalized only when the host supplies `ResultObjectStore`; storage is
+not automatic. Currently deliberate failures with partial output stay inline
+in the typed adapter, even with an object store configured. If that output
+exceeds the inline bound, the transport returns an ABI violation rather than
+the deliberate failure result. A runner/delivery design is still needed for
+combined output, especially failures with partial output; an object reference
+alone does not make a result retrievable by every downstream consumer.
+
+The JSON work item uses optional `maxOutputBytes` with the same range and
+omission/default behavior. Its schema default is an annotation. Producers
+should include resolved budgets before computing
+`container_workload_request_digest`; an explicitly supplied budget is hashed
+unchanged. Consumers verify the original document, then resolve omission to
+1,048,576 when constructing the invocation. Do not insert defaults into an
+already hashed work item. Omission and an explicit default have distinct hashes.
+
+The ABI remains `syntara.container/v1alpha1`, with additive protobuf fields.
+Matching that ABI string alone does **not** prove capture-budget support:
+older protobuf servers silently ignore unknown request fields. New SDK services
+advertise `max_output_bytes.v1` in `HealthResponse.capabilities`, promising
+validation, defaulting, and delivery of the exact budget before execution.
+`ContainerClient.health()` requires this capability, and `stream()`/`execute()`
+perform Health before every Execute, even if the caller skipped `health()`.
+A missing capability fails with `ABI_VIOLATION`, `outcome="not_started"`, and
+no Execute dispatch; the SDK never automatically replays execution. EP clients
+using generated stubs directly must enforce the same negotiation. Health and
+Execute must target the same immutable workload image; do not route them over
+a pool mixing old and new runners. Deploy updated SDK services/runners before
+clients that require the capability. New services continue accepting older
+requests with an omitted budget. The capability establishes budget delivery;
+production script runners must also implement and verify bounded capture.
+
 ## Typed Python steps
 
 Custom-runner authors implement steps with the typed Python API in
@@ -81,7 +139,7 @@ contract: **Step type -> Category -> Runner -> Execution**.
 | `TriggerStep` | `trigger` |
 
 `ExecutionContext` carries the invocation ID, an optional workflow run ID,
-bounded non-secret runtime data, and a cooperative cancellation signal. It
+bounded non-secret runtime data, `max_output_bytes`, and a cooperative cancellation signal. It
 intentionally exposes no protobuf, gRPC, container, worker, or Execution Plane
 types, and no raw credential values; typed credential access is tracked
 separately.

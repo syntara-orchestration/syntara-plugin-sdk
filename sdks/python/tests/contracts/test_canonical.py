@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 from typing import Any
 
 import pytest
@@ -58,3 +59,18 @@ def test_container_request_hash_ignores_only_the_mirrored_hash_fields() -> None:
 
     request["workItem"]["inputs"]["title"] = "Tampered"
     assert container_workload_request_digest(request) != expected
+
+
+def test_capture_budget_is_hashed_without_inserting_or_rewriting_defaults() -> None:
+    request = _request()
+    original = deepcopy(request)
+    omitted_digest = container_workload_request_digest(request)
+    assert request == original
+    assert "maxOutputBytes" not in request["workItem"]
+
+    request["workItem"]["maxOutputBytes"] = 1_048_576
+    default_digest = container_workload_request_digest(request)
+    assert default_digest != omitted_digest
+    request["workItem"]["maxOutputBytes"] = 2_097_152
+    assert container_workload_request_digest(request) not in {omitted_digest, default_digest}
+    assert request["workItem"]["maxOutputBytes"] == 2_097_152

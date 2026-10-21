@@ -73,3 +73,16 @@ for protocol/runtime failures where no valid outcome exists. The added `Result`
 fields are wire-compatible additions within `syntara.container/v1alpha1`; absent
 fields decode as a zero `StatusCode`, and the `runtime_abi` string pins the
 envelope version.
+
+Capture-budget support is additive within that ABI: optional
+`ExecuteRequest.max_output_bytes` and work-item `maxOutputBytes` accept
+1..4294967295 bytes, default to 1048576 on omission, and reject zero.
+For scripts the budget applies independently to stdout and stderr, separate
+from inline JSON/transport bounds. An explicitly supplied work-item budget is
+part of the request hash; resolve omitted defaults only after verifying the
+original document. Consumers must require `max_output_bytes.v1` in
+`HealthResponse.capabilities` before Execute, since the ABI string alone cannot
+distinguish older servers that ignore the new field. This capability promises
+validation and delivery; bounded subprocess capture is the runner's job.
+See [runtime semantics and rollout](../docs/runtime-and-oci.md#capture-budget-and-compatibility)
+and [companion repository work](../docs/developer-guide.md#capture-budget-rollout-follow-ups).

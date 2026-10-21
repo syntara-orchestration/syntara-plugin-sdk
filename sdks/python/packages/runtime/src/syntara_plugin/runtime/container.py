@@ -19,7 +19,8 @@ from typing import Any, Literal, NoReturn
 
 import grpc
 
-from .abi import CONTAINER_ABI, FailureCode
+from .abi import CONTAINER_ABI, MAX_OUTPUT_BYTES_CAPABILITY, FailureCode
+from .limits import DEFAULT_MAX_OUTPUT_BYTES, validate_max_output_bytes
 from .protocol import container_pb2, container_pb2_grpc
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
@@ -40,7 +41,12 @@ ANY_STEP_REVISION = "*"
 
 @dataclass(frozen=True)
 class ContainerInvocation:
-    """The selected plugin step and the safe data supplied to it."""
+    """The selected plugin step and the safe data supplied to it.
+
+    ``max_output_bytes`` is the script capture budget in bytes per stdout/stderr
+    stream, defaulting to 1 MiB. The runner must enforce it while reading;
+    it neither limits arbitrary business JSON nor changes inline transport bounds.
+    """
 
     invocation_id: str
     workflow_run_id: str
@@ -50,6 +56,10 @@ class ContainerInvocation:
     timeout_seconds: int
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
+    max_output_bytes: int = field(default=DEFAULT_MAX_OUTPUT_BYTES, kw_only=True)
+
+    def __post_init__(self) -> None:
+        validate_max_output_bytes(self.max_output_bytes)
 
     @property
     def cancelled(self) -> bool:
@@ -295,6 +305,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ready=True,
             runtime_abi=CONTAINER_ABI,
             step_revision_ids=self._steps.step_revision_ids,
+            capabilities=[MAX_OUTPUT_BYTES_CAPABILITY],
         )
 
     def _register_invocation(self, invocation_id: str, cancellation: Event) -> None:
@@ -336,13 +347,17 @@ class ContainerClient:
         self._stub = container_pb2_grpc.ContainerServiceStub(channel)
 
     def health(self, *, timeout_seconds: float | None = None) -> tuple[str, ...]:
-        """Confirm the container ABI and return the advertised step identities."""
+        """Require the ABI and capture-budget capability; return step identities."""
 
         try:
             response = self._stub.Health(container_pb2.HealthRequest(), timeout=timeout_seconds)
         except grpc.RpcError as error:
             raise _rpc_error(error) from error
-        if not response.ready or response.runtime_abi != CONTAINER_ABI:
+        if (
+            not response.ready
+            or response.runtime_abi != CONTAINER_ABI
+            or MAX_OUTPUT_BYTES_CAPABILITY not in response.capabilities
+        ):
             raise ContainerRemoteError(
                 FailureCode.ABI_VIOLATION,
                 retryable=False,
@@ -373,6 +388,9 @@ class ContainerClient:
 
         request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)
+        # Negotiate before every dispatch, including when the caller skipped
+        # health(). Never Execute against a legacy server that ignores the budget.
+        self.health(timeout_seconds=deadline)
         saw_terminal = False
         try:
             for event in self._stub.Execute(request, timeout=deadline):
@@ -436,6 +454,19 @@ def _invocation_from_request(
             "The plugin step timeout is outside the supported range.",
             outcome="not_started",
         )
+    max_output_bytes = (
+        request.max_output_bytes
+        if request.HasField("max_output_bytes")
+        else DEFAULT_MAX_OUTPUT_BYTES
+    )
+    try:
+        validate_max_output_bytes(max_output_bytes)
+    except ValueError as error:
+        raise ContainerInvocationError(
+            FailureCode.INVALID_INPUT,
+            "The plugin step output capture budget is outside the supported range.",
+            outcome="not_started",
+        ) from error
     inputs = _decode_json_object(request.inputs_json, "inputs")
     runtime_context = _decode_json_object(request.runtime_context_json, "runtime context")
     credential_file_paths = _decode_credential_file_paths(request.credential_file_paths_json)
@@ -450,12 +481,14 @@ def _invocation_from_request(
             timeout_seconds=request.timeout_seconds,
             runtime_context=runtime_context,
             cancellation=cancellation,
+            max_output_bytes=max_output_bytes,
         ),
         cancellation,
     )
 
 
 def _request_from_invocation(invocation: ContainerInvocation) -> container_pb2.ExecuteRequest:
+    validate_max_output_bytes(invocation.max_output_bytes)
     _require_identity(invocation.invocation_id, "invocation_id")
     _require_identity(invocation.workflow_run_id, "workflow_run_id")
     _require_identity(invocation.step_revision_id, "step_revision_id")
@@ -469,6 +502,7 @@ def _request_from_invocation(invocation: ContainerInvocation) -> container_pb2.E
         inputs_json=_encode_json_object(invocation.inputs, "inputs"),
         credential_file_paths_json=_encode_credential_file_paths(invocation.credential_file_paths),
         timeout_seconds=invocation.timeout_seconds,
+        max_output_bytes=invocation.max_output_bytes,
         runtime_context_json=_encode_json_object(invocation.runtime_context, "runtime context"),
     )
 

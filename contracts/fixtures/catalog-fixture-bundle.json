@@ -1,7 +1,7 @@
 {
   "fixtureBundleVersion": "syntara.catalog-fixtures/v1alpha1",
-  "contractBundleDigest": "sha256:ec3d2ff46a84194f3d055695937d5b51e687b45d1bff629fdb9e9005dece7af1",
-  "fixtureContentDigest": "sha256:141b7796bbbb63a378c98a57774b057c8bcdd64a1f53c6473b9c47589b9e35fd",
+  "contractBundleDigest": "sha256:585484c59b57d65c3ab65f535907684872b683e95617716cb4bf00c373c99106",
+  "fixtureContentDigest": "sha256:249c25d1cd5e0feffe3d840f05c1638f102a1161bf8322970653e5a8cd883046",
   "catalogCases": [
     {"path": "catalog/valid-20.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 41, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": []},
     {"path": "catalog/expired.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_INDEX_EXPIRED"]},
@@ -12,6 +12,7 @@
     {"path": "catalog/duplicate-identity.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_ENTRY_IDENTITY_DUPLICATE"]}
   ],
   "documentCases": [
+    {"path": "runtime-work-item.valid.json", "kind": "runtime"},
     {"path": "catalog-source.valid.json", "kind": "catalog_source"},
     {"path": "catalog-source-status.valid.json", "kind": "catalog_source_status"},
     {"path": "integration.valid.json", "kind": "integration"},

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from syntara_plugin.runtime import ExecutionContext
+from syntara_plugin.runtime import DEFAULT_MAX_OUTPUT_BYTES, ExecutionContext
 
 from .errors import HarnessUsageError
 
@@ -43,6 +43,7 @@ def build_execution_context(
     workflow_run_id: str | None = None,
     runtime_context: Mapping[str, Any] | None = None,
     cancelled: bool = False,
+    max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
 ) -> ExecutionContext:
     """Build one valid, locally approved ``ExecutionContext`` for test execution.
 
@@ -62,6 +63,8 @@ def build_execution_context(
             accept it.
         runtime_context: Optional non-secret runtime data surfaced to the step.
         cancelled: Pre-set the cooperative cancellation signal when true.
+        max_output_bytes: Positive uint32 capture budget in bytes per stdout/stderr
+            stream, defaulting to 1 MiB. Capture enforcement belongs to the runner.
     """
 
     if invocation_id is not None:
@@ -79,6 +82,7 @@ def build_execution_context(
         ),
         workflow_run_id=workflow_run_id,
         runtime_context=dict(runtime_context or {}),
+        max_output_bytes=max_output_bytes,
     )
     if cancelled:
         context.cancellation.set()
@@ -116,4 +120,5 @@ def normalize_run_id(context: ExecutionContext) -> ExecutionContext:
         workflow_run_id=f"{context.invocation_id}{_DERIVED_SUFFIX}",
         runtime_context=context.runtime_context,
         cancellation=context.cancellation,
+        max_output_bytes=context.max_output_bytes,
     )

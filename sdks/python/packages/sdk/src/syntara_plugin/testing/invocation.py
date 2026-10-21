@@ -104,6 +104,7 @@ def _prepare_invocation(
         workflow_run_id=context.workflow_run_id,
         runtime_context=normalized_runtime,
         cancellation=context.cancellation,
+        max_output_bytes=context.max_output_bytes,
     )
     return normalized_inputs, prepared
 
@@ -376,6 +377,7 @@ def invoke_step_in_container(
             credential_file_paths={},
             timeout_seconds=timeout_seconds,
             runtime_context=context.runtime_context,
+            max_output_bytes=context.max_output_bytes,
         )
         with _counting_run(binding.step) as spy:
             try:

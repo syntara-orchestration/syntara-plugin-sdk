@@ -12,9 +12,11 @@ from syntara_plugin.testing import (
     INVALID_INPUT_CASES,
     assert_outcomes_equivalent,
     build_execution_context,
+    chain_steps,
     invoke_step,
     invoke_step_in_container,
 )
+from syntara_plugin.testing.bindings_factory import installed_binding
 from syntara_plugin.testing.payloads import (
     FailingReferenceStep,
     ReferenceControlStep,
@@ -59,6 +61,43 @@ class _RunIdEchoStep(ControlStep[_EchoInput, _RunIdEchoOutput]):
 
 class _RunIdOutput(BaseModel):
     workflow_run_id: str
+
+
+class _BudgetOutput(BaseModel):
+    max_output_bytes: int
+
+
+class _BudgetStep(ControlStep[_EchoInput, _BudgetOutput]):
+    def run(self, inputs: _EchoInput, context: ExecutionContext) -> _BudgetOutput:
+        return _BudgetOutput(max_output_bytes=context.max_output_bytes)
+
+
+@pytest.mark.parametrize("run_id", [None, "supplied-run"])
+@pytest.mark.parametrize("budget", [1, 137, 2_097_152, 4_294_967_295])
+def test_custom_capture_budget_reaches_typed_steps_on_both_paths(
+    run_id: str | None, budget: int
+) -> None:
+    context = build_execution_context(workflow_run_id=run_id, max_output_bytes=budget)
+    direct = invoke_step(_BudgetStep(), {}, context=context)
+    container = invoke_step_in_container(_BudgetStep(), {}, context=context)
+    assert_outcomes_equivalent(direct, container)
+    assert direct.output == {"max_output_bytes": budget}
+    assert context.max_output_bytes == budget
+
+
+def test_chaining_preserves_the_capture_budget_for_each_step() -> None:
+    context = build_execution_context(max_output_bytes=137)
+    outcome = chain_steps(
+        [
+            installed_binding(_BudgetStep(), identity="budget.first"),
+            installed_binding(_BudgetStep(), identity="budget.second"),
+        ],
+        {},
+        context=context,
+        seams=[lambda output: {}],
+    )
+    assert outcome.ok
+    assert [link.output for link in outcome.links] == [{"max_output_bytes": 137}] * 2
 
 
 class _RunIdStep(ControlStep[_EchoInput, _RunIdOutput]):

@@ -15,6 +15,7 @@
     "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$"},
     "digestReference": {"type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$"},
     "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 4294967295, "default": 1048576, "description": "Invocation capture budget in bytes, independently for stdout and stderr in script runners. Omission resolves to 1048576 only when constructing an invocation; zero is invalid. Separate from inline JSON and transport limits. This default is an annotation: preserve the original work item for request hashing, without inserting or rewriting defaults after hashing."},
     "base": {
       "type": "object",
       "required": ["apiVersion", "kind"],
@@ -25,7 +26,7 @@
         {"$ref": "#/$defs/base"},
         {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "workflowRunId", "stepRevisionId", "pluginDigest", "runtimeAbi", "imageDigest", "integrationHandle", "inputs", "credentialHandles", "capabilityGrantId", "executionPolicyId", "timeoutSeconds", "requestHash"], "properties": {
           "apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerStepWorkItem"},
-          "invocationId": {"$ref": "#/$defs/id"}, "workflowRunId": {"$ref": "#/$defs/id"}, "stepRevisionId": {"$ref": "#/$defs/id"}, "pluginDigest": {"$ref": "#/$defs/sha256"}, "runtimeAbi": {"const": "syntara.container/v1alpha1"}, "imageDigest": {"$ref": "#/$defs/digestReference"}, "integrationHandle": {"$ref": "#/$defs/id"}, "inputs": {"type": "object"}, "runtimeContext": {"type": "object", "maxProperties": 64}, "credentialHandles": {"type": "array", "items": {"$ref": "#/$defs/id"}}, "capabilityGrantId": {"$ref": "#/$defs/id"}, "executionPolicyId": {"$ref": "#/$defs/id"}, "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400}, "requestHash": {"$ref": "#/$defs/sha256"}
+          "invocationId": {"$ref": "#/$defs/id"}, "workflowRunId": {"$ref": "#/$defs/id"}, "stepRevisionId": {"$ref": "#/$defs/id"}, "pluginDigest": {"$ref": "#/$defs/sha256"}, "runtimeAbi": {"const": "syntara.container/v1alpha1"}, "imageDigest": {"$ref": "#/$defs/digestReference"}, "integrationHandle": {"$ref": "#/$defs/id"}, "inputs": {"type": "object"}, "runtimeContext": {"type": "object", "maxProperties": 64}, "credentialHandles": {"type": "array", "items": {"$ref": "#/$defs/id"}}, "capabilityGrantId": {"$ref": "#/$defs/id"}, "executionPolicyId": {"$ref": "#/$defs/id"}, "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 86400}, "maxOutputBytes": {"$ref": "#/$defs/maxOutputBytes"}, "requestHash": {"$ref": "#/$defs/sha256"}
         }}
       ]
     },

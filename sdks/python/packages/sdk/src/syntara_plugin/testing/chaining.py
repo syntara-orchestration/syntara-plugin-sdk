@@ -146,6 +146,7 @@ def chain_steps(
             workflow_run_id=run_id,
             runtime_context=base.runtime_context,
             cancelled=base.cancelled,
+            max_output_bytes=base.max_output_bytes,
         )
         outcome = invoke_step(binding, current, context=link_context)
         outcomes.append(outcome)

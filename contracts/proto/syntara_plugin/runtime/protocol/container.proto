@@ -24,6 +24,11 @@ message ExecuteRequest {
   // A bounded, non-secret runner-specific context selected by Syntara from the
   // installed immutable step. It never contains an endpoint or credential.
   bytes runtime_context_json = 7;
+  // Capture budget in bytes, independently for stdout and stderr in script
+  // runners. Omission means 1048576; explicit zero is invalid. Runners must
+  // drain/discard excess while the script continues until exit or timeout.
+  // Separate from encoded inline JSON and transport framing limits.
+  optional uint32 max_output_bytes = 9;
 }
 
 message Progress {
@@ -89,4 +94,10 @@ message HealthResponse {
   bool ready = 1;
   string runtime_abi = 2;
   repeated string step_revision_ids = 3;
+  // Feature support beyond the ABI string. "max_output_bytes.v1" means the
+  // server validates and delivers the exact capture budget before execution,
+  // defaulting an omitted value to 1048576. Script capture remains runner-owned.
+  // Clients requiring this contract must reject servers lacking the capability
+  // before Execute, even when runtime_abi matches.
+  repeated string capabilities = 4;
 }

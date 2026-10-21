@@ -1,0 +1,20 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerStepWorkItem",
+  "invocationId": "invoke-1",
+  "workflowRunId": "workflow-1",
+  "stepRevisionId": "step-1",
+  "pluginDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "runtimeAbi": "syntara.container/v1alpha1",
+  "imageDigest": "quay.io/acme/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "integrationHandle": "integration-1",
+  "inputs": {
+    "title": "Example"
+  },
+  "credentialHandles": [],
+  "capabilityGrantId": "grant-1",
+  "executionPolicyId": "policy-1",
+  "timeoutSeconds": 300,
+  "maxOutputBytes": 2097152,
+  "requestHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

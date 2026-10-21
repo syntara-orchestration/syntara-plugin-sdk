@@ -45,6 +45,10 @@ def container_workload_request_digest(request: Mapping[str, Any]) -> str:
     The work-item and policy snapshot each carry the resulting digest. Removing
     both fields before hashing avoids a circular representation while ensuring
     every other execution, policy, and runtime value is committed.
+
+    An explicitly supplied ``workItem.maxOutputBytes`` participates unchanged.
+    Omission remains omission in the hash; resolve its default only when
+    constructing the invocation after verifying this original document.
     """
 
     try:
