@@ -473,16 +473,14 @@ def test_compiler_rejects_a_connection_type_link_to_another_plugin_or_missing_ty
     action_spec = action["spec"]
     assert isinstance(action_spec, dict)
     action_spec["integrationType"] = "acme.issue-tools.github-connection"
+    typed_plugin = _typed_plugin(plugin)
+    targets = [
+        Target("credentials/github-token.yaml", _credential_recipe()),
+        Target("steps/create-issue/manifest.yaml", action),
+    ]
 
     with pytest.raises(CompilationError) as error:
-        compile_model(
-            _typed_plugin(plugin),
-            [
-                Target("credentials/github-token.yaml", _credential_recipe()),
-                Target("steps/create-issue/manifest.yaml", action),
-            ],
-            image_bindings={"plugin-workload": DIGEST},
-        )
+        compile_model(typed_plugin, targets, image_bindings={"plugin-workload": DIGEST})
 
     assert {item.code for item in error.value.diagnostics} >= {
         "ACTION_INTEGRATION_UNDECLARED",
@@ -500,12 +498,11 @@ def test_platform_runner_action_without_a_versioned_driver_is_rejected() -> None
     specification = action["spec"]
     assert isinstance(specification, dict)
     specification["runtime"] = {"kind": "platform-runner"}
+    typed_plugin = _typed_plugin(plugin)
+    target = Target("steps/create-issue/manifest.yaml", action)
 
     with pytest.raises(CompilationError) as error:
-        compile_model(
-            _typed_plugin(plugin),
-            [Target("steps/create-issue/manifest.yaml", action)],
-        )
+        compile_model(typed_plugin, [target])
 
     assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
 
@@ -565,8 +562,11 @@ def test_http_operation_rejects_an_invalid_mapping_source() -> None:
         },
     }
 
+    typed_plugin = _typed_plugin(plugin)
+    target = Target("steps/create-issue/manifest.yaml", action)
+
     with pytest.raises(CompilationError) as error:
-        compile_model(_typed_plugin(plugin), [Target("steps/create-issue/manifest.yaml", action)])
+        compile_model(typed_plugin, [target])
 
     assert "HTTP_MAPPING_INVALID" in {item.code for item in error.value.diagnostics}
 
@@ -691,9 +691,11 @@ def test_declared_workload_requires_a_binding_without_custom_runner_steps() -> N
         "driver": "http.v1",
         "operation": _http_operation(),
     }
+    typed_plugin = _typed_plugin(plugin)
+    target = Target("steps/create-issue/manifest.yaml", action)
 
     with pytest.raises(CompilationError) as error:
-        compile_model(_typed_plugin(plugin), [Target("steps/create-issue/manifest.yaml", action)])
+        compile_model(typed_plugin, [target])
 
     assert "IMAGE_BINDING_MISSING" in {item.code for item in error.value.diagnostics}
 
@@ -702,13 +704,11 @@ def test_rejects_workload_and_provider_image_id_collisions() -> None:
     plugin = _plugin()
     plugin["spec"]["providers"] = [{"id": "resource-provider", "image": "plugin-workload"}]
     action = _action({"kind": "inline", "value": {"type": "object"}})
+    typed_plugin = _typed_plugin(plugin)
+    target = Target("steps/create-issue/manifest.yaml", action)
 
     with pytest.raises(CompilationError) as error:
-        compile_model(
-            _typed_plugin(plugin),
-            [Target("steps/create-issue/manifest.yaml", action)],
-            image_bindings={"plugin-workload": DIGEST},
-        )
+        compile_model(typed_plugin, [target], image_bindings={"plugin-workload": DIGEST})
 
     assert "WORKLOAD_PROVIDER_IMAGE_CONFLICT" in {
         item.code for item in error.value.diagnostics
@@ -729,8 +729,9 @@ def test_authoring_reports_stable_path_diagnostics(tmp_path: Path) -> None:
 def test_rejects_duplicate_yaml_keys_recursive_alias_and_mutable_image(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.yaml"
     duplicate.write_text("apiVersion: syntara.io/v1alpha1\napiVersion: syntara.io/v1alpha1\n")
+    duplicate_request = BuildRequest(duplicate)
     with pytest.raises(CompilationError) as duplicate_error:
-        compile_workspace(BuildRequest(duplicate))
+        compile_workspace(duplicate_request)
     assert duplicate_error.value.diagnostics[0].code == "YAML_INVALID"
 
     root = _workspace(
@@ -747,12 +748,11 @@ def test_rejects_duplicate_yaml_keys_recursive_alias_and_mutable_image(tmp_path:
     root = _workspace(
         tmp_path / "image", action=_action({"kind": "inline", "value": {"type": "object"}})
     )
+    image_request = BuildRequest(
+        root, image_bindings={"plugin-workload": "quay.io/acme/issue-tools:latest"}
+    )
     with pytest.raises(CompilationError) as image_error:
-        compile_workspace(
-            BuildRequest(
-                root, image_bindings={"plugin-workload": "quay.io/acme/issue-tools:latest"}
-            )
-        )
+        compile_workspace(image_request)
     assert "IMAGE_REFERENCE_MUTABLE" in {
         diagnostic.code for diagnostic in image_error.value.diagnostics
     }
@@ -780,8 +780,10 @@ def test_plugin_rejects_multiple_workload_images() -> None:
     }
     del specification["workload"]
 
+    typed_plugin = _typed_plugin(plugin)
+
     with pytest.raises(CompilationError) as error:
-        compile_model(_typed_plugin(plugin), [])
+        compile_model(typed_plugin, [])
 
     assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
 
@@ -792,8 +794,10 @@ def test_plugin_workload_does_not_declare_a_language() -> None:
     assert isinstance(specification, dict)
     specification["workload"] = {"image": "plugin-workload", "language": "python"}
 
+    typed_plugin = _typed_plugin(plugin)
+
     with pytest.raises(CompilationError) as error:
-        compile_model(_typed_plugin(plugin), [])
+        compile_model(typed_plugin, [])
 
     assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
 
@@ -803,17 +807,14 @@ def test_custom_runner_action_requires_one_root_workload() -> None:
     specification = plugin["spec"]
     assert isinstance(specification, dict)
     del specification["workload"]
+    typed_plugin = _typed_plugin(plugin)
+    target = Target(
+        "steps/create-issue/manifest.yaml",
+        _action({"kind": "inline", "value": {"type": "object"}}),
+    )
 
     with pytest.raises(CompilationError) as error:
-        compile_model(
-            _typed_plugin(plugin),
-            [
-                Target(
-                    "steps/create-issue/manifest.yaml",
-                    _action({"kind": "inline", "value": {"type": "object"}}),
-                )
-            ],
-        )
+        compile_model(typed_plugin, [target])
 
     assert "WORKLOAD_MISSING" in {item.code for item in error.value.diagnostics}
 
@@ -825,12 +826,11 @@ def test_action_does_not_select_a_workload() -> None:
     runtime = specification["runtime"]
     assert isinstance(runtime, dict)
     runtime["workload"] = "plugin-workload"
+    typed_plugin = _typed_plugin(_plugin())
+    target = Target("steps/create-issue/manifest.yaml", action)
 
     with pytest.raises(CompilationError) as error:
-        compile_model(
-            _typed_plugin(_plugin()),
-            [Target("steps/create-issue/manifest.yaml", action)],
-        )
+        compile_model(typed_plugin, [target])
 
     assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
 
@@ -850,15 +850,13 @@ def test_rejects_case_collisions_archives_and_oversized_assets(tmp_path: Path) -
         "steps/create-issue/manifest.yaml",
         "steps/CREATE-issue/manifest.yaml",
     ]
+    typed_plugin = _typed_plugin(model)
+    targets = [
+        Target("steps/create-issue/manifest.yaml", first),
+        Target("steps/CREATE-issue/manifest.yaml", second),
+    ]
     with pytest.raises(CompilationError) as collision:
-        compile_model(
-            _typed_plugin(model),
-            [
-                Target("steps/create-issue/manifest.yaml", first),
-                Target("steps/CREATE-issue/manifest.yaml", second),
-            ],
-            image_bindings={"plugin-workload": DIGEST},
-        )
+        compile_model(typed_plugin, targets, image_bindings={"plugin-workload": DIGEST})
     assert "PATH_CASE_COLLISION" in {item.code for item in collision.value.diagnostics}
 
     root = _workspace(
@@ -901,13 +899,15 @@ def test_rejects_non_normalized_asset_paths(tmp_path: Path, asset_path: str) -> 
 def test_reports_invalid_root_shapes_and_missing_root_as_diagnostics(tmp_path: Path) -> None:
     malformed = tmp_path / "malformed.yaml"
     malformed.write_text(_yaml({**_plugin(), "spec": {"targets": None}}))
+    malformed_request = BuildRequest(malformed)
 
     with pytest.raises(CompilationError) as malformed_error:
-        compile_workspace(BuildRequest(malformed))
+        compile_workspace(malformed_request)
     assert "SCHEMA_INVALID" in {item.code for item in malformed_error.value.diagnostics}
 
+    missing_request = BuildRequest(tmp_path / "missing.yaml")
     with pytest.raises(CompilationError) as missing_error:
-        compile_workspace(BuildRequest(tmp_path / "missing.yaml"))
+        compile_workspace(missing_request)
     assert missing_error.value.diagnostics[0].code == "DOCUMENT_UNREADABLE"
 
 
