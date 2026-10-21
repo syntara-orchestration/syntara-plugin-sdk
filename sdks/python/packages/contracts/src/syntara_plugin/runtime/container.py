@@ -31,7 +31,7 @@ _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
 _MAX_STATUS_CODE = 4_294_967_295
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
-_INCOMPLETE_STEP_MESSAGE = "The plugin step did not complete."
+INCOMPLETE_STEP_MESSAGE = "The plugin step did not complete."
 
 # A platform-owned runner can handle any installed step that the control
 # plane has already resolved to that runner. It is a health-advertisement
@@ -170,7 +170,7 @@ class ContainerRemoteError(RuntimeError):
         outcome: str,
         source: Literal["workload", "protocol", "transport"],
     ) -> None:
-        super().__init__(_INCOMPLETE_STEP_MESSAGE)
+        super().__init__(INCOMPLETE_STEP_MESSAGE)
         self.code = code
         self.retryable = retryable
         self.outcome = outcome
@@ -243,7 +243,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         cancellation: Event | None = None
         invocation_id = request.invocation_id
         try:
-            invocation, cancellation = _invocation_from_request(request)
+            invocation, cancellation = invocation_from_request(request)
             handler = self._steps.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
             # Deadline expiry and a disconnected Execution Plane both become a
@@ -251,15 +251,15 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             if not context.add_callback(cancellation.set):
                 cancellation.set()
             result = handler(invocation)
-            yield _terminal_execution_event(invocation, result)
+            yield terminal_execution_event(invocation, result)
         except ContainerInvocationError as error:
-            yield _failure_event(invocation_id, error)
+            yield failure_event(invocation_id, error)
         except Exception:
-            yield _failure_event(
+            yield failure_event(
                 invocation_id,
                 ContainerInvocationError(
                     FailureCode.OUTCOME_UNKNOWN,
-                    _INCOMPLETE_STEP_MESSAGE,
+                    INCOMPLETE_STEP_MESSAGE,
                     outcome="unknown",
                 ),
             )
@@ -302,7 +302,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 del self._active[invocation_id]
 
 
-def _terminal_execution_event(
+def terminal_execution_event(
     invocation: ContainerInvocation,
     result: ContainerResult | None,
 ) -> container_pb2.ExecutionEvent:
@@ -321,13 +321,13 @@ def _terminal_execution_event(
             )
         return _result_event(invocation.invocation_id, result)
     except ContainerInvocationError as error:
-        return _failure_event(invocation.invocation_id, error)
+        return failure_event(invocation.invocation_id, error)
     except Exception:
-        return _failure_event(
+        return failure_event(
             invocation.invocation_id,
             ContainerInvocationError(
                 FailureCode.OUTCOME_UNKNOWN,
-                _INCOMPLETE_STEP_MESSAGE,
+                INCOMPLETE_STEP_MESSAGE,
                 outcome="unknown",
             ),
         )
@@ -431,7 +431,7 @@ class ContainerClient:
         return response.accepted
 
 
-def _invocation_from_request(
+def invocation_from_request(
     request: container_pb2.ExecuteRequest,
 ) -> tuple[ContainerInvocation, Event]:
     try:
@@ -609,7 +609,7 @@ def _result_event(invocation_id: str, result: ContainerResult) -> container_pb2.
     )
 
 
-def _failure_event(
+def failure_event(
     invocation_id: str, error: ContainerInvocationError
 ) -> container_pb2.ExecutionEvent:
     return container_pb2.ExecutionEvent(

@@ -19,12 +19,12 @@ from .abi import CONTAINER_ABI, FailureCode
 from .adapter import step_registry_from_bindings
 from .bindings import StepBindings
 from .container import (
-    _INCOMPLETE_STEP_MESSAGE,
+    INCOMPLETE_STEP_MESSAGE,
     ContainerInvocationError,
     StepRegistry,
-    _failure_event,
-    _invocation_from_request,
-    _terminal_execution_event,
+    failure_event,
+    invocation_from_request,
+    terminal_execution_event,
 )
 from .protocol import container_pb2, container_pb2_grpc
 
@@ -56,20 +56,20 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         invocation_id = request.invocation_id
         cancellation: Event | None = None
         try:
-            invocation, cancellation = _invocation_from_request(request)
+            invocation, cancellation = invocation_from_request(request)
             handler = self._steps.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
             context.add_done_callback(cancellation.set)
             result = await asyncio.to_thread(handler, invocation)
-            yield _terminal_execution_event(invocation, result)
+            yield terminal_execution_event(invocation, result)
         except ContainerInvocationError as error:
-            yield _failure_event(invocation_id, error)
+            yield failure_event(invocation_id, error)
         except Exception:
-            yield _failure_event(
+            yield failure_event(
                 invocation_id,
                 ContainerInvocationError(
                     FailureCode.OUTCOME_UNKNOWN,
-                    _INCOMPLETE_STEP_MESSAGE,
+                    INCOMPLETE_STEP_MESSAGE,
                     outcome="unknown",
                 ),
             )
@@ -246,7 +246,7 @@ def _listener_settings(
 ) -> tuple[str, Path | None, Path | None, Path | None]:
     address = environ.get(_GRPC_ADDRESS, _DEFAULT_ADDRESS).strip()
     host, port = _split_address(address)
-    if not host or not port.isdigit() or not 1 <= int(port) <= 65_535:
+    if not host or not port.isdecimal() or not 1 <= int(port) <= 65_535:
         message = f"{_GRPC_ADDRESS} must be a host:port TCP address"
         raise RuntimeServerError(message)
 

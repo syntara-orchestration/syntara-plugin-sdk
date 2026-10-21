@@ -27,7 +27,7 @@
           "allOf": [
             {
               "if": {"properties": {"kind": {"const": "platform-runner"}}},
-              "then": {"required": ["driver"]}
+              "then": {"required": ["driver"], "not": {"required": ["entryPoint"]}}
             },
             {
               "if": {"properties": {"kind": {"const": "custom-runner"}}},

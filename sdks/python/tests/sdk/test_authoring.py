@@ -681,6 +681,40 @@ def test_provider_binding_materializes_the_provider_abi() -> None:
     }
 
 
+def test_declared_workload_requires_a_binding_without_custom_runner_steps() -> None:
+    plugin = _plugin()
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action_spec = action["spec"]
+    assert isinstance(action_spec, dict)
+    action_spec["runtime"] = {
+        "kind": "platform-runner",
+        "driver": "http.v1",
+        "operation": _http_operation(),
+    }
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(_typed_plugin(plugin), [Target("steps/create-issue/manifest.yaml", action)])
+
+    assert "IMAGE_BINDING_MISSING" in {item.code for item in error.value.diagnostics}
+
+
+def test_rejects_workload_and_provider_image_id_collisions() -> None:
+    plugin = _plugin()
+    plugin["spec"]["providers"] = [{"id": "resource-provider", "image": "plugin-workload"}]
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(plugin),
+            [Target("steps/create-issue/manifest.yaml", action)],
+            image_bindings={"plugin-workload": DIGEST},
+        )
+
+    assert "WORKLOAD_PROVIDER_IMAGE_CONFLICT" in {
+        item.code for item in error.value.diagnostics
+    }
+
+
 def test_authoring_reports_stable_path_diagnostics(tmp_path: Path) -> None:
     root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
     root.write_text(_yaml(_plugin("../outside.yaml")))

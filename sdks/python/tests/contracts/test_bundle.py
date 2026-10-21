@@ -158,6 +158,28 @@ def test_custom_runner_action_requires_a_stable_python_entry_point() -> None:
     assert validate_document(bundle, "action", action) == []
 
 
+def test_platform_runner_action_rejects_a_custom_runner_entry_point() -> None:
+    bundle = load_bundle()
+    action = step_document(
+        "Action",
+        target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
+        {
+            "runtime": {
+                "kind": "platform-runner",
+                "driver": "http.v1",
+                "operation": {"method": "POST", "path": "/repos/{input.owner}/issues"},
+                "entryPoint": "github.actions:CreateIssue",
+            },
+            "input": {"kind": "inline", "value": {"type": "object"}},
+            "output": {"kind": "inline", "value": {"type": "object"}},
+        },
+    )
+
+    assert "entryPoint" in " ".join(validate_document(bundle, "action", action))
+    del action["spec"]["runtime"]["entryPoint"]
+    assert validate_document(bundle, "action", action) == []
+
+
 @pytest.mark.parametrize(
     "entry_point",
     ["steps..bad:Run", "steps.bad.:Run", "steps:Run.More", "steps:Run\n"],

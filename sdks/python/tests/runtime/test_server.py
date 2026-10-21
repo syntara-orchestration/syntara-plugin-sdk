@@ -371,7 +371,7 @@ def test_runtime_server_configuration_accepts_an_uppercase_loopback_host(
     assert config.address == "LOCALHOST:50051"
 
 
-@pytest.mark.parametrize("address", ["::1", "grpc://localhost:50051"])
+@pytest.mark.parametrize("address", ["::1", "grpc://localhost:50051", "localhost:²"])
 def test_runtime_server_configuration_rejects_non_host_port_addresses(
     address: str,
     tmp_path: Path,
