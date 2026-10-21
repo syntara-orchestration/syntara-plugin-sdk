@@ -9,7 +9,7 @@ split them across workflow steps).
 from __future__ import annotations
 
 from pydantic import BaseModel
-from syntara_plugin.runtime import ExecutionContext, WorkflowStep
+from syntara_plugin.runtime import ControlStep, ExecutionContext
 
 
 class ComposeRemediationInput(BaseModel):
@@ -22,7 +22,7 @@ class ComposeRemediationOutput(BaseModel):
 
 
 class ComposeRemediationWorkflow(
-    WorkflowStep[ComposeRemediationInput, ComposeRemediationOutput]
+    ControlStep[ComposeRemediationInput, ComposeRemediationOutput]
 ):
     """Normalize the records, then build one remediation action per record."""
 

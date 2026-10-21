@@ -6,7 +6,7 @@ metadata:
   description: Creates one issue in an external tracker.
 spec:
   runtime:
-    kind: custom-workload
+    kind: custom-runner
     entryPoint: python_steps.create_issue:CreateIssueStep
   input:
     kind: inline

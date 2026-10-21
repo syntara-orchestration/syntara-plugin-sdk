@@ -48,9 +48,9 @@ from .payloads import (
     Expectation,
     FailingReferenceStep,
     PayloadCase,
+    ReferenceControlStep,
     ReferenceInput,
     ReferenceOutput,
-    ReferenceTaskStep,
     schema_violating_binding,
 )
 from .redaction import SecretLeakError, assert_no_secrets, secret_sentinel
@@ -72,7 +72,7 @@ __all__ = [
     "PayloadCase",
     "ReferenceInput",
     "ReferenceOutput",
-    "ReferenceTaskStep",
+    "ReferenceControlStep",
     "StepBindingsFactory",
     "StepOutcome",
     "VALID_INPUT_CASES",

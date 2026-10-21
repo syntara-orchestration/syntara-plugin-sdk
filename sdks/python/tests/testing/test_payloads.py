@@ -5,7 +5,13 @@ from __future__ import annotations
 import logging
 
 import pytest
-from syntara_plugin.runtime import FailureCode, StepExecutionError
+from pydantic import BaseModel
+from syntara_plugin.runtime import (
+    ControlStep,
+    ExecutionContext,
+    FailureCode,
+    StepExecutionError,
+)
 from syntara_plugin.runtime.container import ContainerInvocationError
 from syntara_plugin.testing import (
     DELIBERATE_FAILURE_CASES,
@@ -15,13 +21,15 @@ from syntara_plugin.testing import (
     PAYLOAD_CASES,
     VALID_INPUT_CASES,
     Expectation,
+    HarnessUsageError,
     assert_no_secrets,
+    build_execution_context,
     invoke_step,
     secret_sentinel,
 )
 from syntara_plugin.testing.payloads import (
     FailingReferenceStep,
-    ReferenceTaskStep,
+    ReferenceControlStep,
     schema_violating_binding,
 )
 
@@ -49,14 +57,14 @@ def test_payload_cases_cover_every_ticket_category() -> None:
 
 def test_valid_cases_succeed_against_the_reference_step() -> None:
     for case in VALID_INPUT_CASES:
-        outcome = invoke_step(ReferenceTaskStep(), case.inputs)
+        outcome = invoke_step(ReferenceControlStep(), case.inputs)
         assert outcome.ok, case.name
         assert outcome.run_calls == 1, case.name
 
 
 def test_invalid_cases_fail_validation_against_the_reference_step() -> None:
     for case in INVALID_INPUT_CASES:
-        outcome = invoke_step(ReferenceTaskStep(), case.inputs)
+        outcome = invoke_step(ReferenceControlStep(), case.inputs)
         assert not outcome.ok, case.name
         assert outcome.run_calls == 0, case.name
 
@@ -79,20 +87,20 @@ def test_secret_sentinels_are_unique() -> None:
 
 
 def test_assert_no_secrets_passes_on_a_clean_outcome() -> None:
-    outcome = invoke_step(ReferenceTaskStep(), {"title": "clean"})
+    outcome = invoke_step(ReferenceControlStep(), {"title": "clean"})
     assert_no_secrets(outcome, [secret_sentinel(), secret_sentinel()])
 
 
 def test_assert_no_secrets_fails_when_output_contains_the_sentinel() -> None:
     token = secret_sentinel()
-    outcome = invoke_step(ReferenceTaskStep(), {"title": token})
+    outcome = invoke_step(ReferenceControlStep(), {"title": token})
     with pytest.raises(AssertionError, match="leaked"):
         assert_no_secrets(outcome, [token])
 
 
 def test_leak_report_does_not_echo_the_sentinel_value() -> None:
     token = secret_sentinel()
-    outcome = invoke_step(ReferenceTaskStep(), {"title": token})
+    outcome = invoke_step(ReferenceControlStep(), {"title": token})
     with pytest.raises(AssertionError) as raised:
         assert_no_secrets(outcome, [token])
     message = str(raised.value)
@@ -101,16 +109,22 @@ def test_leak_report_does_not_echo_the_sentinel_value() -> None:
     assert "business output" in message
 
 
+class _LeakyMessageStep(ReferenceControlStep):
+    """Deliberately fails with the token in its safe message."""
+
+    token: str = ""
+
+    def run(self, inputs: object, context: object) -> object:
+        raise ContainerInvocationError(
+            FailureCode.UPSTREAM_TRANSIENT, f"failed for {self.token}"
+        )
+
+
 def test_assert_no_secrets_fails_when_the_error_message_contains_the_sentinel() -> None:
     token = secret_sentinel()
-
-    class LeakyStep(ReferenceTaskStep):
-        def run(self, inputs: object, context: object) -> object:
-            raise ContainerInvocationError(
-                FailureCode.UPSTREAM_TRANSIENT, f"failed for {token}"
-            )
-
-    outcome = invoke_step(LeakyStep(), {"title": "x"})
+    step = _LeakyMessageStep()
+    step.token = token
+    outcome = invoke_step(step, {"title": "x"})
     with pytest.raises(AssertionError, match="leaked"):
         assert_no_secrets(outcome, [token])
 
@@ -130,54 +144,91 @@ def test_assert_no_secrets_accepts_plain_text() -> None:
         assert_no_secrets(f"a message with {FIXED_SECRET_SENTINEL} inside", [FIXED_SECRET_SENTINEL])
 
 
+class _ChainInput(BaseModel):
+    """A permissive input for the exception-chain redaction steps."""
+
+    model_config = {"extra": "allow"}
+    title: str = "x"
+
+
+class _ChainOutput(BaseModel):
+    summary: str = "y"
+
+
+class _CauseStep(ControlStep[_ChainInput, _ChainOutput]):
+    """Hides the token in the explicit ``__cause__`` chain."""
+
+    token: str = ""
+
+    def run(self, inputs: _ChainInput, context: ExecutionContext) -> _ChainOutput:
+        try:
+            raise ValueError(self.token)
+        except ValueError as error:
+            raise RuntimeError("safe failure") from error
+
+
+class _ContextStep(ControlStep[_ChainInput, _ChainOutput]):
+    """Hides the token in the implicit ``__context__`` chain."""
+
+    token: str = ""
+
+    def run(self, inputs: _ChainInput, context: ExecutionContext) -> _ChainOutput:
+        try:
+            raise ValueError(self.token)
+        except ValueError:
+            # ``from None`` suppresses the context from display but still
+            # records it on ``__context__``, which the scan must walk.
+            raise RuntimeError("safe failure") from None
+
+
+class _NotesStep(ControlStep[_ChainInput, _ChainOutput]):
+    """Hides the token in ``__notes__``."""
+
+    token: str = ""
+
+    def run(self, inputs: _ChainInput, context: ExecutionContext) -> _ChainOutput:
+        error = RuntimeError("safe failure")
+        error.add_note(f"token {self.token}")
+        raise error
+
+
+class _OpaqueError(RuntimeError):
+    """A custom ``__repr__`` that discards its payload."""
+
+    def __repr__(self) -> str:
+        return "OpaqueError(<hidden>)"
+
+
+class _OpaqueArgsStep(ControlStep[_ChainInput, _ChainOutput]):
+    """Hides the token in args behind an opaque ``__repr__``."""
+
+    token: str = ""
+
+    def run(self, inputs: _ChainInput, context: ExecutionContext) -> _ChainOutput:
+        raise _OpaqueError("safe failure", self.token)
+
+
 def test_assert_no_secrets_scans_exception_chains() -> None:
     """Secrets hidden in an exception's chain, args, or notes are caught."""
 
-    from pydantic import BaseModel
-    from syntara_plugin.runtime import ExecutionContext, TaskStep
-    from syntara_plugin.testing import build_execution_context
-
-    class ChainInput(BaseModel):
-        title: str = "x"
-
-    class ChainOutput(BaseModel):
-        summary: str = "y"
-
     token = secret_sentinel()
-
-    class CauseStep(TaskStep[ChainInput, ChainOutput]):
-        def run(self, inputs: ChainInput, context: ExecutionContext) -> ChainOutput:
-            try:
-                raise ValueError(token)
-            except ValueError as error:
-                raise RuntimeError("safe failure") from error
-
-    class ContextStep(TaskStep[ChainInput, ChainOutput]):
-        def run(self, inputs: ChainInput, context: ExecutionContext) -> ChainOutput:
-            try:
-                raise ValueError(token)
-            except ValueError:
-                # ``from None`` suppresses the context from display but still
-                # records it on ``__context__``, which the scan must walk.
-                raise RuntimeError("safe failure") from None
-
-    class NotesStep(TaskStep[ChainInput, ChainOutput]):
-        def run(self, inputs: ChainInput, context: ExecutionContext) -> ChainOutput:
-            error = RuntimeError("safe failure")
-            error.add_note(f"token {token}")
-            raise error
-
-    class OpaqueError(RuntimeError):
-        def __repr__(self) -> str:
-            return "OpaqueError(<hidden>)"
-
-    class OpaqueArgsStep(TaskStep[ChainInput, ChainOutput]):
-        def run(self, inputs: ChainInput, context: ExecutionContext) -> ChainOutput:
-            raise OpaqueError("safe failure", token)
-
     context = build_execution_context(invocation_id="chain-redaction")
-    for step in (CauseStep(), ContextStep(), NotesStep(), OpaqueArgsStep()):
+    for step_class in (_CauseStep, _ContextStep, _NotesStep, _OpaqueArgsStep):
+        step = step_class()
+        step.token = token
         outcome = invoke_step(step, {}, context=context)
         with pytest.raises(AssertionError, match="leaked") as raised:
             assert_no_secrets(outcome, [token])
         assert token not in str(raised.value)
+
+
+def test_function_local_step_classes_are_rejected_with_guidance() -> None:
+    """The installed-step contract requires importable entry points."""
+
+    class LocalStep(ControlStep[_ChainInput, _ChainOutput]):
+        def run(self, inputs: _ChainInput, context: ExecutionContext) -> _ChainOutput:
+            return _ChainOutput(summary="unreachable")
+
+    context = build_execution_context(invocation_id="local-class")
+    with pytest.raises(HarnessUsageError, match="module level"):
+        invoke_step(LocalStep(), {}, context=context)

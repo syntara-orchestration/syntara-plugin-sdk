@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel
-from syntara_plugin.runtime import ExecutionContext, TaskStep
+from syntara_plugin.runtime import ControlStep, ExecutionContext
 
 
 class NormalizeRecordsInput(BaseModel):
@@ -15,7 +15,7 @@ class NormalizeRecordsOutput(BaseModel):
     count: int
 
 
-class NormalizeRecordsTask(TaskStep[NormalizeRecordsInput, NormalizeRecordsOutput]):
+class NormalizeRecordsTask(ControlStep[NormalizeRecordsInput, NormalizeRecordsOutput]):
     """Lowercase and trim every record name."""
 
     def run(

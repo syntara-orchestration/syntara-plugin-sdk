@@ -9,14 +9,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
+    ControlStep,
     ExecutionContext,
     FailureCode,
     StepBinding,
-    StepDescriptor,
-    StepTaxonomy,
-    TaskStep,
 )
 from syntara_plugin.runtime.container import ContainerInvocationError
+
+from .bindings_factory import installed_binding
 
 #: Fixed sentinel for the credential-reference payload case. Use
 #: :func:`syntara_plugin.testing.secret_sentinel` for dynamic, unique values.
@@ -58,14 +58,14 @@ class ReferenceOutput(BaseModel):
     priority: str
 
 
-class ReferenceTaskStep(TaskStep[ReferenceInput, ReferenceOutput]):
+class ReferenceControlStep(ControlStep[ReferenceInput, ReferenceOutput]):
     """A representative Task implementation used by harness tests and examples."""
 
     def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
         return ReferenceOutput(summary=f"processed {inputs.title}", priority=inputs.priority)
 
 
-class FailingReferenceStep(TaskStep[ReferenceInput, ReferenceOutput]):
+class FailingReferenceStep(ControlStep[ReferenceInput, ReferenceOutput]):
     """A Task that deliberately fails with a safe, retryable error."""
 
     def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
@@ -88,9 +88,9 @@ _INVALID_OUTPUT_SCHEMA: dict[str, Any] = {
 
 
 def schema_violating_binding(
-    identity: str = "syntara.testing.schema-violating-task",
+    identity: str = "syntara.testing.schema-violating-control",
 ) -> StepBinding:
-    """Bind the reference Task with an output schema its result violates.
+    """Bind the reference Control step with an output schema its result violates.
 
     The declared output schema is deliberately stricter than the
     implementation's model, so a successful ``run()`` result fails the
@@ -99,14 +99,8 @@ def schema_violating_binding(
     against its implementation; it is intentionally not drift-verified.
     """
 
-    step = ReferenceTaskStep()
-    descriptor = StepDescriptor(
-        step_identity=identity,
-        taxonomy=StepTaxonomy.TASK,
-        input_schema=ReferenceInput.model_json_schema(),
-        output_schema=_INVALID_OUTPUT_SCHEMA,
-    )
-    return StepBinding(descriptor, step)
+    step = ReferenceControlStep()
+    return installed_binding(step, identity=identity, output_schema=_INVALID_OUTPUT_SCHEMA)
 
 
 VALID_INPUT_CASES: tuple[PayloadCase, ...] = (
@@ -146,7 +140,7 @@ INVALID_OUTPUT_CASES: tuple[PayloadCase, ...] = (
 #: The seven ticket categories: valid, missing-required, wrong-type, invalid-enum,
 #: schema-invalid output, deliberate failure, and sensitive credential references.
 #: Pair the cases with the matching reference step: input cases with
-#: :class:`ReferenceTaskStep`, the deliberate-failure case with
+#: :class:`ReferenceControlStep`, the deliberate-failure case with
 #: :class:`FailingReferenceStep`, and the schema-invalid-output case with
 #: :func:`schema_violating_binding`.
 PAYLOAD_CASES: tuple[PayloadCase, ...] = (

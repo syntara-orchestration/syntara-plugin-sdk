@@ -11,10 +11,11 @@ import yaml
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
+    ControlStep,
     ExecutionContext,
     SchemaDriftError,
-    StepTaxonomy,
-    TaskStep,
+    StepBindingError,
+    StepKind,
     TriggerStep,
 )
 from syntara_plugin.testing import (
@@ -25,7 +26,7 @@ from syntara_plugin.testing import (
     invoke_step,
     invoke_step_in_container,
 )
-from syntara_plugin.testing.payloads import ReferenceTaskStep
+from syntara_plugin.testing.payloads import ReferenceControlStep
 
 ENTRY_POINT = f"{__name__}:GreetActionStep"
 IDENTITY = "testing.greet-plugin.greet"
@@ -53,7 +54,7 @@ class NormalizeOutput(BaseModel):
     normalized: list[str]
 
 
-class NormalizeTask(TaskStep[NormalizeInput, NormalizeOutput]):
+class NormalizeTask(ControlStep[NormalizeInput, NormalizeOutput]):
     def run(self, inputs: NormalizeInput, context: ExecutionContext) -> NormalizeOutput:
         return NormalizeOutput(normalized=[item.lower() for item in inputs.records])
 
@@ -86,7 +87,7 @@ def _action_manifest(
             "description": "Greets one person.",
         },
         "spec": {
-            "runtime": {"kind": "custom-workload", "entryPoint": entry_point},
+            "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
             "input": {"kind": "inline", "value": input_schema},
             "output": {"kind": "inline", "value": output_schema},
             "error": {"kind": "inline", "value": {"type": "object"}},
@@ -148,7 +149,7 @@ def _two_action_workspace(tmp_path: Path) -> Path:
                     "name": "two-actions",
                     "version": "0.1.0",
                     "displayName": "Two actions",
-                    "description": "Two custom-workload actions.",
+                    "description": "Two custom-runner actions.",
                 },
                 "spec": {
                     "documentation": {"path": "docs/README.md"},
@@ -288,7 +289,7 @@ def test_bind_action_rejects_platform_runner_targets_selected_by_identity(
     )
     (workspace / "docs/README.md").write_text("# Mixed\n", encoding="utf-8")
     factory = StepBindingsFactory()
-    with pytest.raises(HarnessUsageError, match="custom-workload"):
+    with pytest.raises(HarnessUsageError, match="custom-runner"):
         factory.bind_action(
             GreetActionStep, workspace=workspace, identity="testing.mixed.http-action"
         )
@@ -297,7 +298,7 @@ def test_bind_action_rejects_platform_runner_targets_selected_by_identity(
 def test_bind_task_builds_a_drift_verified_binding() -> None:
     factory = StepBindingsFactory()
     binding = factory.bind(NormalizeTask)
-    assert binding.descriptor.taxonomy is StepTaxonomy.TASK
+    assert binding.descriptor.kind is StepKind.CONTROL
     assert factory.step_identities == (binding.descriptor.step_identity,)
     outcome = invoke_step(binding, {"records": ["Alpha", "Beta"]})
     assert outcome.ok
@@ -309,18 +310,18 @@ def test_bind_accepts_instances_and_entry_points() -> None:
     binding = factory.bind(NormalizeTask())
     assert factory.resolve(f"{__name__}:NormalizeTask").descriptor is binding.descriptor
     from_entry_point = StepBindingsFactory().bind(f"{__name__}:NormalizeTask")
-    assert from_entry_point.descriptor.taxonomy is StepTaxonomy.TASK
+    assert from_entry_point.descriptor.kind is StepKind.CONTROL
     assert from_entry_point.descriptor.step_identity == binding.descriptor.step_identity
 
 
 def test_bind_supports_task_workflow_and_trigger_classes() -> None:
     factory = StepBindingsFactory()
     for step, taxonomy in (
-        (NormalizeTask, StepTaxonomy.TASK),
-        (EmitEventTrigger, StepTaxonomy.TRIGGER),
+        (NormalizeTask, StepKind.CONTROL),
+        (EmitEventTrigger, StepKind.TRIGGER),
     ):
         binding = factory.bind(step)
-        assert binding.descriptor.taxonomy is taxonomy
+        assert binding.descriptor.kind is taxonomy
 
 
 def test_bind_with_drifted_declared_schema_raises() -> None:
@@ -338,7 +339,7 @@ def test_bind_action_installs_the_compiled_manifest(tmp_path: Path) -> None:
     factory = StepBindingsFactory()
     binding = factory.bind_action(GreetActionStep, workspace=_matching_workspace(tmp_path))
     assert binding.descriptor.step_identity == IDENTITY
-    assert binding.descriptor.taxonomy is StepTaxonomy.ACTION
+    assert binding.descriptor.kind is StepKind.ACTION
     outcome = invoke_step(binding, {"name": "world", "enthusiasm": 3})
     assert outcome.ok
     assert outcome.output == {"message": "hello world!!!"}
@@ -409,11 +410,10 @@ def test_bind_action_fails_on_entry_point_drift(tmp_path: Path) -> None:
         ),
     )
     factory = StepBindingsFactory()
-    with pytest.raises(SchemaDriftError) as raised:
+    # The unified contracts reject a mismatched entry point at installation,
+    # before drift validation runs; the mismatch is still named precisely.
+    with pytest.raises(StepBindingError, match="does not match"):
         factory.bind_action(GreetActionStep, workspace=workspace, identity=IDENTITY)
-    assert any(
-        issue.code == "ENTRY_POINT_MISMATCH" for issue in raised.value.report.issues
-    )
 
 
 def test_bind_action_rejects_unknown_entry_points(tmp_path: Path) -> None:
@@ -430,12 +430,15 @@ def test_bind_action_rejects_unknown_entry_points(tmp_path: Path) -> None:
         factory.bind_action(GreetActionStep, workspace=workspace)
 
 
-def test_action_bound_with_bind_is_not_executable(tmp_path: Path) -> None:
+def test_action_bound_with_bind_executes_through_the_local_install() -> None:
+    """bind() installs a local manifest, so even Actions are executable."""
+
     factory = StepBindingsFactory()
     binding = factory.bind(GreetActionStep)
-    assert binding.descriptor.taxonomy is StepTaxonomy.ACTION
-    with pytest.raises(HarnessUsageError, match="bind_action"):
-        invoke_step(binding, {"name": "world"})
+    assert binding.descriptor.kind is StepKind.ACTION
+    outcome = invoke_step(binding, {"name": "world"})
+    assert outcome.ok
+    assert outcome.run_calls == 1
 
 
 def test_strict_factory_fails_on_warning_drift(tmp_path: Path) -> None:
@@ -454,7 +457,7 @@ def test_strict_factory_fails_on_warning_drift(tmp_path: Path) -> None:
 
 def test_reference_task_step_binds_directly() -> None:
     factory = StepBindingsFactory()
-    binding = factory.bind(ReferenceTaskStep)
+    binding = factory.bind(ReferenceControlStep)
     assert invoke_step(binding, {"title": "x"}).ok
 
 

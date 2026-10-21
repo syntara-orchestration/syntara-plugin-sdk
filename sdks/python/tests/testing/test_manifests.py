@@ -27,7 +27,7 @@ ACTION_DOCUMENT: dict[str, Any] = {
         "description": "Greets one person.",
     },
     "spec": {
-        "runtime": {"kind": "custom-workload", "entryPoint": "greet.steps:Greet"},
+        "runtime": {"kind": "custom-runner", "entryPoint": "greet.steps:Greet"},
         "input": {"kind": "inline", "value": {"type": "object"}},
         "output": {"kind": "inline", "value": {"type": "object"}},
         "error": {"kind": "inline", "value": {"type": "object"}},

@@ -8,7 +8,7 @@ import pytest
 from syntara_plugin.sdk.cli import main
 from syntara_plugin.sdk.testgen import ScaffoldError, generate_step_tests
 
-STEP_SOURCE = '''"""A custom-workload Action step used by the generated tests."""
+STEP_SOURCE = '''"""A custom-runner Action step used by the generated tests."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ metadata:
   description: Creates.
 spec:
   runtime:
-    kind: custom-workload
+    kind: custom-runner
     entryPoint: gen_pkg.steps:CreateStep
   input:
     kind: inline
@@ -165,7 +165,7 @@ spec:
 """,
         encoding="utf-8",
     )
-    with pytest.raises(ScaffoldError, match="no custom-workload Action targets"):
+    with pytest.raises(ScaffoldError, match="no custom-runner Action targets"):
         generate_step_tests(workspace / "plugin.yaml")
 
 
@@ -336,7 +336,7 @@ metadata:
   description: Waves.
 spec:
   runtime:
-    kind: custom-workload
+    kind: custom-runner
     entryPoint: gen_pkg.steps:CreateStep
   input:
     kind: inline
@@ -430,7 +430,7 @@ metadata:
   description: Reports a count.
 spec:
   runtime:
-    kind: custom-workload
+    kind: custom-runner
     entryPoint: count_report:CountReportStep
   input:
     kind: inline

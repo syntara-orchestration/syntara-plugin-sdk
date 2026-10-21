@@ -6,10 +6,21 @@ metadata:
   description: Fires when a record is opened in a repository.
 spec:
   driver: webhook.v1
+  runtime:
+    kind: custom-runner
+    entryPoint: python_steps.record_opened:RecordOpenedStep
   configuration:
     kind: inline
     value:
       type: object
+  input:
+    kind: inline
+    value:
+      type: object
+      properties:
+        repository:
+          type: string
+      required: [repository]
   output:
     kind: inline
     value:

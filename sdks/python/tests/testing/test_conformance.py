@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
+    ControlStep,
     ExecutionContext,
     StepBindings,
-    StepDescriptor,
-    TaskStep,
 )
 from syntara_plugin.testing import (
     ConformanceReport,
@@ -16,14 +15,16 @@ from syntara_plugin.testing import (
     check_step_conformance,
     check_valid_reaches_hook_once,
 )
-from syntara_plugin.testing.payloads import ReferenceTaskStep
+from syntara_plugin.testing.bindings_factory import installed_binding
+from syntara_plugin.testing.payloads import ReferenceControlStep
 
 
 def _binding() -> StepBindings:
-    step = ReferenceTaskStep()
-    descriptor = StepDescriptor.for_step("testing.conformance.reference", step)
+    binding = installed_binding(
+        ReferenceControlStep(), identity="testing.conformance.reference"
+    )
     bindings = StepBindings()
-    bindings.bind(descriptor, step)
+    bindings.bind(binding.descriptor, binding.step)
     return bindings
 
 
@@ -80,26 +81,31 @@ def test_empty_conformance_run_passes_without_cases() -> None:
     assert report.passed
 
 
+class _EchoContextInput(BaseModel):
+    value: str = "x"
+
+
+class _EchoContextOutput(BaseModel):
+    invocation_id: str
+    workflow_run_id: str
+
+
+class _EchoContextStep(ControlStep[_EchoContextInput, _EchoContextOutput]):
+    """Echoes both context identifiers for equivalence checks."""
+
+    def run(self, inputs: _EchoContextInput, context: ExecutionContext) -> _EchoContextOutput:
+        return _EchoContextOutput(
+            invocation_id=context.invocation_id,
+            workflow_run_id=context.workflow_run_id or "",
+        )
+
+
 def test_conformance_without_context_compares_identical_contexts() -> None:
     """A step echoing invocation identifiers must not false-fail equivalence."""
 
-    class EchoInput(BaseModel):
-        value: str = "x"
-
-    class EchoOutput(BaseModel):
-        invocation_id: str
-        workflow_run_id: str
-
-    class EchoContextTask(TaskStep[EchoInput, EchoOutput]):
-        def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
-            return EchoOutput(
-                invocation_id=context.invocation_id,
-                workflow_run_id=context.workflow_run_id or "",
-            )
-
     bindings = StepBindings()
-    step = EchoContextTask()
-    bindings.bind(StepDescriptor.for_step("testing.conformance.echo", step), step)
+    binding = installed_binding(_EchoContextStep(), identity="testing.conformance.echo")
+    bindings.bind(binding.descriptor, binding.step)
     report = check_step_conformance(
         bindings.binding("testing.conformance.echo"),
         valid_cases=[{"value": "x"}],
@@ -108,27 +114,35 @@ def test_conformance_without_context_compares_identical_contexts() -> None:
     assert report.passed, report.failures
 
 
+class _BoomInput(BaseModel):
+    model_config = {"extra": "allow"}
+    title: str = "x"
+
+
+class _BoomOutput(BaseModel):
+    value: str = "unreachable"
+
+
+class _BoomStep(ControlStep[_BoomInput, _BoomOutput]):
+    """Fails with the token in its raw exception message."""
+
+    token: str = ""
+
+    def run(self, inputs: _BoomInput, context: ExecutionContext) -> _BoomOutput:
+        raise RuntimeError(f"token={self.token}")
+
+
 def test_conformance_details_never_echo_secret_values() -> None:
     """Failure details carry safe metadata, never raw exception text."""
 
     from syntara_plugin.testing import secret_sentinel
 
     token = secret_sentinel()
-
-    class LooseInput(BaseModel):
-        model_config = {"extra": "allow"}
-        title: str = "x"
-
-    class NeverOutput(BaseModel):
-        value: str = "unreachable"
-
-    class BoomTask(TaskStep[LooseInput, NeverOutput]):
-        def run(self, inputs: LooseInput, context: ExecutionContext) -> NeverOutput:
-            raise RuntimeError(f"token={token}")
-
     bindings = StepBindings()
-    step = BoomTask()
-    bindings.bind(StepDescriptor.for_step("testing.conformance.boom", step), step)
+    step = _BoomStep()
+    step.token = token
+    binding = installed_binding(step, identity="testing.conformance.boom")
+    bindings.bind(binding.descriptor, binding.step)
     report = check_valid_reaches_hook_once(
         bindings.binding("testing.conformance.boom"), valid_cases=[{"title": "x"}]
     )

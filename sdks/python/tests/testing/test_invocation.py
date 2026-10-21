@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
-from syntara_plugin.runtime import ActionStep, ExecutionContext, StepExecutionError, TaskStep
+from syntara_plugin.runtime import ActionStep, ControlStep, ExecutionContext, StepExecutionError
 from syntara_plugin.runtime.container import ContainerInvocationError
 from syntara_plugin.testing import (
     FIXED_SECRET_SENTINEL,
@@ -18,7 +18,7 @@ from syntara_plugin.testing import (
 )
 from syntara_plugin.testing.payloads import (
     FailingReferenceStep,
-    ReferenceTaskStep,
+    ReferenceControlStep,
     schema_violating_binding,
 )
 
@@ -33,7 +33,7 @@ class CaptureOutput(BaseModel):
     cancelled: bool
 
 
-class CaptureContextTask(TaskStep[CaptureInput, CaptureOutput]):
+class CaptureContextTask(ControlStep[CaptureInput, CaptureOutput]):
     def run(self, inputs: CaptureInput, context: ExecutionContext) -> CaptureOutput:
         return CaptureOutput(
             invocation_id=context.invocation_id,
@@ -50,13 +50,13 @@ class LocalActionStep(ActionStep[CaptureInput, CaptureOutput]):
         )
 
 
-class CrashingTask(TaskStep[CaptureInput, CaptureOutput]):
+class CrashingTask(ControlStep[CaptureInput, CaptureOutput]):
     def run(self, inputs: CaptureInput, context: ExecutionContext) -> CaptureOutput:
         raise RuntimeError("the business logic crashed")
 
 
 def test_valid_input_reaches_the_hook_once() -> None:
-    outcome = invoke_step(ReferenceTaskStep(), {"title": "deploy"})
+    outcome = invoke_step(ReferenceControlStep(), {"title": "deploy"})
     assert outcome.ok
     assert outcome.status == 0
     assert outcome.status_message == "Completed"
@@ -93,7 +93,7 @@ def test_custom_context_flows_into_the_step() -> None:
 
 @pytest.mark.parametrize("case", INVALID_INPUT_CASES, ids=lambda case: case.name)
 def test_invalid_input_blocks_the_business_hook(case: Any) -> None:
-    outcome = invoke_step(ReferenceTaskStep(), case.inputs)
+    outcome = invoke_step(ReferenceControlStep(), case.inputs)
     assert not outcome.ok
     assert outcome.status == 1
     assert outcome.run_calls == 0
@@ -105,7 +105,7 @@ def test_invalid_input_blocks_the_business_hook(case: Any) -> None:
 
 
 def test_invalid_input_message_never_echoes_the_rejected_value() -> None:
-    outcome = invoke_step(ReferenceTaskStep(), {"title": "t", "count": "two"})
+    outcome = invoke_step(ReferenceControlStep(), {"title": "t", "count": "two"})
     assert outcome.error is not None
     assert "two" not in outcome.error.message
 
@@ -139,14 +139,28 @@ def test_entry_point_string_target_resolves_and_executes() -> None:
     assert outcome.run_calls == 1
 
 
-def test_action_without_installed_manifest_is_rejected_with_guidance() -> None:
-    with pytest.raises(HarnessUsageError, match="bind_action"):
-        invoke_step(LocalActionStep, {})
+def test_auto_bound_actions_install_a_local_manifest() -> None:
+    """A bare Action class auto-binds through a locally installed manifest."""
+
+    outcome = invoke_step(LocalActionStep, {"value": "x"})
+    assert outcome.ok
+    assert outcome.run_calls == 1
+
+
+def test_unprovenanced_bindings_are_rejected_with_guidance() -> None:
+    from syntara_plugin.runtime import StepBindings, StepDescriptor
+
+    step = LocalActionStep()
+    descriptor = StepDescriptor.for_step("unprovenanced.action", step)
+    bindings = StepBindings()
+    bindings.bind(descriptor, step)
+    with pytest.raises(HarnessUsageError, match="installed manifest"):
+        invoke_step(bindings.binding("unprovenanced.action"), {"value": "x"})
 
 
 def test_credential_reference_input_does_not_leak_into_the_outcome() -> None:
     outcome = invoke_step(
-        ReferenceTaskStep(), {"title": "deploy", "api_token": FIXED_SECRET_SENTINEL}
+        ReferenceControlStep(), {"title": "deploy", "api_token": FIXED_SECRET_SENTINEL}
     )
     assert outcome.ok
     assert_no_secrets(outcome, [FIXED_SECRET_SENTINEL])
@@ -162,7 +176,7 @@ def test_raw_contexts_are_held_to_the_same_identity_rules() -> None:
 
     from syntara_plugin.testing import invoke_step_in_container
 
-    step = ReferenceTaskStep()
+    step = ReferenceControlStep()
     invalid_run_id = ExecutionContext(
         invocation_id="raw-probe", workflow_run_id="not valid"
     )
@@ -181,7 +195,7 @@ def test_non_transportable_invocations_are_rejected_on_both_paths() -> None:
 
     from syntara_plugin.testing import invoke_step_in_container
 
-    step = ReferenceTaskStep()
+    step = ReferenceControlStep()
     with pytest.raises(HarnessUsageError, match="JSON object"):
         invoke_step(step, ["not", "a", "mapping"])
     with pytest.raises(HarnessUsageError, match="JSON object"):
@@ -202,25 +216,51 @@ def test_non_transportable_invocations_are_rejected_on_both_paths() -> None:
         invoke_step_in_container(step, {"title": "x"}, context=context)
 
 
+class _ParityInput(BaseModel):
+    """A permissive input so extra values survive schema validation."""
+
+    model_config = {"extra": "allow"}
+    title: str = "x"
+
+
+class _SeenOutput(BaseModel):
+    kind: str
+
+
+class _ObserveStep(ControlStep[_ParityInput, _SeenOutput]):
+    """Echoes the JSON type of the first extra input value."""
+
+    def run(self, inputs: _ParityInput, context: ExecutionContext) -> _SeenOutput:
+        extra = inputs.model_extra or {}
+        first = next(iter(extra.values()), None)
+        return _SeenOutput(kind=type(first).__name__)
+
+
+class _ItemsOutput(BaseModel):
+    items: list
+
+
+class _MutateStep(ControlStep[_ParityInput, _ItemsOutput]):
+    """Appends to the shared runtime-context list."""
+
+    def run(self, inputs: _ParityInput, context: ExecutionContext) -> _ItemsOutput:
+        context.runtime_context["items"].append("mutated-by-step")
+        return _ItemsOutput(items=list(context.runtime_context["items"]))
+
+
+class _ExitingStep(ControlStep[_ParityInput, CaptureOutput]):
+    """Calls sys.exit from the business hook."""
+
+    def run(self, inputs: _ParityInput, context: ExecutionContext) -> CaptureOutput:
+        raise SystemExit(3)
+
+
 def test_both_paths_deliver_json_normalized_inputs() -> None:
     """Tuples and non-string keys arrive as JSON-native values on both paths."""
 
     from syntara_plugin.testing import assert_outcomes_equivalent, invoke_step_in_container
 
-    class LooseInput(BaseModel):
-        model_config = {"extra": "allow"}
-        title: str = "x"
-
-    class SeenOutput(BaseModel):
-        kind: str
-
-    class ObserveTask(TaskStep[LooseInput, SeenOutput]):
-        def run(self, inputs: LooseInput, context: ExecutionContext) -> SeenOutput:
-            extra = inputs.model_extra or {}
-            first = next(iter(extra.values()), None)
-            return SeenOutput(kind=type(first).__name__)
-
-    step = ObserveTask()
+    step = _ObserveStep()
     context = build_execution_context(invocation_id="json-parity")
     inputs = {"title": "x", "value": (1, 2)}
     direct = invoke_step(step, inputs, context=context)
@@ -234,25 +274,13 @@ def test_runtime_context_mutation_does_not_leak_between_paths() -> None:
 
     from syntara_plugin.testing import invoke_step_in_container
 
-    class LooseInput(BaseModel):
-        model_config = {"extra": "allow"}
-        title: str = "x"
-
-    class ItemsOutput(BaseModel):
-        items: list
-
-    class MutateTask(TaskStep[LooseInput, ItemsOutput]):
-        def run(self, inputs: LooseInput, context: ExecutionContext) -> ItemsOutput:
-            context.runtime_context["items"].append("mutated-by-step")
-            return ItemsOutput(items=list(context.runtime_context["items"]))
-
     context = build_execution_context(
         invocation_id="ctx-isolation", runtime_context={"items": ["original"]}
     )
-    direct = invoke_step(MutateTask(), {}, context=context)
+    direct = invoke_step(_MutateStep(), {}, context=context)
     assert direct.output == {"items": ["original", "mutated-by-step"]}
     assert context.runtime_context["items"] == ["original"]
-    container = invoke_step_in_container(MutateTask(), {}, context=context)
+    container = invoke_step_in_container(_MutateStep(), {}, context=context)
     assert container.output == {"items": ["original", "mutated-by-step"]}
 
 
@@ -261,18 +289,7 @@ def test_system_exit_is_normalized_on_both_paths() -> None:
 
     from syntara_plugin.testing import assert_outcomes_equivalent, invoke_step_in_container
 
-    class LooseInput(BaseModel):
-        model_config = {"extra": "allow"}
-        title: str = "x"
-
-    class NeverOutput(BaseModel):
-        value: str = "unreachable"
-
-    class ExitingTask(TaskStep[LooseInput, NeverOutput]):
-        def run(self, inputs: LooseInput, context: ExecutionContext) -> NeverOutput:
-            raise SystemExit(3)
-
-    step = ExitingTask()
+    step = _ExitingStep()
     context = build_execution_context(invocation_id="sysexit-parity")
     direct = invoke_step(step, {}, context=context)
     container = invoke_step_in_container(step, {}, context=context)

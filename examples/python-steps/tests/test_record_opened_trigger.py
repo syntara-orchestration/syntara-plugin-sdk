@@ -11,7 +11,7 @@ from syntara_plugin.runtime import (
     StepBindingError,
     StepBindings,
     StepDescriptor,
-    StepTaxonomy,
+    StepKind,
 )
 from syntara_plugin.testing import (
     assert_outcomes_equivalent,
@@ -67,7 +67,7 @@ def test_platform_managed_drivers_are_not_python_steps() -> None:
 
     descriptor = StepDescriptor(
         step_identity="example.python-steps.webhook-driver",
-        taxonomy=StepTaxonomy.TRIGGER,
+        kind=StepKind.TRIGGER,
         input_schema={"type": "object"},
         output_schema={"type": "object"},
     )

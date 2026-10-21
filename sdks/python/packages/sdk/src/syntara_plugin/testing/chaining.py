@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from jsonschema import Draft202012Validator
 from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import DriftReport, StepBinding, compare_model_to_schema
+from syntara_plugin.runtime.bindings import to_json_document
 
 from .context_builder import build_execution_context
 from .invocation import StepOutcome, invoke_step
@@ -47,8 +48,12 @@ def check_seam_compatible(source: StepBinding, target: StepBinding) -> DriftRepo
             f"{source.descriptor.step_identity}-to-{target.descriptor.step_identity}"
         ),
         version=None,
-        input_schema_digest=canonical_json_digest(target.descriptor.input_schema),
-        output_schema_digest=canonical_json_digest(source.descriptor.output_schema),
+        input_schema_digest=canonical_json_digest(
+            to_json_document(target.descriptor.input_schema)
+        ),
+        output_schema_digest=canonical_json_digest(
+            to_json_document(source.descriptor.output_schema)
+        ),
         issues=issues,
     )
 
@@ -105,7 +110,7 @@ def chain_steps(
     This is sequential dataflow for tests only. It is deliberately not a
     workflow engine: no branching, parallelism, fan-in, retries, or
     persistence. Orchestration belongs to the platform and to
-    ``WorkflowStep.run`` implementations; when a chain needs control flow,
+    ``ControlStep.run`` implementations; when a chain needs control flow,
     implement it as a Workflow step and test the step.
 
     Args:

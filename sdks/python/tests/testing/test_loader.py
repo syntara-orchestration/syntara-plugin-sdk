@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
-from syntara_plugin.runtime import ActionStep, BaseStep, ExecutionContext, TaskStep
+from syntara_plugin.runtime import ActionStep, BaseStep, ControlStep, ExecutionContext
 from syntara_plugin.testing import (
     HarnessUsageError,
-    ReferenceTaskStep,
+    ReferenceControlStep,
     entry_point_of,
     load_step_class,
     parse_entry_point,
@@ -25,7 +25,7 @@ class LocalOutput(BaseModel):
     result: str = "y"
 
 
-class LocalTask(TaskStep[LocalInput, LocalOutput]):
+class LocalTask(ControlStep[LocalInput, LocalOutput]):
     def run(self, inputs: LocalInput, context: ExecutionContext) -> LocalOutput:
         return LocalOutput(result=inputs.value)
 
@@ -35,7 +35,7 @@ class LocalAction(ActionStep[LocalInput, LocalOutput]):
         return LocalOutput(result=inputs.value)
 
 
-class NeedsArguments(TaskStep[LocalInput, LocalOutput]):
+class NeedsArguments(ControlStep[LocalInput, LocalOutput]):
     def __init__(self, anything: int) -> None:
         super().__init__()
         self.anything = anything
@@ -101,5 +101,5 @@ def test_resolve_step_rejects_classes_needing_arguments() -> None:
 
 
 def test_reference_step_is_a_task_base_step() -> None:
-    step: BaseStep[Any, Any] = ReferenceTaskStep()
-    assert isinstance(step, TaskStep)
+    step: BaseStep[Any, Any] = ReferenceControlStep()
+    assert isinstance(step, ControlStep)

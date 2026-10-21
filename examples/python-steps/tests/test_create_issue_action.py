@@ -1,4 +1,4 @@
-"""Example tests for the custom-workload Action step (full manifest path)."""
+"""Example tests for the custom-runner Action step (full manifest path)."""
 
 from __future__ import annotations
 

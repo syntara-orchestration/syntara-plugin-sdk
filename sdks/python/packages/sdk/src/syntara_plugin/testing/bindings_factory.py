@@ -7,13 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from syntara_plugin.runtime import (
+    ActionStep,
     BaseStep,
-    InstalledActionManifest,
+    ControlStep,
+    InstalledStepManifest,
     SchemaDriftError,
     StepBinding,
     StepBindingError,
     StepBindings,
     StepDescriptor,
+    StepKind,
     check_step_contract,
     check_target_binding,
 )
@@ -39,11 +42,96 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _synthetic_manifest(
+    step: BaseStep[Any, Any],
+    *,
+    input_schema: Mapping[str, Any],
+    output_schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a local installed manifest from an implementation's own schemas.
+
+    Mirrors the runtime's own test pattern: the provenance gate requires every
+    executable binding to come from an installed manifest, so local bindings
+    are installed through the same trusted factory with schemas derived from
+    (or explicitly supplied for) the implementation.
+    """
+
+    step_class = type(step)
+    if issubclass(step_class, ActionStep):
+        kind = StepKind.ACTION
+    elif issubclass(step_class, ControlStep):
+        kind = StepKind.CONTROL
+    else:
+        kind = StepKind.TRIGGER
+    manifest: dict[str, Any] = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": kind.value,
+        "metadata": {
+            "name": "local",
+            "displayName": "Local binding",
+            "description": "Locally installed binding.",
+        },
+        "spec": {
+            "runtime": {
+                "kind": "custom-runner",
+                "entryPoint": entry_point_of(step_class),
+            },
+            "input": {"kind": "inline", "value": _plain(input_schema)},
+            "output": {"kind": "inline", "value": _plain(output_schema)},
+        },
+    }
+    if kind is StepKind.CONTROL:
+        manifest["spec"]["invocation"] = {"kind": "orchestration"}
+    elif kind is StepKind.TRIGGER:
+        manifest["spec"]["driver"] = "webhook.v1"
+        manifest["spec"]["configuration"] = {"kind": "inline", "value": {"type": "object"}}
+    return manifest
+
+
+def installed_binding(
+    step: BaseStep[Any, Any],
+    *,
+    identity: str | None = None,
+    input_schema: Mapping[str, Any] | None = None,
+    output_schema: Mapping[str, Any] | None = None,
+) -> StepBinding:
+    """Build one locally installed, executable binding for a step implementation.
+
+    The manifest is synthetic but flows through the trusted
+    ``InstalledStepManifest.from_manifest`` and ``StepDescriptor.for_installed_step``
+    factories, so the provenance gate accepts it. Schemas default to the
+    implementation's own Pydantic models; explicit schemas install a declared
+    contract instead (used, for example, to exercise output-schema drift).
+    """
+
+    resolved_identity = identity or default_step_identity(step)
+    step_class = type(step)
+    if "<locals>" in step_class.__qualname__:
+        message = (
+            f"{step_class.__qualname__} is defined inside a function. The installed-step "
+            "contract requires an importable module:Class entry point, so step classes "
+            "must be defined at module level; move the class out of the enclosing function."
+        )
+        raise HarnessUsageError(message)
+    declared_input = (
+        input_schema if input_schema is not None else step.input_model().model_json_schema()
+    )
+    declared_output = (
+        output_schema if output_schema is not None else step.output_model().model_json_schema()
+    )
+    manifest = _synthetic_manifest(
+        step, input_schema=declared_input, output_schema=declared_output
+    )
+    installed = InstalledStepManifest.from_manifest(resolved_identity, manifest, {})
+    descriptor = StepDescriptor.for_installed_step(step, installed)
+    return StepBinding(descriptor, step)
+
+
 def _installable_manifest(target: Mapping[str, Any]) -> dict[str, Any]:
     """Rebuild the raw Action manifest shape from one compiled target.
 
     The compiler normalizes targets into a canonical form (top-level identity
-    and resolved schemas); ``InstalledActionManifest.from_manifest`` consumes
+    and resolved schemas); ``InstalledStepManifest.from_manifest`` consumes
     the raw manifest shape. Rebuilding from the compiled target keeps the
     validated canonical schemas as the installation source of truth instead of
     re-reading author files that may have changed after compilation.
@@ -51,7 +139,7 @@ def _installable_manifest(target: Mapping[str, Any]) -> dict[str, Any]:
 
     runtime = target["runtime"]
     specification: dict[str, Any] = {
-        "runtime": {"kind": "custom-workload", "entryPoint": runtime["entryPoint"]},
+        "runtime": {"kind": "custom-runner", "entryPoint": runtime["entryPoint"]},
         "input": {"kind": "inline", "value": _plain(target["input"])},
         "output": {"kind": "inline", "value": _plain(target["output"])},
     }
@@ -68,13 +156,12 @@ def _installable_manifest(target: Mapping[str, Any]) -> dict[str, Any]:
 class StepBindingsFactory:
     """Builds drift-verified ``StepBindings`` for direct and container invocation.
 
-    ``bind`` covers Task, Workflow, and Python-bound Trigger steps through
-    implementation-derived descriptors verified with ``check_step_contract``.
-    ``bind_action`` compiles a plugin workspace, installs the compiled Action
-    manifest through ``InstalledActionManifest.from_manifest``, binds the
-    implementation, and verifies the full plugin with
-    ``validate_plugin_bindings``. Action execution requires that installed
-    provenance; an Action bound with ``bind`` is usable for drift checks only.
+    ``bind`` installs a local manifest derived from the implementation's own
+    schemas (or explicitly supplied ones) and verifies it with
+    ``check_step_contract``; every bound step is executable through
+    :func:`~syntara_plugin.testing.invoke_step`. ``bind_action`` compiles a
+    plugin workspace, installs the compiled Action manifest through the same
+    trusted factory, and verifies the target with ``check_target_binding``.
     """
 
     def __init__(self, *, strict: bool = False) -> None:
@@ -116,39 +203,37 @@ class StepBindingsFactory:
         input_schema: Mapping[str, Any] | None = None,
         output_schema: Mapping[str, Any] | None = None,
     ) -> StepBinding:
-        """Bind one step with an implementation-derived, drift-verified descriptor.
+        """Bind one step through a locally installed, drift-verified manifest.
 
-        Task, Workflow, and Trigger steps bound here are executable through
-        :func:`~syntara_plugin.testing.invoke_step`. Binding an Action this way
-        is allowed for drift validation but is not executable; use
-        :meth:`bind_action` for Actions.
+        The binding is executable through
+        :func:`~syntara_plugin.testing.invoke_step`. For compiled workspaces
+        prefer :meth:`bind_action`, which installs the real manifest.
 
         Args:
             step: A step class or instance, or a ``module:Class`` entry point.
             identity: Step identity; derived from the class when omitted.
-            input_schema: Optional declared input schema to verify against
-                (defaults to the implementation's own model schema).
-            output_schema: Optional declared output schema to verify against.
+            input_schema: Optional declared input schema to install and verify
+                against (defaults to the implementation's own model schema).
+            output_schema: Optional declared output schema to install and
+                verify against.
         """
 
         step_instance = resolve_step(step)
-        resolved_identity = identity or default_step_identity(step_instance)
-        base = StepDescriptor.for_step(resolved_identity, step_instance)
-        descriptor = StepDescriptor(
-            step_identity=resolved_identity,
-            taxonomy=base.taxonomy,
-            input_schema=input_schema if input_schema is not None else base.input_schema,
-            output_schema=output_schema if output_schema is not None else base.output_schema,
+        binding = installed_binding(
+            step_instance,
+            identity=identity,
+            input_schema=input_schema,
+            output_schema=output_schema,
         )
         report = check_step_contract(
             step_instance,
-            input_schema=descriptor.input_schema,
-            output_schema=descriptor.output_schema,
-            step_identity=resolved_identity,
+            input_schema=binding.descriptor.input_schema,
+            output_schema=binding.descriptor.output_schema,
+            step_identity=binding.descriptor.step_identity,
         )
         report.raise_for_drift(strict=self._strict)
-        self._register(descriptor, step_instance)
-        return StepBinding(descriptor, step_instance)
+        self._register(binding.descriptor, step_instance)
+        return binding
 
     def bind_action(
         self,
@@ -161,10 +246,10 @@ class StepBindingsFactory:
 
         The workspace is compiled through the same canonical compiler the CLI
         ``validate`` command uses (with ``require_image_bindings=False`` since
-        local tests build no images). The matching custom-workload Action
+        local tests build no images). The matching custom-runner Action
         target is located by entry point (or explicitly by ``identity``), its
         compiled manifest is installed through
-        ``InstalledActionManifest.from_manifest``, and only that target is
+        ``InstalledStepManifest.from_manifest``, and only that target is
         verified with ``check_target_binding`` so schema drift between the
         manifest and the implementation fails the test. Sibling targets are
         validated by their own ``bind_action`` calls; each call checks exactly
@@ -191,10 +276,10 @@ class StepBindingsFactory:
         entry_point = declared_entry_point or entry_point_of(type(step_instance))
         target = self._find_action_target(result, entry_point=entry_point, identity=identity)
         resolved_identity = identity or str(target["identity"])
-        installed = InstalledActionManifest.from_manifest(
+        installed = InstalledStepManifest.from_manifest(
             resolved_identity, _installable_manifest(target), {}
         )
-        descriptor = StepDescriptor.for_installed_action(step_instance, installed)
+        descriptor = StepDescriptor.for_installed_step(step_instance, installed)
         candidate = StepBinding(descriptor, step_instance)
         # Validate only the bound target, before registering, so a failed drift
         # check never leaves an unverified binding resolvable in this factory
@@ -251,14 +336,15 @@ class StepBindingsFactory:
             message = f"target {target.get('identity')!r} is not an Action"
             raise HarnessUsageError(message)
         runtime_kind = target.get("runtime", {}).get("kind")
-        if runtime_kind != "custom-workload":
+        if runtime_kind != "custom-runner":
             message = (
                 f"target {target.get('identity')!r} uses the {runtime_kind!r} runtime; "
-                "only custom-workload Actions bind Python implementations "
+                "only custom-runner Actions bind Python implementations "
                 "(platform-runner targets are declarative manifests)"
             )
             raise HarnessUsageError(message)
-        return target
+        matched: Mapping[str, Any] = target
+        return matched
 
 
 __all__ = [

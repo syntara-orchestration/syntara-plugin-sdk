@@ -19,11 +19,11 @@ from syntara_plugin.runtime import (
     FailureCode,
     StandardOutputWrapper,
     StepBinding,
-    StepDescriptor,
+    StepBindingError,
     StepExecutor,
-    StepTaxonomy,
 )
 from syntara_plugin.runtime.adapter import container_step_for_binding
+from syntara_plugin.runtime.bindings import validate_executable_step_binding
 from syntara_plugin.runtime.container import (
     ContainerClient,
     ContainerInvocation,
@@ -35,9 +35,10 @@ from syntara_plugin.runtime.container import (
     add_container_runtime_service,
 )
 
+from .bindings_factory import installed_binding
 from .context_builder import build_execution_context, normalize_run_id
 from .errors import HarnessUsageError
-from .loader import StepTarget, default_step_identity, resolve_step
+from .loader import StepTarget, resolve_step
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -146,20 +147,22 @@ def _resolve_binding(target: StepTargetOrBinding) -> StepBinding:
     if isinstance(target, StepBinding):
         return target
     step = resolve_step(target)
-    return StepBinding(StepDescriptor.for_step(default_step_identity(step), step), step)
+    return installed_binding(step)
 
 
 def _require_executable(binding: StepBinding) -> None:
-    """Reject Action bindings that lack the SDK's installed-manifest provenance."""
+    """Reject bindings that lack the SDK's installed-manifest provenance."""
 
-    is_action = binding.descriptor.taxonomy is StepTaxonomy.ACTION
-    if is_action and not binding.descriptor.is_installed_action:
+    try:
+        validate_executable_step_binding(binding.descriptor, binding.step)
+    except StepBindingError as error:
         message = (
-            "Action steps execute only through an installed manifest. Bind the step with "
-            "step_bindings.bind_action(entry_point, workspace=...) so the compiled manifest "
-            "supplies the executable contract; see examples/python-steps."
+            "custom-runner steps execute only through an installed manifest. Bind the "
+            "step with step_bindings.bind(step) or, for a compiled workspace, "
+            "step_bindings.bind_action(entry_point, workspace=...) so the installed "
+            "contract supplies the executable binding; see examples/python-steps."
         )
-        raise HarnessUsageError(message)
+        raise HarnessUsageError(message) from error
 
 
 @contextmanager

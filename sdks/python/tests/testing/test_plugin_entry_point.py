@@ -13,19 +13,19 @@ import pytest
 def test_fixtures_are_auto_discovered_in_a_fresh_project(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(
         """
-        from syntara_plugin.testing import ReferenceTaskStep, invoke_step
+        from syntara_plugin.testing import ReferenceControlStep, invoke_step
 
         def test_reference_step(mock_execution_context):
             outcome = invoke_step(
-                ReferenceTaskStep(), {"title": "hi"}, context=mock_execution_context()
+                ReferenceControlStep(), {"title": "hi"}, context=mock_execution_context()
             )
             assert outcome.ok
             assert outcome.run_calls == 1
 
         def test_bindings_factory(step_bindings):
-            binding = step_bindings.bind(ReferenceTaskStep)
+            binding = step_bindings.bind(ReferenceControlStep)
             assert step_bindings.resolve(
-                "syntara_plugin.testing.payloads.ReferenceTaskStep"
+                "syntara_plugin.testing.payloads.ReferenceControlStep"
             ).descriptor.step_identity == binding.descriptor.step_identity
         """
     )
@@ -48,7 +48,7 @@ def test_container_helper_works_in_a_fresh_project(pytester: pytest.Pytester) ->
     pytester.makepyfile(
         """
         from syntara_plugin.testing import (
-            ReferenceTaskStep,
+            ReferenceControlStep,
             assert_outcomes_equivalent,
             invoke_step,
             invoke_step_in_container,
@@ -56,9 +56,9 @@ def test_container_helper_works_in_a_fresh_project(pytester: pytest.Pytester) ->
 
         def test_equivalence(mock_execution_context):
             context = mock_execution_context(invocation_id="pytester-equivalence")
-            direct = invoke_step(ReferenceTaskStep(), {"title": "hi"}, context=context)
+            direct = invoke_step(ReferenceControlStep(), {"title": "hi"}, context=context)
             container = invoke_step_in_container(
-                ReferenceTaskStep(), {"title": "hi"}, context=context
+                ReferenceControlStep(), {"title": "hi"}, context=context
             )
             assert_outcomes_equivalent(direct, container)
         """

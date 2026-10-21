@@ -76,7 +76,7 @@ excluded; raised failures compare their failure codes when both carry one).
 `syntara_plugin.testing.payloads` ships the seven contract categories as
 `PayloadCase` data: valid, missing-required, wrong-type, invalid-enum,
 schema-invalid output, deliberate failure, and sensitive credential
-references, with `ReferenceTaskStep`, `FailingReferenceStep`, and
+references, with `ReferenceControlStep`, `FailingReferenceStep`, and
 `schema_violating_binding()` as the matching stand-ins.
 
 ```python
@@ -129,12 +129,12 @@ explicit output-to-input seams and fails fast naming the broken link.
 `check_seam_compatible(source, target)` statically proves the seam with the
 same drift engine used for manifests. This is deliberately not a workflow
 engine: no branching, parallelism, fan-in, retries, or persistence. When a
-chain needs control flow, implement it as a `WorkflowStep.run()` and test the
+chain needs control flow, implement it as a `ControlStep.run()` and test the
 step.
 
 ## Generated tests
 
-`syntara-plugin test-init` scaffolds a test module per custom-workload Action
+`syntara-plugin test-init` scaffolds a test module per custom-runner Action
 target from the compiled manifest and its schemas: the entry point, one valid
 case, derived invalid cases, and the standard property tests. Generated files
 refuse silent overwrite (`--force` to regenerate) and are deterministic.

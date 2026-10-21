@@ -1,7 +1,7 @@
-"""Deterministic pytest scaffolding for custom-workload Action steps.
+"""Deterministic pytest scaffolding for custom-runner Action steps.
 
 The generator compiles the workspace through the same canonical compiler the
-``validate`` command uses, then emits one test module per custom-workload
+``validate`` command uses, then emits one test module per custom-runner
 Action target. The generated file is the checklist: valid input reaches the
 business hook once, every invalid case blocks it, and the direct and
 container-adapter paths yield equivalent outcomes. Generated code imports the
@@ -124,7 +124,7 @@ def generate_step_tests(
     tests_dir: Path | None = None,
     force: bool = False,
 ) -> list[Path]:
-    """Generate pytest modules for every custom-workload Action target.
+    """Generate pytest modules for every custom-runner Action target.
 
     Returns the written paths. Existing files are only replaced when ``force``
     is true; the ``tests/conftest.py`` import shim is written only when absent
@@ -140,7 +140,7 @@ def generate_step_tests(
     workspace_relative = os.path.relpath(workspace, tests)
     planned = _plan_test_modules(result, tests, manifest.name, workspace_relative)
     if not planned:
-        message = "the workspace declares no custom-workload Action targets"
+        message = "the workspace declares no custom-runner Action targets"
         raise ScaffoldError(message)
     _refuse_existing(planned, force)
     written = _write_planned_modules(planned)
@@ -189,7 +189,7 @@ def _plan_test_modules(
     planned: list[tuple[Path, str]] = []
     for target in result.descriptor["spec"]["targets"]:
         runtime = target.get("runtime", {})
-        if target.get("kind") != "Action" or runtime.get("kind") != "custom-workload":
+        if target.get("kind") != "Action" or runtime.get("kind") != "custom-runner":
             continue
         entry_point = str(runtime["entryPoint"])
         valid, invalid, valid_errors = _cases_from_schema(target["input"])

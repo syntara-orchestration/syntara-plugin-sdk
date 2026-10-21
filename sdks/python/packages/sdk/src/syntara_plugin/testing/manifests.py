@@ -6,7 +6,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
+from syntara_plugin.contracts import (
+    ContractBundle,
+    load_bundle,
+    validate_document,
+)
+from syntara_plugin.contracts.bundle import ContractKind
 from syntara_plugin.sdk import (
     BuildRequest,
     CompilationResult,
@@ -61,6 +66,16 @@ _KIND_ALIASES = {
 }
 
 
+#: The contract kinds the canonical bundle validates; anything else needs an
+#: owner-supplied bundle.
+_BUNDLE_KINDS: frozenset[ContractKind] = frozenset({
+    "plugin", "plugin_build_settings", "action", "control", "trigger", "step",
+    "plugin_descriptor", "runtime", "provider", "catalog_index", "catalog_source",
+    "catalog_source_status", "integration", "http_mapping", "http_runner_context",
+    "credential_recipe", "trigger_driver", "trigger_event_mapping", "installed_identity",
+})
+
+
 def _inferred_kind(document: Mapping[str, Any]) -> str:
     declared = document.get("kind")
     if isinstance(declared, str) and declared:
@@ -92,6 +107,13 @@ class ManifestValidator:
 
         active = bundle or self._bundle
         resolved = _resolve_kind(kind) if kind is not None else _inferred_kind(document)
+        if resolved not in _BUNDLE_KINDS:
+            message = (
+                f"kind {resolved!r} is not covered by the active bundle; kinds owned by "
+                "step-type repositories need their canonical bundle supplied with "
+                "bundle= (for example a Control or Trigger owner bundle)"
+            )
+            raise HarnessUsageError(message)
         try:
             return list(validate_document(active, resolved, document))
         except KeyError as error:

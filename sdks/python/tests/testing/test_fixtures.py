@@ -8,7 +8,7 @@ from pathlib import Path
 from syntara_plugin.runtime import ExecutionContext
 from syntara_plugin.sdk import CompilationResult
 from syntara_plugin.testing import invoke_step
-from syntara_plugin.testing.payloads import ReferenceTaskStep
+from syntara_plugin.testing.payloads import ReferenceControlStep
 
 
 def test_mock_execution_context_fixture_builds_contexts(
@@ -25,7 +25,7 @@ def test_step_bindings_fixture_binds_and_resolves(
     from syntara_plugin.testing import StepBindingsFactory
 
     assert isinstance(step_bindings, StepBindingsFactory)
-    binding = step_bindings.bind(ReferenceTaskStep)
+    binding = step_bindings.bind(ReferenceControlStep)
     outcome = invoke_step(binding, {"title": "fixture"})
     assert outcome.ok
 
@@ -46,7 +46,7 @@ def test_manifest_validator_fixture_validates_documents(
         },
         "spec": {
             "runtime": {
-                "kind": "custom-workload",
+                "kind": "custom-runner",
                 "entryPoint": "fixture_plugin.actions:FixtureAction",
             },
             "input": {"kind": "inline", "value": {"type": "object"}},

@@ -7,16 +7,16 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
+    ControlStep,
     ExecutionContext,
     StepBindings,
-    StepDescriptor,
-    TaskStep,
 )
 from syntara_plugin.testing import (
     chain_steps,
     check_seam_compatible,
     identity_seam,
 )
+from syntara_plugin.testing.bindings_factory import installed_binding
 
 
 class UpperInput(BaseModel):
@@ -27,7 +27,7 @@ class UpperOutput(BaseModel):
     upper: str
 
 
-class UpperTask(TaskStep[UpperInput, UpperOutput]):
+class UpperTask(ControlStep[UpperInput, UpperOutput]):
     def run(self, inputs: UpperInput, context: ExecutionContext) -> UpperOutput:
         return UpperOutput(upper=inputs.text.upper())
 
@@ -40,7 +40,7 @@ class CountVowelsOutput(BaseModel):
     vowel_count: int
 
 
-class CountVowelsTask(TaskStep[CountVowelsInput, CountVowelsOutput]):
+class CountVowelsTask(ControlStep[CountVowelsInput, CountVowelsOutput]):
     def run(self, inputs: CountVowelsInput, context: ExecutionContext) -> CountVowelsOutput:
         return CountVowelsOutput(
             vowel_count=sum(character in "AEIOU" for character in inputs.upper)
@@ -52,7 +52,7 @@ class StrictInput(BaseModel):
     mandatory_extra: str
 
 
-class StrictTask(TaskStep[StrictInput, CountVowelsOutput]):
+class StrictTask(ControlStep[StrictInput, CountVowelsOutput]):
     def run(self, inputs: StrictInput, context: ExecutionContext) -> CountVowelsOutput:
         return CountVowelsOutput(vowel_count=0)
 
@@ -66,7 +66,7 @@ class CaptureIdOutput(BaseModel):
     workflow_run_id: str
 
 
-class CaptureIdTask(TaskStep[CaptureIdInput, CaptureIdOutput]):
+class CaptureIdTask(ControlStep[CaptureIdInput, CaptureIdOutput]):
     def run(self, inputs: CaptureIdInput, context: ExecutionContext) -> CaptureIdOutput:
         return CaptureIdOutput(
             invocation_id=context.invocation_id,
@@ -75,9 +75,9 @@ class CaptureIdTask(TaskStep[CaptureIdInput, CaptureIdOutput]):
 
 
 def _bind(step: Any, identity: str) -> Any:
-    descriptor = StepDescriptor.for_step(identity, step())
+    binding = installed_binding(step(), identity=identity)
     bindings = StepBindings()
-    bindings.bind(descriptor, step())
+    bindings.bind(binding.descriptor, binding.step)
     return bindings.binding(identity)
 
 
@@ -117,14 +117,17 @@ def test_chain_gives_each_link_its_own_invocation_id() -> None:
     )
 
 
-def test_chain_fails_fast_naming_the_broken_link() -> None:
-    class FailingVowelsTask(TaskStep[CountVowelsInput, CountVowelsOutput]):
-        def run(self, inputs: CountVowelsInput, context: ExecutionContext) -> CountVowelsOutput:
-            raise RuntimeError("middle link failed")
+class _FailingVowelsStep(ControlStep[CountVowelsInput, CountVowelsOutput]):
+    """Fails from the business hook."""
 
+    def run(self, inputs: CountVowelsInput, context: ExecutionContext) -> CountVowelsOutput:
+        raise RuntimeError("middle link failed")
+
+
+def test_chain_fails_fast_naming_the_broken_link() -> None:
     bindings = [
         _bind(UpperTask, "chain.upper"),
-        _bind(FailingVowelsTask, "chain.failing"),
+        _bind(_FailingVowelsStep, "chain.failing"),
         _bind(CountVowelsTask, "chain.count"),
     ]
     outcome = chain_steps(
@@ -169,30 +172,38 @@ def test_check_seam_compatible_detects_missing_required_fields() -> None:
     assert report.errors
 
 
+class _IntInput(BaseModel):
+    value: int
+
+
+class _IntOutput(BaseModel):
+    value: int
+
+
+class _IntSourceStep(ControlStep[CaptureIdInput, _IntOutput]):
+    """Emits an integer output for seam validation."""
+
+    def run(self, inputs: CaptureIdInput, context: ExecutionContext) -> _IntOutput:
+        return _IntOutput(value=1)
+
+
+class _IntTargetStep(ControlStep[_IntInput, _IntOutput]):
+    """Consumes an integer input."""
+
+    def run(self, inputs: _IntInput, context: ExecutionContext) -> _IntOutput:
+        return _IntOutput(value=inputs.value)
+
+
 def test_seam_output_validation_names_the_seam_and_blocks_the_target() -> None:
     """A seam returning schema-invalid values fails before the target runs."""
 
-    class LooseInput(BaseModel):
-        title: str = "x"
-
-    class IntOutput(BaseModel):
-        value: int
-
-    class SourceTask(TaskStep[LooseInput, IntOutput]):
-        def run(self, inputs: LooseInput, context: ExecutionContext) -> IntOutput:
-            return IntOutput(value=1)
-
-    class IntInput(BaseModel):
-        value: int
-
-    class TargetTask(TaskStep[IntInput, IntOutput]):
-        def run(self, inputs: IntInput, context: ExecutionContext) -> IntOutput:
-            return IntOutput(value=inputs.value)
-
     bindings = StepBindings()
-    source_step, target_step = SourceTask(), TargetTask()
-    bindings.bind(StepDescriptor.for_step("chain.json.source", source_step), source_step)
-    bindings.bind(StepDescriptor.for_step("chain.json.target", target_step), target_step)
+    for identity, step in (
+        ("chain.json.source", _IntSourceStep()),
+        ("chain.json.target", _IntTargetStep()),
+    ):
+        binding = installed_binding(step, identity=identity)
+        bindings.bind(binding.descriptor, binding.step)
     source = bindings.binding("chain.json.source")
     target = bindings.binding("chain.json.target")
 
@@ -202,7 +213,7 @@ def test_seam_output_validation_names_the_seam_and_blocks_the_target() -> None:
     # named as a seam failure, and never reaches the target's hook.
     outcome = chain_steps(
         [source, target],
-        {"title": "x"},
+        {"text": "x"},
         context=None,
         seams=[lambda output: {"value": "not-an-integer"}],
     )
