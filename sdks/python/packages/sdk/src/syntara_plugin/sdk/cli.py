@@ -111,7 +111,7 @@ def _parser() -> argparse.ArgumentParser:
 
     test_init = commands.add_parser(
         "test-init",
-        help="Generate local pytest tests for custom-workload Action steps.",
+        help="Generate local pytest tests for custom-runner Step types.",
     )
     test_init.add_argument(
         "manifest",
@@ -604,7 +604,7 @@ def _boolean_option(command_line: bool | None, settings: bool | None, *, default
 
 
 def _init_tests(arguments: argparse.Namespace) -> int:
-    """Generate local pytest tests for custom-workload Action targets."""
+    """Generate local pytest tests for custom-runner Step targets."""
     try:
         written = generate_step_tests(
             arguments.manifest,

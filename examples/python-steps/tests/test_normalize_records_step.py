@@ -1,4 +1,4 @@
-"""Example tests for the Task step (descriptor path, no source manifest)."""
+"""Example tests for a Control-category Step (descriptor path, no source manifest)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from syntara_plugin.testing import (
 )
 
 
-def test_task_executes_through_the_descriptor_path(
+def test_control_executes_through_the_descriptor_path(
     mock_execution_context, step_bindings
 ) -> None:
     binding = step_bindings.bind(NormalizeRecordsStep)
@@ -25,7 +25,7 @@ def test_task_executes_through_the_descriptor_path(
     assert outcome.output == {"normalized": ["alpha", "beta"], "count": 2}
 
 
-def test_task_rejects_wrong_input_types(mock_execution_context, step_bindings) -> None:
+def test_control_rejects_wrong_input_types(mock_execution_context, step_bindings) -> None:
     binding = step_bindings.bind(NormalizeRecordsStep)
     outcome = invoke_step(binding, {"records": "not-a-list"}, context=mock_execution_context())
     assert not outcome.ok
@@ -36,14 +36,14 @@ def test_direct_and_container_paths_are_equivalent(
     mock_execution_context, step_bindings
 ) -> None:
     binding = step_bindings.bind(NormalizeRecordsStep)
-    context = mock_execution_context(invocation_id="task-equivalence")
+    context = mock_execution_context(invocation_id="control-equivalence")
     inputs = {"records": ["Alpha"]}
     direct = invoke_step(binding, inputs, context=context)
     container = invoke_step_in_container(binding, inputs, context=context)
     assert_outcomes_equivalent(direct, container)
 
 
-def test_chained_tasks_pass_outputs_through_an_explicit_seam(
+def test_chained_control_steps_pass_outputs_through_an_explicit_seam(
     mock_execution_context, step_bindings
 ) -> None:
     first = step_bindings.bind(NormalizeRecordsStep, identity="example.python-steps.normalize-1")

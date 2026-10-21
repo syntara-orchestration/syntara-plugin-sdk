@@ -95,6 +95,32 @@ def _action_manifest(
     }
 
 
+def _control_manifest(
+    input_schema: Mapping[str, Any],
+    output_schema: Mapping[str, Any],
+    entry_point: str,
+) -> dict[str, Any]:
+    manifest = _action_manifest(input_schema, output_schema, entry_point)
+    manifest["kind"] = "Control"
+    manifest["spec"]["invocation"] = {"kind": "orchestration"}
+    return manifest
+
+
+def _trigger_manifest(
+    input_schema: Mapping[str, Any],
+    output_schema: Mapping[str, Any],
+    entry_point: str,
+) -> dict[str, Any]:
+    manifest = _action_manifest(input_schema, output_schema, entry_point)
+    manifest["kind"] = "Trigger"
+    manifest["spec"]["driver"] = "webhook.v1"
+    manifest["spec"]["configuration"] = {
+        "kind": "inline",
+        "value": {"type": "object"},
+    }
+    return manifest
+
+
 def _workspace(tmp_path: Path, manifest: Mapping[str, Any]) -> Path:
     workspace = tmp_path / "greet-plugin"
     (workspace / "steps/greet").mkdir(parents=True)
@@ -186,20 +212,48 @@ class WaveActionStep(ActionStep[GreetInput, GreetOutput]):
         return GreetOutput(message=f"wave {inputs.name}")
 
 
-def test_bind_action_supports_multi_action_workspaces(tmp_path: Path) -> None:
+def test_bind_step_supports_multi_action_workspaces(tmp_path: Path) -> None:
     """Each call validates only its own target, so siblings never block it."""
 
     workspace = _two_action_workspace(tmp_path)
     factory = StepBindingsFactory()
-    first = factory.bind_action(GreetActionStep, workspace=workspace)
-    second = factory.bind_action(WaveActionStep, workspace=workspace)
+    first = factory.bind_step(GreetActionStep, workspace=workspace)
+    second = factory.bind_step(WaveActionStep, workspace=workspace)
     assert first.descriptor.step_identity == "testing.two-actions.greet"
     assert second.descriptor.step_identity == "testing.two-actions.wave"
     assert invoke_step(first, {"name": "a"}).ok
     assert invoke_step(second, {"name": "b"}).ok
 
 
-def test_bind_action_matches_caller_supplied_entry_point_strings(
+def test_bind_step_installs_control_manifest(tmp_path: Path) -> None:
+    workspace = _workspace(
+        tmp_path,
+        _control_manifest(
+            NormalizeInput.model_json_schema(),
+            NormalizeOutput.model_json_schema(),
+            entry_point_of(NormalizeStep),
+        ),
+    )
+    binding = StepBindingsFactory().bind_step(NormalizeStep, workspace=workspace)
+    assert binding.descriptor.kind is StepKind.CONTROL
+    assert invoke_step(binding, {"records": ["A"]}).ok
+
+
+def test_bind_step_installs_trigger_manifest(tmp_path: Path) -> None:
+    workspace = _workspace(
+        tmp_path,
+        _trigger_manifest(
+            EmitEventInput.model_json_schema(),
+            EmitEventOutput.model_json_schema(),
+            entry_point_of(EmitEventTrigger),
+        ),
+    )
+    binding = StepBindingsFactory().bind_step(EmitEventTrigger, workspace=workspace)
+    assert binding.descriptor.kind is StepKind.TRIGGER
+    assert invoke_step(binding, {"repository": "repo"}).ok
+
+
+def test_bind_step_matches_caller_supplied_entry_point_strings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A re-export entry point matches the manifest as written."""
@@ -219,7 +273,7 @@ def test_bind_action_matches_caller_supplied_entry_point_strings(
         ),
     )
     factory = StepBindingsFactory()
-    binding = factory.bind_action(
+    binding = factory.bind_step(
         "reexport_helper:GreetActionStep", workspace=workspace
     )
     assert invoke_step(binding, {"name": "a"}).ok
@@ -229,7 +283,7 @@ def test_bind_action_matches_caller_supplied_entry_point_strings(
     assert factory.resolve(entry_point_of(GreetActionStep)).descriptor is binding.descriptor
 
 
-def test_bind_action_rejects_platform_runner_targets_selected_by_identity(
+def test_bind_step_rejects_platform_runner_targets_selected_by_identity(
     tmp_path: Path,
 ) -> None:
     """An identity selecting a declarative runtime fails with guidance, not KeyError."""
@@ -290,7 +344,7 @@ def test_bind_action_rejects_platform_runner_targets_selected_by_identity(
     (workspace / "docs/README.md").write_text("# Mixed\n", encoding="utf-8")
     factory = StepBindingsFactory()
     with pytest.raises(HarnessUsageError, match="custom-runner"):
-        factory.bind_action(
+        factory.bind_step(
             GreetActionStep, workspace=workspace, identity="testing.mixed.http-action"
         )
 
@@ -335,9 +389,9 @@ def test_bind_with_drifted_declared_schema_raises() -> None:
         factory.bind(NormalizeStep, input_schema=drifted)
 
 
-def test_bind_action_installs_the_compiled_manifest(tmp_path: Path) -> None:
+def test_bind_step_installs_the_compiled_manifest(tmp_path: Path) -> None:
     factory = StepBindingsFactory()
-    binding = factory.bind_action(GreetActionStep, workspace=_matching_workspace(tmp_path))
+    binding = factory.bind_step(GreetActionStep, workspace=_matching_workspace(tmp_path))
     assert binding.descriptor.step_identity == IDENTITY
     assert binding.descriptor.kind is StepKind.ACTION
     outcome = invoke_step(binding, {"name": "world", "enthusiasm": 3})
@@ -345,26 +399,26 @@ def test_bind_action_installs_the_compiled_manifest(tmp_path: Path) -> None:
     assert outcome.output == {"message": "hello world!!!"}
 
 
-def test_bind_action_accepts_a_directory_or_manifest_path(tmp_path: Path) -> None:
+def test_bind_step_accepts_a_directory_or_manifest_path(tmp_path: Path) -> None:
     workspace = _matching_workspace(tmp_path)
-    from_directory = StepBindingsFactory().bind_action(GreetActionStep, workspace=workspace)
-    from_manifest = StepBindingsFactory().bind_action(
+    from_directory = StepBindingsFactory().bind_step(GreetActionStep, workspace=workspace)
+    from_manifest = StepBindingsFactory().bind_step(
         GreetActionStep, workspace=workspace / "plugin.yaml"
     )
     assert from_directory.descriptor.step_identity == from_manifest.descriptor.step_identity
 
 
-def test_bind_action_resolves_by_identity_and_entry_point(tmp_path: Path) -> None:
+def test_bind_step_resolves_by_identity_and_entry_point(tmp_path: Path) -> None:
     factory = StepBindingsFactory()
-    factory.bind_action(GreetActionStep, workspace=_matching_workspace(tmp_path))
+    factory.bind_step(GreetActionStep, workspace=_matching_workspace(tmp_path))
     assert factory.resolve(IDENTITY).descriptor.step_identity == IDENTITY
     assert factory.resolve(ENTRY_POINT).descriptor.step_identity == IDENTITY
     assert factory.step_identities == (IDENTITY,)
 
 
-def test_bind_action_executes_over_the_container_path(tmp_path: Path) -> None:
+def test_bind_step_executes_over_the_container_path(tmp_path: Path) -> None:
     factory = StepBindingsFactory()
-    binding = factory.bind_action(GreetActionStep, workspace=_matching_workspace(tmp_path))
+    binding = factory.bind_step(GreetActionStep, workspace=_matching_workspace(tmp_path))
     context_id = "bind-action-container"
     from syntara_plugin.testing import build_execution_context
 
@@ -375,7 +429,7 @@ def test_bind_action_executes_over_the_container_path(tmp_path: Path) -> None:
     assert container.ok
 
 
-def test_bind_action_fails_on_schema_drift(tmp_path: Path) -> None:
+def test_bind_step_fails_on_schema_drift(tmp_path: Path) -> None:
     drifted_input = {
         "type": "object",
         "properties": {"whom": {"type": "string"}},
@@ -386,7 +440,7 @@ def test_bind_action_fails_on_schema_drift(tmp_path: Path) -> None:
     )
     factory = StepBindingsFactory()
     with pytest.raises(SchemaDriftError):
-        factory.bind_action(GreetActionStep, workspace=workspace)
+        factory.bind_step(GreetActionStep, workspace=workspace)
     # A failed drift check must not leave an unverified binding resolvable.
     assert factory.step_identities == ()
     with pytest.raises(HarnessUsageError, match="has not been bound yet"):
@@ -400,7 +454,7 @@ def test_resolve_accepts_identities_containing_colons() -> None:
     assert factory.resolve(identity).descriptor is binding.descriptor
 
 
-def test_bind_action_fails_on_entry_point_drift(tmp_path: Path) -> None:
+def test_bind_step_fails_on_entry_point_drift(tmp_path: Path) -> None:
     workspace = _workspace(
         tmp_path,
         _action_manifest(
@@ -413,10 +467,10 @@ def test_bind_action_fails_on_entry_point_drift(tmp_path: Path) -> None:
     # The unified contracts reject a mismatched entry point at installation,
     # before drift validation runs; the mismatch is still named precisely.
     with pytest.raises(StepBindingError, match="does not match"):
-        factory.bind_action(GreetActionStep, workspace=workspace, identity=IDENTITY)
+        factory.bind_step(GreetActionStep, workspace=workspace, identity=IDENTITY)
 
 
-def test_bind_action_rejects_unknown_entry_points(tmp_path: Path) -> None:
+def test_bind_step_rejects_unknown_entry_points(tmp_path: Path) -> None:
     workspace = _workspace(
         tmp_path,
         _action_manifest(
@@ -427,7 +481,7 @@ def test_bind_action_rejects_unknown_entry_points(tmp_path: Path) -> None:
     )
     factory = StepBindingsFactory()
     with pytest.raises(HarnessUsageError, match="no Action target matches"):
-        factory.bind_action(GreetActionStep, workspace=workspace)
+        factory.bind_step(GreetActionStep, workspace=workspace)
 
 
 def test_action_bound_with_bind_executes_through_the_local_install() -> None:
@@ -452,7 +506,7 @@ def test_strict_factory_fails_on_warning_drift(tmp_path: Path) -> None:
     )
     factory = StepBindingsFactory(strict=True)
     with pytest.raises(SchemaDriftError):
-        factory.bind_action(GreetActionStep, workspace=workspace)
+        factory.bind_step(GreetActionStep, workspace=workspace)
 
 
 def test_reference_task_step_binds_directly() -> None:
@@ -464,6 +518,6 @@ def test_reference_task_step_binds_directly() -> None:
 def test_declared_view_excludes_bindings_from_other_workspaces(tmp_path: Path) -> None:
     factory = StepBindingsFactory()
     factory.bind(NormalizeStep)
-    factory.bind_action(GreetActionStep, workspace=_matching_workspace(tmp_path))
+    factory.bind_step(GreetActionStep, workspace=_matching_workspace(tmp_path))
     task_identity = f"{__name__}.{NormalizeStep.__qualname__}"
     assert set(factory.step_identities) == {task_identity, IDENTITY}

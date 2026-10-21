@@ -46,8 +46,8 @@ def step_bindings() -> StepBindingsFactory:
     """Factory fixture building drift-verified step bindings.
 
     Use ``step_bindings.bind(step)`` for any step (a locally installed
-    manifest) and ``step_bindings.bind_action(entry_point, workspace=...)``
-    for Actions compiled from a real workspace.
+    manifest) and ``step_bindings.bind_step(entry_point, workspace=...)``
+    for custom-runner Step types compiled from a real workspace.
     """
 
     return StepBindingsFactory()

@@ -8,7 +8,7 @@
 
 Step authors need a fast local feedback loop for declared contracts and the
 Python API: manifest validation, model-versus-manifest drift, and execution of
-Action, Task, Workflow, and Trigger implementations through the shared SDK
+Action, Control, and Trigger implementations through the shared SDK
 executor, without AO, EP, or a cluster. Before this decision the repository had
 no shared test fixtures (roughly ten test files duplicated private helpers),
 no entry-point loading (`spec.runtime.entryPoint` was validated but never
@@ -38,7 +38,7 @@ Docker, autouse fixtures, lockstep pins, and white-box assertions.
    through `StepExecutor`, `validate_step_inputs`, `StepBindings`, and
    `load_bundle()`. Manifest checks use the canonical schema bundle or an
    owner-supplied bundle. Action bindings are built only through
-   `compile_workspace` and `InstalledActionManifest.from_manifest`, so the
+   `compile_workspace` and `InstalledStepManifest.from_manifest`, so the
    SDK's provenance gate enforces the no-fabricated-identity rule.
 4. Normalize outcomes behind a `StepOutcome` accessor so result assertions
    never touch raw envelope fields; direct and container-adapter invocation

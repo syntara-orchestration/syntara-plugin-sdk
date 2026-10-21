@@ -18,7 +18,7 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 
 
 def test_valid_input_reaches_the_hook_once(mock_execution_context, step_bindings) -> None:
-    binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(ENTRY_POINT, workspace=WORKSPACE)
     outcome = invoke_step(
         binding, {"title": "Broken build", "priority": "high"}, context=mock_execution_context()
     )
@@ -28,7 +28,7 @@ def test_valid_input_reaches_the_hook_once(mock_execution_context, step_bindings
 
 
 def test_missing_required_field_blocks_the_hook(mock_execution_context, step_bindings) -> None:
-    binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(ENTRY_POINT, workspace=WORKSPACE)
     outcome = invoke_step(binding, {"priority": "high"}, context=mock_execution_context())
     assert not outcome.ok
     assert outcome.run_calls == 0
@@ -37,7 +37,7 @@ def test_missing_required_field_blocks_the_hook(mock_execution_context, step_bin
 
 
 def test_invalid_enum_value_blocks_the_hook(mock_execution_context, step_bindings) -> None:
-    binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(ENTRY_POINT, workspace=WORKSPACE)
     outcome = invoke_step(
         binding, {"title": "Broken build", "priority": "urgent"}, context=mock_execution_context()
     )
@@ -49,7 +49,7 @@ def test_secrets_never_leak_into_outcomes_or_messages(
     mock_execution_context, step_bindings
 ) -> None:
     token = secret_sentinel()
-    binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(ENTRY_POINT, workspace=WORKSPACE)
     outcome = invoke_step(
         binding,
         {"title": "Broken build", "api_token": token},
@@ -62,7 +62,7 @@ def test_secrets_never_leak_into_outcomes_or_messages(
 def test_direct_and_container_paths_are_equivalent(
     mock_execution_context, step_bindings
 ) -> None:
-    binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(ENTRY_POINT, workspace=WORKSPACE)
     context = mock_execution_context(invocation_id="example-equivalence")
     direct = invoke_step(binding, {"title": "Broken build"}, context=context)
     container = invoke_step_in_container(binding, {"title": "Broken build"}, context=context)
@@ -72,7 +72,7 @@ def test_direct_and_container_paths_are_equivalent(
 def test_conformance_in_one_call(mock_execution_context, step_bindings) -> None:
     from syntara_plugin.testing import check_step_conformance
 
-    binding = step_bindings.bind_action(CreateIssueStep, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(CreateIssueStep, workspace=WORKSPACE)
     report = check_step_conformance(
         binding,
         valid_cases=[{"title": "Broken build"}],

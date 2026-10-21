@@ -5,7 +5,7 @@ SDK test harness without AO, EP, or a cluster.
 
 | Step | Taxonomy | Source manifest? | Tested through |
 |---|---|---|---|
-| `create_issue.CreateIssueStep` | Action | `steps/create-issue/manifest.yaml` (custom-runner) | `step_bindings.bind_action` (compile, install, drift-check, execute) |
+| `create_issue.CreateIssueStep` | Action | `steps/create-issue/manifest.yaml` (custom-runner) | `step_bindings.bind_step` (compile, install, drift-check, execute) |
 | `record_opened.RecordOpenedStep` | Trigger | `steps/record-opened/manifest.yaml` (driver + Python binding) | `manifest_validator` + `step_bindings.bind` |
 | `normalize_records.NormalizeRecordsStep` | Control | none (owned by the step-type repository) | `step_bindings.bind` (local install) |
 | `compose_remediation.ComposeRemediationStep` | Control | none (owned by the step-type repository) | `step_bindings.bind` (local install) |

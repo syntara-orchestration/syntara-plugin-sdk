@@ -30,11 +30,11 @@ Their names are public API.
 | `manifest_validator` | `syntara_plugin.contracts` canonical bundle | `manifest_validator(document, kind=...)` raises `ManifestValidationError` on invalid documents; `.check(...)` returns diagnostics; `bundle=` accepts a step-type owner's canonical bundle. |
 | `compile_manifest` | `syntara_plugin.sdk` compiler | `compile_manifest(path_or_plugin, targets=None, ...)` compiles a workspace (path to `plugin.yaml` or its directory) or an in-memory `Plugin` model; path compiles default to `require_image_bindings=False` because local tests build no images. |
 | `mock_execution_context` | `ExecutionContext` | `mock_execution_context(invocation_id=..., workflow_run_id=..., runtime_context=..., cancelled=False)` builds one locally approved context: valid, free of real credentials, authorized only for local test execution. |
-| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for any step (a locally installed manifest verified with `check_step_contract`); `bind_action(entry_point, workspace=...)` for Actions (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
+| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for any step (a locally installed manifest verified with `check_step_contract`); `bind_step(entry_point, workspace=...)` for custom-runner Step types (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
 
 Action steps execute only through an installed manifest: the SDK's
 `require_executable_contract` provenance gate rejects fabricated descriptors,
-so `bind_action` is the only path to an executable Action binding. Binding an
+so `bind_step` is the only path to an executable custom-runner Step binding. Binding an
 Action with `bind` is allowed for drift checks but is not executable.
 
 ## Invocation helpers

@@ -17,6 +17,7 @@ from syntara_plugin.runtime import (
     StepBindings,
     StepDescriptor,
     StepKind,
+    TriggerStep,
     check_step_contract,
     check_target_binding,
 )
@@ -128,7 +129,7 @@ def installed_binding(
 
 
 def _installable_manifest(target: Mapping[str, Any]) -> dict[str, Any]:
-    """Rebuild the raw Action manifest shape from one compiled target.
+    """Rebuild the raw Step manifest shape from one compiled target.
 
     The compiler normalizes targets into a canonical form (top-level identity
     and resolved schemas); ``InstalledStepManifest.from_manifest`` consumes
@@ -143,11 +144,20 @@ def _installable_manifest(target: Mapping[str, Any]) -> dict[str, Any]:
         "input": {"kind": "inline", "value": _plain(target["input"])},
         "output": {"kind": "inline", "value": _plain(target["output"])},
     }
+    kind = str(target["kind"])
+    for field_name in ("invocation", "driver"):
+        if field_name in target:
+            specification[field_name] = _plain(target[field_name])
+    if "configuration" in target:
+        specification["configuration"] = {
+            "kind": "inline",
+            "value": _plain(target["configuration"]),
+        }
     if "error" in target:
         specification["error"] = {"kind": "inline", "value": _plain(target["error"])}
     return {
         "apiVersion": "syntara.io/v1alpha1",
-        "kind": "Action",
+        "kind": kind,
         "metadata": _plain(target["metadata"]),
         "spec": specification,
     }
@@ -159,8 +169,8 @@ class StepBindingsFactory:
     ``bind`` installs a local manifest derived from the implementation's own
     schemas (or explicitly supplied ones) and verifies it with
     ``check_step_contract``; every bound step is executable through
-    :func:`~syntara_plugin.testing.invoke_step`. ``bind_action`` compiles a
-    plugin workspace, installs the compiled Action manifest through the same
+    :func:`~syntara_plugin.testing.invoke_step`. ``bind_step`` compiles a
+    plugin workspace, installs the compiled Step manifest through the same
     trusted factory, and verifies the target with ``check_target_binding``.
     """
 
@@ -207,7 +217,7 @@ class StepBindingsFactory:
 
         The binding is executable through
         :func:`~syntara_plugin.testing.invoke_step`. For compiled workspaces
-        prefer :meth:`bind_action`, which installs the real manifest.
+            prefer :meth:`bind_step`, which installs the real manifest.
 
         Args:
             step: A step class or instance, or a ``module:Class`` entry point.
@@ -235,24 +245,24 @@ class StepBindingsFactory:
         self._register(binding.descriptor, step_instance)
         return binding
 
-    def bind_action(
+    def bind_step(
         self,
         step: StepTarget,
         *,
         workspace: Path | str,
         identity: str | None = None,
     ) -> StepBinding:
-        """Compile a workspace, install its Action manifest, and bind the implementation.
+        """Compile a workspace, install its Step manifest, and bind the implementation.
 
         The workspace is compiled through the same canonical compiler the CLI
         ``validate`` command uses (with ``require_image_bindings=False`` since
-        local tests build no images). The matching custom-runner Action
+        local tests build no images). The matching custom-runner Step
         target is located by entry point (or explicitly by ``identity``), its
         compiled manifest is installed through
         ``InstalledStepManifest.from_manifest``, and only that target is
         verified with ``check_target_binding`` so schema drift between the
         manifest and the implementation fails the test. Sibling targets are
-        validated by their own ``bind_action`` calls; each call checks exactly
+        validated by their own ``bind_step`` calls; each call checks exactly
         the target it binds.
 
         Args:
@@ -274,7 +284,13 @@ class StepBindingsFactory:
         step_instance = resolve_step(step)
         declared_entry_point = step if isinstance(step, str) else None
         entry_point = declared_entry_point or entry_point_of(type(step_instance))
-        target = self._find_action_target(result, entry_point=entry_point, identity=identity)
+        expected_kind = _step_kind(type(step_instance))
+        target = self._find_step_target(
+            result,
+            entry_point=entry_point,
+            identity=identity,
+            expected_kind=expected_kind,
+        )
         resolved_identity = identity or str(target["identity"])
         installed = InstalledStepManifest.from_manifest(
             resolved_identity, _installable_manifest(target), {}
@@ -300,12 +316,13 @@ class StepBindingsFactory:
         self._bindings.bind(descriptor, step_instance)
         self._entry_points[entry_point_of(type(step_instance))] = descriptor.step_identity
 
-    def _find_action_target(
+    def _find_step_target(
         self,
         result: CompilationResult,
         *,
         entry_point: str,
         identity: str | None,
+        expected_kind: StepKind,
     ) -> Mapping[str, Any]:
         targets = result.descriptor["spec"]["targets"]
         lookup = f"identity {identity!r}" if identity is not None else f"entry point {entry_point!r}"
@@ -315,36 +332,50 @@ class StepBindingsFactory:
             matches = [
                 item
                 for item in targets
-                if item.get("kind") == "Action"
+                if item.get("kind") == expected_kind.value
                 and item.get("runtime", {}).get("entryPoint") == entry_point
             ]
         if not matches:
             available = ", ".join(
-                f"{item.get('identity')} ({item.get('runtime', {}).get('entryPoint')})"
+                f"{item.get('identity')} [{item.get('kind')}] ({item.get('runtime', {}).get('entryPoint')})"
                 for item in targets
             )
             message = (
-                f"no Action target matches {lookup} in the compiled workspace; "
+                f"no {expected_kind.value} target matches {lookup} in the compiled workspace; "
                 f"compiled targets: {available or 'none'}"
             )
             raise HarnessUsageError(message)
         if len(matches) > 1:
-            message = "multiple Action targets matched; pass identity= to select one"
+            message = f"multiple {expected_kind.value} targets matched; pass identity= to select one"
             raise HarnessUsageError(message)
         target = matches[0]
-        if target.get("kind") != "Action":
-            message = f"target {target.get('identity')!r} is not an Action"
+        if target.get("kind") != expected_kind.value:
+            message = (
+                f"target {target.get('identity')!r} is {target.get('kind')!r}, "
+                f"not {expected_kind.value!r}"
+            )
             raise HarnessUsageError(message)
         runtime_kind = target.get("runtime", {}).get("kind")
         if runtime_kind != "custom-runner":
             message = (
                 f"target {target.get('identity')!r} uses the {runtime_kind!r} runtime; "
-                "only custom-runner Actions bind Python implementations "
+                "only custom-runner Step targets bind Python implementations "
                 "(platform-runner targets are declarative manifests)"
             )
             raise HarnessUsageError(message)
         matched: Mapping[str, Any] = target
         return matched
+
+
+def _step_kind(step_class: type[BaseStep[Any, Any]]) -> StepKind:
+    if issubclass(step_class, ActionStep):
+        return StepKind.ACTION
+    if issubclass(step_class, ControlStep):
+        return StepKind.CONTROL
+    if issubclass(step_class, TriggerStep):
+        return StepKind.TRIGGER
+    message = f"{step_class.__qualname__} does not belong to a supported Step kind"
+    raise HarnessUsageError(message)
 
 
 __all__ = [

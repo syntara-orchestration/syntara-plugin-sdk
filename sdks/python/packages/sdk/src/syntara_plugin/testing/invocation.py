@@ -159,7 +159,7 @@ def _require_executable(binding: StepBinding) -> None:
         message = (
             "custom-runner steps execute only through an installed manifest. Bind the "
             "step with step_bindings.bind(step) or, for a compiled workspace, "
-            "step_bindings.bind_action(entry_point, workspace=...) so the installed "
+            "step_bindings.bind_step(entry_point, workspace=...) so the installed "
             "contract supplies the executable binding; see examples/python-steps."
         )
         raise HarnessUsageError(message) from error
@@ -267,8 +267,8 @@ def invoke_step(
 
     Args:
         target: A ``StepBinding``, a step class or instance, or a ``module:Class``
-            entry point. Action steps must arrive as bindings produced by
-            ``StepBindingsFactory.bind_action``.
+            entry point. Custom-runner Step types must arrive as bindings
+            produced by ``StepBindingsFactory.bind_step``.
         inputs: Raw input mapping; must be a JSON object encodable within the
             container ABI's 1 MiB limit. Both paths deliver the JSON-normalized
             form (tuples as lists, non-string keys as strings), each through

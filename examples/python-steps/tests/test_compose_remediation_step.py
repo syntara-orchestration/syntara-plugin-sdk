@@ -1,4 +1,4 @@
-"""Example tests for the Workflow step (composition inside run())."""
+"""Example tests for a Control-category Step (composition inside run())."""
 
 from __future__ import annotations
 

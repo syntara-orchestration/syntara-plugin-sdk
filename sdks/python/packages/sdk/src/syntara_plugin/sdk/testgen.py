@@ -1,10 +1,10 @@
-"""Deterministic pytest scaffolding for custom-runner Action steps.
+"""Deterministic pytest scaffolding for custom-runner Step types.
 
 The generator compiles the workspace through the same canonical compiler the
-``validate`` command uses, then emits one test module per custom-runner
-Action target. The generated file is the checklist: valid input reaches the
-business hook once, every invalid case blocks it, and the direct and
-container-adapter paths yield equivalent outcomes. Generated code imports the
+``validate`` command uses, then emits one test module per custom-runner target.
+The generated file is the checklist: valid input reaches the business hook
+once, every invalid case blocks it, and the direct and container-adapter paths
+yield equivalent outcomes. Generated code imports the
 ``syntara_plugin.testing`` subpackage shipped inside this distribution.
 
 A generated suite never fails on first run. Business-independent tests (the
@@ -31,7 +31,7 @@ from .authoring import BuildRequest, compile_workspace
 _MAX_INVALID_CASES = 8
 _IDENTIFIER_SAFE = re.compile(r"[^a-z0-9]")
 
-_TEMPLATE = '''"""Generated local tests for the {identity} Action step.
+_TEMPLATE = '''"""Generated local tests for the {identity} {kind} Step type.
 
 Regenerate with: syntara-plugin test-init {manifest} --force
 Review the TODO markers and extend the cases with business-specific payloads.
@@ -62,14 +62,14 @@ INVALID_CASES = [
 
 
 {valid_guard}def test_valid_input_reaches_the_hook_once(mock_execution_context, step_bindings):
-    binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(ENTRY_POINT, workspace=WORKSPACE)
     outcome = invoke_step(binding, VALID_CASES[0], context=mock_execution_context())
     assert outcome.ok, f"valid case failed (status={{outcome.status}})"
     assert outcome.run_calls == 1
 
 
 {invalid_guard}def test_invalid_input_blocks_the_hook(mock_execution_context, step_bindings):
-    binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(ENTRY_POINT, workspace=WORKSPACE)
     for inputs in INVALID_CASES:
         outcome = invoke_step(binding, inputs, context=mock_execution_context())
         assert not outcome.ok, "an invalid case was accepted"
@@ -77,7 +77,7 @@ INVALID_CASES = [
 
 
 {valid_guard}def test_direct_and_container_paths_are_equivalent(mock_execution_context, step_bindings):
-    binding = step_bindings.bind_action(ENTRY_POINT, workspace=WORKSPACE)
+    binding = step_bindings.bind_step(ENTRY_POINT, workspace=WORKSPACE)
     context = mock_execution_context(invocation_id="generated-equivalence")
     direct = invoke_step(binding, VALID_CASES[0], context=context)
     container = invoke_step_in_container(binding, VALID_CASES[0], context=context)
@@ -124,7 +124,7 @@ def generate_step_tests(
     tests_dir: Path | None = None,
     force: bool = False,
 ) -> list[Path]:
-    """Generate pytest modules for every custom-runner Action target.
+    """Generate pytest modules for every custom-runner Step target.
 
     Returns the written paths. Existing files are only replaced when ``force``
     is true; the ``tests/conftest.py`` import shim is written only when absent
@@ -140,7 +140,7 @@ def generate_step_tests(
     workspace_relative = os.path.relpath(workspace, tests)
     planned = _plan_test_modules(result, tests, manifest.name, workspace_relative)
     if not planned:
-        message = "the workspace declares no custom-runner Action targets"
+        message = "the workspace declares no custom-runner Step targets"
         raise ScaffoldError(message)
     _refuse_existing(planned, force)
     written = _write_planned_modules(planned)
@@ -189,7 +189,10 @@ def _plan_test_modules(
     planned: list[tuple[Path, str]] = []
     for target in result.descriptor["spec"]["targets"]:
         runtime = target.get("runtime", {})
-        if target.get("kind") != "Action" or runtime.get("kind") != "custom-runner":
+        if (
+            target.get("kind") not in {"Action", "Control", "Trigger"}
+            or runtime.get("kind") != "custom-runner"
+        ):
             continue
         entry_point = str(runtime["entryPoint"])
         valid, invalid, valid_errors = _cases_from_schema(target["input"])
@@ -199,6 +202,7 @@ def _plan_test_modules(
                 path,
                 _TEMPLATE.format(
                     identity=target["identity"],
+                    kind=target["kind"],
                     manifest=manifest_name,
                     entry_point=entry_point,
                     workspace_relative=workspace_relative,

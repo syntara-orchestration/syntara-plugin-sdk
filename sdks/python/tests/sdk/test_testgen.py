@@ -100,6 +100,35 @@ spec:
     return root
 
 
+def _write_workspace_for_kind(root: Path, kind: str) -> Path:
+    """Write the same minimal workspace with a non-Action Step kind."""
+
+    workspace = _write_workspace(root)
+    manifest_path = workspace / "steps/create/manifest.yaml"
+    manifest = manifest_path.read_text(encoding="utf-8").replace(
+        "kind: Action\n", f"kind: {kind}\n"
+    )
+    if kind == "Control":
+        manifest = manifest.replace(
+            "spec:\n  runtime:", "spec:\n  invocation:\n    kind: orchestration\n  runtime:"
+        )
+    else:
+        manifest = manifest.replace(
+            "spec:\n  runtime:",
+            "spec:\n  driver: webhook.v1\n"
+            "  configuration:\n"
+            "    kind: inline\n"
+            "    value:\n"
+            "      type: object\n"
+            "  runtime:",
+        )
+    manifest_path.write_text(manifest, encoding="utf-8")
+    (workspace / "gen_pkg/steps.py").write_text(
+        STEP_SOURCE.replace("ActionStep", f"{kind}Step"), encoding="utf-8"
+    )
+    return workspace
+
+
 def test_generate_creates_a_test_module_and_import_shim(tmp_path: Path) -> None:
     workspace = _write_workspace(tmp_path / "gen")
     written = generate_step_tests(workspace / "plugin.yaml")
@@ -108,7 +137,16 @@ def test_generate_creates_a_test_module_and_import_shim(tmp_path: Path) -> None:
     content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
     assert 'ENTRY_POINT = "gen_pkg.steps:CreateStep"' in content
     assert "'title': 'example-title'" in content
-    assert "step_bindings.bind_action" in content
+    assert "step_bindings.bind_step" in content
+
+
+@pytest.mark.parametrize("kind", ["Control", "Trigger"])
+def test_generate_covers_every_custom_runner_step_kind(tmp_path: Path, kind: str) -> None:
+    workspace = _write_workspace_for_kind(tmp_path / kind.lower(), kind)
+    generate_step_tests(workspace / "plugin.yaml")
+    content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
+    assert f"{kind} Step type" in content
+    assert "step_bindings.bind_step" in content
 
 
 def test_generation_is_deterministic(tmp_path: Path) -> None:
@@ -131,7 +169,7 @@ def test_generate_rejects_a_missing_manifest(tmp_path: Path) -> None:
         generate_step_tests(tmp_path / "nowhere")
 
 
-def test_generate_rejects_workspaces_without_custom_workload_actions(
+def test_generate_rejects_workspaces_without_custom_runner_steps(
     tmp_path: Path,
 ) -> None:
     workspace = _write_workspace(tmp_path / "gen")
@@ -165,7 +203,7 @@ spec:
 """,
         encoding="utf-8",
     )
-    with pytest.raises(ScaffoldError, match="no custom-runner Action targets"):
+    with pytest.raises(ScaffoldError, match="no custom-runner Step targets"):
         generate_step_tests(workspace / "plugin.yaml")
 
 
