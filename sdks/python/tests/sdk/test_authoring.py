@@ -164,6 +164,22 @@ def _compile(root: Path):
     return compile_workspace(BuildRequest(root, image_bindings={"plugin-workload": DIGEST}))
 
 
+@pytest.mark.parametrize(
+    "entry_point", ["steps..bad:Run", "steps.bad.:Run", "steps:Run.More"]
+)
+def test_compile_workspace_rejects_malformed_custom_runner_entry_points(
+    tmp_path: Path, entry_point: str
+) -> None:
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action["spec"]["runtime"]["entryPoint"] = entry_point
+    root = _workspace(tmp_path, action=action)
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+    assert "SCHEMA_INVALID" in {diagnostic.code for diagnostic in error.value.diagnostics}
+    assert not (root / "dist").exists()
+
+
 def _http_operation(*, asset_maps: bool = False) -> dict[str, object]:
     if asset_maps:
         request_map: dict[str, object] = {

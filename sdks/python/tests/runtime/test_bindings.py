@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
+from syntara_plugin.contracts import load_bundle, validate_document
 from syntara_plugin.runtime import (
     ActionStep,
     BaseStep,
@@ -69,17 +70,32 @@ def _manifest(
     kind: str = "Action",
     entry_point: str = "steps:Echo",
 ) -> dict[str, object]:
+    specification: dict[str, object] = {
+        "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
+        "input": {"kind": "inline", "value": input_schema},
+        "output": {
+            "kind": "inline",
+            "value": output_schema if output_schema is not None else {"type": "object"},
+        },
+    }
+    if kind == "Control":
+        specification["invocation"] = {"kind": "orchestration"}
+    elif kind == "Trigger":
+        specification.update(
+            {
+                "driver": "webhook.v1",
+                "configuration": {"kind": "inline", "value": {"type": "object"}},
+            }
+        )
     return {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": kind,
-        "spec": {
-            "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
-            "input": {"kind": "inline", "value": input_schema},
-            "output": {
-                "kind": "inline",
-                "value": output_schema if output_schema is not None else {"type": "object"},
-            },
+        "metadata": {
+            "name": "echo",
+            "displayName": "Echo",
+            "description": "An echo Step type.",
         },
+        "spec": specification,
     }
 
 
@@ -349,18 +365,65 @@ def test_installed_platform_runner_cannot_be_bound_to_python(
     manifest = _manifest(
         EchoInput.model_json_schema(), kind=kind, entry_point=entry_point
     )
-    manifest["spec"]["runtime"] = {"kind": "platform-runner", "driver": "http.v1"}
+    manifest["spec"]["runtime"] = {
+        "kind": "platform-runner",
+        "driver": "transform.v1",
+    }
 
     with pytest.raises(StepBindingError, match="custom-runner"):
         InstalledStepManifest.from_manifest("acme.plugin.echo", manifest, {})
 
 
 @pytest.mark.parametrize(
-    "entry_point", ["", ":Echo", ".steps:Echo", "steps.:Echo", "steps..api:Echo", "steps:Echo.More"]
+    "entry_point",
+    [
+        "",
+        ":Echo",
+        ".steps:Echo",
+        "steps.:Echo",
+        "steps..api:Echo",
+        "steps:Echo.More",
+        "steps:Echo\n",
+    ],
 )
 def test_installed_step_rejects_malformed_entry_points(entry_point: str) -> None:
-    with pytest.raises(StepBindingError, match="valid runtime entryPoint"):
+    with pytest.raises(StepBindingError, match="manifest violates its contract"):
         _installed_step(EchoInput.model_json_schema(), entry_point=entry_point)
+
+
+@pytest.mark.parametrize(
+    ("kind", "missing_field"),
+    [
+        ("Control", "metadata"),
+        ("Control", "invocation"),
+        ("Trigger", "driver"),
+        ("Trigger", "configuration"),
+    ],
+)
+def test_installed_step_rejects_each_missing_category_field(
+    kind: str, missing_field: str
+) -> None:
+    manifest = _manifest(EchoInput.model_json_schema(), kind=kind)
+    if missing_field == "metadata":
+        del manifest["metadata"]
+    else:
+        del manifest["spec"][missing_field]
+
+    errors = validate_document(load_bundle(), kind.lower(), manifest)
+    assert any(missing_field in error for error in errors)
+    with pytest.raises(StepBindingError, match=missing_field):
+        InstalledStepManifest.from_manifest("acme.plugin.echo", manifest, {})
+
+
+@pytest.mark.parametrize("kind", ["Control", "Trigger"])
+def test_installed_step_manifest_rejects_unknown_category_fields(kind: str) -> None:
+    manifest = _manifest(EchoInput.model_json_schema(), kind=kind)
+    manifest["spec"]["unexpected"] = True
+
+    errors = validate_document(load_bundle(), kind.lower(), manifest)
+    assert any("unexpected" in error for error in errors)
+    with pytest.raises(StepBindingError, match="unexpected"):
+        InstalledStepManifest.from_manifest("acme.plugin.echo", manifest, {})
 
 
 def test_installed_step_manifest_resolves_an_asset_backed_schema() -> None:

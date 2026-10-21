@@ -156,22 +156,37 @@ def _installed_step(
         if issubclass(step_class, ControlStep)
         else "Trigger"
     )
+    specification: dict[str, object] = {
+        "runtime": {
+            "kind": "custom-runner",
+            "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
+        },
+        "input": {"kind": "inline", "value": input_schema},
+        "output": {
+            "kind": "inline",
+            "value": output_schema or _permissive_output_schema(),
+        },
+    }
+    if kind == "Control":
+        specification["invocation"] = {"kind": "orchestration"}
+    elif kind == "Trigger":
+        specification.update(
+            {
+                "driver": "webhook.v1",
+                "configuration": {"kind": "inline", "value": {"type": "object"}},
+            }
+        )
     return InstalledStepManifest.from_manifest(
         step_identity,
         {
             "apiVersion": "syntara.io/v1alpha1",
             "kind": kind,
-            "spec": {
-                "runtime": {
-                    "kind": "custom-runner",
-                    "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
-                },
-                "input": {"kind": "inline", "value": input_schema},
-                "output": {
-                    "kind": "inline",
-                    "value": output_schema or _permissive_output_schema(),
-                },
+            "metadata": {
+                "name": "echo",
+                "displayName": "Echo",
+                "description": "An echo Step type.",
             },
+            "spec": specification,
         },
         {},
     )

@@ -230,6 +230,15 @@ def _installed_step(
             "output": {"kind": "inline", "value": output_schema if output_schema is not None else {}},
         },
     }
+    if kind is StepKind.CONTROL:
+        manifest["spec"]["invocation"] = {"kind": "orchestration"}
+    elif kind is StepKind.TRIGGER:
+        manifest["spec"].update(
+            {
+                "driver": "webhook.v1",
+                "configuration": {"kind": "inline", "value": {"type": "object"}},
+            }
+        )
     if configuration_schema is not None:
         manifest["spec"]["configuration"] = {
             "kind": "inline",

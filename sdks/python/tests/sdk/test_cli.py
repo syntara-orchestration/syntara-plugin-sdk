@@ -196,6 +196,30 @@ def test_validate_reports_compiler_diagnostics_without_a_traceback(tmp_path: Pat
     assert payload["diagnostics"][0]["code"] == "DOCUMENT_UNREADABLE"
 
 
+@pytest.mark.parametrize(
+    "entry_point", ["steps..bad:Run", "steps.bad.:Run", "steps:Run.More"]
+)
+def test_validate_rejects_malformed_custom_runner_entry_points(
+    tmp_path: Path, capsys, entry_point: str
+) -> None:
+    """The CLI rejects malformed entry points before an artifact can be built."""
+    workspace = tmp_path / "malformed-entry-point"
+    assert main(["init", str(workspace)]) == 0
+    capsys.readouterr()
+
+    manifest_path = workspace / "steps/request/manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["spec"]["runtime"]["entryPoint"] = entry_point
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert any(diagnostic["code"] == "SCHEMA_INVALID" for diagnostic in payload["diagnostics"])
+    assert "entryPoint" in json.dumps(payload)
+    assert not (workspace / "dist").exists()
+
+
 def test_validate_defers_a_custom_runner_image_binding_until_build(
     tmp_path: Path, capsys
 ) -> None:

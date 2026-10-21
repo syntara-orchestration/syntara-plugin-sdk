@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from weakref import ReferenceType, ref
 
 from jsonschema import Draft202012Validator
@@ -17,7 +17,7 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
-from syntara_plugin.contracts import canonical_json_digest
+from syntara_plugin.contracts import canonical_json_digest, load_bundle, validate_document
 
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 
@@ -420,6 +420,15 @@ class InstalledStepManifest:
         specification = manifest.get("spec")
         if not isinstance(specification, Mapping):
             message = "Step manifest must contain a spec object"
+            raise StepBindingError(message)
+        contract_kind = cast(
+            Literal["action", "control", "trigger"], kind.value.lower()
+        )
+        contract_errors = validate_document(load_bundle(), contract_kind, manifest)
+        if contract_errors:
+            message = "installed Step manifest violates its contract: " + "; ".join(
+                contract_errors
+            )
             raise StepBindingError(message)
         runtime = specification.get("runtime")
         if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":

@@ -158,6 +158,26 @@ def test_custom_runner_action_requires_a_stable_python_entry_point() -> None:
     assert validate_document(bundle, "action", action) == []
 
 
+@pytest.mark.parametrize(
+    "entry_point",
+    ["steps..bad:Run", "steps.bad.:Run", "steps:Run.More", "steps:Run\n"],
+)
+def test_step_contract_rejects_malformed_entry_points(entry_point: str) -> None:
+    bundle = load_bundle()
+    action = step_document(
+        "Action",
+        target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
+        {
+            "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
+            "input": {"kind": "inline", "value": {"type": "object"}},
+            "output": {"kind": "inline", "value": {"type": "object"}},
+        },
+    )
+
+    errors = validate_document(bundle, "action", action)
+    assert any("entryPoint" in error for error in errors)
+
+
 def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
     bundle = load_bundle()
     source = {"kind": "inline", "value": {"type": "object"}}
