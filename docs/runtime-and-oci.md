@@ -92,15 +92,21 @@ adapters use the same envelope and put their own bootstrap fields under
 `bindingsFactory` is a Python import path, not a filesystem path and not part
 of the language-neutral runtime config envelope. The adapter imports
 `acme_plugin.runtime` and calls its `create_bindings` function. That function
-takes no arguments and returns a non-empty `StepBindings` object:
+takes no arguments and returns a non-empty `StepBindings` object. Every bound
+Step must use a descriptor created from its installed custom-runner manifest
+(see [Typed Python steps](#typed-python-steps)); the server rejects
+implementation-derived descriptors when it starts:
 
 ```python
-from syntara_plugin.runtime import StepBindings, StepDescriptor
+from syntara_plugin.runtime import InstalledStepManifest, StepBindings, StepDescriptor
 
 def create_bindings() -> StepBindings:
     bindings = StepBindings()
     step = EchoStep()
-    bindings.bind(StepDescriptor.for_step("acme.echo.v1", step), step)
+    installed_step = InstalledStepManifest.from_manifest(
+        "acme.echo.v1", installed_manifest, installed_assets
+    )
+    bindings.bind(StepDescriptor.for_installed_step(step, installed_step), step)
     return bindings
 ```
 

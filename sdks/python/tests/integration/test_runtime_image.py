@@ -45,9 +45,7 @@ def test_ubi_python_image_serves_sample_step_over_grpc(tmp_path: Path) -> None:
     _build_image(context, image_tag)
 
     host_port = _free_port()
-    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(
-        tmp_path
-    )
+    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(tmp_path)
     _make_tls_material_readable(certificate, key, client_ca)
 
     subprocess.run(
@@ -137,8 +135,14 @@ packages = ["src/syntara_sample_step"]
     )
     (source / "__init__.py").write_text("", encoding="utf-8")
     (source / "runtime.py").write_text(
-        '''from pydantic import BaseModel
-from syntara_plugin.runtime import ExecutionContext, StepBindings, StepDescriptor, TaskStep
+        """from pydantic import BaseModel
+from syntara_plugin.runtime import (
+    ActionStep,
+    ExecutionContext,
+    InstalledStepManifest,
+    StepBindings,
+    StepDescriptor,
+)
 
 
 class EchoInput(BaseModel):
@@ -149,17 +153,38 @@ class EchoOutput(BaseModel):
     message: str
 
 
-class EchoStep(TaskStep[EchoInput, EchoOutput]):
+class EchoStep(ActionStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
         return EchoOutput(message=inputs.message)
 
 
 def create_bindings() -> StepBindings:
     step = EchoStep()
+    installed_step = InstalledStepManifest.from_manifest(
+        "integration.echo.v1",
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "Action",
+            "metadata": {
+                "name": "echo",
+                "displayName": "Echo",
+                "description": "Echoes one message.",
+            },
+            "spec": {
+                "runtime": {
+                    "kind": "custom-runner",
+                    "entryPoint": "syntara_sample_step.runtime:EchoStep",
+                },
+                "input": {"kind": "inline", "value": EchoInput.model_json_schema()},
+                "output": {"kind": "inline", "value": EchoOutput.model_json_schema()},
+            },
+        },
+        {},
+    )
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("integration.echo.v1", step), step)
+    bindings.bind(StepDescriptor.for_installed_step(step, installed_step), step)
     return bindings
-''',
+""",
         encoding="utf-8",
     )
 
@@ -183,13 +208,9 @@ def _build_sample_wheel(context: Path, output: Path) -> None:
 def _write_runtime_config(context: Path) -> None:
     document = {
         "abi": "syntara.container/v1alpha1",
-        "adapter": {
-            "bindingsFactory": "syntara_sample_step.runtime:create_bindings"
-        },
+        "adapter": {"bindingsFactory": "syntara_sample_step.runtime:create_bindings"},
     }
-    (context / "runtime.json").write_text(
-        json.dumps(document, indent=2), encoding="utf-8"
-    )
+    (context / "runtime.json").write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
 def _write_containerfile(context: Path) -> None:
@@ -347,9 +368,7 @@ def _generate_tls_material(
     )
 
 
-def _make_tls_material_readable(
-    certificate: Path, key: Path, client_ca: Path
-) -> None:
+def _make_tls_material_readable(certificate: Path, key: Path, client_ca: Path) -> None:
     for path in (certificate, key, client_ca):
         path.chmod(0o644)
 

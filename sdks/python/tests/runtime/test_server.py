@@ -13,14 +13,16 @@ import grpc
 import pytest
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
+    ActionStep,
+    BaseStep,
     ContainerClient,
     ContainerInvocation,
     ContainerRemoteError,
     ExecutionContext,
     FailureCode,
+    InstalledStepManifest,
     StepBindings,
     StepDescriptor,
-    TaskStep,
 )
 from syntara_plugin.runtime.adapter import step_registry_from_bindings
 from syntara_plugin.runtime.protocol import container_pb2
@@ -42,12 +44,12 @@ class EchoOutput(BaseModel):
     message: str
 
 
-class EchoStep(TaskStep[EchoInput, EchoOutput]):
+class EchoStep(ActionStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
         return EchoOutput(message=inputs.message)
 
 
-class BarrierStep(TaskStep[EchoInput, EchoOutput]):
+class BarrierStep(ActionStep[EchoInput, EchoOutput]):
     barrier = threading.Barrier(2, timeout=2)
 
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
@@ -55,7 +57,7 @@ class BarrierStep(TaskStep[EchoInput, EchoOutput]):
         return EchoOutput(message=inputs.message)
 
 
-class CancellationStep(TaskStep[EchoInput, EchoOutput]):
+class CancellationStep(ActionStep[EchoInput, EchoOutput]):
     started = threading.Event()
 
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
@@ -64,13 +66,13 @@ class CancellationStep(TaskStep[EchoInput, EchoOutput]):
         return EchoOutput(message=inputs.message)
 
 
-class CooperativeTimeoutStep(TaskStep[EchoInput, EchoOutput]):
+class CooperativeTimeoutStep(ActionStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
         context.cancellation.wait(timeout=5)
         return EchoOutput(message=inputs.message)
 
 
-class UncancellableTimeoutStep(TaskStep[EchoInput, EchoOutput]):
+class UncancellableTimeoutStep(ActionStep[EchoInput, EchoOutput]):
     release = threading.Event()
     finished = threading.Event()
 
@@ -86,40 +88,55 @@ class FakeServicerContext:
         del callback
 
 
-def create_bindings() -> StepBindings:
-    step = EchoStep()
+def installed_action_bindings(
+    step_identity: str, step: BaseStep[EchoInput, EchoOutput]
+) -> StepBindings:
+    step_class = type(step)
+    installed_step = InstalledStepManifest.from_manifest(
+        step_identity,
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "Action",
+            "metadata": {
+                "name": "echo",
+                "displayName": "Echo",
+                "description": "Echoes one message.",
+            },
+            "spec": {
+                "runtime": {
+                    "kind": "custom-runner",
+                    "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
+                },
+                "input": {"kind": "inline", "value": EchoInput.model_json_schema()},
+                "output": {"kind": "inline", "value": EchoOutput.model_json_schema()},
+            },
+        },
+        {},
+    )
     bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("smoke.echo.v1", step), step)
+    bindings.bind(StepDescriptor.for_installed_step(step, installed_step), step)
     return bindings
+
+
+def create_bindings() -> StepBindings:
+    return installed_action_bindings("smoke.echo.v1", EchoStep())
 
 
 def create_barrier_bindings() -> StepBindings:
-    step = BarrierStep()
-    bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("smoke.barrier.v1", step), step)
-    return bindings
+    return installed_action_bindings("smoke.barrier.v1", BarrierStep())
 
 
 def create_cancellation_bindings() -> StepBindings:
     CancellationStep.started = threading.Event()
-    step = CancellationStep()
-    bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("smoke.cancellation.v1", step), step)
-    return bindings
+    return installed_action_bindings("smoke.cancellation.v1", CancellationStep())
 
 
 def create_cooperative_timeout_bindings() -> StepBindings:
-    step = CooperativeTimeoutStep()
-    bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("smoke.cooperative-timeout.v1", step), step)
-    return bindings
+    return installed_action_bindings("smoke.cooperative-timeout.v1", CooperativeTimeoutStep())
 
 
 def create_uncancellable_timeout_bindings() -> StepBindings:
-    step = UncancellableTimeoutStep()
-    bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_step("smoke.uncancellable-timeout.v1", step), step)
-    return bindings
+    return installed_action_bindings("smoke.uncancellable-timeout.v1", UncancellableTimeoutStep())
 
 
 def write_runtime_config(
@@ -130,9 +147,7 @@ def write_runtime_config(
 ) -> Path:
     document = {
         "abi": abi,
-        "adapter": adapter
-        if adapter is not None
-        else {"bindingsFactory": "example:create"},
+        "adapter": adapter if adapter is not None else {"bindingsFactory": "example:create"},
     }
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps(document), encoding="utf-8")
@@ -277,9 +292,7 @@ def _generate_tls_material(
         ]
         if role == "server":
             extensions = directory / "server.ext"
-            extensions.write_text(
-                "subjectAltName=DNS:localhost,IP:127.0.0.1\n", encoding="utf-8"
-            )
+            extensions.write_text("subjectAltName=DNS:localhost,IP:127.0.0.1\n", encoding="utf-8")
             command.extend(("-extfile", str(extensions)))
         _run_openssl(*command)
         certificates[role] = certificate
@@ -298,6 +311,7 @@ def test_runtime_server_serves_health_and_executes_a_bound_step() -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
+
     async def scenario() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
@@ -325,6 +339,7 @@ def test_runtime_server_executes_steps_concurrently() -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
+
     async def scenario() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
@@ -356,6 +371,7 @@ def test_runtime_server_cancels_an_active_step() -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
+
     async def scenario() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
@@ -371,9 +387,7 @@ def test_runtime_server_cancels_an_active_step() -> None:
                 asyncio.to_thread(client.execute, _cancellation_invocation())
             )
             assert await asyncio.to_thread(CancellationStep.started.wait, 5)
-            assert await asyncio.to_thread(
-                client.cancel, "invocation-1", timeout_seconds=5
-            )
+            assert await asyncio.to_thread(client.cancel, "invocation-1", timeout_seconds=5)
             with pytest.raises(ContainerRemoteError) as raised:
                 await execution
         finally:
@@ -443,9 +457,8 @@ def test_runtime_server_serves_health_and_steps_over_mutual_tls(
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(
-        tmp_path
-    )
+    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(tmp_path)
+
     async def scenario() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
@@ -466,9 +479,7 @@ def test_runtime_server_serves_health_and_steps_over_mutual_tls(
         try:
             client = ContainerClient(channel)
             health = await asyncio.to_thread(client.health, timeout_seconds=5)
-            result = await asyncio.to_thread(
-                client.execute, _invocation(), timeout_seconds=5
-            )
+            result = await asyncio.to_thread(client.execute, _invocation(), timeout_seconds=5)
 
             assert health == ("smoke.echo.v1",)
             assert result.output == {"message": "hello"}

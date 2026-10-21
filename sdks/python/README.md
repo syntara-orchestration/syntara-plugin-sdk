@@ -26,7 +26,9 @@ API for registering several action callables in one workload image, serving the
 container ABI, and invoking it from a trusted adapter. The API exposes only
 structured JSON data, a bounded non-secret runtime context, and mounted
 credential-file paths; it neither selects an image nor reads credential
-contents.
+contents. A final Python workload image starts that server with the
+`syntara-plugin-runtime-server` console script; see
+[runtime adapters and workload images](../../docs/runtime-and-oci.md#runtime-adapters-and-workload-images).
 
 It also exposes `HttpOperationMapper`, a pure interpreter for an installed
 `http.v1` operation. It constructs only a method, origin-less relative path,
