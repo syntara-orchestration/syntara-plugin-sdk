@@ -35,8 +35,7 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
 | [`contracts/proto`](../contracts/proto) | Versioned container/runtime protobuf ABI. |
 | [`contracts/fixtures`](../contracts/fixtures) | Cross-language conformance fixtures. |
 | [`sdks/python/packages/sdk`](../sdks/python/packages/sdk) | Authoring compiler, CLI, packaging, registry, catalog, settings behavior, and the local testing harness (`syntara_plugin.testing`). |
-| [`sdks/python/packages/runtime`](../sdks/python/packages/runtime) | In-container runtime implementation. |
-| [`sdks/python/packages/contracts`](../sdks/python/packages/contracts) | Python package that ships the contract bundle. |
+| [`sdks/python/packages/contracts`](../sdks/python/packages/contracts) | Shared contracts distribution used by the SDK and Execution Plane. |
 | [`sdks/python/tests`](../sdks/python/tests) | Unit and CLI contract tests. |
 | [`examples`](../examples) | End-user examples that must remain runnable. |
 
@@ -65,9 +64,10 @@ When changing a contract:
    git diff --check
    ```
 
-The SDK is not released yet. Prefer a clear forward-only contract over a
+The SDK is pre-release. Prefer a clear forward-only contract over a
 compatibility shim; removed configuration keys should fail validation rather
-than silently selecting legacy behavior.
+than silently selecting legacy behavior. Follow the [release guide](releasing.md)
+when preparing a published package release.
 
 ## Documentation and review checklist
 

@@ -1,0 +1,132 @@
+name: Publish Python distributions
+
+on:
+  release:
+    types: [published]
+
+# Every job declares only the permissions it needs. The PyPI upload jobs receive
+# an OIDC token, but never execute repository code or receive a long-lived key.
+permissions: {}
+
+jobs:
+  build:
+    name: Build and verify release distributions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Verify the release target and version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          git fetch origin devel
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/devel
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if not tag.startswith("v"):
+              raise SystemExit("Release tags must be in the form v<PEP 440 version>.")
+          version = tag.removeprefix("v")
+          projects = [
+              Path("pyproject.toml"),
+              Path("sdks/python/packages/contracts/pyproject.toml"),
+              Path("sdks/python/packages/sdk/pyproject.toml"),
+          ]
+          versions = {
+              project: tomllib.loads(project.read_text())["project"]["version"]
+              for project in projects
+          }
+          if set(versions.values()) != {version}:
+              detail = ", ".join(f"{path}: {value}" for path, value in versions.items())
+              raise SystemExit(f"Release tag {tag!r} does not match package versions: {detail}")
+          with Path(os.environ["GITHUB_ENV"]).open("a") as github_env:
+              github_env.write(f"RELEASE_VERSION={version}\n")
+          PY
+      - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
+      - run: uv run --no-sync --no-build pytest sdks/python/tests -q
+      - run: uv run --no-sync --no-build pre-commit run --all-files
+      - run: uv build --package syntara-plugin-contracts --out-dir release-dist/contracts
+      - run: uv build --package syntara-plugin-sdk --out-dir release-dist/sdk
+      - run: uv run --no-sync --no-build twine check --strict release-dist/*/*
+      - name: Smoke-test the release wheels outside the workspace
+        run: |
+          uv venv --clear .venv-release
+          uv pip install --no-build --python .venv-release/bin/python \
+            --find-links release-dist/contracts \
+            --find-links release-dist/sdk \
+            "syntara-plugin-sdk==$RELEASE_VERSION"
+          .venv-release/bin/syntara-plugin --help
+          .venv-release/bin/python - <<'PY'
+          from syntara_plugin.contracts import load_bundle
+          from syntara_plugin.runtime import ContainerInvocation
+          from syntara_plugin.sdk import compile_workspace
+
+          assert load_bundle().digest
+          assert ContainerInvocation
+          assert compile_workspace
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: contracts-distributions
+          path: release-dist/contracts
+          if-no-files-found: error
+          retention-days: 5
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sdk-distributions
+          path: release-dist/sdk
+          if-no-files-found: error
+          retention-days: 5
+
+  publish-contracts:
+    name: Publish syntara-plugin-contracts
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/syntara-plugin-contracts/
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: contracts-distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with:
+          packages-dir: dist
+          attestations: true
+
+  publish-sdk:
+    name: Publish syntara-plugin-sdk
+    needs: publish-contracts
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/syntara-plugin-sdk/
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: sdk-distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with:
+          packages-dir: dist
+          attestations: true

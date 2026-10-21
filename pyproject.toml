@@ -2,10 +2,10 @@
 # This non-package workspace must remain distinct from the distributable SDK
 # member below; uv rejects two workspace members with the same package name.
 name = "syntara-plugin-sdk-workspace"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "Development workspace for the Syntara Plugin SDK distributions"
 requires-python = ">=3.12"
-dependencies = ["syntara-plugin-sdk[testing]>=0.1.0"]
+dependencies = ["syntara-plugin-sdk[testing]==0.1.0a1"]
 
 [tool.uv.sources]
 syntara-plugin-sdk = { workspace = true }
@@ -17,6 +17,7 @@ dev = [
   "grpcio-tools==1.78.0",
   "pre-commit>=3.5",
   "ruff>=0.1",
+  "twine==7.0.0",
 ]
 
 [tool.uv]
@@ -32,10 +33,10 @@ addopts = "-ra --strict-markers"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["sdks/python/packages/runtime/src/syntara_plugin/runtime/protocol/*_pb2*.py"]
+extend-exclude = ["sdks/python/packages/contracts/src/syntara_plugin/runtime/protocol/*_pb2*.py"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-"sdks/python/packages/runtime/src/syntara_plugin/runtime/protocol/*_pb2*.py" = ["F401"]
+"sdks/python/packages/contracts/src/syntara_plugin/runtime/protocol/*_pb2*.py" = ["F401"]

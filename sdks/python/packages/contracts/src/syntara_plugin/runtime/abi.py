@@ -13,6 +13,10 @@ from typing import Any
 
 from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
 
+# ABI means Application Binary Interface. In this package an ABI value is a
+# compatibility marker for a versioned, language-neutral runtime protocol; it
+# is not the OCI image architecture. The Execution Plane and workload compare
+# this exact value during Health before exchanging Execute/Cancel messages.
 CONTAINER_ABI = "syntara.container/v1alpha1"
 PROVIDER_ABI = "syntara.provider/v1alpha1"
 

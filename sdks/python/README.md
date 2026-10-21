@@ -6,12 +6,11 @@ and contributing guide, start at the repository [README](../../README.md) and
 the [documentation index](../../docs/README.md).
 
 - `packages/sdk/` provides Python authoring, compilation, and deterministic offline OCI-artifact assembly APIs.
-- `packages/runtime/` provides Python runtime ABI helpers, including the
-  model-versus-manifest `contract_validation` module used at authoring/CI time.
-- `packages/contracts/` packages the canonical repository-level contracts for Python callers.
+- `packages/contracts/` provides the shared contract and runtime APIs,
+  including `contract_validation`.
 - `tests/` contains Python-specific tests.
 
-The three distributions share the `syntara_plugin` namespace. Plugin authors
+The two distributions share the `syntara_plugin` namespace. Plugin authors
 import the public APIs as `syntara_plugin.sdk`, `syntara_plugin.runtime`, and
 `syntara_plugin.contracts`. The runtime's `abi` module contains the workload
 and provider ABI helpers; it does not contain the language-neutral contracts.
@@ -22,7 +21,7 @@ stub files.
 The canonical schemas and conformance fixtures are in [../../contracts](../../contracts). Do not create language-local copies of those files.
 
 The canonical container protobuf source is also in `../../contracts`. The
-Python runtime package contains generated protobuf bindings plus a small public
+Python contracts distribution contains generated protobuf bindings plus a small public
 API for registering several action callables in one workload image, serving the
 container ABI, and invoking it from a trusted adapter. The API exposes only
 structured JSON data, a bounded non-secret runtime context, and mounted
@@ -70,8 +69,8 @@ the config inventory. Inline documents remain in the canonical metadata layer.
 ## Offline authoring command
 
 The `syntara-plugin-sdk` distribution installs the `syntara-plugin` command.
-When released, it is one public dependency: the contracts and Python runtime
-are installed transitively.
+When released, it is one public dependency: the contracts distribution provides
+the contract and runtime APIs together.
 
 ```zsh
 uv tool install syntara-plugin-sdk

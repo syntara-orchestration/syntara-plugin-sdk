@@ -1,12 +1,37 @@
 [project]
 name = "syntara-plugin-contracts"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "Versioned contracts and deterministic bundles for Syntara plugins"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12"
-dependencies = ["jsonschema>=4.23"]
+dependencies = [
+  "grpcio>=1.78.0",
+  "jsonschema>=4.23",
+  "protobuf>=6.31.1",
+  "pydantic>=2.0",
+  "referencing>=0.37",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/syntara-orchestration/syntara-plugin-sdk"
+Repository = "https://github.com/syntara-orchestration/syntara-plugin-sdk"
+Issues = "https://github.com/syntara-orchestration/syntara-plugin-sdk/issues"
 
 [build-system]
-requires = ["hatchling>=1.25"]
+# Keep release builds reproducible; upgrades are reviewed like any other
+# build-tool supply-chain change.
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

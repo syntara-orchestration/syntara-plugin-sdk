@@ -16,8 +16,10 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
@@ -27,9 +29,47 @@ jobs:
     name: Pre-commit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.12"
       - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
       - run: uv run --no-sync --no-build pre-commit run --all-files
+
+  package:
+    name: Build and install distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
+      - run: uv build --all-packages --out-dir dist
+      - run: uv run --no-sync --no-build twine check --strict dist/*
+      - name: Smoke-test the published dependency metadata
+        run: |
+          sdk_version="$(uv run --no-sync --no-build python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          print(tomllib.loads(Path("sdks/python/packages/sdk/pyproject.toml").read_text())["project"]["version"])
+          PY
+          )"
+          uv venv --clear .venv-release
+          uv pip install --no-build --python .venv-release/bin/python --find-links dist \
+            "syntara-plugin-sdk==$sdk_version"
+          .venv-release/bin/syntara-plugin --help
+          .venv-release/bin/python - <<'PY'
+          from syntara_plugin.contracts import load_bundle
+          from syntara_plugin.runtime import ContainerInvocation
+          from syntara_plugin.sdk import compile_workspace
+
+          assert load_bundle().digest
+          assert ContainerInvocation
+          assert compile_workspace
+          PY
