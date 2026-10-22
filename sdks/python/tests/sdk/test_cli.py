@@ -190,8 +190,8 @@ def test_init_accepts_a_required_field_map_entry(tmp_path: Path, capsys) -> None
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
 
 
-def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys) -> None:
-    """A JSON schema file can be supplied directly to ``--fields``."""
+def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys, monkeypatch) -> None:
+    """An absolute schema path is accepted when it resolves inside the working directory."""
     workspace = tmp_path / "issue-tools"
     schema_path = tmp_path / "fields.json"
     schema = {
@@ -203,6 +203,7 @@ def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys) -> None:
         },
     }
     schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
     assert main(["init", str(workspace), "--fields", str(schema_path)]) == 0
     capsys.readouterr()
@@ -260,6 +261,7 @@ def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeyp
     (work / "nested" / "up.json").symlink_to(Path("..") / ".." / "secret" / "fields.json")
     monkeypatch.chdir(work)
     absolute = work / ".." / "secret" / "fields.json"
+    outside = (secret / "fields.json").resolve()
     arguments = [
         "../secret/fields.json",
         "@../secret/fields.json",
@@ -271,6 +273,8 @@ def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeyp
         "@nested/../local.json",
         str(absolute),
         f"@{absolute}",
+        str(outside),
+        f"@{outside}",
         "link.json",
         "@link.json",
         "linkdir/fields.json",

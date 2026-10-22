@@ -18,12 +18,11 @@ cd ./my-plugin
 
 Pass a comma-separated list to `--fields` for optional input fields. For more
 control, pass an inline JSON schema, a JSON field map, or a path to a JSON
-schema file. Paths may be absolute or relative to the working directory and
-must not contain a `..` segment. Relative paths must resolve inside the
-working directory, including through symlinks. Field maps support per-field
-types, descriptions, defaults, enums, patterns, and requiredness. Add
-`"required": true` to a field-map entry when the action needs that input in
-addition to the built-in `resource` field.
+schema file. Paths may be absolute or relative. They must not contain a `..`
+segment, and the resolved path, including symlinks, must stay inside the
+working directory. Field maps support per-field types, descriptions, defaults,
+enums, patterns, and requiredness. Add `"required": true` to a field-map entry
+when the action needs that input in addition to the built-in `resource` field.
 
 For example:
 

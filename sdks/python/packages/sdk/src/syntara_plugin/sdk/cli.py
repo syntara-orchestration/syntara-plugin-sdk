@@ -12,6 +12,7 @@ import argparse
 import base64
 import binascii
 import json
+import os
 import re
 import sys
 from collections.abc import Mapping, Sequence
@@ -117,8 +118,7 @@ def _parser() -> argparse.ArgumentParser:
         metavar="FIELDS",
         help=(
             "Comma-separated names, JSON schema, JSON field map, or JSON file path. "
-            "File paths must not contain '..'. Relative paths must stay inside the "
-            "working directory."
+            "File paths must not contain '..' and must resolve inside the working directory."
         ),
     )
 
@@ -692,49 +692,42 @@ def _invalid_init_argument(arguments: argparse.Namespace, name: str) -> str | No
 
 
 def _fields_payload(value: str) -> dict[str, Any] | list[str]:
-    path = _fields_file(value)
-    if path is not None:
-        return _normalize_fields_document(json.loads(path.read_text(encoding="utf-8")))
+    loaded = _read_fields_file(value)
+    if loaded is not None:
+        return _normalize_fields_document(json.loads(loaded))
     if value.lstrip().startswith("{") or value.lstrip().startswith("["):
         return _normalize_fields_document(json.loads(value))
     return [field.strip() for field in value.split(",")]
 
 
-def _fields_file(value: str) -> Path | None:
-    """Return a JSON fields file, or None when ``value`` is inline data.
+def _read_fields_file(value: str) -> str | None:
+    """Read a JSON fields file, or return None when ``value`` is inline data.
 
     A leading ``@`` is removed before path checks. ``Path("@../secret.json")``
     has no ``..`` part; the parent segment appears only after the prefix is
-    stripped. Relative paths are resolved and must stay inside the working
-    directory, so a symlink cannot escape in place of ``..``.
+    stripped. The opened path is the real path, and it must stay inside the
+    working directory. Absolute paths and symlinks are held to that same check,
+    so neither can stand in for ``..``.
     """
 
     prefixed = value.startswith("@")
     candidate = value[1:] if prefixed else value
     if not prefixed and not candidate.endswith(".json"):
         return None
-    path = _contained_fields_path(Path(candidate))
-    if prefixed or path.is_file():
-        return path
-    return None
-
-
-def _contained_fields_path(path: Path) -> Path:
-    """Reject ``..`` and relative paths that resolve outside the working directory."""
-
-    if ".." in path.parts:
+    if ".." in Path(candidate).parts:
         raise ValueError("fields file must not contain '..' path traversal")
-    if path.is_absolute():
-        return path
-    root = Path.cwd().resolve()
+    base_dir = os.path.realpath(os.getcwd())
     message = "fields file must not escape the working directory through path traversal"
     try:
-        resolved = path.resolve()
+        filepath = os.path.realpath(candidate)
     except (OSError, RuntimeError) as error:
         raise ValueError(message) from error
-    if not resolved.is_relative_to(root):
+    if os.path.commonpath([base_dir, filepath]) != base_dir:
         raise ValueError(message)
-    return resolved
+    if not prefixed and not os.path.isfile(filepath):
+        return None
+    with open(filepath, encoding="utf-8") as handle:
+        return handle.read()
 
 
 def _normalize_fields_document(
