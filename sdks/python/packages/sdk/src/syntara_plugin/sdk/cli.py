@@ -705,9 +705,10 @@ def _read_fields_file(value: str) -> str | None:
 
     A leading ``@`` is removed before path checks. ``Path("@../secret.json")``
     has no ``..`` part; the parent segment appears only after the prefix is
-    stripped. The opened path is the real path, and it must stay inside the
-    working directory. Absolute paths and symlinks are held to that same check,
-    so neither can stand in for ``..``.
+    stripped. The candidate is joined onto the working directory and then
+    resolved to its real path, which must stay inside that directory. Absolute
+    paths replace the base during the join and symlinks are resolved, so both
+    are held to the same check and neither can stand in for ``..``.
     """
 
     prefixed = value.startswith("@")
@@ -719,7 +720,7 @@ def _read_fields_file(value: str) -> str | None:
     base_dir = os.path.realpath(os.getcwd())
     message = "fields file must not escape the working directory through path traversal"
     try:
-        filepath = os.path.realpath(candidate)
+        filepath = os.path.realpath(os.path.join(base_dir, candidate))
     except (OSError, RuntimeError) as error:
         raise ValueError(message) from error
     if os.path.commonpath([base_dir, filepath]) != base_dir:
@@ -777,16 +778,24 @@ def _schema_from_field_map(document: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_fields(document: dict[str, Any] | list[str]) -> None:
     if isinstance(document, list):
-        if len(document) != len(set(document)):
-            raise ValueError("fields must be unique")
-        for field in document:
-            if field == "resource":
-                raise ValueError("field 'resource' is already included")
-            if not _FIELD_IDENTIFIER.fullmatch(field):
-                raise ValueError(f"field is not valid: {field!r}")
+        _validate_field_names(document)
         return
     if not isinstance(document, dict):
         raise ValueError("fields JSON must be an object")
+    _validate_fields_schema(document)
+
+
+def _validate_field_names(fields: list[str]) -> None:
+    if len(fields) != len(set(fields)):
+        raise ValueError("fields must be unique")
+    for field in fields:
+        if field == "resource":
+            raise ValueError("field 'resource' is already included")
+        if not _FIELD_IDENTIFIER.fullmatch(field):
+            raise ValueError(f"field is not valid: {field!r}")
+
+
+def _validate_fields_schema(document: dict[str, Any]) -> None:
     if document.get("type") != "object":
         raise ValueError("fields JSON schema must have type: object")
     required = document.get("required", [])
