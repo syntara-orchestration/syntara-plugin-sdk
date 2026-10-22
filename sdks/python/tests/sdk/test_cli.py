@@ -69,7 +69,7 @@ def test_init_creates_a_compilable_workspace_and_validate_reports_its_digest(
     assert payload["assetCount"] == 2
 
 
-def test_init_accepts_additional_optional_fields_and_generates_a_valid_schema(
+def test_init_accepts_field_names_and_generates_a_valid_schema(
     tmp_path: Path,
     capsys,
 ) -> None:
@@ -81,10 +81,8 @@ def test_init_accepts_additional_optional_fields_and_generates_a_valid_schema(
             [
                 "init",
                 str(workspace),
-                "--optional-fields",
+                "--fields",
                 "title,issue_count",
-                "--optional-fields",
-                "assignee",
             ]
         )
         == 0
@@ -95,29 +93,158 @@ def test_init_accepts_additional_optional_fields_and_generates_a_valid_schema(
     )
 
     assert schema["required"] == ["resource"]
-    assert set(schema["properties"]) == {"resource", "title", "issue_count", "assignee"}
+    assert set(schema["properties"]) == {"resource", "title", "issue_count"}
     assert schema["properties"]["title"]["description"] == "Optional input field."
 
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
 
 
+def test_init_accepts_an_inline_json_schema_with_required_fields(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """A JSON parameter can define the complete generated input schema."""
+    workspace = tmp_path / "issue-tools"
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["resource", "title"],
+        "properties": {
+            "resource": {"type": "string", "minLength": 1},
+            "title": {"type": "string", "minLength": 1},
+            "priority": {
+                "type": "string",
+                "default": "low",
+                "enum": ["low", "medium", "high"],
+            },
+        },
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 0
+    capsys.readouterr()
+    generated = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert generated == schema
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_accepts_a_json_field_map_with_standard_schema_keys(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """A field map can describe each property without a full JSON Schema."""
+    workspace = tmp_path / "issue-tools"
+    field_map = {
+        "url": {
+            "description": "description",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50,
+        }
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(field_map)]) == 0
+    capsys.readouterr()
+    schema = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert schema["required"] == ["resource"]
+    assert schema["properties"]["url"] == {
+        "description": "description",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 50,
+    }
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_accepts_a_required_field_map_entry(tmp_path: Path, capsys) -> None:
+    """Field-map entries can be marked required without a full schema."""
+    workspace = tmp_path / "issue-tools"
+    field_map = {
+        "title": {
+            "type": "string",
+            "minLength": 1,
+            "required": True,
+        }
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(field_map)]) == 0
+    capsys.readouterr()
+    schema = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert schema["required"] == ["resource", "title"]
+    assert schema["properties"]["title"] == {
+        "type": "string",
+        "minLength": 1,
+    }
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys) -> None:
+    """A JSON schema file can be supplied directly to ``--fields``."""
+    workspace = tmp_path / "issue-tools"
+    schema_path = tmp_path / "fields.json"
+    schema = {
+        "type": "object",
+        "required": ["resource", "issue_count"],
+        "properties": {
+            "resource": {"type": "string"},
+            "issue_count": {"type": "integer", "minimum": 0},
+        },
+    }
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+
+    assert main(["init", str(workspace), "--fields", str(schema_path)]) == 0
+    capsys.readouterr()
+    generated = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert generated == schema
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_rejects_a_json_schema_that_does_not_require_resource(
+    tmp_path: Path, capsys
+) -> None:
+    """The scaffold route still requires the built-in resource input."""
+    workspace = tmp_path / "invalid-schema"
+    schema = {
+        "type": "object",
+        "required": ["title"],
+        "properties": {"title": {"type": "string"}},
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 2
+    assert "must require resource" in capsys.readouterr().err
+    assert not workspace.exists()
+
+
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
-        (["title", "title"], "optional fields must be unique"),
-        (["resource"], "optional field 'resource' is already included"),
-        (["1-title"], "optional field is not valid"),
+        ("title,title", "fields must be unique"),
+        ("resource", "field 'resource' is already included"),
+        ("1-title", "field is not valid"),
     ],
 )
-def test_init_rejects_invalid_optional_fields(
-    tmp_path: Path, capsys, fields: list[str], message: str
+def test_init_rejects_invalid_field_names(
+    tmp_path: Path, capsys, fields: str, message: str
 ) -> None:
     """Invalid or duplicate fields are rejected before files are written."""
     workspace = tmp_path / "invalid-fields"
-    arguments = ["init", str(workspace)]
-    for field in fields:
-        arguments.extend(("--optional-fields", field))
+    arguments = ["init", str(workspace), "--fields", fields]
 
     assert main(arguments) == 2
     assert message in capsys.readouterr().err

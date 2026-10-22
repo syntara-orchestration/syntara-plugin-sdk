@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import yaml
+from jsonschema import Draft202012Validator, SchemaError
+
 from .artifact import ArtifactBuildError, PluginArtifact, build_plugin_artifact
 from .artifact_archive import (
     ArtifactArchiveError,
@@ -110,10 +113,9 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--version", default="0.1.0", help="Plugin SemVer version (default: 0.1.0).")
     init.add_argument("--action", default="request", help="Initial action name (default: request).")
     init.add_argument(
-        "--optional-fields",
-        action="append",
-        default=None,
-        help="Comma-separated optional action input fields; option may be repeated.",
+        "--fields",
+        metavar="FIELDS",
+        help="Comma-separated names, JSON schema, JSON field map, or JSON file path.",
     )
 
     test_init = commands.add_parser(
@@ -676,23 +678,90 @@ def _invalid_init_argument(arguments: argparse.Namespace, name: str) -> str | No
     ):
         if not pattern.fullmatch(value):
             return f"{label} is not valid: {value!r}"
-    fields = _optional_fields(arguments)
-    if len(fields) != len(set(fields)):
-        return "optional fields must be unique"
-    for field in fields:
-        if field == "resource":
-            return "optional field 'resource' is already included"
-        if not _FIELD_IDENTIFIER.fullmatch(field):
-            return f"optional field is not valid: {field!r}"
+    fields = arguments.fields
+    if fields is not None:
+        try:
+            _validate_fields(_fields_payload(fields))
+        except (OSError, json.JSONDecodeError, SchemaError, ValueError) as error:
+            return str(error)
     return None
 
 
-def _optional_fields(arguments: argparse.Namespace) -> list[str]:
-    return [
-        field.strip()
-        for value in arguments.optional_fields or []
-        for field in value.split(",")
-    ]
+def _fields_payload(value: str) -> dict[str, Any] | list[str]:
+    if value.startswith("@") or (value.endswith(".json") and Path(value).is_file()):
+        path = Path(value[1:] if value.startswith("@") else value)
+        return _normalize_fields_document(json.loads(path.read_text(encoding="utf-8")))
+    if value.lstrip().startswith("{") or value.lstrip().startswith("["):
+        return _normalize_fields_document(json.loads(value))
+    return [field.strip() for field in value.split(",")]
+
+
+def _normalize_fields_document(
+    document: dict[str, Any] | list[str],
+) -> dict[str, Any] | list[str]:
+    if _is_field_map(document):
+        return _schema_from_field_map(document)
+    return document
+
+
+def _is_field_map(document: object) -> bool:
+    return (
+        isinstance(document, dict)
+        and bool(document)
+        and all(isinstance(value, dict) for value in document.values())
+        and not ("type" in document and "properties" in document)
+    )
+
+
+def _schema_from_field_map(document: dict[str, Any]) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    required = ["resource"]
+    for name, specification in document.items():
+        if name == "resource":
+            raise ValueError("field 'resource' is already included")
+        if not _FIELD_IDENTIFIER.fullmatch(name):
+            raise ValueError(f"field is not valid: {name!r}")
+        normalized = dict(specification)
+        normalized.pop("name", None)
+        normalized.pop("required", None)
+        properties[name] = normalized
+        if specification.get("required") is True:
+            required.append(name)
+    properties["resource"] = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Required input field.",
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required,
+        "properties": properties,
+    }
+
+
+def _validate_fields(document: dict[str, Any] | list[str]) -> None:
+    if isinstance(document, list):
+        if len(document) != len(set(document)):
+            raise ValueError("fields must be unique")
+        for field in document:
+            if field == "resource":
+                raise ValueError("field 'resource' is already included")
+            if not _FIELD_IDENTIFIER.fullmatch(field):
+                raise ValueError(f"field is not valid: {field!r}")
+        return
+    if not isinstance(document, dict):
+        raise ValueError("fields JSON must be an object")
+    if document.get("type") != "object":
+        raise ValueError("fields JSON schema must have type: object")
+    required = document.get("required", [])
+    if not isinstance(required, list) or "resource" not in required:
+        raise ValueError("fields JSON schema must require resource")
+    properties = document.get("properties", {})
+    if not isinstance(properties, dict) or "resource" not in properties:
+        raise ValueError("fields JSON schema must define resource")
+    Draft202012Validator.check_schema(document)
 
 
 def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) -> None:
@@ -710,9 +779,13 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
     (directory / action_path).write_text(
         _action_template(arguments.action, input_path), encoding="utf-8"
     )
-    (directory / input_path).write_text(
-        _input_template(_optional_fields(arguments)), encoding="utf-8"
-    )
+    payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
+    if isinstance(payload, dict):
+        (directory / input_path).write_text(
+            yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+        )
+    else:
+        (directory / input_path).write_text(_input_template(payload), encoding="utf-8")
     (directory / "docs" / "README.md").write_text(
         _readme_template(name, arguments.action), encoding="utf-8"
     )
@@ -1469,9 +1542,9 @@ def _action_template(action: str, input_path: Path) -> str:
     )
 
 
-def _input_template(optional_fields: Sequence[str]) -> str:
+def _input_template(field_names: Sequence[str]) -> str:
     """Return one bounded input schema for the generated action."""
-    fields = ["resource", *optional_fields]
+    fields = ["resource", *field_names]
     required = "  - resource\n"
     properties = "".join(
         f"  {field}:\n"

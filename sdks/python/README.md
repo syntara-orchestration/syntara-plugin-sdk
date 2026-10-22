@@ -82,7 +82,7 @@ uv tool install syntara-plugin-sdk
 The command supports:
 
 ```zsh
-syntara-plugin init ./my-plugin --namespace acme --optional-fields title
+syntara-plugin init ./my-plugin --namespace acme --fields title
 syntara-plugin validate ./my-plugin/plugin.yaml --json
 syntara-plugin inspect ./my-plugin/plugin.yaml > descriptor.json
 syntara-plugin build ./my-plugin/plugin.yaml --output ./dist/my-plugin.oci.tar --json

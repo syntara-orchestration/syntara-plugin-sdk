@@ -12,13 +12,21 @@ Install the released CLI or prepare an unreleased checkout by following
 ## Create your first plugin
 
 ```sh
-syntara-plugin init ./my-plugin --namespace acme --optional-fields title
+syntara-plugin init ./my-plugin --namespace acme --fields title
 cd ./my-plugin
 ```
 
-Pass a comma-separated list to `--optional-fields` for each additional optional
-input field. The generated input schema always includes the built-in required
-`resource` field.
+Pass a comma-separated list to `--fields` for optional input fields. For more
+control, pass an inline JSON schema, a JSON field map, or a path to a JSON
+schema file. Field maps support per-field types, descriptions, defaults,
+enums, patterns, and requiredness.
+
+For example:
+
+```sh
+syntara-plugin init ./my-plugin --namespace acme \
+  --fields '{"url":{"type":"string","description":"Target URL","minLength":1,"maxLength":50}}'
+```
 
 The generated workspace contains:
 
