@@ -5,17 +5,18 @@ Use this guide after completing [getting started](getting-started.md). It descri
 ## The normal authoring loop
 
 ```text
-edit plugin source → validate → inspect → build archive → inspect archive
+edit plugin source → validate → inspect → run locally → build archive → inspect archive
 ```
 
 ```sh
 syntara-plugin validate
 syntara-plugin inspect
+syntara-plugin run create-issue --input-file input.json
 syntara-plugin build
 syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
 
-The default build has no registry side effects. It compiles the selected manifest, validates the contracts, and writes a deterministic OCI-layout tar archive.
+The default build has no registry side effects. It compiles the selected manifest, validates the contracts, and writes a deterministic OCI-layout tar archive. `run` executes one custom-runner Step locally, from source or against a running workload runtime, so you can inspect a real result without a test suite; see [Running locally](running-locally.md).
 
 ## Settings and command-line precedence
 

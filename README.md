@@ -94,6 +94,7 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
 - [Plugin language reference](docs/plugin-language.md) — each manifest kind and field, with links to its normative schema.
 - [Build settings reference](docs/build-settings.md) — every `syntara-plugin.yaml` key and its behavior.
 - [Testing reference](docs/testing.md) — local pytest harness, fixtures, invocation helpers, and generated tests.
+- [Running locally](docs/running-locally.md) — validate inputs and run one Step from source or a running image.
 - [Developer guide](docs/developer-guide.md) — local setup, tests, contract changes, and contribution expectations.
 - [Runtime and OCI model](docs/runtime-and-oci.md) — container ABI, artifact boundaries, and ownership.
 - [Documentation index](docs/README.md) — the complete map, including design records and language-specific notes.

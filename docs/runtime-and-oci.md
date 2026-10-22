@@ -122,6 +122,12 @@ TLS. Supply all three of `SYNTARA_RUNTIME_GRPC_TLS_CERT`,
 TLS is enabled. These values are mounted file paths, never PEM data or private
 key contents.
 
+`syntara-plugin run --mode image` is a supported client for such a runtime: it
+connects through the SDK's `ContainerClient`, verifies the ABI and advertised
+step identities over `Health`, executes one invocation, and prints the result.
+See [Running locally](running-locally.md) for the full workflow, including the
+client-side TLS options.
+
 The **container ABI** is the versioned gRPC/protobuf contract that the
 Execution Plane and a step container use to exchange execution requests,
 progress, results, and cancellation. It is not a CPU ABI. The current contract

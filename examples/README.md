@@ -6,6 +6,7 @@ validate and package without a registry, a container engine, or credentials.
 | Example | What it demonstrates |
 | --- | --- |
 | [Hello World](hello-world) | One credentialless `platform-runner` action, an asset-backed input schema, documentation, and a non-secret build and release settings template. |
+| [Python steps](python-steps) | One `custom-runner` step per Syntara kind (an Action and a Trigger with source manifests), tested on both execution paths and used as the `syntara-plugin run` demo workspace. |
 
 Start with [Hello World](hello-world). Its directory is also the command
 working directory:
