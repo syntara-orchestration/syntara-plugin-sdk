@@ -322,6 +322,45 @@ def test_init_accepts_a_fields_symlink_inside_the_working_directory(
     assert generated == schema
 
 
+def test_init_reads_a_fields_file_from_a_subdirectory(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Nested relative and absolute paths inside the working directory are readable."""
+    schema = {
+        "type": "object",
+        "required": ["resource", "issue_count"],
+        "properties": {
+            "resource": {"type": "string"},
+            "issue_count": {"type": "integer", "minimum": 0},
+        },
+    }
+    nested = tmp_path / "schemas" / "fields.json"
+    nested.parent.mkdir()
+    nested.write_text(json.dumps(schema), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    for index, fields in enumerate(["schemas/fields.json", f"@{nested}"]):
+        workspace = tmp_path / f"issue-tools-{index}"
+        assert main(["init", str(workspace), "--fields", fields]) == 0, fields
+        capsys.readouterr()
+        generated = yaml.safe_load(
+            (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+        )
+        assert generated == schema
+
+
+def test_init_rejects_a_missing_at_prefixed_fields_file(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """``@`` always names a file, so a missing one is an error rather than inline data."""
+    workspace = tmp_path / "issue-tools"
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["init", str(workspace), "--fields", "@missing.json"]) == 2
+    assert "fields file does not exist: missing.json" in capsys.readouterr().err
+    assert not workspace.exists()
+
+
 def test_init_rejects_a_json_schema_that_does_not_require_resource(
     tmp_path: Path, capsys
 ) -> None:

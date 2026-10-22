@@ -708,7 +708,9 @@ def _read_fields_file(value: str) -> str | None:
     stripped. The candidate is joined onto the working directory and then
     resolved to its real path, which must stay inside that directory. Absolute
     paths replace the base during the join and symlinks are resolved, so both
-    are held to the same check and neither can stand in for ``..``.
+    are held to the same check and neither can stand in for ``..``. The file is
+    then opened through the path found by listing the working directory, never
+    through the path built from ``value``.
     """
 
     prefixed = value.startswith("@")
@@ -727,8 +729,29 @@ def _read_fields_file(value: str) -> str | None:
         raise ValueError(message)
     if not prefixed and not os.path.isfile(filepath):
         return None
-    with open(filepath, encoding="utf-8") as handle:
+    discovered = _discover_contained_path(base_dir, os.path.relpath(filepath, base_dir))
+    if discovered is None:
+        raise ValueError(f"fields file does not exist: {candidate}")
+    with open(discovered, encoding="utf-8") as handle:
         return handle.read()
+
+
+def _discover_contained_path(base_dir: str, relative: str) -> str | None:
+    """Return the entry path that matches ``relative`` under ``base_dir``.
+
+    Each segment is matched against the names listed in its parent directory,
+    starting at ``base_dir``. The returned path is built only from those listed
+    entries, so nothing from the caller's string reaches the filesystem call.
+    """
+
+    current = base_dir
+    for part in Path(relative).parts:
+        with os.scandir(current) as entries:
+            found = next((entry.path for entry in entries if entry.name == part), None)
+        if found is None:
+            return None
+        current = found
+    return current
 
 
 def _normalize_fields_document(
