@@ -115,7 +115,10 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--fields",
         metavar="FIELDS",
-        help="Comma-separated names, JSON schema, JSON field map, or JSON file path.",
+        help=(
+            "Comma-separated names, JSON schema, JSON field map, or JSON file path. "
+            "File paths must not contain '..'."
+        ),
     )
 
     test_init = commands.add_parser(
@@ -682,18 +685,37 @@ def _invalid_init_argument(arguments: argparse.Namespace, name: str) -> str | No
     if fields is not None:
         try:
             _validate_fields(_fields_payload(fields))
-        except (OSError, json.JSONDecodeError, SchemaError, ValueError) as error:
+        except (OSError, SchemaError, ValueError) as error:
             return str(error)
     return None
 
 
 def _fields_payload(value: str) -> dict[str, Any] | list[str]:
-    if value.startswith("@") or (value.endswith(".json") and Path(value).is_file()):
-        path = Path(value[1:] if value.startswith("@") else value)
+    path = _fields_file(value)
+    if path is not None:
         return _normalize_fields_document(json.loads(path.read_text(encoding="utf-8")))
     if value.lstrip().startswith("{") or value.lstrip().startswith("["):
         return _normalize_fields_document(json.loads(value))
     return [field.strip() for field in value.split(",")]
+
+
+def _fields_file(value: str) -> Path | None:
+    """Return a JSON fields file, or None when ``value`` is inline data.
+
+    A leading ``@`` is removed before the ``..`` check. ``Path("@../secret.json")``
+    has no ``..`` part; the parent segment appears only after the prefix is stripped.
+    """
+
+    prefixed = value.startswith("@")
+    candidate = value[1:] if prefixed else value
+    if not prefixed and not candidate.endswith(".json"):
+        return None
+    path = Path(candidate)
+    if ".." in path.parts:
+        raise ValueError("fields file must not contain '..' path traversal")
+    if prefixed or path.is_file():
+        return path
+    return None
 
 
 def _normalize_fields_document(

@@ -215,6 +215,68 @@ def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys) -> None:
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
 
 
+def test_init_accepts_an_at_prefixed_json_schema_file(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """``@`` selects a JSON file. ``..`` inside one segment is not parent traversal."""
+    workspace = tmp_path / "issue-tools"
+    schema_path = tmp_path / "fields..json"
+    schema = {
+        "type": "object",
+        "required": ["resource", "issue_count"],
+        "properties": {
+            "resource": {"type": "string"},
+            "issue_count": {"type": "integer", "minimum": 0},
+        },
+    }
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["init", str(workspace), "--fields", "@fields..json"]) == 0
+    capsys.readouterr()
+    generated = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert generated == schema
+
+
+def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeypatch) -> None:
+    """LLM-supplied ``--fields`` paths cannot escape via ``..``, including after ``@``."""
+    sentinel = "fields-schema-sentinel"
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    schema = {
+        "type": "object",
+        "required": ["resource"],
+        "properties": {"resource": {"type": "string", "description": sentinel}},
+    }
+    (secret / "fields.json").write_text(json.dumps(schema), encoding="utf-8")
+    work = tmp_path / "work"
+    (work / "nested").mkdir(parents=True)
+    monkeypatch.chdir(work)
+    absolute = work / ".." / "secret" / "fields.json"
+    arguments = [
+        "../secret/fields.json",
+        "@../secret/fields.json",
+        "./../secret/fields.json",
+        "@./../secret/fields.json",
+        "nested/../../secret/fields.json",
+        "@nested/../../secret/fields.json",
+        str(absolute),
+        f"@{absolute}",
+    ]
+
+    for index, fields in enumerate(arguments):
+        workspace = work / f"plugin-{index}"
+        assert main(["init", str(workspace), "--fields", fields]) == 2, fields
+        captured = capsys.readouterr()
+        assert "path traversal" in captured.err
+        assert sentinel not in captured.out
+        assert sentinel not in captured.err
+        assert not workspace.exists()
+
+
 def test_init_rejects_a_json_schema_that_does_not_require_resource(
     tmp_path: Path, capsys
 ) -> None:
