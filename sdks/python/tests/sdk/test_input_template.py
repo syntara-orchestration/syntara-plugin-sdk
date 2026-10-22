@@ -320,3 +320,36 @@ def test_template_masks_declared_values_behind_local_refs() -> None:
     assert template == {"title": "", "note": ""}
     assert "REF-EXAMPLE-SECRET" not in joined
     assert "sensitive" in joined
+
+
+def test_chained_root_references_resolve_to_the_final_target() -> None:
+    """A root $ref pointing at another $ref still yields the full template."""
+
+    schema: dict[str, Any] = {
+        "$defs": {
+            "leaf": {
+                "type": "object",
+                "properties": {"title": {"type": "string"}},
+                "required": ["title"],
+            },
+            "mid": {"$ref": "#/$defs/leaf"},
+            "root": {"$ref": "#/$defs/mid"},
+        },
+        "$ref": "#/$defs/root",
+    }
+
+    assert template_for(schema) == {"title": ""}
+
+
+def test_reference_cycles_terminate() -> None:
+    """A $ref cycle yields an empty template instead of looping."""
+
+    schema: dict[str, Any] = {
+        "$defs": {
+            "a": {"$ref": "#/$defs/b"},
+            "b": {"$ref": "#/$defs/a"},
+        },
+        "$ref": "#/$defs/a",
+    }
+
+    assert template_for(schema) == {}
