@@ -126,8 +126,9 @@ Inputs arrive in one of three ways:
 | File or stdin | `--input-file input.json` / `--input-file -` | Preferred for larger payloads and secrets. |
 
 Before anything executes, the parsed input is validated against the compiled
-manifest's input schema (JSON Schema Draft 2020-12 with format checking).
-Every violation is reported with its JSON Pointer, and no server is started:
+manifest's input schema (JSON Schema Draft 2020-12; format annotations are
+checked for the formats the installed `jsonschema` build validates). Every
+violation is reported with its RFC 6901 JSON Pointer, and no server is started:
 
 ```text
 error: input does not satisfy the declared schema for example.python-steps.create-issue
@@ -249,7 +250,11 @@ path: there is deliberately no cleartext fallback, because a fixed-port
 unauthenticated listener would let any local process impersonate the runtime.
 The managed path never builds and never pulls images: a missing image is an
 error with the fix, not a side effect, because building requires the
-author-owned Containerfile and bindings factory the CLI cannot infer. A
+author-owned Containerfile and bindings factory the CLI cannot infer. The
+image must be tagged with the logical workload ID your `plugin.yaml` declares
+under `spec.workload.image`; after `build --with-workload` pushes
+`repository:tag`, tag the local image accordingly, for example
+`podman tag repository:tag python-steps-workload`. A
 container whose process exits before its runtime becomes healthy is reported
 immediately, with its exit status and the last lines of its log, instead of
 waiting out the startup window. The
@@ -365,13 +370,22 @@ captures the raised exception in `StepOutcome.raised`.
 | `1` | The workspace did not compile, the Step completed with a nonzero status, or the transport failed. |
 | `2` | Usage error: missing or invalid input, unknown or ambiguous target, unreadable input file, or an option used in the wrong mode. |
 
-With `--json`, stdout carries exactly one pretty-printed JSON document
-(`ok`, `mode`, `target`, `inputSource`, `input` with sensitive fields masked,
-`invocationId`, `workflowRunId`, `status`, `statusMessage`, `output`,
-`objectReference`, `outcome`, `errorDetail`, and `error` with `code`,
-`message`, and `retryable`); guidance stays on stderr. Template mode is
-unchanged by `--json`: stdout stays the raw template so redirection keeps
-working.
+With `--json`, stdout carries exactly one pretty-printed JSON document on
+every exit path, and stderr stays empty. The document has three shapes:
+
+- **Completed invocation** (exit 0, or exit 1 when the Step completed with a
+  failure): `ok`, `mode`, `target`, `image`, `inputSource`, `input` with
+  sensitive fields masked, `invocationId`, `workflowRunId`, `status`,
+  `statusMessage`, `output`, `objectReference`, `outcome`, `errorDetail`,
+  and `error` with `code`, `message`, and `retryable`.
+- **Usage or setup failure** (exit 2: invalid input, missing manifest, bad
+  flag combination): `ok: false` and `error` with `kind`, `message`,
+  `detail` (the validation lines), and `nextSteps`.
+- **Compilation failure** (exit 1): `ok: false` with `diagnostics` (code,
+  location, message, remediation per diagnostic) and `next`.
+
+Template mode is unchanged by `--json`: stdout stays the raw template so
+redirection keeps working.
 
 With `--verbose`, execution progress streams to stderr as
 `==> <state> <percent>% <message>` lines. The `output.json` and `output.verbose`

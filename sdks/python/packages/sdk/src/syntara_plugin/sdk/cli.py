@@ -14,6 +14,7 @@ import binascii
 import json
 import os
 import re
+import shlex
 import sys
 import textwrap
 from collections.abc import Callable, Mapping, Sequence
@@ -65,12 +66,23 @@ _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MACHINE_READABLE_OUTPUT_HELP = "Print machine-readable output."
 _DEFAULT_MANIFEST_NAME = "plugin.yaml"
+_RUN_COMMAND_PREFIX = "syntara-plugin run "
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the authoring CLI and return its process status."""
+
+    # The gRPC C core reads its verbosity when the library loads; setting it
+    # here, before argument resolution can import the runner, keeps stderr
+    # clean on every path.
+    os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
     parser = _parser()
     arguments = parser.parse_args(argv)
+    if arguments.command == "run" and arguments.manifest is not None and arguments.manifest.is_dir():
+        # Settings discovery follows the manifest file's directory, so resolve
+        # a directory to its plugin.yaml: --manifest ws and
+        # --manifest ws/plugin.yaml must behave identically.
+        arguments.manifest = arguments.manifest / _DEFAULT_MANIFEST_NAME
     if arguments.command == "init":
         return _init_workspace(arguments)
     if arguments.command == "test-init":
@@ -82,14 +94,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _resolve_arguments(arguments, settings)
     except (SettingsError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        _print_settings_error(error, arguments)
         return 2
     if arguments.command == "validate":
         return _compile_workspace(arguments)
     if arguments.command == "inspect":
         return _inspect(arguments)
     if arguments.command == "run":
-        return _run_command(arguments)
+        return _run_command_guarded(arguments)
     if arguments.command == "build":
         return _build_artifact(arguments)
     if arguments.command == "publish":
@@ -100,6 +112,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _recover_catalog(arguments)
     parser.error("a command is required")
     return 2
+
+
+def _print_settings_error(error: SettingsError | ValueError, arguments: argparse.Namespace) -> None:
+    """Print one settings or flag failure, honoring the run command's JSON contract."""
+
+    if arguments.command == "run" and arguments.json:
+        _print_error_json("SettingsError", str(error), (), ())
+        return
+    print(f"error: {error}", file=sys.stderr)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -202,7 +223,7 @@ def _parser() -> argparse.ArgumentParser:
         metavar="HOST:PORT",
         default=None,
         help="Use a runtime you started yourself at this address instead of running the "
-        "workload image (default: 127.0.0.1:50051 when given).",
+        "workload image.",
     )
     run.add_argument(
         "--tls-ca",
@@ -868,7 +889,7 @@ def _print_compilation_failure(
     if next_steps:
         payload["next"] = list(next_steps)
     if arguments.json:
-        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
         return
     for diagnostic in error.diagnostics:
         location = diagnostic.location
@@ -886,10 +907,6 @@ def _print_compilation_failure(
 
 def _run_command(arguments: argparse.Namespace) -> int:
     """Validate inputs and run one custom-runner Step locally."""
-    # The gRPC C core reports the in-process server's shutdown GOAWAY at INFO
-    # directly on file descriptor 2, which reads like a command failure. Keep
-    # the CLI's stderr contract clean unless the author chose a verbosity.
-    os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
     # The execution engine pulls gRPC; importing it here keeps every command
     # that never executes a Step free of that import cost. The template
     # helpers are grpc-free and stay at module scope.
@@ -906,7 +923,7 @@ def _run_command(arguments: argparse.Namespace) -> int:
     try:
         manifest = resolve_manifest(arguments.manifest)
     except RunUsageError as error:
-        _print_run_error(error)
+        _print_run_error(_localized_error(error, arguments), arguments)
         return 2
     try:
         compiled = compile_workspace(BuildRequest(manifest, require_image_bindings=False))
@@ -914,7 +931,7 @@ def _run_command(arguments: argparse.Namespace) -> int:
         _print_compilation_failure(arguments, error, next_steps=("syntara-plugin validate",))
         return 1
     except ValueError as error:
-        print(f"error: {error}", file=sys.stderr)
+        _print_value_error(error, arguments)
         return 2
 
     try:
@@ -925,7 +942,7 @@ def _run_command(arguments: argparse.Namespace) -> int:
         inputs, input_source = load_input(arguments.input, arguments.input_file)
         errors = validate_inputs(target.input_schema, inputs)
         if errors:
-            _print_input_errors(target, input_source, errors)
+            _print_input_errors(target, input_source, errors, arguments)
             return 2
         progress = _progress_printer(arguments)
         if arguments.mode == "source":
@@ -935,13 +952,31 @@ def _run_command(arguments: argparse.Namespace) -> int:
         else:
             report = _run_image_mode(arguments, target, inputs, input_source, progress)
     except RunUsageError as error:
-        _print_run_error(error)
+        _print_run_error(_localized_error(error, arguments), arguments)
         return 2
     except RunExecutionError as error:
-        _print_run_error(error)
+        _print_run_error(_localized_error(error, arguments), arguments)
         return 1
     _print_run_report(arguments, report)
     return 0 if report.ok else 1
+
+
+def _run_command_guarded(arguments: argparse.Namespace) -> int:
+    """Run one command with Ctrl-C mapped to a quiet conventional exit."""
+
+    try:
+        return _run_command(arguments)
+    except KeyboardInterrupt:
+        return 130
+
+
+def _print_value_error(error: ValueError, arguments: argparse.Namespace) -> None:
+    """Print one compile-path value failure, honoring the JSON contract."""
+
+    if arguments.json:
+        _print_error_json("ValueError", str(error), (), ())
+        return
+    print(f"error: {error}", file=sys.stderr)
 
 
 def _run_image_mode(
@@ -970,7 +1005,8 @@ def _run_image_mode(
             input_source,
             tls=tls,
             on_progress=progress,
-            startup_seconds=2.0,
+            # A cold runtime server needs seconds for Python and gRPC imports.
+            startup_seconds=10.0,
         )
     if target.workload_image is None:
         raise RunExecutionError(
@@ -980,7 +1016,7 @@ def _run_image_mode(
                 "or start the runtime yourself and pass --address HOST:PORT",
             ),
         )
-    if arguments.verbose:
+    if arguments.verbose and not arguments.json:
         print(f"==> starting workload container {target.workload_image}", file=sys.stderr)
     with managed_runtime(target.workload_image) as runtime:
         return run_image(
@@ -996,9 +1032,66 @@ def _run_image_mode(
         )
 
 
-def _print_run_error(error: RunExecutionError | RunUsageError) -> None:
-    """Print one run failure with its guidance and next command."""
+def _localized_error(
+    error: RunExecutionError | RunUsageError, arguments: argparse.Namespace
+) -> RunExecutionError | RunUsageError:
+    """Rewrite the runner's generic next steps into commands that run here.
 
+    ``validate`` and ``inspect`` take the manifest as a positional argument
+    and fail without one in workspaces that have no settings file, and the
+    runner's run suggestions cannot know which manifest or mode the author
+    used; the CLI can, so it localizes every suggested command.
+    """
+
+    from .runner import RunExecutionError, RunUsageError
+
+    manifest = getattr(arguments, "manifest", None)
+    manifest_suffix = f" {manifest}" if manifest is not None else ""
+    replacements = {
+        "syntara-plugin validate": f"syntara-plugin validate{manifest_suffix}",
+        "syntara-plugin inspect": f"syntara-plugin inspect{manifest_suffix}",
+    }
+    run_prefix = _run_base_options(arguments)
+    localized = tuple(
+        replacements.get(step, step)
+        if not step.startswith(_RUN_COMMAND_PREFIX)
+        else _RUN_COMMAND_PREFIX + step.removeprefix(_RUN_COMMAND_PREFIX) + run_prefix
+        for step in error.next_steps
+    )
+    return RunExecutionError(
+        error.message, failure_code=error.failure_code, detail=error.detail, next_steps=localized
+    ) if isinstance(error, RunExecutionError) else RunUsageError(
+        error.message, detail=error.detail, next_steps=localized
+    )
+
+
+def _run_base_options(arguments: argparse.Namespace) -> str:
+    """Build the option suffix that keeps a suggested run command on target."""
+
+    parts: list[str] = []
+    if arguments.manifest is not None and str(arguments.manifest) != _DEFAULT_MANIFEST_NAME:
+        parts.extend(("--manifest", str(arguments.manifest)))
+    if arguments.settings is not None:
+        parts.extend(("--settings", str(arguments.settings)))
+    if arguments.mode == "image":
+        parts.extend(("--mode", "image"))
+    if arguments.address is not None:
+        parts.extend(("--address", arguments.address))
+    return " " + " ".join(parts) if parts else ""
+
+
+def _print_run_error(
+    error: RunExecutionError | RunUsageError, arguments: argparse.Namespace | None = None
+) -> None:
+    """Print one run failure with its guidance and next command.
+
+    With ``--json`` the failure becomes one machine-readable error document
+    on stdout, so a consumer can parse every exit path the same way.
+    """
+
+    if arguments is not None and arguments.json:
+        _print_error_json(type(error).__name__, error.message, error.detail, error.next_steps)
+        return
     print(f"error: {_safe_text(error.message)}", file=sys.stderr)
     for line in error.detail:
         print(_safe_text(line), file=sys.stderr)
@@ -1007,6 +1100,23 @@ def _print_run_error(error: RunExecutionError | RunUsageError) -> None:
         print("Next:", file=sys.stderr)
         for step in error.next_steps:
             print(f"  {step}", file=sys.stderr)
+
+
+def _print_error_json(
+    kind: str, message: str, detail: Sequence[str], next_steps: Sequence[str]
+) -> None:
+    """Print one failure as the machine-readable counterpart of the report."""
+
+    payload = {
+        "ok": False,
+        "error": {
+            "kind": kind,
+            "message": message,
+            "detail": list(detail),
+            "nextSteps": list(next_steps),
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
 
 
 def _print_run_template(arguments: argparse.Namespace, target: RunTarget) -> None:
@@ -1026,9 +1136,22 @@ def _print_run_template(arguments: argparse.Namespace, target: RunTarget) -> Non
     print(f"  {_run_command_line(arguments, target)} --input-file input.json", file=sys.stderr)
 
 
-def _print_input_errors(target: RunTarget, input_source: str, errors: Sequence[str]) -> None:
+def _print_input_errors(
+    target: RunTarget,
+    input_source: str,
+    errors: Sequence[str],
+    arguments: argparse.Namespace | None = None,
+) -> None:
     """Print every input validation error with the fix-forward guidance."""
 
+    if arguments is not None and arguments.json:
+        _print_error_json(
+            "InvalidInput",
+            f"input does not satisfy the declared schema for {target.identity}",
+            errors,
+            (f"fix {input_source} and rerun", "or run without --input to print a template"),
+        )
+        return
     print(
         f"error: input does not satisfy the declared schema for {target.identity}",
         file=sys.stderr,
@@ -1056,7 +1179,8 @@ def _print_run_report(arguments: argparse.Namespace, report: RunReport) -> None:
     if report.output is not None:
         print()
         print(_bold("Output:"))
-        print(json.dumps(report.output, ensure_ascii=False, indent=2))
+        rendered = json.dumps(report.output, ensure_ascii=False, indent=2)
+        print(_CONTROL_CHARACTERS.sub("", rendered))
     elif report.object_reference is not None:
         print()
         print(_bold("Output reference:") + f" {_safe_text(report.object_reference)}")
@@ -1177,13 +1301,31 @@ def _safe_text(text: str) -> str:
 
 
 def _run_command_line(arguments: argparse.Namespace, target: RunTarget) -> str:
-    """Rebuild the invoked run command so guidance is copy-pasteable."""
+    """Rebuild the invoked run command so guidance is copy-pasteable.
+
+    Options that change what the next run executes or prints are preserved so
+    an author in image mode is never guided into a source-mode rerun or away
+    from the runtime they addressed. Shell-quoted so paths with spaces paste
+    correctly.
+    """
 
     parts = ["syntara-plugin", "run"]
     if arguments.manifest is not None and str(arguments.manifest) != _DEFAULT_MANIFEST_NAME:
         parts.extend(("--manifest", str(arguments.manifest)))
+    if arguments.settings is not None:
+        parts.extend(("--settings", str(arguments.settings)))
+    if arguments.mode == "image":
+        parts.extend(("--mode", "image"))
+    if arguments.address is not None:
+        parts.extend(("--address", arguments.address))
+    if arguments.tls_ca is not None:
+        parts.extend(("--tls-ca", str(arguments.tls_ca)))
+        parts.extend(("--tls-cert", str(arguments.tls_cert)))
+        parts.extend(("--tls-key", str(arguments.tls_key)))
     parts.append(arguments.target or target.metadata_name)
-    return " ".join(parts)
+    if arguments.json:
+        parts.append("--json")
+    return shlex.join(parts)  # NOSONAR - printed guidance only; shlex.join quotes every component
 
 
 def _run_tls_options(arguments: argparse.Namespace) -> TlsOptions | None:

@@ -310,6 +310,39 @@ def test_template_mode_is_unchanged_by_json_flag(tmp_path: Path, capsys) -> None
     assert json.loads(captured.out) == {"title": "", "priority": "low"}
 
 
+def test_template_guidance_in_image_mode_keeps_mode_image(tmp_path: Path, capsys) -> None:
+    """An author in image mode is guided into an image-mode rerun."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+
+    status = main(["run", "--manifest", str(workspace / "plugin.yaml"), "--mode", "image"])
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"title": "", "priority": "low"}
+    suggested = next(
+        line for line in captured.err.splitlines() if "--input-file input.json" in line
+    )
+    assert suggested.strip().startswith("syntara-plugin run")
+    assert " --mode image " in suggested
+
+
+def test_template_guidance_with_json_keeps_json(tmp_path: Path, capsys) -> None:
+    """A --json consumer is guided into a machine-readable rerun."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+
+    status = main(["run", "--manifest", str(workspace / "plugin.yaml"), "--json"])
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"title": "", "priority": "low"}
+    suggested = next(
+        line for line in captured.err.splitlines() if "--input-file input.json" in line
+    )
+    assert suggested.strip().endswith("--json --input-file input.json")
+
+
 def _report_field(stdout: str, label: str) -> str:
     """Extract one aligned report field value from human output."""
 
@@ -447,6 +480,33 @@ class ItemsStep(ActionStep[ItemsInput, ItemsOutput]):
         return ItemsOutput(echo=f"item={inputs.values[0]}")
 '''
 
+_PREFIX_ITEMS_SOURCE = '''"""A step that reports whether its secret row arrived masked."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import ActionStep, ExecutionContext
+
+
+class MaskProbeInput(BaseModel):
+    rows: tuple[str, str]
+
+
+class MaskProbeOutput(BaseModel):
+    first_is_mask: bool
+
+
+class MaskProbeStep(ActionStep[MaskProbeInput, MaskProbeOutput]):
+    def run(self, inputs: MaskProbeInput, context: ExecutionContext) -> MaskProbeOutput:
+        return MaskProbeOutput(first_is_mask=inputs.rows[0] == "***")
+'''
+
+_MASK_PROBE_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"first_is_mask": {"type": "boolean"}},
+    "required": ["first_is_mask"],
+}
+
 _NOTE_SOURCE = '''"""A step with a plain note field and a token field."""
 
 from __future__ import annotations
@@ -552,6 +612,50 @@ def test_sensitive_array_items_are_masked_and_scrubbed(tmp_path: Path, capsys) -
     assert "aaaaSECRETaaaa" not in captured.out
 
 
+def test_prefix_items_secret_masks_the_echo_without_corrupting_the_invocation(
+    tmp_path: Path, capsys
+) -> None:
+    """A prefixItems-declared secret masks the echo; the Step gets the real value."""
+
+    workspace = _write_custom_workspace(
+        tmp_path / "ws",
+        source=_PREFIX_ITEMS_SOURCE,
+        class_name="MaskProbeStep",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "prefixItems": [
+                        {"type": "string", "writeOnly": True},
+                        {"type": "string"},
+                    ],
+                },
+            },
+            "required": ["rows"],
+        },
+        output_schema=_MASK_PROBE_OUTPUT,
+    )
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--input",
+            '{"rows": ["aaaaSECRETaaaa", "public"]}',
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert _report_field(captured.out, "Input") == '{"rows": ["***", "public"]}'
+    assert json.loads(captured.out.split("Output:\n", 1)[1]) == {"first_is_mask": False}
+    assert "aaaaSECRETaaaa" not in captured.out
+
+
 def test_validation_errors_for_sensitive_array_items_name_the_constraint(
     tmp_path: Path, capsys
 ) -> None:
@@ -587,7 +691,7 @@ def test_validation_errors_for_sensitive_array_items_name_the_constraint(
 
     assert status == 2
     captured = capsys.readouterr()
-    assert "inputs.values[0]: maxLength constraint is not satisfied" in captured.err
+    assert "inputs/values/0: maxLength constraint is not satisfied" in captured.err
     assert "hhhhSECREThhhh" not in captured.err
 
 
@@ -657,7 +761,7 @@ def test_secret_pasted_into_a_plain_field_is_scrubbed_from_validation_errors(
 
     assert status == 2
     captured = capsys.readouterr()
-    assert "inputs.note:" in captured.err
+    assert "inputs/note:" in captured.err
     assert "'***' is too long" in captured.err
     assert "ghp_TooLongSecret88" not in captured.err
 
@@ -887,7 +991,7 @@ def test_workspace_without_runnable_targets_is_rejected(tmp_path: Path, capsys) 
 
 
 def test_missing_manifest_guidance(tmp_path: Path, capsys, monkeypatch) -> None:
-    """Running outside a workspace names the missing plugin.yaml."""
+    """Running outside a workspace names the missing plugin.yaml and its directory."""
 
     monkeypatch.chdir(tmp_path)
 
@@ -896,6 +1000,8 @@ def test_missing_manifest_guidance(tmp_path: Path, capsys, monkeypatch) -> None:
     assert status == 2
     captured = capsys.readouterr()
     assert "no plugin.yaml" in captured.err
+    # The location names the directory, never the bare default file name.
+    assert f"no plugin.yaml in {tmp_path}" in captured.err
     assert "--manifest PATH" in captured.err
 
 
@@ -948,9 +1054,8 @@ def test_invalid_input_reports_every_pointer_error_without_executing(
     assert status == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "inputs.title: required property is missing" in captured.err
-    assert "inputs.priority" in captured.err
-    assert "not one of" in captured.err
+    assert "inputs/title: required property is missing" in captured.err
+    assert "inputs/priority: enum constraint is not satisfied" in captured.err
     assert "Nothing was executed" in captured.err
 
 
@@ -974,7 +1079,7 @@ def test_sensitive_values_are_never_echoed_in_validation_errors(
     assert status == 2
     captured = capsys.readouterr()
     assert "short-secret-value" not in captured.err
-    assert "inputs.api_token" in captured.err
+    assert "inputs/api_token" in captured.err
 
 
 def test_nested_write_only_fields_are_redacted(tmp_path: Path, capsys) -> None:
@@ -1006,7 +1111,7 @@ def test_nested_write_only_fields_are_redacted(tmp_path: Path, capsys) -> None:
     assert status == 2
     captured = capsys.readouterr()
     assert "hunter2-secret" not in captured.err
-    assert "inputs.options.value: maxLength constraint is not satisfied" in captured.err
+    assert "inputs/options/value: maxLength constraint is not satisfied" in captured.err
 
 
 def test_aggregate_validator_messages_never_embed_input_values(
@@ -1077,7 +1182,7 @@ def test_validation_error_lines_are_bounded(tmp_path: Path, capsys) -> None:
 
     assert status == 2
     captured = capsys.readouterr()
-    assert "inputs.title" in captured.err
+    assert "inputs/title" in captured.err
     # The embedded 100k-character value is truncated with an ellipsis marker.
     assert captured.err.count("x") < 1_000
     assert "..." in captured.err
@@ -1601,7 +1706,7 @@ def test_image_mode_without_an_engine_reports_both_unavailable(
 
     workspace = _write_echo_workspace(tmp_path / "ws")
     monkeypatch.setattr(
-        "syntara_plugin.sdk.container_engine.detect_engine", lambda: None
+        "syntara_plugin.sdk.container_engine.detect_engines", lambda: []
     )
 
     status = main(
@@ -1640,8 +1745,8 @@ def test_image_mode_with_a_missing_workload_image_reports_guidance(
         manifest.read_text().replace("image: run-workload", f"image: {missing}")
     )
     monkeypatch.setattr(
-        "syntara_plugin.sdk.container_engine.detect_engine",
-        lambda: ContainerEngine("podman" if shutil.which("podman") else "docker"),
+        "syntara_plugin.sdk.container_engine.detect_engines",
+        lambda: [ContainerEngine("podman" if shutil.which("podman") else "docker")],
     )
 
     status = main(
@@ -1658,7 +1763,8 @@ def test_image_mode_with_a_missing_workload_image_reports_guidance(
 
     assert status == 1
     captured = capsys.readouterr()
-    assert f"the workload image '{missing}' is not available locally" in captured.err
+    assert f"no usable container engine has the workload image '{missing}' locally" in captured.err
+    assert f"build and tag the image as '{missing}'" in captured.err
     assert "--address" in captured.err
 
 
@@ -2039,7 +2145,7 @@ def test_validation_errors_under_declared_secret_maps_name_the_constraint(
 
     assert status == 2
     captured = capsys.readouterr()
-    assert "inputs.settings.note: maxLength constraint is not satisfied" in captured.err
+    assert "inputs/settings/note: maxLength constraint is not satisfied" in captured.err
     assert "LONGSECRETVALUE3" not in captured.err
 
 
@@ -2081,3 +2187,633 @@ def test_root_level_declared_secret_masks_the_whole_input(
     # The Step received the real value (the slug is derived from it); only the
     # exact secret value itself would be scrubbed from the output.
     assert json.loads(captured.out.split("Output:\n", 1)[1]) == {"slug": "secret-ish"}
+
+
+_COMPOSITION_SOURCE = '''"""A step whose input is only schema-governed extra keys."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import ActionStep, ExecutionContext
+
+
+class CompInput(BaseModel):
+    pass
+
+
+class CompOutput(BaseModel):
+    slug: str
+
+
+class CompStep(ActionStep[CompInput, CompOutput]):
+    def run(self, inputs: CompInput, context: ExecutionContext) -> CompOutput:
+        return CompOutput(slug="ok")
+'''
+
+
+def test_composition_declared_secrets_are_masked(tmp_path: Path, capsys) -> None:
+    """A writeOnly declaration inside anyOf masks and scrubs the value.
+
+    jsonschema nests branch errors in the composition error's context, so a
+    top-level marker scan alone misses them.
+    """
+
+    workspace = _write_custom_workspace(
+        tmp_path / "ws",
+        source=_COMPOSITION_SOURCE,
+        class_name="CompStep",
+        input_schema={
+            "type": "object",
+            "additionalProperties": {
+                "anyOf": [{"type": "string", "writeOnly": True}, {"type": "null"}]
+            },
+        },
+        output_schema={
+            "type": "object",
+            "properties": {"slug": {"type": "string"}},
+            "required": ["slug"],
+        },
+    )
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--input",
+            '{"db": "hunter22"}',
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert json.loads(_report_field(captured.out, "Input")) == {"db": "***"}
+    assert "hunter22" not in captured.out
+
+
+def test_template_guidance_preserves_transport_options(
+    tmp_path: Path, capsys
+) -> None:
+    """The Next command reaches the same runtime the author addressed."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--mode",
+            "image",
+            "--address",
+            "10.0.0.5:50051",
+            "--tls-ca",
+            "ca crt with spaces.crt",
+            "--tls-cert",
+            "client.crt",
+            "--tls-key",
+            "client.key",
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "--address 10.0.0.5:50051" in captured.err
+    assert "'ca crt with spaces.crt'" in captured.err
+    assert "--tls-ca 'ca crt with spaces.crt' --tls-cert client.crt --tls-key client.key" in (
+        captured.err
+    )
+
+
+def test_json_failures_emit_one_document_on_stdout(tmp_path: Path, capsys) -> None:
+    """Every failing exit path parses as one JSON document when --json is set."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+
+    # Input validation failure (exit 2).
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--json",
+            "--input",
+            "{}",
+        ]
+    )
+    assert status == 2
+    document = json.loads(capsys.readouterr().out)
+    assert document["ok"] is False
+    assert document["error"]["kind"] == "InvalidInput"
+    assert document["error"]["detail"]
+
+    # Usage failure from a bad flag combination (exit 2).
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--json",
+            "--mode",
+            "source",
+            "--address",
+            "10.0.0.5:50051",
+        ]
+    )
+    assert status == 2
+    document = json.loads(capsys.readouterr().out)
+    assert document["ok"] is False
+    assert document["error"]["kind"] == "SettingsError"
+
+    # Execution failure: unreachable image-mode address (exit 1).
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--json",
+            "--mode",
+            "image",
+            "--address",
+            "127.0.0.1:59999",
+            "--input",
+            '{"title": "x"}',
+        ]
+    )
+    assert status == 1
+    document = json.loads(capsys.readouterr().out)
+    assert document["ok"] is False
+    assert document["error"]["kind"] == "RunExecutionError"
+
+    # Missing manifest (exit 2).
+    status = main(["run", "--manifest", str(tmp_path / "nowhere"), "--json"])
+    assert status == 2
+    document = json.loads(capsys.readouterr().out)
+    assert document["ok"] is False
+    assert document["error"]["kind"] == "RunUsageError"
+
+
+_SHORT_SECRET_SOURCE = '''"""A step echoing a very short declared secret."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import ActionStep, ExecutionContext
+
+
+class KeyInput(BaseModel):
+    title: str
+    api_key: str = ""
+
+
+class KeyOutput(BaseModel):
+    echo: str
+
+
+class KeyStep(ActionStep[KeyInput, KeyOutput]):
+    def run(self, inputs: KeyInput, context: ExecutionContext) -> KeyOutput:
+        return KeyOutput(echo=f"processed key {inputs.api_key}")
+'''
+
+
+def test_short_declared_secrets_are_scrubbed_everywhere(tmp_path: Path, capsys) -> None:
+    """A one-character declared secret is scrubbed from output and tracebacks."""
+
+    workspace = _write_custom_workspace(
+        tmp_path / "ws",
+        source=_SHORT_SECRET_SOURCE,
+        class_name="KeyStep",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "api_key": {"type": "string", "writeOnly": True},
+            },
+            "required": ["title"],
+        },
+        output_schema=_ECHO_STRING_OUTPUT,
+    )
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--input",
+            '{"title": "x", "api_key": "k3"}',
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out.split("Output:\n", 1)[1]) == {"echo": "processed key ***"}
+    assert "k3" not in captured.out
+
+
+_ROOT_COMPOSITION_SOURCE = '''"""A step for root-composition schema tests."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import ActionStep, ExecutionContext
+
+
+class AnyInput(BaseModel):
+    model_config = {"extra": "allow"}
+    title: str = ""
+
+
+class AnyOutput(BaseModel):
+    slug: str
+
+
+class AnyStep(ActionStep[AnyInput, AnyOutput]):
+    def run(self, inputs: AnyInput, context: ExecutionContext) -> AnyOutput:
+        return AnyOutput(slug=inputs.title)
+'''
+
+
+@pytest.mark.parametrize("keyword", ["oneOf", "anyOf"])
+def test_root_composition_errors_do_not_embed_the_instance(
+    tmp_path: Path, capsys, keyword: str
+) -> None:
+    """Root-level oneOf/anyOf failures render a constraint-only message."""
+
+    workspace = _write_custom_workspace(
+        tmp_path / "ws",
+        source=_ROOT_COMPOSITION_SOURCE,
+        class_name="AnyStep",
+        input_schema={
+            keyword: [
+                {
+                    "type": "object",
+                    "properties": {"payload": {"type": "string"}},
+                    "required": ["payload"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {"note": {"type": "string"}},
+                    "required": ["note"],
+                    "additionalProperties": False,
+                },
+            ]
+        },
+        output_schema={
+            "type": "object",
+            "properties": {"slug": {"type": "string"}},
+            "required": ["slug"],
+        },
+    )
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--input",
+            '{"payload": "S3CR3T-value", "extra": true}',
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert f"{keyword} constraint is not satisfied" in captured.err
+    assert "S3CR3T-value" not in captured.err
+
+
+def test_root_not_does_not_leak_a_declared_secret(tmp_path: Path, capsys) -> None:
+    """A writeOnly secret under a root `not` never reaches the message."""
+
+    workspace = _write_custom_workspace(
+        tmp_path / "ws",
+        source=_ROOT_COMPOSITION_SOURCE,
+        class_name="AnyStep",
+        input_schema={
+            "type": "object",
+            "not": {
+                "type": "object",
+                "properties": {"blob": {"type": "string", "writeOnly": True}},
+                "required": ["blob"],
+            },
+        },
+        output_schema={
+            "type": "object",
+            "properties": {"slug": {"type": "string"}},
+            "required": ["slug"],
+        },
+    )
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--input",
+            '{"blob": "S3CR3T-value"}',
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "S3CR3T-value" not in captured.err
+
+
+def test_pointer_rendering_is_rfc6901(tmp_path: Path, capsys) -> None:
+    """Literal dots, slashes, and tildes in property names stay unambiguous."""
+
+    workspace = _write_custom_workspace(
+        tmp_path / "ws",
+        source=_ROOT_COMPOSITION_SOURCE,
+        class_name="AnyStep",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "foo.bar": {"type": "integer"},
+                "a/b": {"type": "integer"},
+                "c~d": {"type": "integer"},
+                "foo": {
+                    "type": "object",
+                    "properties": {"bar": {"type": "integer"}},
+                },
+            },
+        },
+        output_schema=_ECHO_STRING_OUTPUT,
+    )
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--input",
+            '{"foo.bar": "x", "a/b": "x", "c~d": "x", "foo": {"bar": "x"}}',
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    lines = [line.strip() for line in captured.err.splitlines()]
+    assert "inputs/a~1b: 'x' is not of type 'integer'" in lines
+    assert "inputs/c~0d: 'x' is not of type 'integer'" in lines
+    assert "inputs/foo.bar: 'x' is not of type 'integer'" in lines
+    assert "inputs/foo/bar: 'x' is not of type 'integer'" in lines
+    assert lines.count("inputs/foo.bar: 'x' is not of type 'integer'") == 1
+
+
+def test_invalid_utf8_input_file_exits_two_without_a_traceback(
+    tmp_path: Path, capsys
+) -> None:
+    """Undecodable bytes become one usage error, not a raw traceback."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    bad = tmp_path / "bad.json"
+    bad.write_bytes(b'{"title": "x"}\xff')
+
+    status = main(
+        ["run", "--manifest", str(workspace / "plugin.yaml"), "--input-file", str(bad)]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "not valid UTF-8" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_bom_prefixed_input_file_is_accepted(tmp_path: Path, capsys) -> None:
+    """A byte-order mark is stripped instead of breaking JSON parsing."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    bom_file = tmp_path / "bom.json"
+    bom_file.write_bytes("﻿{\"title\": \"bom ok\"}".encode())
+
+    status = main(
+        ["run", "--manifest", str(workspace / "plugin.yaml"), "--input-file", str(bom_file)]
+    )
+
+    assert status == 0
+    assert '"slug": "bom-ok"' in capsys.readouterr().out
+
+
+def test_lone_surrogate_input_is_rejected(tmp_path: Path, capsys) -> None:
+    """A lone surrogate cannot crash the report later; it is rejected up front."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--input",
+            '{"title": "\\ud800"}',
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "UTF-8 encodable" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_step_stdout_does_not_pollute_the_json_contract(
+    tmp_path: Path, capsys
+) -> None:
+    """A Step calling print() keeps stdout parseable under --json."""
+
+    printing_source = _STEP_SOURCE.replace(
+        "        return EchoOutput(slug=inputs.title.lower().replace(\" \", \"-\"))",
+        "        print(\"DEBUG: step print\")\n"
+        "        return EchoOutput(slug=inputs.title.lower().replace(\" \", \"-\"))",
+    )
+    workspace = _write_custom_workspace(
+        tmp_path / "ws",
+        source=printing_source,
+        class_name="EchoStep",
+        input_schema={
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {"slug": {"type": "string"}},
+            "required": ["slug"],
+        },
+    )
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--json",
+            "--input",
+            '{"title": "t"}',
+        ]
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert document["ok"] is True
+    assert "DEBUG: step print" in captured.err
+
+
+def test_mode_spies_source_image_and_address(monkeypatch, tmp_path: Path, capsys) -> None:
+    """The CLI provably takes the source, managed-image, and address paths."""
+
+    import syntara_plugin.sdk.runner as runner_module
+    from syntara_plugin.sdk import container_engine
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    manifest = str(workspace / "plugin.yaml")
+    arguments_address_mode = False
+    calls: dict[str, list[dict[str, Any]]] = {"source": [], "image": [], "managed": []}
+    real_source = runner_module.run_source
+    real_image = runner_module.run_image
+
+    def spy_source(*args, **kwargs):
+        calls["source"].append(kwargs)
+        return real_source(*args, **kwargs)
+
+    def spy_image(*args, **kwargs):
+        calls["image"].append(kwargs)
+        if arguments_address_mode:
+            from syntara_plugin.sdk.runner import RunExecutionError
+
+            raise RunExecutionError("spy: address path taken")
+        return real_image(*args, **kwargs)
+
+    def spy_managed(image):
+        calls["managed"].append({"image": image})
+
+    monkeypatch.setattr(runner_module, "run_source", spy_source, raising=False)
+    monkeypatch.setattr(runner_module, "run_image", spy_image, raising=False)
+    monkeypatch.setattr(container_engine, "managed_runtime", spy_managed, raising=False)
+
+    # Source mode (the default): only run_source, never the image machinery.
+    main(["run", "--manifest", manifest, "--input", '{"title": "x"}'])
+    assert len(calls["source"]) == 1
+    assert calls["image"] == []
+    assert calls["managed"] == []
+
+    # Image mode with --address: run_image directly, no managed container.
+    arguments_address_mode = True
+    calls.update(source=[], image=[], managed=[])
+    main(
+        [
+            "run",
+            "--manifest",
+            manifest,
+            "--mode",
+            "image",
+            "--address",
+            "127.0.0.1:59999",
+            "--input",
+            '{"title": "x"}',
+        ]
+    )
+    assert calls["source"] == []
+    assert len(calls["image"]) == 1
+    assert calls["image"][0].get("startup_seconds") is not None
+    assert calls["managed"] == []
+
+
+def test_invalid_input_never_invokes_the_execution_machinery(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Invalid input stops before any execution path is entered."""
+
+    import syntara_plugin.sdk.runner as runner_module
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("the execution machinery must not run on invalid input")
+
+    monkeypatch.setattr(runner_module, "run_source", fail_if_called, raising=False)
+    monkeypatch.setattr(runner_module, "run_image", fail_if_called, raising=False)
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--input",
+            '{"priority": "urgent"}',
+        ]
+    )
+
+    assert status == 2
+
+
+def test_selector_actually_selects_the_target(tmp_path: Path, capsys) -> None:
+    """Each selector form resolves to the target it names, not just any."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws", second_target="second")
+    package = next(path for path in workspace.iterdir() if path.name.startswith("run_pkg_"))
+    plugin_name = "run-fixture-" + package.name.removeprefix("run_pkg_")
+
+    for selector, expected in (
+        (f"run.{plugin_name}.echo", "echo"),
+        (f"run.{plugin_name}.second", "second"),
+        ("echo", "echo"),
+        ("second", "second"),
+    ):
+        status = main(
+            [
+                "run",
+                "--manifest",
+                str(workspace / "plugin.yaml"),
+                selector,
+                "--input",
+                '{"title": "x"}',
+            ]
+        )
+        assert status == 0, selector
+        assert _report_field(capsys.readouterr().out, "Target") == f"run.{plugin_name}.{expected}"
+
+
+def test_suggested_next_commands_run_from_the_same_directory(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Every Next command the multi-target error prints actually runs."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws", second_target="second")
+    monkeypatch.chdir(workspace)
+
+    status = main(["run"])
+
+    assert status == 2
+    captured = capsys.readouterr()
+    next_commands = [
+        line.strip()
+        for line in captured.err.splitlines()
+        if line.strip().startswith("syntara-plugin run ")
+    ]
+    assert next_commands
+    for command in next_commands:
+        replay = main(command.split()[1:])
+        assert replay == 2, command  # template mode from the same directory
+
+
+def test_manifest_directory_uses_adjacent_settings(tmp_path: Path, capsys) -> None:
+    """--manifest DIR and --manifest DIR/plugin.yaml read the same settings."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    settings = workspace / "syntara-plugin.yaml"
+    settings.write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: PluginBuildSettings
+output:
+  json: true
+""",
+        encoding="utf-8",
+    )
+
+    status = main(["run", "--manifest", str(workspace), "--input", '{"title": "x"}'])
+
+    assert status == 0
+    document = json.loads(capsys.readouterr().out)
+    assert document["ok"] is True

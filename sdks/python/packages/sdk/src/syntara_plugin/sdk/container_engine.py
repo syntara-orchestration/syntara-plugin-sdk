@@ -22,8 +22,10 @@ the workload died instead of a generic timeout.
 from __future__ import annotations
 
 import shutil
+import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -31,6 +33,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from .runner import RunExecutionError, TlsOptions
 
@@ -67,6 +70,19 @@ class ManagedRuntime:
 def detect_engine() -> ContainerEngine | None:
     """Return the first working engine, preferring Podman over Docker."""
 
+    engines = detect_engines()
+    return engines[0] if engines else None
+
+
+def detect_engines() -> list[ContainerEngine]:
+    """Return every installed engine in preference order (Podman first).
+
+    ``--version`` only proves the client binary runs; a stopped machine or
+    daemon, or an image living in the other engine's storage, is handled by
+    :func:`_select_engine` trying the next candidate.
+    """
+
+    engines: list[ContainerEngine] = []
     for command in _ENGINE_COMMANDS:
         if shutil.which(command) is None:
             continue
@@ -81,8 +97,43 @@ def detect_engine() -> ContainerEngine | None:
         except (OSError, subprocess.SubprocessError):
             continue
         if completed.returncode == 0:
-            return ContainerEngine(command=command)
-    return None
+            engines.append(ContainerEngine(command=command))
+    return engines
+
+
+def _select_engine(image: str) -> ContainerEngine:
+    """Return the first engine that is usable and holds the image.
+
+    An engine whose daemon is unreachable, or whose storage lacks the image,
+    is skipped in favor of the next installed one; when none works, one error
+    lists what happened to each candidate.
+    """
+
+    engines = detect_engines()
+    if not engines:
+        raise RunExecutionError(
+            "neither podman nor docker is available to run the workload image",
+            next_steps=(
+                "install podman or docker",
+                _SELF_MANAGED_NEXT_STEP,
+            ),
+        )
+    failures: list[str] = []
+    for engine in engines:
+        try:
+            if _image_available(engine, image):
+                return engine
+            failures.append(f"{engine.command}: the image is not in its local storage")
+        except RunExecutionError as error:
+            failures.append(f"{engine.command}: {error.message}")
+    raise RunExecutionError(
+        f"no usable container engine has the workload image {image!r} locally",
+        detail=tuple(failures),
+        next_steps=(
+            f"build and tag the image as {image!r} (see the image-mode guide)",
+            _SELF_MANAGED_NEXT_STEP,
+        ),
+    )
 
 
 @contextmanager
@@ -101,23 +152,7 @@ def managed_runtime(image: str) -> Iterator[ManagedRuntime]:
     readable for the liveness probe and for post-mortem inspection.
     """
 
-    engine = detect_engine()
-    if engine is None:
-        raise RunExecutionError(
-            "neither podman nor docker is available to run the workload image",
-            next_steps=(
-                "install podman or docker",
-                _SELF_MANAGED_NEXT_STEP,
-            ),
-        )
-    if not _image_available(engine, image):
-        raise RunExecutionError(
-            f"the workload image {image!r} is not available locally",
-            next_steps=(
-                f"build and tag the image as {image!r} (see the image-mode guide)",
-                _SELF_MANAGED_NEXT_STEP,
-            ),
-        )
+    engine = _select_engine(image)
     name = f"syntara-run-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory(prefix="syntara-run-tls-") as temporary:
         material = _generate_tls_material(Path(temporary))
@@ -129,13 +164,21 @@ def managed_runtime(image: str) -> Iterator[ManagedRuntime]:
                     _SELF_MANAGED_NEXT_STEP,
                 ),
             )
-        runtime = replace(
-            _published_runtime(engine, image, name, material),
-            liveness=_container_liveness(engine, name, image),
-        )
+        # SIGTERM (timeout, CI cancellation, IDE stop) must unwind through
+        # the finally like Ctrl-C does; restore the previous handler after.
+        previous_handler = _install_sigterm_exit()
+        # The cleanup guard starts before the container is created, not after:
+        # a start failure (a port race, the engine timeout, Ctrl-C) must not
+        # leave the named container behind. Removal is best effort, so a
+        # failure before creation is harmless.
         try:
+            runtime = replace(
+                _published_runtime(engine, image, name, material),
+                liveness=_container_liveness(engine, name, image),
+            )
             yield runtime
         finally:
+            _restore_sigterm(previous_handler)
             _remove_container(engine, name)
 
 
@@ -145,7 +188,11 @@ def _published_runtime(
     """Run the container on a published loopback port with generated mTLS."""
 
     port = _free_port()
-    mount_mode = "ro,Z" if engine.command == "podman" else "ro"
+    # Both engines support the SELinux relabel; without it, Docker on an
+    # SELinux-enforcing host cannot read the mounted material (it stays
+    # labeled user_tmp_t) and the runtime dies with EACCES. Where SELinux is
+    # off the flag is a no-op.
+    mount_mode = "ro,Z"
     try:
         completed = subprocess.run(
             [
@@ -209,6 +256,32 @@ def _published_runtime(
             key=material.client_key,
         ),
     )
+
+
+def _install_sigterm_exit() -> Any:
+    """Turn SIGTERM into an exception so cleanup paths run; return the old handler."""
+
+    def _terminate(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _terminate)
+        return previous
+    except ValueError:
+        # Not the main thread; the process-level default applies.
+        return None
+
+
+def _restore_sigterm(previous: Any) -> None:
+    """Restore the SIGTERM handler captured by _install_sigterm_exit."""
+
+    if previous is None:
+        return
+    try:
+        signal.signal(signal.SIGTERM, previous)
+    except ValueError:
+        pass
 
 
 def _container_liveness(engine: ContainerEngine, name: str, image: str) -> Callable[[], None]:
@@ -310,17 +383,44 @@ def _container_log_tail(
 
 
 def _remove_container(engine: ContainerEngine, name: str) -> None:
-    """Remove the managed container; best effort so cleanup never masks a failure."""
+    """Remove the managed container; best effort so cleanup never masks a failure.
+
+    ``rm --force`` on a container that never existed exits nonzero by design,
+    so a failed removal only warns when the container is still present
+    afterwards; the author then gets the exact command to clean it up.
+    """
 
     try:
-        subprocess.run(
+        completed = subprocess.run(
             [engine.command, "rm", "--force", name],
             capture_output=True,
             timeout=_RUN_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        pass
+        completed = None
+    if (completed is None or completed.returncode != 0) and _container_exists(engine, name):
+        print(
+            f"warning: could not remove the managed container {name}; "
+            f"remove it with `{engine.command} rm -f {name}`",
+            file=sys.stderr,
+        )
+
+
+def _container_exists(engine: ContainerEngine, name: str) -> bool:
+    """Return whether the named container is still present."""
+
+    try:
+        completed = subprocess.run(
+            [engine.command, "inspect", "--format", "{{.State.Running}}", name],
+            capture_output=True,
+            text=True,
+            timeout=_INSPECT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return completed.returncode == 0
 
 
 @dataclass(frozen=True)
@@ -476,14 +576,35 @@ def _image_available(engine: ContainerEngine, image: str) -> bool:
         ) from error
     if completed.returncode == 0:
         return True
+    stderr = completed.stderr.lower()
     if engine.command == "docker":
-        stderr = completed.stderr.lower()
-        if "cannot connect" in stderr or "daemon" in stderr:
-            raise RunExecutionError(
-                f"{engine.command} is installed but not usable",
-                detail=_stderr_tail(completed.stderr),
-                next_steps=("start the engine and rerun", "or pass --address HOST:PORT"),
-            )
+        # Docker's ordinary missing-image response also mentions the daemon
+        # ("Error response from daemon: No such image: ..."), so that case
+        # must be classified as a missing image before any engine check.
+        if "no such image" in stderr:
+            return False
+        unusable = (
+            "cannot connect" in stderr
+            or "daemon is unreachable" in stderr
+            or "permission denied" in stderr
+        )
+    else:
+        # Podman flags an infrastructure failure (no machine started, a dead
+        # PODMAN_HOST) with its infra-failure exit status 125 or a connection
+        # complaint on stderr. The image name is schema-constrained to
+        # ^[a-z][a-z0-9-]{0,62}$ (a logical image ID), so exit 125 cannot be
+        # a malformed-reference case here.
+        unusable = (
+            completed.returncode == 125
+            or "cannot connect" in stderr
+            or "unable to connect" in stderr
+        )
+    if unusable:
+        raise RunExecutionError(
+            f"{engine.command} is installed but not usable",
+            detail=_stderr_tail(completed.stderr),
+            next_steps=("start the engine and rerun", "or pass --address HOST:PORT"),
+        )
     return False
 
 

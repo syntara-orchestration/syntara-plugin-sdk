@@ -598,3 +598,249 @@ def test_image_mode_reports_a_real_steps_unexpected_exception(
     assert "Error detail:" in captured.out
     assert "not captured" in captured.out
     assert "unexpected crash" not in captured.out
+
+
+class _RecordingService(ContainerRuntimeService):
+    """A real server that records the RPC order and the invocation it receives."""
+
+    def __init__(self, steps: StepRegistry) -> None:
+        super().__init__(steps)
+        self.rpc_order: list[str] = []
+        self.invocations: list[ContainerInvocation] = []
+
+    def Health(self, request, context):
+        self.rpc_order.append("Health")
+        return super().Health(request, context)
+
+    def Execute(self, request, context):
+        self.rpc_order.append("Execute")
+        invocation, _cancellation = __import__(
+            "syntara_plugin.runtime.container", fromlist=["invocation_from_request"]
+        ).invocation_from_request(request)
+        self.invocations.append(invocation)
+        return super().Execute(request, context)
+
+
+def _start_recording_server(handlers: dict[str, Any]) -> tuple[_RecordingService, int, grpc.Server]:
+    service = _RecordingService(StepRegistry(handlers))
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    return service, port, server
+
+
+def test_health_precedes_execute_and_the_invocation_contract_holds(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Health runs first, Execute runs once, and the invocation fields match the docs."""
+
+    workspace, package, plugin_name = _write_real_step_workspace(tmp_path / "ws")
+    monkeypatch.syspath_prepend(str(workspace))
+    module = importlib.import_module(f"{package}.steps")
+    from syntara_plugin.runtime import StepBindings
+    from syntara_plugin.runtime.adapter import step_registry_from_bindings
+    from syntara_plugin.testing.bindings_factory import installed_binding
+
+    bindings = StepBindings()
+    step = module.OkStep()
+    binding = installed_binding(step, identity=f"run.{plugin_name}.ok")
+    bindings.bind(binding.descriptor, step)
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    service = _RecordingService(step_registry_from_bindings(bindings))
+    container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        status = main(
+            [
+                "run",
+                "--manifest",
+                str(workspace / "plugin.yaml"),
+                "ok",
+                "--mode",
+                "image",
+                "--address",
+                f"127.0.0.1:{port}",
+                "--input",
+                '{"title": "Hello"}',
+            ]
+        )
+    finally:
+        _stop(server)
+
+    assert status == 0
+    assert service.rpc_order == ["Health", "Execute"]
+    invocation = service.invocations[0]
+    assert invocation.step_revision_id == f"run.{plugin_name}.ok"
+    assert invocation.timeout_seconds == 60
+    assert invocation.runtime_context == {}
+    assert invocation.credential_file_paths == {}
+    assert invocation.inputs == {"title": "Hello"}
+
+
+_PROGRESS_WS_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "api_token": {"type": "string", "writeOnly": True},
+    },
+    "required": ["title"],
+}
+
+
+def _write_progress_workspace(root: Path) -> Path:
+    """One workspace whose target identity matches the progress-leak server."""
+
+    suffix = uuid.uuid4().hex[:8]
+    package = f"e2e_pkg_{suffix}"
+    plugin_name = f"progress-ws-{suffix}"
+    (root / "steps/echo").mkdir(parents=True, exist_ok=True)
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / package).mkdir(parents=True, exist_ok=True)
+    (root / "plugin.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: run
+  name: {plugin_name}
+  version: 0.1.0
+  displayName: Progress
+  description: Progress fixture.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: progress-workload
+  targets:
+    - steps/echo/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    (root / "steps/echo/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: echo
+  displayName: Echo
+  description: Fixture.
+spec:
+  runtime:
+    kind: custom-runner
+    entryPoint: {package}.steps:EchoStep
+  input:
+    kind: inline
+    value: {_PROGRESS_WS_INPUT_SCHEMA}
+  output:
+    kind: inline
+    value:
+      type: object
+      properties:
+        slug:
+          type: string
+      required: [slug]
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    (root / "docs/README.md").write_text("# Progress\n", encoding="utf-8")
+    (root / f"{package}/__init__.py").write_text("", encoding="utf-8")
+    (root / f"{package}/steps.py").write_text(_E2E_STEPS_SOURCE, encoding="utf-8")
+    return root
+
+
+class _ProgressLeakService(ContainerRuntimeService):
+    """A real server whose Execute streams a progress event with the secret."""
+
+    def __init__(self) -> None:
+        super().__init__(StepRegistry({"run.progress-ws-X.echo": self._handler}))
+        self._identity = "run.progress-ws-X.echo"
+
+    def set_identity(self, identity: str) -> None:
+        self._identity = identity
+        self._steps = StepRegistry({identity: self._handler})
+
+    def _handler(self, invocation: ContainerInvocation) -> ContainerResult:
+        from syntara_plugin.runtime.container import ContainerResult as Result
+
+        return Result("sha256:" + "a" * 64, output={"slug": "ok"})
+
+
+def _start_progress_server(identity: str, monkeypatch: Any) -> tuple[int, grpc.Server]:
+    service = _ProgressLeakService()
+    service.set_identity(identity)
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+
+    # Wrap Execute to prepend a progress event carrying the supplied secret.
+    original_execute = service.Execute
+
+    def execute_with_progress(request, context):
+        from syntara_plugin.runtime.container import invocation_from_request
+
+        invocation, _ = invocation_from_request(request)
+        secret = invocation.inputs.get("api_token", "")
+        yield container_pb2.ExecutionEvent(
+            invocation_id=invocation.invocation_id,
+            progress=container_pb2.Progress(
+                sequence=1,
+                state="progress",
+                message=f"working with {secret}",
+                percent=10.0,
+                has_percent=True,
+            ),
+        )
+        yield from original_execute(request, context)
+
+    monkeypatch.setattr(service, "Execute", execute_with_progress)
+    container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    return port, server
+
+
+def test_progress_events_are_scrubbed_on_stderr(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A progress message carrying a supplied secret is masked on stderr."""
+
+    workspace = _write_progress_workspace(tmp_path / "ws")
+    str(workspace.name)
+    # The identity is derived from the plugin name; rebuild it deterministically.
+    identity = next(
+        str(target["identity"])
+        for workspace_path in [workspace]
+        for target in _compiled_targets(workspace_path)
+    )
+    port, server = _start_progress_server(identity, monkeypatch)
+    try:
+        status = main(
+            [
+                "run",
+                "--manifest",
+                str(workspace / "plugin.yaml"),
+                "--mode",
+                "image",
+                "--address",
+                f"127.0.0.1:{port}",
+                "--verbose",
+                "--input",
+                '{"title": "x", "api_token": "PROGRESS-SECRET-42"}',
+            ]
+        )
+    finally:
+        _stop(server)
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "PROGRESS-SECRET-42" not in captured.err
+    assert "==> progress" in captured.err
+
+
+def _compiled_targets(workspace: Path) -> list[dict[str, Any]]:
+    from syntara_plugin.sdk.authoring import BuildRequest, compile_workspace
+
+    result = compile_workspace(BuildRequest(workspace / "plugin.yaml", require_image_bindings=False))
+    return list(result.descriptor["spec"]["targets"])

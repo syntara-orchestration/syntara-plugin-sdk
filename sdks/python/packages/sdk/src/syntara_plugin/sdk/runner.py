@@ -10,6 +10,8 @@ with author-facing guidance; the CLI renders both.
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import json
 import re
 import shutil
@@ -98,8 +100,8 @@ _VALIDATE_NEXT_STEP = "syntara-plugin validate"
 # any field's value, sensitive or not) in their message, so their errors are
 # always reported as a sanitized constraint line.
 _INSTANCE_EMBEDDING_VALIDATORS = frozenset(
-    {"contains", "dependencies", "dependentRequired", "dependentSchemas", "maxProperties",
-     "minProperties", "uniqueItems"}
+    {"anyOf", "contains", "dependencies", "dependentRequired", "dependentSchemas", "enum",
+     "maxProperties", "minProperties", "not", "oneOf", "uniqueItems"}
 )
 
 
@@ -199,7 +201,9 @@ _REDACTED = "***"
 _MIN_SECRET_LENGTH = 4
 # A schema-declared secret (writeOnly, format: password) is an explicit
 # contract, so shorter values are still collected.
-_MIN_DECLARED_SECRET_LENGTH = 3
+# A schema-declared secret is collected whatever its length; only
+# heuristic name detection keeps a false-positive threshold.
+_MIN_DECLARED_SECRET_LENGTH = 1
 
 
 def _declared_secret_marker(
@@ -239,13 +243,32 @@ def _declared_secret_paths(
     try:
         marker = _SECRET_MARKER_VALIDATOR(input_schema)
         return tuple(
-            tuple(error.absolute_path)
-            for error in marker.iter_errors(instance)
-            if error.validator == "writeOnly"
-            or (error.validator == "format" and error.validator_value == "password")
+            path for error in marker.iter_errors(instance) for path in _marker_paths(error)
         )
     except Exception:  # noqa: BLE001 - an unusable schema yields no paths
         return ()
+
+
+def _marker_paths(error: Any) -> Iterator[tuple[Any, ...]]:
+    """Yield the paths one marker error, or its composition branches, marks.
+
+    Inside ``anyOf``/``oneOf``/``allOf`` jsonschema reports a single error for
+    the composition keyword and nests the branch errors in ``context``, so a
+    top-level scan alone would miss declarations inside a branch.
+    """
+
+    if _is_secret_marker(error):
+        yield tuple(error.absolute_path)
+    for branch in error.context or ():
+        yield from _marker_paths(branch)
+
+
+def _is_secret_marker(error: Any) -> bool:
+    """Return whether one validation error is a declared-secret marker."""
+
+    return error.validator == "writeOnly" or (
+        error.validator == "format" and error.validator_value == "password"
+    )
 
 
 def redact_inputs(input_schema: Mapping[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
@@ -258,9 +281,11 @@ def redact_inputs(input_schema: Mapping[str, Any], inputs: Mapping[str, Any]) ->
     resolved locations. A declaration on the schema root marks the entire
     input secret: every top-level value is masked wholesale. Everything else
     is echoed back unchanged so the author can see exactly what executed.
+    The supplied mapping is never mutated.
     """
 
-    redacted = _redact_object(input_schema, inputs)
+    # Masking must never write into the structure the invocation references.
+    redacted = _redact_object(input_schema, copy.deepcopy(inputs))
     paths = _declared_secret_paths(input_schema, inputs)
     if any(path == () for path in paths):
         return dict.fromkeys(redacted, _REDACTED)
@@ -512,6 +537,9 @@ def _mask_leaf(container: Any, leaf: Any) -> None:
         container[leaf] = _REDACTED
 
 
+_DEFAULT_MANIFEST_NAME = "plugin.yaml"
+
+
 def resolve_manifest(manifest: Path | None) -> Path:
     """Resolve the run command's manifest path, rejecting missing workspaces.
 
@@ -522,14 +550,20 @@ def resolve_manifest(manifest: Path | None) -> Path:
     """
 
     if manifest is None:
-        candidate = Path("plugin.yaml")
-        location = str(Path.cwd())
+        candidate = Path(_DEFAULT_MANIFEST_NAME)
     else:
         candidate = manifest.expanduser()
-        location = str(candidate)
     if candidate.is_dir():
-        candidate = candidate / "plugin.yaml"
+        candidate = candidate / _DEFAULT_MANIFEST_NAME
+    # Name the directory, never the file: for the bare default this reads
+    # "no plugin.yaml in /current/directory" instead of "in plugin.yaml".
+    location = str(candidate.resolve().parent)
     if not candidate.is_file():
+        if manifest is not None and str(manifest) != _DEFAULT_MANIFEST_NAME:
+            raise RunUsageError(
+                f"plugin manifest not found: {candidate}",
+                next_steps=("check the --manifest path",),
+            )
         raise RunUsageError(
             f"no plugin.yaml in {location}",
             next_steps=(
@@ -554,7 +588,7 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         if not runnable:
             raise RunUsageError(
                 "this workspace declares no custom-runner Step target that can run locally",
-                detail=_target_lines(runnable),
+                detail=_target_lines(result.descriptor["spec"]["targets"]),
                 next_steps=("run syntara-plugin inspect to review the declared targets",),
             )
         if len(runnable) > 1:
@@ -599,17 +633,32 @@ def load_input(inline: str | None, input_file: Path | None) -> tuple[dict[str, A
 
 
 def _read_input_source(input_file: Path) -> tuple[str, str]:
-    """Read the raw input and its display label from a file or stdin."""
+    """Read the raw input and its display label from a file or stdin.
+
+    Files are read as UTF-8 with a byte-order mark tolerated; undecodable
+    bytes, a closed stdin, and any other read failure become one usage error
+    instead of a traceback.
+    """
 
     reading_stdin = str(input_file) == "-"
     if reading_stdin:
-        return sys.stdin.read(), "stdin"
+        try:
+            return sys.stdin.read(), "stdin"
+        except (OSError, ValueError) as error:
+            raise RunUsageError(f"could not read the input from stdin: {error}") from error
     try:
+        # utf-8-sig strips a leading byte-order mark, which authors hit when
+        # their editor writes one; the ABI expects plain UTF-8 JSON.
         raw = input_file.read_text(  # NOSONAR - the author's own --input-file path, accepted like validate/inspect/build
-            encoding="utf-8"
+            encoding="utf-8-sig"
         )
     except OSError as error:
         raise RunUsageError(f"could not read the input file {input_file}: {error}") from error
+    except UnicodeDecodeError as error:
+        raise RunUsageError(
+            f"the input file {input_file} is not valid UTF-8: {error}",
+            next_steps=("save the file as UTF-8 and rerun",),
+        ) from error
     return raw, str(input_file)
 
 
@@ -632,10 +681,15 @@ def _require_input_size(value: dict[str, Any], source: str) -> None:
     """Reject inputs whose encoded form exceeds the container ABI's bound."""
 
     try:
-        encoded = json.dumps(value, allow_nan=False, separators=(",", ":"))
+        # The unescaped form is what every display surface prints, so lone
+        # surrogates must be rejected here rather than crashing the report.
+        encoded = json.dumps(value, allow_nan=False, separators=(",", ":"), ensure_ascii=False)
+        size = len(encoded.encode("utf-8"))
     except (ValueError, RecursionError) as error:
-        raise RunUsageError(f"the input from {source} is not valid JSON: {error}") from error
-    size = len(encoded.encode("utf-8"))
+        raise RunUsageError(
+            f"the input from {source} must contain only UTF-8 encodable values: {error}",
+            next_steps=("remove lone surrogate characters and rerun",),
+        ) from error
     if size > _MAX_INPUT_BYTES:
         raise RunUsageError(
             "the input is too large for the container ABI "
@@ -757,17 +811,20 @@ def run_source(
     server.start()
     channel = grpc.insecure_channel(f"unix:{socket_path}")
     try:
-        return _execute_over_channel(
-            channel,
-            target,
-            inputs,
-            input_source,
-            mode="source",
-            address=f"unix:{socket_path}",
-            timeout_seconds=timeout_seconds,
-            on_progress=on_progress,
-            captured_detail=captured,
-        )
+        # The Step runs in this process; anything it prints belongs on stderr
+        # so stdout keeps carrying only the report (or the --json document).
+        with contextlib.redirect_stdout(sys.stderr):
+            return _execute_over_channel(
+                channel,
+                target,
+                inputs,
+                input_source,
+                mode="source",
+                address=f"unix:{socket_path}",
+                timeout_seconds=timeout_seconds,
+                on_progress=on_progress,
+                captured_detail=captured,
+            )
     finally:
         channel.close()
         server.stop(None)
@@ -980,6 +1037,18 @@ def _health(
                 break
             time.sleep(0.25)
     assert last_remote_error is not None
+    if liveness is not None:
+        # A managed container is still running but never served: point at its
+        # logs instead of suggesting the author start something they started.
+        raise RunExecutionError(
+            f"the workload container never became healthy within "
+            f"{startup_seconds:.0f} seconds",
+            failure_code=last_remote_error.code,
+            next_steps=(
+                "check the container log for the startup failure",
+                "or rerun with --mode source to execute the Step from the workspace",
+            ),
+        ) from last_remote_error
     raise RunExecutionError(
         f"cannot reach a container runtime at {address}",
         failure_code=last_remote_error.code,
@@ -1038,6 +1107,17 @@ def _consume(
                 ),
                 outcome=error.outcome,
             )
+        if error.code == FailureCode.TIMEOUT:
+            raise RunExecutionError(
+                f"the invocation did not complete within its "
+                f"{invocation.timeout_seconds} second timeout",
+                failure_code=error.code,
+                detail=(f"outcome: {error.outcome}",),
+                next_steps=(
+                    "make the Step finish within the timeout",
+                    "or split the work into smaller invocations",
+                ),
+            ) from error
         raise RunExecutionError(
             f"the invocation did not complete ({error.code}, source: {error.source})",
             failure_code=error.code,
@@ -1188,8 +1268,11 @@ def _identifiers() -> tuple[str, str]:
 
 
 def _channel(address: str, tls: TlsOptions | None) -> grpc.Channel:
+    # The runtime is local or author-named; a shell's proxy variables would
+    # otherwise stall or misroute the channel for minutes.
+    options = [("grpc.enable_http_proxy", 0)]
     if tls is None:
-        return grpc.insecure_channel(address)
+        return grpc.insecure_channel(address, options=options)
     try:
         credentials = grpc.ssl_channel_credentials(
             root_certificates=tls.ca.read_bytes(),
@@ -1198,7 +1281,7 @@ def _channel(address: str, tls: TlsOptions | None) -> grpc.Channel:
         )
     except OSError as error:
         raise RunUsageError(f"could not read the TLS material: {error}") from error
-    return grpc.secure_channel(address, credentials)
+    return grpc.secure_channel(address, credentials, options=options)
 
 
 def _reject_json_constant(value: str) -> Any:
@@ -1214,17 +1297,23 @@ def _bounded(line: str) -> str:
 
 
 def _pointer(path: Sequence[Any]) -> str:
+    """Render one error path as an RFC 6901 JSON Pointer.
+
+    Every segment is escaped (``~`` becomes ``~0``, ``/`` becomes ``~1``), so
+    a property literally named ``foo.bar`` renders ``/foo.bar`` and stays
+    distinguishable from the nested ``/foo/bar``.
+    """
+
     rendered = ""
     for item in path:
-        if isinstance(item, int):
-            rendered += f"[{item}]"
-        else:
-            rendered += f".{item}"
+        escaped = str(item).replace("~", "~0").replace("/", "~1")
+        rendered += f"/{escaped}"
     return rendered
 
 
 def _join_pointer(path: Sequence[Any], name: str) -> str:
-    return _pointer(path) + f".{name}"
+    escaped = str(name).replace("~", "~0").replace("/", "~1")
+    return _pointer(path) + f"/{escaped}"
 
 
 def _sensitive_error(

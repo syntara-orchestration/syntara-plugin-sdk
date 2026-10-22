@@ -16,6 +16,11 @@ syntara-plugin build
 syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
 
+`run` executes custom-runner Steps; the `create-issue` target lives in the
+[python-steps example](../examples/python-steps), so run that line from a
+checkout with `--manifest examples/python-steps/plugin.yaml`. See
+[Running locally](running-locally.md) for the full workflow.
+
 The default build has no registry side effects. It compiles the selected manifest, validates the contracts, and writes a deterministic OCI-layout tar archive. `run` executes one custom-runner Step locally, from source or against a running workload runtime, so you can inspect a real result without a test suite; see [Running locally](running-locally.md).
 
 ## Settings and command-line precedence

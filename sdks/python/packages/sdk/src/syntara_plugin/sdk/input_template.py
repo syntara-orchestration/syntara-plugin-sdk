@@ -102,7 +102,7 @@ def field_summaries(schema: Mapping[str, Any]) -> tuple[FieldSummary, ...]:
     even when the template omits them.
     """
 
-    return _field_summaries(schema, depth=0, seen=(), document=schema)
+    return _field_summaries(_deref(schema, schema), depth=0, seen=(), document=schema)
 
 
 def is_declared_secret(
@@ -157,14 +157,36 @@ def _is_declared_secret(
 
 
 def _resolve_local_ref(reference: str, document: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """Resolve one local JSON pointer within the schema document."""
+    """Resolve one local JSON pointer (RFC 6901) within the schema document."""
 
     node: Any = document
     for part in reference[2:].split("/"):
-        if not isinstance(node, Mapping) or part not in node:
+        # RFC 6901: ~1 encodes "/", ~0 encodes "~"; decode in this order.
+        key = part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(node, Mapping) or key not in node:
             return None
-        node = node[part]
+        node = node[key]
     return node if isinstance(node, Mapping) else None
+
+
+def _deref(
+    schema: Mapping[str, Any], document: Mapping[str, Any] | None
+) -> Mapping[str, Any]:
+    """Resolve a local ``$ref`` node to its target, or return the node itself.
+
+    Cycle and depth safety come from the callers' ``seen`` guards: a chain of
+    references eventually revisits the same schema object, whose ``id`` is
+    already recorded.
+    """
+
+    if document is None:
+        return schema
+    reference = schema.get("$ref")
+    if isinstance(reference, str) and reference.startswith("#/"):
+        resolved = _resolve_local_ref(reference, document)
+        if resolved is not None:
+            return resolved
+    return schema
 
 
 def is_sensitive(
@@ -199,7 +221,7 @@ def template_for(schema: Mapping[str, Any]) -> dict[str, Any]:
     pass validation unchanged: the validator is the guide for completing it.
     """
 
-    return _template_object(schema, depth=0, seen=(), document=schema)
+    return _template_object(_deref(schema, schema), depth=0, seen=(), document=schema)
 
 
 def render_summary_lines(identity: str, kind: str, schema: Mapping[str, Any]) -> list[str]:
@@ -210,9 +232,11 @@ def render_summary_lines(identity: str, kind: str, schema: Mapping[str, Any]) ->
     if not summaries:
         lines.append("  (no declared properties)")
         return lines
-    width = max(len(field.name) for field in _flatten(summaries)) + 2
+    flattened = _flatten(summaries)
+    width = max(len(field.name) for field in flattened) + 2
+    type_width = max(len(field.type) for field in flattened) + 2
     for summary in summaries:
-        _render_summary_field(lines, summary, width, indent=2)
+        _render_summary_field(lines, summary, width, type_width=type_width, indent=2)
     return lines
 
 
@@ -230,6 +254,7 @@ def _field_summaries(
     for name, property_schema in _properties(schema).items():
         if not isinstance(name, str) or not isinstance(property_schema, Mapping):
             continue
+        property_schema = _deref(property_schema, document)
         nested: tuple[FieldSummary, ...] = ()
         if name in required and _schema_type(property_schema) == "object":
             marker = id(property_schema)
@@ -302,6 +327,7 @@ def _template_entry(
 ) -> Any:
     """Pick one property's template value, or ``_UNSET`` to omit the property."""
 
+    property_schema = _deref(property_schema, document)
     sensitive = is_sensitive(name, property_schema, document)
     if sensitive:
         # Never place a declared value of a credential-shaped field into the
@@ -351,6 +377,12 @@ def _declared_value(property_schema: Mapping[str, Any]) -> Any:
 
 
 def _typed_empty(schema_type: str) -> Any:
+    if "|" in schema_type:
+        # A union uses its first non-null member's empty value.
+        for member in schema_type.split("|"):
+            if member and member != "null":
+                schema_type = member
+                break
     if schema_type in {"string", "-"}:
         return ""
     if schema_type in {"integer", "number"}:
@@ -439,16 +471,21 @@ def _flatten(summaries: tuple[FieldSummary, ...]) -> list[FieldSummary]:
 
 
 def _render_summary_field(
-    lines: list[str], summary: FieldSummary, width: int, *, indent: int
+    lines: list[str],
+    summary: FieldSummary,
+    width: int,
+    *,
+    type_width: int = _TYPE_COLUMN_WIDTH,
+    indent: int,
 ) -> None:
     parts = _summary_parts(summary)
     prefix = " " * indent + f"{summary.name:<{width}}"
-    type_label = f"{summary.type:<{_TYPE_COLUMN_WIDTH}}"
+    type_label = f"{summary.type:<{type_width}}"
     lines.append(f"{prefix}{type_label}{', '.join(parts)}")
     if summary.description is not None:
-        lines.append(" " * (indent + width + _TYPE_COLUMN_WIDTH) + summary.description)
+        lines.append(" " * (indent + width + type_width) + summary.description)
     for nested in summary.nested:
-        _render_summary_field(lines, nested, width, indent=indent + 2)
+        _render_summary_field(lines, nested, width, type_width=type_width, indent=indent + 2)
 
 
 def _summary_parts(summary: FieldSummary) -> list[str]:
