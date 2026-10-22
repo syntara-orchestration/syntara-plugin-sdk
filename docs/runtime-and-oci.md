@@ -115,6 +115,16 @@ register one or more steps; the Execution Plane selects the exact step revision
 in each gRPC request. The final image, not the SDK repository, owns its
 runtime-config file and adapter package versions.
 
+The checked-in [Existing Step](../examples/existing-step) prototype exercises
+this path for Action, Control, and Trigger. `make test-integration` builds its
+plugin wheel, installs it with the Python contracts distribution, and invokes
+all three manifest-declared entry points over the container ABI. The current
+standalone Execution Plane still vendors the older `syntara.node.v1` protocol;
+until that service adopts `syntara.container/v1alpha1`, this repository proves
+the SDK adapter path but does not claim end-to-end Execution Plane dispatch.
+Automation Orchestrator's workflow selection and platform-owned runners remain
+separate platform responsibilities.
+
 The server listens on `127.0.0.1:50051` by default. Override the address with
 `SYNTARA_RUNTIME_GRPC_ADDRESS`; every non-loopback listener requires mutual
 TLS. Supply all three of `SYNTARA_RUNTIME_GRPC_TLS_CERT`,

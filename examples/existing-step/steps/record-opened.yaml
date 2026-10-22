@@ -1,0 +1,51 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Trigger",
+  "metadata": {
+    "name": "record-opened",
+    "displayName": "Record opened",
+    "description": "Produces one deterministic event identifier."
+  },
+  "spec": {
+    "driver": "webhook.v1",
+    "runtime": {
+      "kind": "custom-runner",
+      "entryPoint": "existing_step.runtime:RecordOpenedStep"
+    },
+    "configuration": {
+      "kind": "inline",
+      "value": {
+        "type": "object"
+      }
+    },
+    "input": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repository": {
+            "type": "string"
+          }
+        },
+        "required": ["repository"]
+      }
+    },
+    "output": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          }
+        },
+        "required": ["event_id", "repository"]
+      }
+    }
+  }
+}
