@@ -117,7 +117,8 @@ def _parser() -> argparse.ArgumentParser:
         metavar="FIELDS",
         help=(
             "Comma-separated names, JSON schema, JSON field map, or JSON file path. "
-            "File paths must not contain '..'."
+            "File paths must not contain '..'. Relative paths must stay inside the "
+            "working directory."
         ),
     )
 
@@ -702,20 +703,38 @@ def _fields_payload(value: str) -> dict[str, Any] | list[str]:
 def _fields_file(value: str) -> Path | None:
     """Return a JSON fields file, or None when ``value`` is inline data.
 
-    A leading ``@`` is removed before the ``..`` check. ``Path("@../secret.json")``
-    has no ``..`` part; the parent segment appears only after the prefix is stripped.
+    A leading ``@`` is removed before path checks. ``Path("@../secret.json")``
+    has no ``..`` part; the parent segment appears only after the prefix is
+    stripped. Relative paths are resolved and must stay inside the working
+    directory, so a symlink cannot escape in place of ``..``.
     """
 
     prefixed = value.startswith("@")
     candidate = value[1:] if prefixed else value
     if not prefixed and not candidate.endswith(".json"):
         return None
-    path = Path(candidate)
-    if ".." in path.parts:
-        raise ValueError("fields file must not contain '..' path traversal")
+    path = _contained_fields_path(Path(candidate))
     if prefixed or path.is_file():
         return path
     return None
+
+
+def _contained_fields_path(path: Path) -> Path:
+    """Reject ``..`` and relative paths that resolve outside the working directory."""
+
+    if ".." in path.parts:
+        raise ValueError("fields file must not contain '..' path traversal")
+    if path.is_absolute():
+        return path
+    root = Path.cwd().resolve()
+    message = "fields file must not escape the working directory through path traversal"
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError) as error:
+        raise ValueError(message) from error
+    if not resolved.is_relative_to(root):
+        raise ValueError(message)
+    return resolved
 
 
 def _normalize_fields_document(

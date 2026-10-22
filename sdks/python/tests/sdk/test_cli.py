@@ -242,7 +242,7 @@ def test_init_accepts_an_at_prefixed_json_schema_file(
 
 
 def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeypatch) -> None:
-    """LLM-supplied ``--fields`` paths cannot escape via ``..``, including after ``@``."""
+    """LLM-supplied ``--fields`` paths cannot escape via ``..`` or a symlink."""
     sentinel = "fields-schema-sentinel"
     secret = tmp_path / "secret"
     secret.mkdir()
@@ -254,6 +254,10 @@ def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeyp
     (secret / "fields.json").write_text(json.dumps(schema), encoding="utf-8")
     work = tmp_path / "work"
     (work / "nested").mkdir(parents=True)
+    (work / "local.json").write_text(json.dumps(schema), encoding="utf-8")
+    (work / "link.json").symlink_to(Path("..") / "secret" / "fields.json")
+    (work / "linkdir").symlink_to(secret, target_is_directory=True)
+    (work / "nested" / "up.json").symlink_to(Path("..") / ".." / "secret" / "fields.json")
     monkeypatch.chdir(work)
     absolute = work / ".." / "secret" / "fields.json"
     arguments = [
@@ -263,8 +267,18 @@ def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeyp
         "@./../secret/fields.json",
         "nested/../../secret/fields.json",
         "@nested/../../secret/fields.json",
+        "nested/../local.json",
+        "@nested/../local.json",
         str(absolute),
         f"@{absolute}",
+        "link.json",
+        "@link.json",
+        "linkdir/fields.json",
+        "@linkdir/fields.json",
+        "linkdir/missing.json",
+        "@linkdir/missing.json",
+        "nested/up.json",
+        "@nested/up.json",
     ]
 
     for index, fields in enumerate(arguments):
@@ -275,6 +289,33 @@ def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeyp
         assert sentinel not in captured.out
         assert sentinel not in captured.err
         assert not workspace.exists()
+
+
+def test_init_accepts_a_fields_symlink_inside_the_working_directory(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A relative symlink is readable when its target stays in the working directory."""
+    workspace = tmp_path / "issue-tools"
+    schema_path = tmp_path / "fields.json"
+    schema = {
+        "type": "object",
+        "required": ["resource", "issue_count"],
+        "properties": {
+            "resource": {"type": "string"},
+            "issue_count": {"type": "integer", "minimum": 0},
+        },
+    }
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    (tmp_path / "link.json").symlink_to(schema_path.name)
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["init", str(workspace), "--fields", "link.json"]) == 0
+    capsys.readouterr()
+    generated = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert generated == schema
 
 
 def test_init_rejects_a_json_schema_that_does_not_require_resource(
