@@ -758,9 +758,17 @@ def _validate_fields(document: dict[str, Any] | list[str]) -> None:
     required = document.get("required", [])
     if not isinstance(required, list) or "resource" not in required:
         raise ValueError("fields JSON schema must require resource")
+    if not all(isinstance(field, str) for field in required):
+        raise ValueError("fields JSON schema required entries must be strings")
     properties = document.get("properties", {})
     if not isinstance(properties, dict) or "resource" not in properties:
         raise ValueError("fields JSON schema must define resource")
+    missing_required = sorted(set(required) - set(properties))
+    if missing_required:
+        raise ValueError(
+            "fields JSON schema must define every required property: "
+            + ", ".join(missing_required)
+        )
     Draft202012Validator.check_schema(document)
 
 

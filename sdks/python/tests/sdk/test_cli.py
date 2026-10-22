@@ -231,6 +231,22 @@ def test_init_rejects_a_json_schema_that_does_not_require_resource(
     assert not workspace.exists()
 
 
+def test_init_rejects_a_required_property_that_is_not_defined(
+    tmp_path: Path, capsys
+) -> None:
+    """Every required input must have a matching property definition."""
+    workspace = tmp_path / "invalid-schema"
+    schema = {
+        "type": "object",
+        "required": ["resource", "title"],
+        "properties": {"resource": {"type": "string"}},
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 2
+    assert "must define every required property: title" in capsys.readouterr().err
+    assert not workspace.exists()
+
+
 @pytest.mark.parametrize(
     ("fields", "message"),
     [

@@ -19,13 +19,22 @@ cd ./my-plugin
 Pass a comma-separated list to `--fields` for optional input fields. For more
 control, pass an inline JSON schema, a JSON field map, or a path to a JSON
 schema file. Field maps support per-field types, descriptions, defaults,
-enums, patterns, and requiredness.
+enums, patterns, and requiredness. Add `"required": true` to a field-map
+entry when the action needs that input in addition to the built-in
+`resource` field.
 
 For example:
 
 ```sh
 syntara-plugin init ./my-plugin --namespace acme \
   --fields '{"url":{"type":"string","description":"Target URL","minLength":1,"maxLength":50}}'
+```
+
+To make `url` required, use:
+
+```sh
+syntara-plugin init ./my-plugin --namespace acme \
+  --fields '{"url":{"type":"string","description":"Target URL","minLength":1,"maxLength":50,"required":true}}'
 ```
 
 The generated workspace contains:
