@@ -831,6 +831,7 @@ def _validate_fields_schema(document: dict[str, Any]) -> None:
     properties = document.get("properties", {})
     if not isinstance(properties, dict) or "resource" not in properties:
         raise ValueError("fields JSON schema must define resource")
+    _validate_resource_property(properties["resource"])
     missing_required = sorted(set(required) - set(properties))
     if missing_required:
         raise ValueError(
@@ -838,6 +839,15 @@ def _validate_fields_schema(document: dict[str, Any]) -> None:
             + ", ".join(missing_required)
         )
     Draft202012Validator.check_schema(document)
+
+
+def _validate_resource_property(resource: object) -> None:
+    """The scaffolded action interpolates resource into the HTTP request path."""
+    if not isinstance(resource, dict) or resource.get("type") != "string":
+        raise ValueError("fields JSON schema must define resource as a string")
+    minimum = resource.get("minLength")
+    if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:
+        raise ValueError("fields JSON schema must set resource minLength to at least 1")
 
 
 def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) -> None:

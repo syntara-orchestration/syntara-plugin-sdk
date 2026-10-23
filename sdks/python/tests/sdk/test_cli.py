@@ -198,7 +198,7 @@ def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys, monkeypatch) ->
         "type": "object",
         "required": ["resource", "issue_count"],
         "properties": {
-            "resource": {"type": "string"},
+            "resource": {"type": "string", "minLength": 1},
             "issue_count": {"type": "integer", "minimum": 0},
         },
     }
@@ -226,7 +226,7 @@ def test_init_accepts_an_at_prefixed_json_schema_file(
         "type": "object",
         "required": ["resource", "issue_count"],
         "properties": {
-            "resource": {"type": "string"},
+            "resource": {"type": "string", "minLength": 1},
             "issue_count": {"type": "integer", "minimum": 0},
         },
     }
@@ -305,7 +305,7 @@ def test_init_accepts_a_fields_symlink_inside_the_working_directory(
         "type": "object",
         "required": ["resource", "issue_count"],
         "properties": {
-            "resource": {"type": "string"},
+            "resource": {"type": "string", "minLength": 1},
             "issue_count": {"type": "integer", "minimum": 0},
         },
     }
@@ -330,7 +330,7 @@ def test_init_reads_a_fields_file_from_a_subdirectory(
         "type": "object",
         "required": ["resource", "issue_count"],
         "properties": {
-            "resource": {"type": "string"},
+            "resource": {"type": "string", "minLength": 1},
             "issue_count": {"type": "integer", "minimum": 0},
         },
     }
@@ -385,11 +385,37 @@ def test_init_rejects_a_required_property_that_is_not_defined(
     schema = {
         "type": "object",
         "required": ["resource", "title"],
-        "properties": {"resource": {"type": "string"}},
+        "properties": {"resource": {"type": "string", "minLength": 1}},
     }
 
     assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 2
     assert "must define every required property: title" in capsys.readouterr().err
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize(
+    ("resource", "message"),
+    [
+        ({"type": "integer"}, "must define resource as a string"),
+        ({"type": ["string", "integer"]}, "must define resource as a string"),
+        (True, "must define resource as a string"),
+        ({"type": "string"}, "must set resource minLength to at least 1"),
+        ({"type": "string", "minLength": 0}, "must set resource minLength to at least 1"),
+    ],
+)
+def test_init_rejects_a_json_schema_that_redefines_resource_unusably(
+    tmp_path: Path, capsys, resource: object, message: str
+) -> None:
+    """The generated action renders resource into its path, so it must stay usable."""
+    workspace = tmp_path / "invalid-schema"
+    schema = {
+        "type": "object",
+        "required": ["resource"],
+        "properties": {"resource": resource},
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 2
+    assert message in capsys.readouterr().err
     assert not workspace.exists()
 
 

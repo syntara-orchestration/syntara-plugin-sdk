@@ -23,6 +23,9 @@ segment, and the resolved path, including symlinks, must stay inside the
 working directory. Field maps support per-field types, descriptions, defaults,
 enums, patterns, and requiredness. Add `"required": true` to a field-map entry
 when the action needs that input in addition to the built-in `resource` field.
+A full JSON schema must define `resource` as a string with `"minLength": 1`;
+the generated action interpolates it into its HTTP request path, where the
+runner requires a non-empty string.
 
 For example:
 
