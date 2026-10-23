@@ -160,3 +160,12 @@ repository root:
 ```sh
 uv run --no-sync pytest examples/python-steps/tests -q
 ```
+
+[`../examples/existing-step`](../examples/existing-step) is the checked-in
+end-to-end prototype. Its suite compiles the real plugin workspace, loads each
+manifest entry point, checks invalid inputs, compares direct and in-process
+container outcomes, and builds deterministic plugin and catalog artifacts:
+
+```sh
+uv run --no-sync pytest examples/existing-step/tests -q
+```

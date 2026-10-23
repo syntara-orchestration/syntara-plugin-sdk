@@ -1,0 +1,54 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Control",
+  "metadata": {
+    "name": "normalize-records",
+    "displayName": "Normalize records",
+    "description": "Normalizes records before workflow selection."
+  },
+  "spec": {
+    "invocation": {
+      "kind": "workflow-invocation",
+      "workflow": "example.existing-step.select"
+    },
+    "runtime": {
+      "kind": "custom-runner",
+      "entryPoint": "existing_step.runtime:NormalizeRecordsStep"
+    },
+    "input": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "records": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["records"]
+      }
+    },
+    "output": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "normalized": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["count", "normalized"]
+      }
+    }
+  }
+}
