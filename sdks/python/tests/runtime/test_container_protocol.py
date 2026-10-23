@@ -433,3 +433,44 @@ def test_success_result_with_error_metadata_is_a_protocol_error() -> None:
         _result_from_event(event)
 
     assert raised.value.source == "protocol"
+
+
+def test_failure_event_message_surfaces_on_the_remote_error() -> None:
+    """The client keeps the workload's safe failure message for display."""
+
+    event = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        failure=container_pb2.Failure(
+            code="INVALID_INPUT",
+            message="The tracker rejected the request.",
+            retryable=False,
+            outcome="not_started",
+        ),
+    )
+    from syntara_plugin.runtime.container import _remote_failure
+
+    error = _remote_failure(event)
+
+    assert error.code is FailureCode.INVALID_INPUT
+    assert error.source == "workload"
+    assert error.retryable is False
+    assert error.message == "The tracker rejected the request."
+
+
+def test_oversized_failure_message_is_a_protocol_error() -> None:
+    """The failure message is bounded like every other remote string."""
+
+    from syntara_plugin.runtime.container import _remote_failure
+
+    event = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        failure=container_pb2.Failure(
+            code="REMOTE_REJECTED",
+            message="x" * 5_000,
+            outcome="not_completed",
+        ),
+    )
+    with pytest.raises(ContainerRemoteError) as raised:
+        _remote_failure(event)
+
+    assert raised.value.source == "protocol"
