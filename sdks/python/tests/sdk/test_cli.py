@@ -399,6 +399,9 @@ def test_init_rejects_a_required_property_that_is_not_defined(
         ("title,title", "fields must be unique"),
         ("resource", "field 'resource' is already included"),
         ("1-title", "field is not valid"),
+        ("[1]", "fields JSON array entries must be strings"),
+        ("[{}]", "fields JSON array entries must be strings"),
+        ("[1, 1]", "fields JSON array entries must be strings"),
     ],
 )
 def test_init_rejects_invalid_field_names(

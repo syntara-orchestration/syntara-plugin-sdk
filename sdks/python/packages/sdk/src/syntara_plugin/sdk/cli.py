@@ -809,6 +809,8 @@ def _validate_fields(document: dict[str, Any] | list[str]) -> None:
 
 
 def _validate_field_names(fields: list[str]) -> None:
+    if not all(isinstance(field, str) for field in fields):
+        raise ValueError("fields JSON array entries must be strings")
     if len(fields) != len(set(fields)):
         raise ValueError("fields must be unique")
     for field in fields:
