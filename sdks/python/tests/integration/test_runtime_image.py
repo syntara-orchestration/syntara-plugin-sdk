@@ -79,9 +79,16 @@ def test_ubi_python_image_serves_sample_step_over_grpc(tmp_path: Path) -> None:
         client = ContainerClient(channel)
         health = _wait_for_health(client)
         result = client.execute(_invocation(), timeout_seconds=10)
+        wrapper = client.execute_wrapped(
+            _invocation(), output_schema=_echo_output_schema(), timeout_seconds=10
+        )
 
         assert health == ("integration.echo.v1",)
         assert result.output == {"message": "hello from UBI"}
+        assert wrapper.status_code == 0
+        assert wrapper.status_message == "Completed"
+        assert wrapper.result == {"message": "hello from UBI"}
+        assert wrapper.error_message is None
     finally:
         channel.close()
         subprocess.run(
@@ -274,6 +281,15 @@ def _invocation() -> ContainerInvocation:
         timeout_seconds=30,
         runtime_context={},
     )
+
+
+def _echo_output_schema() -> dict[str, object]:
+    return {
+        "properties": {"message": {"title": "Message", "type": "string"}},
+        "required": ["message"],
+        "title": "EchoOutput",
+        "type": "object",
+    }
 
 
 def _wait_for_health(client: ContainerClient) -> tuple[str, ...]:

@@ -16,8 +16,8 @@
         "invocation": {"$ref": "step.schema.json#/$defs/workflowInvocation"},
         "runtime": {"$ref": "step.schema.json#/$defs/runner"},
         "input": {"$ref": "step.schema.json#/$defs/schemaSource"},
-        "output": {"$ref": "step.schema.json#/$defs/schemaSource"},
-        "error": {"$ref": "step.schema.json#/$defs/schemaSource"}
+        "output": {"$ref": "step.schema.json#/$defs/schemaSource", "description": "Schema for StandardOutputWrapper.result on success; describes the business result, not the wrapper."},
+        "error": {"$ref": "step.schema.json#/$defs/schemaSource", "description": "Optional declared business-error schema; runtime wrapper metadata remains SDK-defined."}
       }
     }
   }

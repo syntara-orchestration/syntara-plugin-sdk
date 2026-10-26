@@ -7,5 +7,6 @@
   "statusMessage": "The upstream service rejected the request.",
   "errorCode": "REMOTE_REJECTED",
   "errorMessage": "The upstream service rejected the request.",
-  "retryable": false
+  "retryable": false,
+  "errorCategory": "dependency"
 }

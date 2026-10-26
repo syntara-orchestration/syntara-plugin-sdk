@@ -135,6 +135,13 @@ def test_unsupported_step_is_a_safe_not_found_failure(
     assert "delete-organization" not in str(raised.value)
     assert calls == {}
 
+    with pytest.raises(ContainerRemoteError) as wrapped_error:
+        client.execute_wrapped(
+            _invocation("github.delete-organization.v1"), output_schema={"type": "object"}
+        )
+    assert wrapped_error.value.code is FailureCode.NOT_FOUND
+    assert wrapped_error.value.source == "workload"
+
 
 def test_platform_runner_can_advertise_and_dispatch_a_control_plane_selected_step() -> None:
     """A generic runner does not need one image build for every installed step."""
@@ -171,6 +178,32 @@ def test_unhandled_step_exception_never_exposes_its_message(
 
     assert raised.value.code is FailureCode.OUTCOME_UNKNOWN
     assert "plaintext-value" not in str(raised.value)
+
+
+def test_normalized_transport_error_does_not_retain_the_rpc_exception() -> None:
+    sentinel = "transport-backend-secret-sentinel"
+
+    class SentinelRpcError(grpc.RpcError):
+        def code(self) -> grpc.StatusCode:
+            return grpc.StatusCode.UNAVAILABLE
+
+        def details(self) -> str:
+            return sentinel
+
+    class FailingStub:
+        def Execute(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise SentinelRpcError()
+
+    client = ContainerClient.__new__(ContainerClient)
+    client._stub = FailingStub()
+
+    with pytest.raises(ContainerRemoteError) as raised:
+        client.execute(_invocation("github.create-issue.v1"))
+
+    assert raised.value.source == "transport"
+    assert raised.value.code is FailureCode.UPSTREAM_TRANSIENT
+    assert sentinel not in str(raised.value)
+    assert raised.value.__cause__ is None
 
 
 def test_invalid_abi_is_returned_as_a_terminal_failure(
@@ -322,6 +355,7 @@ def test_container_result_enforces_terminal_invariants() -> None:
         status_message="The upstream service rejected the request.",
         error_code="REMOTE_REJECTED",
         error_message="The upstream service rejected the request.",
+        error_category="dependency",
     )
     assert failure.output is None
     assert failure.object_reference is None
@@ -351,27 +385,48 @@ def test_container_result_enforces_terminal_invariants() -> None:
     with pytest.raises(ValueError, match="failed result requires an error"):
         ContainerResult(OUTPUT_SCHEMA_DIGEST, status_code=7, error_code="REMOTE_REJECTED")
 
+    with pytest.raises(ValueError, match="error category"):
+        ContainerResult(
+            OUTPUT_SCHEMA_DIGEST,
+            status_code=7,
+            error_code="REMOTE_REJECTED",
+            error_message="The upstream service rejected the request.",
+        )
+
+    with pytest.raises(ValueError, match="known error category"):
+        ContainerResult(
+            OUTPUT_SCHEMA_DIGEST,
+            status_code=7,
+            error_code="REMOTE_REJECTED",
+            error_message="The upstream service rejected the request.",
+            error_category="unknown",
+        )
+
 
 def test_deliberate_step_failure_round_trips_as_a_result_event() -> None:
     from syntara_plugin.runtime.container import _result_event, _result_from_event
 
     failure = ContainerResult(
         OUTPUT_SCHEMA_DIGEST,
+        output={"rejected": True},
         status_code=1,
         status_message="The upstream service rejected the request.",
         error_code="REMOTE_REJECTED",
         error_message="The upstream service rejected the request.",
         retryable=True,
+        error_category="dependency",
     )
     event = _result_event("invocation-1", failure)
     decoded = _result_from_event(event)
 
     assert decoded.status_code == 1
-    assert decoded.output is None
+    assert decoded.status_message == "The upstream service rejected the request."
+    assert decoded.output == {"rejected": True}
     assert decoded.object_reference is None
     assert decoded.error_code == "REMOTE_REJECTED"
     assert decoded.error_message == "The upstream service rejected the request."
     assert decoded.retryable is True
+    assert decoded.error_category == "dependency"
 
 
 def test_object_reference_result_round_trips() -> None:

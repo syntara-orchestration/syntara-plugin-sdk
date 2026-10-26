@@ -20,7 +20,7 @@ from syntara_plugin.runtime import (
     StandardOutputWrapper,
     StepBinding,
     StepBindingError,
-    StepExecutor,
+    invoke,
 )
 from syntara_plugin.runtime.adapter import container_step_for_binding
 from syntara_plugin.runtime.bindings import validate_executable_step_binding
@@ -284,10 +284,9 @@ def invoke_step(
     inputs, context = _prepare_invocation(inputs, context)
     # Construct outside the catch so harness-usage errors stay loud on both
     # paths instead of being normalized into a quiet failed outcome.
-    executor = StepExecutor(binding)
     with _counting_run(binding.step) as spy:
         try:
-            wrapper = executor.execute(inputs, context)
+            wrapper = invoke(binding, inputs, context)
         except KeyboardInterrupt:
             raise
         except BaseException as error:
@@ -385,6 +384,7 @@ def invoke_step_in_container(
         wrapper_error = None
         if result.error_code:
             wrapper_error = ErrorMessage(
+                category=result.error_category or "business",
                 code=result.error_code,
                 message=result.error_message,
                 retryable=result.retryable,

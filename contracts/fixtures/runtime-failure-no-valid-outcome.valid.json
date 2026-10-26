@@ -1,0 +1,9 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerFailure",
+  "invocationId": "invoke-unknown",
+  "code": "OUTCOME_UNKNOWN",
+  "message": "The runtime could not determine whether the operation completed.",
+  "retryable": true,
+  "outcome": "unknown"
+}

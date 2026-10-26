@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -165,6 +166,15 @@ def test_runtime_package_does_not_depend_on_sdk_implementation() -> None:
 
 def test_container_result_envelope_fixtures_conform() -> None:
     harness = ConformanceHarness()
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+
+    for fixture_name in (
+        "runtime-result.valid.json",
+        "runtime-result-reference.valid.json",
+        "runtime-result-failure.valid.json",
+    ):
+        fixture = json.loads((fixtures / fixture_name).read_text(encoding="utf-8"))
+        assert harness.validate_runtime(fixture).valid
 
     assert harness.validate_runtime(
         {
@@ -198,6 +208,7 @@ def test_container_result_envelope_fixtures_conform() -> None:
             "errorCode": "REMOTE_REJECTED",
             "errorMessage": "The upstream service rejected the request.",
             "retryable": False,
+            "errorCategory": "dependency",
         }
     ).valid
     # A legacy result that predates the status fields decodes as a success.
@@ -257,4 +268,58 @@ def test_container_result_envelope_rejects_invalid_payload_shapes() -> None:
     assert not harness.validate_runtime(dict(base, statusCode=7)).valid
     assert not harness.validate_runtime(
         dict(base, statusCode=7, errorCode="REMOTE_REJECTED")
+    ).valid
+
+    failure = dict(
+        base,
+        statusCode=7,
+        errorCode="REMOTE_REJECTED",
+        errorMessage="The upstream service rejected the request.",
+        retryable=True,
+        errorCategory="dependency",
+    )
+    assert harness.validate_runtime(failure).valid
+    assert not harness.validate_runtime({key: value for key, value in failure.items() if key != "retryable"}).valid
+    assert not harness.validate_runtime(
+        {key: value for key, value in failure.items() if key != "errorCategory"}
+    ).valid
+    assert not harness.validate_runtime(dict(failure, errorCategory="unknown")).valid
+
+
+def test_standard_output_wrapper_requires_object_result_and_complete_error_metadata() -> None:
+    harness = ConformanceHarness()
+    success = {
+        "result": {"issue": 42},
+        "statusCode": 0,
+        "statusMessage": "Completed",
+        "errorMessage": None,
+    }
+    assert harness.validate_runtime(success).valid
+    assert not harness.validate_runtime(dict(success, result=[42])).valid
+    assert not harness.validate_runtime(dict(success, result=42)).valid
+
+    failure = {
+        "result": None,
+        "statusCode": 1,
+        "statusMessage": "Rejected",
+        "errorMessage": {
+            "category": "dependency",
+            "code": "REMOTE_REJECTED",
+            "message": "The upstream service rejected the request.",
+            "retryable": True,
+        },
+    }
+    assert harness.validate_runtime(failure).valid
+    assert not harness.validate_runtime(
+        dict(failure, errorMessage={**failure["errorMessage"], "category": "unknown"})
+    ).valid
+    assert not harness.validate_runtime(
+        dict(
+            failure,
+            errorMessage={
+                key: value
+                for key, value in failure["errorMessage"].items()
+                if key != "retryable"
+            },
+        )
     ).valid

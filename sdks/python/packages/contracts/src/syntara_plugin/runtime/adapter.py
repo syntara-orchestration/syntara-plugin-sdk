@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, canonical_json_digest
 
+from . import invoke
 from .bindings import (
     InstalledStepManifest,
     StepBinding,
@@ -27,11 +29,10 @@ from .container import (
     StepRegistry,
 )
 from .context import ExecutionContext
-from .execution import StepExecutionError, StepExecutor
+from .execution import StepExecutionError
 from .outcome import StandardOutputWrapper
 from .step import BaseStep
 
-_SHA256 = re.compile(r"^sha256:[a-f0-9]{64}$")
 _REFERENCE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 # Business results above this canonical-JSON size cannot travel inline over the
 # container ABI and are externalized to an object-store reference instead.
@@ -77,19 +78,14 @@ def _applied_output_schema_digest(binding: StepBinding) -> str:
     return canonical_json_digest(_thaw_json_document(binding.descriptor.output_schema))
 
 
-def _installed_output_schema_digest(invocation: ContainerInvocation) -> str | None:
-    """Return the installed output schema digest carried by the runtime context."""
+def _thaw_result_value(value: Any) -> Any:
+    """Materialize immutable wrapper values as ordinary JSON containers."""
 
-    digest = invocation.runtime_context.get("outputSchemaDigest")
-    if digest is None:
-        return None
-    if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
-        raise ContainerInvocationError(
-            FailureCode.ABI_VIOLATION,
-            "The runtime context carries an invalid output schema digest.",
-            outcome="not_started",
-        )
-    return digest
+    if isinstance(value, Mapping):
+        return {key: _thaw_result_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_result_value(item) for item in value]
+    return value
 
 
 def _place_business_result(
@@ -103,16 +99,19 @@ def _place_business_result(
     result is a safe ABI violation rather than a silently truncated response.
     """
 
+    invalid_result = False
     try:
-        payload = canonical_json_bytes(result)
-    except CanonicalJsonError as error:
+        payload = canonical_json_bytes(_thaw_result_value(result))
+    except (CanonicalJsonError, RecursionError):
+        invalid_result = True
+    if invalid_result:
         raise ContainerInvocationError(
             FailureCode.ABI_VIOLATION,
             "The plugin step returned an invalid response.",
             outcome="unknown",
-        ) from error
+        )
     if len(payload) <= _MAX_INLINE_RESULT_BYTES:
-        return result, None
+        return json.loads(payload), None
     if object_store is None:
         raise ContainerInvocationError(
             FailureCode.ABI_VIOLATION,
@@ -120,14 +119,18 @@ def _place_business_result(
             outcome="unknown",
         )
     content_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    store_failed = False
+    reference = ""
     try:
         reference = object_store.store(payload, content_digest=content_digest)
-    except Exception as error:
+    except Exception:
+        store_failed = True
+    if store_failed:
         raise ContainerInvocationError(
             FailureCode.ABI_VIOLATION,
             "The business result could not be externalized to the object store.",
             outcome="unknown",
-        ) from error
+        )
     if not isinstance(reference, str) or not _REFERENCE.fullmatch(reference):
         raise ContainerInvocationError(
             FailureCode.ABI_VIOLATION,
@@ -142,31 +145,50 @@ def _container_result(
     output_schema_digest: str,
     object_store: ResultObjectStore | None,
 ) -> ContainerResult:
-    """Map one executor envelope onto the container ABI result.
+    """Map the complete runtime envelope onto the container ABI result.
 
-    A deliberate failure keeps its business result inline. A success is placed
-    inline or externalized when it exceeds the inline bound.
+    ``ContainerResult`` is the transport representation of a valid SDK
+    outcome: status, status message, optional output, and optional error
+    metadata all survive the mapping. Inline versus object-reference placement
+    applies to any business output, regardless of whether the step deliberately
+    returned a nonzero status. Exceptions that cannot produce a valid wrapper
+    are mapped separately to the container ``Failure`` event.
     """
 
+    output: Mapping[str, Any] | None = None
+    object_reference: str | None = None
+    business_result = wrapper.result
+    if business_result is not None:
+        if not isinstance(business_result, Mapping):
+            raise ContainerInvocationError(
+                FailureCode.ABI_VIOLATION,
+                "The plugin step returned an invalid response.",
+                outcome="unknown",
+            )
+        output, object_reference = _place_business_result(business_result, object_store)
+
     error = wrapper.error
-    if error is not None:
+    invalid_wrapper = False
+    try:
         return ContainerResult(
             output_schema_digest,
-            output=wrapper.output,
-            status_code=wrapper.status,
+            output=output,
+            object_reference=object_reference,
+            status_code=wrapper.status_code,
             status_message=wrapper.status_message,
-            error_code=error.code,
-            error_message=error.message,
-            retryable=error.retryable,
+            error_code=error.code if error is not None else "",
+            error_message=error.message if error is not None else "",
+            retryable=error.retryable if error is not None else False,
+            error_category=error.category.value if error is not None else "",
         )
-    output, object_reference = _place_business_result(wrapper.output, object_store)
-    return ContainerResult(
-        output_schema_digest,
-        output=output,
-        object_reference=object_reference,
-        status_code=wrapper.status,
-        status_message=wrapper.status_message,
-    )
+    except (TypeError, ValueError):
+        invalid_wrapper = True
+    if invalid_wrapper:
+        raise ContainerInvocationError(
+            FailureCode.ABI_VIOLATION,
+            "The plugin step returned an invalid response.",
+            outcome="unknown",
+        )
 
 
 def container_step_for_binding(
@@ -177,14 +199,12 @@ def container_step_for_binding(
     """Wrap one typed step as a container handler.
 
     The handler validates the invocation's raw JSON inputs against the installed
-    manifest schema for a custom-runner Step, constructs the registered Pydantic model, executes the
-    step through the shared executor, and converts the typed output into a
+    manifest schema for a custom-runner Step, invokes the public
+    ``runtime.invoke()`` operation, and converts its typed output into a
     ``ContainerResult``. The wrapper's business result and status fields map
-    onto the terminal ``Result`` envelope, and the output schema digest is the
-    canonical digest of the declared output schema the executor validates the
-    business result against. A digest supplied in the invocation's runtime
-    context is accepted only when it matches that applied schema; a mismatch is
-    an ABI violation rather than a silently echoed, unverifiable claim.
+    onto the terminal ``Result`` envelope. The output schema digest is the
+    canonical digest of the declared schema applied by ``runtime.invoke()``;
+    that public operation also verifies any digest in the invocation context.
 
     A successful business result that exceeds the inline limit is externalized
     through ``object_store`` and carried as an ``object_reference``; without a
@@ -192,7 +212,6 @@ def container_step_for_binding(
     """
 
     validate_executable_step_binding(binding.descriptor, binding.step)
-    executor = StepExecutor(binding)
     output_schema_digest = _applied_output_schema_digest(binding)
 
     def handler(invocation: ContainerInvocation) -> ContainerResult:
@@ -203,21 +222,17 @@ def container_step_for_binding(
                 outcome="not_started",
             )
         context = _execution_context(invocation)
-        supplied_digest = _installed_output_schema_digest(invocation)
-        if supplied_digest is not None and supplied_digest != output_schema_digest:
-            raise ContainerInvocationError(
-                FailureCode.ABI_VIOLATION,
-                "The runtime context output schema digest does not match the declared schema.",
-                outcome="not_started",
-            )
+        execution_failure: str | None = None
         try:
-            wrapper = executor.execute(invocation.inputs, context)
+            wrapper = invoke(binding, invocation.inputs, context)
         except StepExecutionError as error:
+            execution_failure = error.safe_message
+        if execution_failure is not None:
             raise ContainerInvocationError(
                 FailureCode.ABI_VIOLATION,
-                "The plugin step returned an invalid response.",
+                execution_failure,
                 outcome="unknown",
-            ) from error
+            )
         return _container_result(wrapper, output_schema_digest, object_store)
 
     return handler
@@ -251,13 +266,13 @@ def container_step_for_bindings(
         try:
             binding = bindings.binding(invocation.step_revision_id)
             return container_step_for_binding(binding, object_store=object_store)(invocation)
-        except StepBindingError as error:
+        except StepBindingError:
             message = "The requested plugin step is not available in this container image."
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
                 message,
                 outcome="not_started",
-            ) from error
+            ) from None
 
     return handler
 

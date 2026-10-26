@@ -46,7 +46,7 @@ from .contract_validation import (
     compare_model_to_schema,
     validate_plugin_bindings,
 )
-from .execution import StepExecutionError, StepExecutor
+from .execution import StepExecutionError, StepExecutor, StepFailure, invoke
 from .http import (
     HttpOperationError,
     HttpOperationMapper,
@@ -58,7 +58,7 @@ from .http import (
     map_http_response,
 )
 from .manifest_validation import ManifestInputValidationError
-from .outcome import ErrorMessage, StandardOutputWrapper
+from .outcome import ErrorCategory, ErrorMessage, StandardOutputWrapper
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 from .validation import StepInputValidationError
 
@@ -82,6 +82,7 @@ if TYPE_CHECKING:
         ContainerStepHandler,
         StepRegistry,
         add_container_runtime_service,
+        standard_output_from_container_result,
     )
 
 # Transport exports whose defining module imports gRPC/protobuf. They are loaded
@@ -101,6 +102,7 @@ _LAZY_EXPORTS = {
     "ContainerStepHandler": _CONTAINER_MODULE,
     "StepRegistry": _CONTAINER_MODULE,
     "add_container_runtime_service": _CONTAINER_MODULE,
+    "standard_output_from_container_result": _CONTAINER_MODULE,
     "ResultObjectStore": _ADAPTER_MODULE,
     "container_step_for_installed_manifest": _ADAPTER_MODULE,
     "container_step_for_binding": _ADAPTER_MODULE,
@@ -145,6 +147,7 @@ __all__ = [
     "DriftIssue",
     "DriftReport",
     "DriftSeverity",
+    "ErrorCategory",
     "EntryPointResolver",
     "ErrorMessage",
     "ExecutionContext",
@@ -167,6 +170,7 @@ __all__ = [
     "StepDescriptor",
     "StepExecutionError",
     "StepExecutor",
+    "StepFailure",
     "StepInputValidationError",
     "StepRegistry",
     "StepCategory",
@@ -185,7 +189,9 @@ __all__ = [
     "container_step_for_bindings",
     "load_http_runner_context",
     "map_http_response",
+    "invoke",
     "step_registry_from_bindings",
+    "standard_output_from_container_result",
     "validate_plugin_bindings",
     "validate_provider",
     "validate_runtime",

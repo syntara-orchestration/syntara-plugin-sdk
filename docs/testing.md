@@ -2,8 +2,8 @@
 
 The SDK's testing harness gives step authors a local pytest suite: validate
 declared contracts and execute Python Action, Control, and Trigger
-implementations through the shared SDK executor, without running AO, EP, or a
-cluster.
+implementations through the shared SDK execution boundary, without a cluster
+or platform services.
 
 Install the SDK with the `testing` extra so pytest and the auto-loaded
 fixtures are available:
@@ -45,27 +45,44 @@ from syntara_plugin.testing import invoke_step, invoke_step_in_container
 outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
 ```
 
-- `invoke_step` runs the direct path: `validate_step_inputs` (kind
-  dispatched), the typed `run()` hook, execution-time output-schema
-  validation, and `StandardOutputWrapper` construction. No
-  `ContainerInvocation`, no gRPC server.
+- `invoke_step` runs the direct path: input validation, the typed
+  `BaseStep.execute()` operation (currently delegated to the author-defined
+  `run()` hook), output-schema and canonical-JSON validation, then
+  `StandardOutputWrapper` construction. No `ContainerInvocation` or gRPC
+  server is used. The helper calls public `runtime.invoke`.
 - `invoke_step_in_container` runs the same registered implementation over a
   real in-process gRPC server on `127.0.0.1` through the container adapter.
-  Authors never construct a `ContainerInvocation`. Two boundaries apply only
-  to this path: a preset `cancelled` context is not transported (the container
-  path delivers cancellation through the transport), and business results
-  above the container ABI's inline bound (1 MiB) fail with `ABI_VIOLATION`
-  because the harness wires no object store. Test pre-cancelled contexts and
-  oversized outputs with `invoke_step`.
+  The adapter calls public `runtime.invoke`; authors never construct a
+  `ContainerInvocation`. Public direct and gRPC callers share this invocation
+  function. The test helper's direct path calls `StepExecutor` itself. Two
+  boundaries apply only to the container helper:
+  a preset `cancelled` context is not transported (the container path delivers
+  cancellation through the transport), and business results above the
+  container ABI's inline bound (1 MiB) are externalized only when an object
+  store is configured. Test pre-cancelled contexts and oversized outputs with
+  the adapter-specific tests.
 - Both accept a `StepBinding`, a step class or instance, or a
   `module:Class` entry point, and return a `StepOutcome`.
 
 `StepOutcome` normalizes both paths: `.ok`, `.status`, `.status_message`,
-`.output`, `.error` (code/message/retryable), `.run_calls` (business-hook spy),
-`.raised` (executor or business exception), `.transport`, and `.raw`.
-Executor-level failures (`StepExecutionError`, business exceptions) are
-captured in `.raised` so both transports compare uniformly. Assert outcomes
-through these accessors only; never through raw wrapper fields.
+`.output`, `.error` (category/code/message/retryable), `.run_calls` (business-hook spy),
+`.raised` (executor exception or remote failure), `.transport`, and `.raw`.
+Invalid output or serialization raises `StepExecutionError` before wrapper
+construction; `invoke_step` stores it in `.raised`, while the container
+adapter emits `ContainerFailure` because there is no valid wrapper to
+serialize. The container helper exposes that event as `ContainerRemoteError`
+in `.raised`. A `StepFailure` produces a nonzero wrapper and appears in
+`.status` and `.error` on both paths. Assert outcomes through these accessors
+only; never through raw wrapper fields.
+
+Unexpected exceptions raised by the business hook are sanitized into
+`StepExecutionError` on the direct path and `ContainerFailure` on the container
+path; neither produces a wrapper.
+
+Runtime contract tests cover inline and asset-resolved output schemas, trusted
+output-schema digest matching, inline and object-reference reconstruction, and
+rejection of missing or unknown failure categories. Transport and object-store
+errors are checked for safe normalization without retaining backend exceptions.
 
 `assert_outcomes_equivalent(direct, container)` asserts the two SDK paths
 agree on success, status, output, and error envelope (digests deliberately
@@ -75,9 +92,11 @@ excluded; raised failures compare their failure codes when both carry one).
 
 `syntara_plugin.testing.payloads` ships the seven contract categories as
 `PayloadCase` data: valid, missing-required, wrong-type, invalid-enum,
-schema-invalid output, deliberate failure, and sensitive credential
+schema-invalid output, a raised exception, and sensitive credential
 references, with `ReferenceControlStep`, `FailingReferenceStep`, and
-`schema_violating_binding()` as the matching stand-ins.
+`schema_violating_binding()` as the matching stand-ins. The failure payload
+currently exercises the no-valid-outcome exception path. Use `StepFailure` to
+test a valid nonzero wrapper.
 
 ```python
 import logging
@@ -97,12 +116,10 @@ pytest only captures records that pass the root logger's effective level,
 which defaults to WARNING, and INFO is exactly where a chatty step leaks
 credentials.
 
-One asymmetry to know: a secret placed in a deliberate-failure message (a
-raised `ContainerInvocationError`) is caller-visible on the direct path, but
-the container transport deliberately drops untrusted-workload message text
-(`ContainerRemoteError` carries only the failure code), so
-`assert_no_secrets` can only catch that leak class through `invoke_step`.
-Test deliberate-failure messages on the direct path.
+Credential values must not appear in outputs, wrapper fields, raised errors,
+or logs. `assert_no_secrets` detects leaks in both outcomes and captured logs;
+it does not sanitize them. Keep secrets out of exception text and log messages
+on both invocation paths.
 
 ## Conformance in one call
 
@@ -118,9 +135,9 @@ report = check_step_conformance(
 assert report.passed, report.failures
 ```
 
-The check proves the ticket's three properties: invalid input blocks the
-business hook, valid input reaches it exactly once, and the direct and
-container paths yield equivalent outcomes.
+The check proves three properties: invalid input blocks the business hook,
+valid input reaches it exactly once, and the direct and container paths yield
+equivalent outcomes.
 
 ## Chaining steps
 

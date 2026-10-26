@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
-from syntara_plugin.runtime import ControlStep, ExecutionContext
+from syntara_plugin.runtime import ControlStep, ExecutionContext, StepFailure
 from syntara_plugin.testing import (
     INVALID_INPUT_CASES,
     assert_outcomes_equivalent,
@@ -16,7 +16,6 @@ from syntara_plugin.testing import (
     invoke_step_in_container,
 )
 from syntara_plugin.testing.payloads import (
-    FailingReferenceStep,
     ReferenceControlStep,
     schema_violating_binding,
 )
@@ -25,6 +24,18 @@ from syntara_plugin.testing.payloads import (
 class CrashingStep(ReferenceControlStep):
     def run(self, inputs: Any, context: Any) -> Any:
         raise RuntimeError("the business logic crashed")
+
+
+class TypedFailureStep(ReferenceControlStep):
+    def run(self, inputs: Any, context: Any) -> Any:
+        raise StepFailure(
+            17,
+            "The dependency rejected this operation.",
+            "The remote service rejected the request.",
+            category="dependency",
+            code="REMOTE_REJECTED",
+            retryable=True,
+        )
 
 
 class _EchoInput(BaseModel):
@@ -135,12 +146,25 @@ def test_valid_outcomes_are_equivalent_across_paths() -> None:
 
 def test_deliberate_failures_are_equivalent_with_matching_codes() -> None:
     context = build_execution_context(invocation_id="equiv-failure")
-    direct = invoke_step(FailingReferenceStep(), {"title": "x"}, context=context)
-    container = invoke_step_in_container(FailingReferenceStep(), {"title": "x"}, context=context)
-    assert_outcomes_equivalent(direct, container)
-    assert direct.raised is not None
-    assert container.raised is not None
-    assert direct.raised.code == container.raised.code  # type: ignore[attr-defined]
+    direct = invoke_step(TypedFailureStep(), {"title": "x"}, context=context)
+    container = invoke_step_in_container(TypedFailureStep(), {"title": "x"}, context=context)
+
+    # The container ABI carries the complete safe error metadata needed by the
+    # public wrapper, including category, code, message, and retryability.
+    assert not direct.ok
+    assert not container.ok
+    assert direct.raised is None
+    assert container.raised is None
+    assert direct.status == container.status == 17
+    assert direct.status_message == container.status_message
+    assert direct.output is container.output is None
+    assert direct.error is not None
+    assert container.error is not None
+    assert direct.error.category == "dependency"
+    assert container.error.category == "dependency"
+    assert direct.error.code == container.error.code == "REMOTE_REJECTED"
+    assert direct.error.message == container.error.message == "The remote service rejected the request."
+    assert direct.error.retryable is container.error.retryable is True
 
 
 def test_schema_invalid_outputs_are_equivalent_as_raised_failures() -> None:

@@ -1,0 +1,11 @@
+{
+  "result": null,
+  "statusCode": 1,
+  "statusMessage": "The remote service rejected the request.",
+  "errorMessage": {
+    "category": "dependency",
+    "code": "REMOTE_REJECTED",
+    "message": "The remote service rejected the request.",
+    "retryable": false
+  }
+}

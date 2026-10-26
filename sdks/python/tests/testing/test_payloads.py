@@ -8,11 +8,11 @@ import pytest
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ControlStep,
+    ErrorCategory,
     ExecutionContext,
-    FailureCode,
     StepExecutionError,
+    StepFailure,
 )
-from syntara_plugin.runtime.container import ContainerInvocationError
 from syntara_plugin.testing import (
     DELIBERATE_FAILURE_CASES,
     FIXED_SECRET_SENTINEL,
@@ -28,7 +28,6 @@ from syntara_plugin.testing import (
     secret_sentinel,
 )
 from syntara_plugin.testing.payloads import (
-    FailingReferenceStep,
     ReferenceControlStep,
     schema_violating_binding,
 )
@@ -71,14 +70,33 @@ def test_invalid_cases_fail_validation_against_the_reference_step() -> None:
 
 def test_deliberate_failure_case_matches_the_failing_reference_step() -> None:
     for case in DELIBERATE_FAILURE_CASES:
-        outcome = invoke_step(FailingReferenceStep(), case.inputs)
-        assert isinstance(outcome.raised, ContainerInvocationError), case.name
+        outcome = invoke_step(_TypedFailureReferenceStep(), case.inputs)
+        assert not outcome.ok, case.name
+        assert outcome.raised is None, case.name
+        assert outcome.error is not None, case.name
+        assert outcome.error.code == "UPSTREAM_TRANSIENT", case.name
+        assert outcome.error.category is ErrorCategory.DEPENDENCY, case.name
+        assert outcome.error.retryable, case.name
 
 
 def test_invalid_output_case_matches_the_schema_violating_binding() -> None:
     for case in INVALID_OUTPUT_CASES:
         outcome = invoke_step(schema_violating_binding(), case.inputs)
         assert isinstance(outcome.raised, StepExecutionError), case.name
+
+
+class _TypedFailureReferenceStep(ReferenceControlStep):
+    """Reference input/output with an author-raised typed failure."""
+
+    def run(self, inputs: object, context: object) -> object:
+        raise StepFailure(
+            17,
+            "The upstream service rejected the request.",
+            "The upstream service rejected the request.",
+            code="UPSTREAM_TRANSIENT",
+            category=ErrorCategory.DEPENDENCY,
+            retryable=True,
+        )
 
 
 def test_secret_sentinels_are_unique() -> None:
@@ -115,8 +133,13 @@ class _LeakyMessageStep(ReferenceControlStep):
     token: str = ""
 
     def run(self, inputs: object, context: object) -> object:
-        raise ContainerInvocationError(
-            FailureCode.UPSTREAM_TRANSIENT, f"failed for {self.token}"
+        raise StepFailure(
+            17,
+            "The upstream service rejected the request.",
+            f"failed for {self.token}",
+            code="UPSTREAM_TRANSIENT",
+            category=ErrorCategory.DEPENDENCY,
+            retryable=True,
         )
 
 
@@ -208,8 +231,8 @@ class _OpaqueArgsStep(ControlStep[_ChainInput, _ChainOutput]):
         raise _OpaqueError("safe failure", self.token)
 
 
-def test_assert_no_secrets_scans_exception_chains() -> None:
-    """Secrets hidden in an exception's chain, args, or notes are caught."""
+def test_normalized_step_failures_do_not_retain_secret_exception_chains() -> None:
+    """Normalized SDK failures do not expose step exception payloads."""
 
     token = secret_sentinel()
     context = build_execution_context(invocation_id="chain-redaction")
@@ -217,9 +240,7 @@ def test_assert_no_secrets_scans_exception_chains() -> None:
         step = step_class()
         step.token = token
         outcome = invoke_step(step, {}, context=context)
-        with pytest.raises(AssertionError, match="leaked") as raised:
-            assert_no_secrets(outcome, [token])
-        assert token not in str(raised.value)
+        assert_no_secrets(outcome, [token])
 
 
 def test_function_local_step_classes_are_rejected_with_guidance() -> None:

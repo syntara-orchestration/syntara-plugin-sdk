@@ -66,6 +66,8 @@ message Result {
   string error_message = 7;
   // Whether a deliberate step failure may be retried.
   bool retryable = 8;
+  // Broad category from the SDK wrapper's ErrorMessage; empty on success.
+  string error_category = 9;
 }
 
 // Emitted only when no valid SDK outcome can be produced, for example an ABI

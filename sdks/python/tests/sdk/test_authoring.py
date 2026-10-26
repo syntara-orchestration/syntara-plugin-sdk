@@ -274,6 +274,25 @@ def test_platform_runner_trigger_requires_and_preserves_matching_driver() -> Non
     assert compiled_trigger["runtime"]["driver"] == "webhook.v1"
 
 
+def test_compiler_preserves_plugin_and_target_tags_in_descriptor_metadata() -> None:
+    plugin = _plugin()
+    plugin["metadata"]["tags"] = ["github", "issue-tracking"]
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action["metadata"]["tags"] = ["workflow-automation", "github"]
+
+    result = compile_model(
+        _typed_plugin(plugin),
+        [Target("steps/create-issue/manifest.yaml", action)],
+        image_bindings={"plugin-workload": DIGEST},
+    )
+
+    assert result.descriptor["metadata"]["tags"] == ["github", "issue-tracking"]
+    assert result.descriptor["spec"]["targets"][0]["metadata"]["tags"] == [
+        "workflow-automation",
+        "github",
+    ]
+
+
 def test_platform_runner_trigger_with_mismatched_drivers_is_rejected() -> None:
     plugin = _plugin("triggers/issue-opened.yaml")
     plugin["spec"] = {

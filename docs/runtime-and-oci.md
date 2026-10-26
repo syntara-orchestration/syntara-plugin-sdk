@@ -47,18 +47,20 @@ The corresponding runtime work-item JSON shape is in
 The Python helper implementation is in
 [`container.py`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/container.py).
 
-The ABI is the boundary between an Execution Plane launcher and an author
+The Application Binary Interface (ABI) is the boundary between an Execution Plane launcher and an author
 workload. It carries invocation and workflow-run identities, step inputs,
 output/error contracts, and approved file paths. It does not carry raw
 credentials in workflow JSON, environment variables, or command-line arguments.
 
-Credential-bearing custom runner execution is intentionally deferred in the
-current local proof of concept. The ABI reserves a map of credential-file paths:
-the eventual Execution Plane will redeem an opaque, short-lived credential
-handle, write a secret into an isolated per-invocation in-memory mount, make
-that mount read-only in the workload container, and send only the file path to
-the plugin. The plugin never receives broker credentials or a Kubernetes API
-identity.
+The ABI carries approved credential-file paths, not credential values. The
+launcher is responsible for authorizing the paths and making the files
+available to the workload; those host-side policies are outside this SDK.
+
+Credential values must never appear in business output, wrapper status or
+error fields, raised error messages, or logs. Pass approved file paths or
+handles through the runtime boundary; do not copy secret values into inputs or
+runtime context. The test harness can detect sentinel leaks, but it does not
+redact values written by step code.
 
 ### Runtime adapters and workload images
 
@@ -139,10 +141,24 @@ does not create a long-lived shared runtime image.
 
 Custom-runner authors implement steps with the typed Python API in
 [`syntara_plugin.runtime`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/).
-`BaseStep[TInput, TOutput]` is bound to Pydantic v2 models and exposes one
-stable author-facing entrypoint, `execute(inputs, context)`. Subclasses
-implement `run()`; the shared dispatch boundary validates raw input and returns
-the common output envelope without changing that hook.
+`BaseStep[TInput, TOutput]` is bound to Pydantic v2 models. Its typed
+implementation operation is `execute(inputs, context) -> TOutput`: it receives
+a validated `TInput` and an `ExecutionContext`, and returns the typed business
+result. The public invocation operation is `runtime.invoke(step, input,
+context)`. It accepts a trusted `StepBinding` and raw input, validates the
+input, calls `step.execute(...)`, serializes the result, validates it against
+the declared `spec.output` schema, and only then constructs a
+`StandardOutputWrapper`. The container gRPC adapter calls this same function;
+direct callers can invoke it without using the container transport.
+
+The output must both satisfy the declared schema and serialize as canonical
+JSON before a success wrapper can be constructed. Invalid output or
+serialization raises `StepExecutionError` and produces no wrapper. A
+step-authored `StepFailure` is different: it produces a valid nonzero wrapper,
+which the container adapter serializes as `ContainerResult`. The adapter
+reports `ContainerFailure` for errors that leave no valid wrapper. In the
+current class implementation, `BaseStep.execute()` delegates to the
+author-defined `run()` hook, so examples below implement `run()`.
 
 The three executable Step classes share the same lifecycle. A catalog
 **Step type** (for example, Create GitHub Issue) belongs to one **Category**;
@@ -187,8 +203,8 @@ registered), not per invocation.
 ### Minimal direct execution
 
 Direct SDK execution exercises the typed implementation only. It does not
-demonstrate Automation Orchestrator registry integration or end-to-end
-Execution Plane execution.
+demonstrate platform registry integration or end-to-end Execution Plane
+execution.
 
 ```python
 from pydantic import BaseModel
@@ -270,13 +286,15 @@ The exposed documents are immutable mappings/sequences; call the runtime
 serialization or transport.
 The business result is validated against the manifest output schema before a
 successful outcome is declared, so the echoed digest names the schema actually
-applied. The
-schema must be self-contained; local JSON Schema references are resolved when
+applied. A `StepFailure` is a deliberate nonzero outcome and does not validate a
+business result against `spec.output`. The schema must be self-contained; local
+JSON Schema references are resolved when
 the descriptor is created, so a dangling reference fails installation instead of
 breaking every invocation. The
-resulting `StepBinding` can be passed to `StepExecutor`, which validates the
+resulting `StepBinding` can be passed to `runtime.invoke`, which validates the
 raw JSON mapping against that trusted schema, constructs the registered
-Pydantic model in strict mode, and invokes the implementation hook once:
+Pydantic model in strict mode, invokes the typed implementation once, validates
+and serializes its result, and then constructs the wrapper:
 
 ```python
 from syntara_plugin.runtime import (
@@ -284,7 +302,7 @@ from syntara_plugin.runtime import (
     InstalledStepManifest,
     StepBindings,
     StepDescriptor,
-    StepExecutor,
+    invoke,
 )
 
 bindings = StepBindings()
@@ -294,9 +312,10 @@ installed_step = InstalledStepManifest.from_manifest(
 )
 descriptor = StepDescriptor.for_installed_step(step, installed_step)
 bindings.bind(descriptor, step)
-executor = StepExecutor(bindings.binding("acme.plugin.echo"))
-result = executor.execute(
-    {"message": "hello"}, ExecutionContext(invocation_id="demo-1")
+result = invoke(
+    bindings.binding("acme.plugin.echo"),
+    {"message": "hello"},
+    ExecutionContext(invocation_id="demo-1"),
 )
 ```
 
@@ -306,13 +325,13 @@ authorized document. The SDK runtime cannot independently verify remote or
 cryptographic provenance, but it records opaque provenance for the exact
 factory-created manifest and descriptor objects. `StepBindings` accepts
 implementation-derived descriptors for authoring validation, while
-`StepExecutor` and container dispatch reject them for execution. All three
+`runtime.invoke` and container dispatch reject them for execution. All three
 supported custom-runner Step kinds execute only through the factory-created
 identity and canonical installed-schema binding.
 
-`StepExecutor` is the owner of the runtime-local `StandardOutputWrapper` and
-`ErrorMessage` result types. Invalid input returns that wrapper with a nonzero
-status and a safe `ErrorMessage`; the implementation hook is not called. JSON Schema
+The runtime owns the `StandardOutputWrapper` and `ErrorMessage` result types.
+Invalid input returns a wrapper with a nonzero status and safe error metadata;
+the implementation hook is not called. JSON Schema
 `default` values are annotations, so the registered Pydantic model supplies the
 actual default. Enums must match exactly, and unknown fields are rejected only
 when the manifest schema forbids them. Pydantic runs in strict mode after JSON
@@ -323,31 +342,36 @@ Control and Trigger execution uses the installed `spec.input` contract. The
 registered Pydantic model still supplies the typed object, defaults, and model
 configuration; in particular, a Trigger's executor input is its registered
 input contract rather than driver configuration. Every supported custom-runner
-Step type passes through the same `StepExecutor`, which validates against the
-installed schema, constructs the registered Pydantic model, and invokes the
-hook only after validation completes successfully.
+Step type passes through the same invocation boundary, which validates against
+the installed schema, constructs the registered Pydantic model, and invokes
+the typed implementation only after validation completes successfully.
 
-The current container adapter mapping is provisional: it maps that same wrapper
-onto the terminal `Result` envelope pending the canonical wrapper and terminal-
-failure normalization tracked by a separate ticket. The business output and the four
-wrapper status/error fields currently travel as sibling protobuf fields
-(`status_code`, `status_message`, `error_code`, `error_message`, `retryable`).
-A completed step with a nonzero `status_code` remains a valid terminal `Result`
-and must carry a safe `error_code` failure classification and `error_message`;
-the separate `Failure` event is reserved for protocol or runtime failures where
-no valid outcome exists. Direct Python and container execution share the same
-validation behavior and hook-call guarantees, but their current result
-representations are not the final canonical wrapper contract. Platform-runner
-Steps remain declarative and are not bound to a Python implementation by this
-runtime path.
+The container adapter maps a valid `StandardOutputWrapper` into the ABI's
+`ContainerResult`: business output and wrapper status/error metadata are
+serialized in the result fields, alongside the digest of the applied
+declared `spec.output` schema. A nonzero status is still a valid result and
+carries a safe error category, code, message, and retryability value.
+`ContainerFailure` is reserved for
+cases where no valid wrapper/outcome exists, such as invalid output,
+serialization failure, or a runtime/protocol failure. Direct and container
+execution share input validation, typed execution, and output validation;
+only the container path adds ABI serialization and transport limits. The JSON
+runtime contract names this outcome `ContainerFailure`; the gRPC protocol
+carries it in a `Failure` event.
 
-The eventual mapping is expected to carry the canonical
-`StandardOutputWrapper` shape directly. Until that work lands, the flattened
-mapping above remains the compatibility behavior for this SDK revision.
+For a nonzero `ContainerResult`, the error category is required and must be one
+of the categories defined by the runtime contract. A missing or unknown
+category is a protocol error. Inline output and object references are
+mutually exclusive; either may carry a deliberate failure's optional business
+result.
+
+Platform-runner Steps remain declarative and are not bound to a Python
+implementation by this runtime path.
 
 Direct execution is transport-independent: importing `syntara_plugin.runtime`
-and using `StepExecutor`, the typed bindings, and the `StandardOutputWrapper`
-never pulls in gRPC or the generated protobuf. The container transport symbols
+and using `invoke`, `StepExecutor`, the typed bindings, and the
+`StandardOutputWrapper` never pulls in gRPC or the generated protobuf. The
+container transport symbols
 (`ContainerClient`, `ContainerRuntimeService`, the adapter factories, and
 `ResultObjectStore`) are exported lazily and resolve those dependencies only on
 first use, so steps run and test where the transport libraries are absent.
@@ -357,20 +381,33 @@ first use, so steps run and test where the transport libraries are absent.
 `step_registry_from_bindings(bindings)` builds a container `StepRegistry`
 with one transport handler per registered step. The adapter converts each
 `ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
-cancellation event), runs the same `StepExecutor` input-validation boundary used
-by direct Python execution, checks the returned object against the step's output
-model, and returns a `ContainerResult`. Invalid input and other deliberate step
-failures return a nonzero-status `Result`; valid input returns a zero-status
-`Result`. Both carry the canonical digest of the declared output schema that the
-executor validates the business result against, so the terminal `Result` stays
-self-describing. An `outputSchemaDigest` supplied in the runtime context is
-accepted only when it matches that applied schema; a mismatch is an ABI
-violation rather than an unverifiable echoed claim. A successful business result
-that exceeds the 1 MiB inline bound is serialized and handed to a
-`ResultObjectStore` supplied by the host (`object_store=`), which persists the
-payload and returns the `object_reference` identity; without a store, an
-oversized result is a safe ABI violation. Authors never import
+cancellation event), calls `runtime.invoke`, and maps the returned wrapper to a
+`ContainerResult`. Invalid input and deliberate `StepFailure` produce
+nonzero-status results; valid output produces a zero-status result. Invalid
+output, serialization errors, and unexpected step exceptions produce no
+wrapper and become `ContainerFailure` outcomes. Each `ContainerResult` carries
+the canonical digest of the declared output schema; successful business results
+are validated against that schema. An `outputSchemaDigest` in runtime context
+is accepted only when it matches that schema; a mismatch is an ABI violation.
+
+The adapter accepts a host-supplied `ResultObjectStore`. `runtime.invoke`
+performs transport-independent output-schema and canonical-JSON validation;
+the adapter applies the container ABI's 1 MiB inline limit and externalizes
+larger valid results through the object store. Authors never import
 `ContainerInvocation` to write or test a step.
+
+On the client, `ContainerClient.execute_wrapped(invocation)` returns the SDK's
+`StandardOutputWrapper`, including the original status message and error metadata.
+`execute()` and `stream()` continue to expose the transport result and its output
+schema digest. `standard_output_from_container_result(result)` also converts an
+already received result. When a result carries an `object_reference`, pass
+`resolve_object_reference=` to either wrapper API: the host callback receives the
+opaque reference and returns the retrieved business result as a JSON object. A
+missing resolver, invalid resolved object, or resolver exception raises a safe
+error without exposing resolver details; inline and resolved values are checked
+against the caller-supplied trusted output schema before a wrapper is built. A
+terminal transport `Failure` still raises `ContainerRemoteError` and is never
+converted to a deliberate step failure.
 
 ### Installed revision mapping
 
