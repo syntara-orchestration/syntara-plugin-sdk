@@ -6,6 +6,7 @@ Choose the guide that matches what you are doing.
 | --- | --- |
 | Install the CLI or prepare a source checkout | [Installation](installation.md) |
 | Create and package a first plugin | [Getting started](getting-started.md) |
+| Follow the whole authoring workflow, from planning a Step to composing workflows | [Step authoring and composition guide](authoring-guide.md) |
 | Configure a plugin, publish an artifact, or update a catalog | [User guide](user-guide.md) |
 | Understand every YAML manifest field | [Plugin language reference](plugin-language.md) |
 | Configure `syntara-plugin.yaml` | [Build settings reference](build-settings.md) |

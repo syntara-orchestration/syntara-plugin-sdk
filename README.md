@@ -100,6 +100,7 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
 
 - [Installation](docs/installation.md) — install a released SDK or prepare a source checkout.
 - [Getting started](docs/getting-started.md) — first plugin and the four core commands.
+- [Step authoring and composition guide](docs/authoring-guide.md): the end-to-end authoring workflow for Action, Control, and Trigger Steps, and composition best practices.
 - [User guide](docs/user-guide.md) — settings, custom runners, artifact publication, and catalog release.
 - [Plugin language reference](docs/plugin-language.md) — each manifest kind and field, with links to its normative schema.
 - [Build settings reference](docs/build-settings.md) — every `syntara-plugin.yaml` key and its behavior.

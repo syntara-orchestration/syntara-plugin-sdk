@@ -83,6 +83,7 @@ syntara-plugin build ../examples/hello-world/plugin.yaml \
 
 ## Next steps
 
+- Follow the [Step authoring and composition guide](authoring-guide.md) to take a Step from plan to publication.
 - Read the [plugin language reference](plugin-language.md) before changing a manifest.
 - Read the [build settings reference](build-settings.md) before configuring a registry or workload image.
 - Run one Step locally with [Running locally](running-locally.md) before writing a test suite.
