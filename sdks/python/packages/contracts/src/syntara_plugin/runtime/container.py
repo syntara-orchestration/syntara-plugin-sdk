@@ -22,13 +22,18 @@ from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
 from .abi import CONTAINER_ABI, FailureCode
-from .outcome import ErrorCategory, ErrorMessage, StandardOutputWrapper, _validate_json_object
+from .outcome import (
+    ErrorResult,
+    StandardOutputWrapper,
+    _freeze_json,
+    _validate_json_object,
+    error_result_base_schema,
+    error_result_schema,
+)
 from .protocol import container_pb2, container_pb2_grpc
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
-_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
-_ERROR_CATEGORY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _CREDENTIAL_PATH = re.compile(r"^/var/run/syntara/secrets/[A-Za-z0-9._-]+$")
 _PROVIDER_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _MAX_JSON_BYTES = 1_048_576
@@ -95,15 +100,11 @@ class ContainerResult:
     cannot produce a valid SDK outcome. Output may be inline or represented by
     an object-store reference; that choice does not change the outcome.
 
-    The adapter maps the wrapper's structured error metadata to the transport
-    fields, including its broad category, stable code, safe message, and
-    retryability.
-
     A step returns either an inline JSON object or an object-store reference for
     its business result, never both. ``status_code`` zero is success; a nonzero
     value is a deliberate step failure that remains a valid outcome and must
-    carry a safe ``error_code`` category and ``error_message``. The output
-    schema digest lets the control plane interpret the business result without
+    carry the complete ``error_result`` and its effective ``error_schema_digest``.
+    The schema digests let the control plane interpret the result without
     importing plugin Python code.
     """
 
@@ -112,10 +113,8 @@ class ContainerResult:
     object_reference: str | None = None
     status_code: int = 0
     status_message: str = ""
-    error_code: str = ""
-    error_message: str = ""
-    retryable: bool = False
-    error_category: str = ""
+    error_result: Mapping[str, Any] | None = None
+    error_schema_digest: str = ""
 
     def __post_init__(self) -> None:
         self._validate_schema_and_status_code()
@@ -149,40 +148,36 @@ class ContainerResult:
             raise ValueError("object_reference must be a Syntara identity")
 
     def _validate_status_metadata(self) -> None:
-        if len(self.status_message) > 4_096 or len(self.error_message) > 4_096:
-            raise ValueError("status and error messages must contain at most 4096 characters")
-        if self.error_code and not _ERROR_CODE.fullmatch(self.error_code):
-            raise ValueError("error_code must be an uppercase failure category")
-        if self.error_category and not _ERROR_CATEGORY.fullmatch(self.error_category):
-            raise ValueError("error_category must be a lowercase failure category")
-        if self.error_category:
-            try:
-                ErrorCategory(self.error_category)
-            except ValueError:
-                raise ValueError("error_category must be a known error category") from None
-        if not isinstance(self.retryable, bool):
-            raise TypeError("retryable must be a boolean")
-        if self.status_code == 0 and (
-            self.error_code or self.error_message or self.retryable or self.error_category
-        ):
+        if not isinstance(self.status_message, str) or len(self.status_message) > 4_096:
+            raise ValueError("status message must contain at most 4096 characters")
+        if self.status_code == 0 and (self.error_result is not None or self.error_schema_digest):
             raise ValueError("a successful result must not carry error metadata")
-        if self.status_code != 0 and not (
-            self.error_code and self.error_message and self.error_category
-        ):
-            raise ValueError("a failed result requires an error code, message, and error category")
+        if self.status_code != 0:
+            if self.error_result is None or not _OUTPUT_SCHEMA_DIGEST.fullmatch(
+                self.error_schema_digest
+            ):
+                raise ValueError("a failed result requires an error result and schema digest")
+            _validate_json_object(self.error_result)
+            document = _thaw_json_document(self.error_result)
+            if not Draft202012Validator(error_result_base_schema()).is_valid(document):
+                raise ValueError("error result must satisfy the SDK base schema")
+            object.__setattr__(self, "error_result", _freeze_json(document))
 
 
 def standard_output_from_container_result(
     result: ContainerResult,
     *,
     output_schema: Mapping[str, Any],
+    error_schema: Mapping[str, Any] | None = None,
     resolve_object_reference: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> StandardOutputWrapper:
     """Reconstruct a wrapper, resolving opaque host-owned references when present.
 
     ``output_schema`` is the caller's trusted schema from the invocation
     contract. Its canonical digest must match the result, and the business
-    output is validated against it before a wrapper is created. The resolver
+    output is validated against it before a wrapper is created. ``error_schema``
+    is the trusted declared schema, or the SDK base schema when omitted. Its
+    digest and the error itself are checked on nonzero results. The resolver
     retrieves and decodes any stored result as a JSON object; storage and
     addressing policy belong to the host. Resolver failures use safe messages.
     """
@@ -223,25 +218,26 @@ def standard_output_from_container_result(
 
     error = None
     if result.status_code != 0:
-        invalid_category = False
-        category: ErrorCategory | None = None
-        try:
-            category = ErrorCategory(result.error_category)
-        except ValueError:
-            invalid_category = True
-        if invalid_category or category is None:
-            raise _protocol_error()
-        error = ErrorMessage(
-            category=category,
-            code=result.error_code,
-            message=result.error_message,
-            retryable=result.retryable,
+        schema = _thaw_json_document(
+            error_schema if error_schema is not None else error_result_schema()
         )
+        try:
+            Draft202012Validator.check_schema(schema)
+            if result.error_schema_digest != canonical_json_digest(schema):
+                raise ValueError("error schema digest mismatch")
+            error_document = _thaw_json_document(result.error_result)
+            if not Draft202012Validator(schema, format_checker=FormatChecker()).is_valid(
+                error_document
+            ):
+                raise ValueError("invalid error result")
+            error = ErrorResult.model_validate(error_document)
+        except Exception:
+            raise _protocol_error() from None
     return StandardOutputWrapper(
         result=output,
         status_code=result.status_code,
         status_message=result.status_message,
-        error_message=error,
+        error_result=error,
     )
 
 
@@ -510,14 +506,15 @@ class ContainerClient:
         invocation: ContainerInvocation,
         *,
         output_schema: Mapping[str, Any],
+        error_schema: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
         resolve_object_reference: Callable[[str], Mapping[str, Any]] | None = None,
     ) -> StandardOutputWrapper:
         """Invoke a step and reconstruct its SDK-owned output wrapper.
 
-        ``output_schema`` must be the trusted schema associated with this
-        invocation. Its canonical digest is checked against the returned
-        result before output validation.
+        ``output_schema`` and an optional ``error_schema`` must be trusted
+        schemas associated with this invocation. Their canonical digests are
+        checked before validating the corresponding result.
 
         Remote and transport failures still raise ``ContainerRemoteError``.
         Referenced output requires a host-supplied resolver.
@@ -527,6 +524,7 @@ class ContainerClient:
         return standard_output_from_container_result(
             result,
             output_schema=output_schema,
+            error_schema=error_schema,
             resolve_object_reference=resolve_object_reference,
         )
 
@@ -727,9 +725,7 @@ def _encode_json_object(value: Mapping[str, Any], field_name: str) -> bytes:
         raise ValueError(f"{field_name} must be a JSON object")
     try:
         _validate_json_object(value)
-        encoded = json.dumps(value, allow_nan=False, separators=(",", ":"), sort_keys=True).encode(
-            "utf-8"
-        )
+        encoded = canonical_json_bytes(_thaw_json_document(value))
     except (TypeError, ValueError):
         raise ValueError(f"{field_name} must contain JSON-compatible values") from None
     if len(encoded) > _MAX_JSON_BYTES:
@@ -754,9 +750,14 @@ def _require_identity(value: str, field_name: str) -> None:
 def _result_event(invocation_id: str, result: ContainerResult) -> container_pb2.ExecutionEvent:
     invalid_output = False
     output_json = b""
+    error_result_json = b""
     try:
         output_json = (
             _encode_json_object(result.output, "output") if result.output is not None else b""
+        )
+        error_result_json = (
+            _encode_json_object(result.error_result, "error result")
+            if result.error_result is not None else b""
         )
     except ValueError:
         invalid_output = True
@@ -774,10 +775,8 @@ def _result_event(invocation_id: str, result: ContainerResult) -> container_pb2.
             object_reference=result.object_reference or "",
             status_code=result.status_code,
             status_message=result.status_message,
-            error_code=result.error_code,
-            error_message=result.error_message,
-            retryable=result.retryable,
-            error_category=result.error_category,
+            error_result_json=error_result_json,
+            error_schema_digest=result.error_schema_digest,
         ),
     )
 
@@ -834,10 +833,9 @@ def _result_from_event(event: container_pb2.ExecutionEvent) -> ContainerResult:
             object_reference=result.object_reference or None,
             status_code=result.status_code,
             status_message=result.status_message,
-            error_code=result.error_code,
-            error_message=result.error_message,
-            retryable=result.retryable,
-            error_category=result.error_category,
+            error_result=_decode_json_object(result.error_result_json, "error result")
+            if result.error_result_json else None,
+            error_schema_digest=result.error_schema_digest,
         )
     except (ContainerInvocationError, ValueError, TypeError):
         invalid_result = True

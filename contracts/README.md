@@ -63,30 +63,33 @@ execution pool, endpoint, or credential value.
 
 `runtime.schema.json` defines the canonical `StandardOutputWrapper` JSON shape
 with exactly four required lower-camel keys: `result`, `statusCode`,
-`statusMessage`, and `errorMessage`. The runtime model is immutable after
+`statusMessage`, and `errorResult`. The runtime model is immutable after
 construction; the schema rejects missing or additional serialized fields.
 These keys serialize the logical `Result`, `StatusCode`, `StatusMessage`, and
-`ErrorMessage` fields, respectively.
+`ErrorResult` fields, respectively.
 `result` is the business result, `statusCode` is an unsigned 32-bit outcome
 code, and `statusMessage` is a bounded, safe summary. `statusCode` is not an
 HTTP status. These field names and meanings are independent of the container
 protocol's wire encoding.
 
 A zero `statusCode` is success: `result` must be present and non-null,
-`errorMessage` must be `null`, and `result` is validated against the step's
+`errorResult` must be `null`, and `result` is validated against the step's
 `spec.output` schema. A nonzero `statusCode` is a deliberate failure that is
-still a valid completed outcome. It requires structured `errorMessage` metadata
-and may have a `null` result; a failure result is not validated against
-`spec.output`. `errorMessage` requires `category`, stable uppercase `code`, a
+still a valid completed outcome. It requires a structured `errorResult` and
+may have a `null` result. `errorResult` requires `category`, stable uppercase `code`, a
 bounded safe `message`, and boolean `retryable`. Its message must not expose
 credentials, secrets, raw sensitive provider responses, or tracebacks. The
 category identifies the broad failure class; the code identifies its stable,
 machine-readable reason. `retryable` communicates whether retrying may succeed.
 
 `spec.output` remains the schema for the successful business result, never for
-the wrapper. The separate `spec.error` schema is optional and remains a
-declared business-error contract; this runtime boundary does not yet validate
-arbitrary `spec.error` payloads against it. A wrapper cannot represent an
+the wrapper. The separate `spec.error` schema is optional. When present, the
+runtime validates the entire error object against that schema and the SDK base
+schema; when absent, the SDK base schema is the effective schema. Both allow
+step-specific fields unless the declared schema restricts them. A failed
+container result carries the complete error object and the canonical digest of
+the effective error schema. If an error, including an input-validation error,
+does not satisfy the effective schema, no valid wrapper exists. A wrapper cannot represent an
 invocation that produced no valid outcome. In that case the runtime emits a
 `ContainerFailure` instead: its `outcome` is `not_started`, `not_completed`, or
 `unknown`. `not_started` means execution did not begin; `not_completed` means

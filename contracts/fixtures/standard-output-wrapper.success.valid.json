@@ -2,5 +2,5 @@
   "result": {"issue": 42},
   "statusCode": 0,
   "statusMessage": "Completed",
-  "errorMessage": null
+  "errorResult": null
 }

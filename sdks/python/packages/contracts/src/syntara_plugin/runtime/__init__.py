@@ -58,7 +58,14 @@ from .http import (
     map_http_response,
 )
 from .manifest_validation import ManifestInputValidationError
-from .outcome import ErrorCategory, ErrorMessage, StandardOutputWrapper
+from .outcome import (
+    ErrorCategory,
+    ErrorMessage,
+    ErrorResult,
+    StandardOutputWrapper,
+    error_result_base_schema,
+    error_result_schema,
+)
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 from .validation import StepInputValidationError
 
@@ -150,6 +157,9 @@ __all__ = [
     "ErrorCategory",
     "EntryPointResolver",
     "ErrorMessage",
+    "ErrorResult",
+    "error_result_base_schema",
+    "error_result_schema",
     "ExecutionContext",
     "FailureCode",
     "HttpOperationError",

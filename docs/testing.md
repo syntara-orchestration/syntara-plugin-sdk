@@ -65,7 +65,7 @@ outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
   `module:Class` entry point, and return a `StepOutcome`.
 
 `StepOutcome` normalizes both paths: `.ok`, `.status`, `.status_message`,
-`.output`, `.error` (category/code/message/retryable), `.run_calls` (business-hook spy),
+`.output`, `.error` (the complete structured error result), `.run_calls` (business-hook spy),
 `.raised` (executor exception or remote failure), `.transport`, and `.raw`.
 Invalid output or serialization raises `StepExecutionError` before wrapper
 construction; `invoke_step` stores it in `.raised`, while the container
@@ -79,9 +79,9 @@ Unexpected exceptions raised by the business hook are sanitized into
 `StepExecutionError` on the direct path and `ContainerFailure` on the container
 path; neither produces a wrapper.
 
-Runtime contract tests cover inline and asset-resolved output schemas, trusted
-output-schema digest matching, inline and object-reference reconstruction, and
-rejection of missing or unknown failure categories. Transport and object-store
+Runtime contract tests cover inline and asset-resolved output and error schemas,
+trusted schema digest matching, structured error round trips, inline and
+object-reference reconstruction, and rejection of invalid error results. Transport and object-store
 errors are checked for safe normalization without retaining backend exceptions.
 
 `assert_outcomes_equivalent(direct, container)` asserts the two SDK paths

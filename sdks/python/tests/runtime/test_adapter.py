@@ -33,6 +33,7 @@ from syntara_plugin.runtime import (
     add_container_runtime_service,
     container_step_for_bindings,
     container_step_for_installed_manifest,
+    error_result_schema,
     invoke,
     standard_output_from_container_result,
     step_registry_from_bindings,
@@ -268,9 +269,8 @@ def test_container_handler_executes_a_typed_step() -> None:
     assert result.output_schema_digest == _expected_digest()
     assert result.status_code == 0
     assert result.status_message == "Completed"
-    assert result.error_code == ""
-    assert result.error_message == ""
-    assert result.retryable is False
+    assert result.error_result is None
+    assert result.error_schema_digest == ""
     assert result.output == {
         "message": "hello",
         "invocation_id": "invocation-1",
@@ -477,16 +477,13 @@ def test_wrapper_output_on_a_deliberate_failure_uses_transport_externalization()
         result={"details": "x" * 1_048_577},
     )
 
-    result = _container_result(wrapper, _expected_digest(), store)
+    result = _container_result(wrapper, _expected_digest(), canonical_json_digest(error_result_schema()), store)
 
     assert result.output is None
     assert result.object_reference == "object-store:failed-result-1"
     assert result.status_code == wrapper.status
     assert result.status_message == wrapper.status_message
-    assert result.error_category == "dependency"
-    assert result.error_code == "REMOTE_REJECTED"
-    assert result.error_message == "The upstream service rejected the request."
-    assert result.retryable is True
+    assert result.error_result == wrapper.error_result.model_dump(mode="json")
     assert store.payload is not None
     assert store.content_digest is not None
 
@@ -608,7 +605,7 @@ def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
 )
 def test_wrapper_round_trips_through_container_client(wrapper: StandardOutputWrapper) -> None:
     def handler(invocation: ContainerInvocation) -> ContainerResult:
-        return _container_result(wrapper, _expected_digest(), None)
+        return _container_result(wrapper, _expected_digest(), canonical_json_digest(error_result_schema()), None)
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
     add_container_runtime_service(server, StepRegistry({"acme.plugin.echo": handler}))
@@ -663,10 +660,8 @@ def test_reference_resolution_preserves_failed_result_metadata() -> None:
         object_reference="host:partial",
         status_code=3,
         status_message="Partial result",
-        error_code="REMOTE_REJECTED",
-        error_message="Rejected",
-        retryable=True,
-        error_category="dependency",
+        error_result={"category": "dependency", "code": "REMOTE_REJECTED", "message": "Rejected", "retryable": True},
+        error_schema_digest=canonical_json_digest(error_result_schema()),
     )
 
     assert standard_output_from_container_result(
@@ -777,10 +772,10 @@ def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
 
     assert result.output is None
     assert result.status_code != 0
-    assert result.error_code == FailureCode.INVALID_INPUT.value
-    assert result.status_message == result.error_message
-    assert result.retryable is False
-    assert "message" in result.error_message
+    assert result.error_result["code"] == FailureCode.INVALID_INPUT.value
+    assert result.status_message == result.error_result["message"]
+    assert result.error_result["retryable"] is False
+    assert "message" in result.error_result["message"]
 
 
 def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
@@ -796,10 +791,10 @@ def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
 
     result = handler(invocation)
 
-    assert result.error_code == FailureCode.INVALID_INPUT.value
-    assert len(result.error_message) <= 4096
-    assert "and 190 more" in result.error_message
-    assert "leaked-secret-value" not in result.error_message
+    assert result.error_result["code"] == FailureCode.INVALID_INPUT.value
+    assert len(result.error_result["message"]) <= 4096
+    assert "and 190 more" in result.error_result["message"]
+    assert "leaked-secret-value" not in result.error_result["message"]
 
 
 def test_small_validation_failures_report_every_stable_code() -> None:
@@ -811,8 +806,8 @@ def test_small_validation_failures_report_every_stable_code() -> None:
 
     result = handler(invocation)
 
-    assert "properties.message.type: type" in result.error_message
-    assert "and " not in result.error_message
+    assert "properties.message.type: type" in result.error_result["message"]
+    assert "and " not in result.error_result["message"]
 
 
 def test_undeclared_output_model_is_an_abi_violation() -> None:
@@ -957,7 +952,7 @@ def test_large_invalid_payloads_remain_invalid_input_over_grpc() -> None:
 
     assert result.output is None
     assert result.status_code != 0
-    assert result.error_code == FailureCode.INVALID_INPUT.value
+    assert result.error_result["code"] == FailureCode.INVALID_INPUT.value
 
 
 def test_generic_runner_can_dispatch_a_bindings_fallback_step() -> None:

@@ -5,8 +5,12 @@
   "outputSchemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "statusCode": 1,
   "statusMessage": "The upstream service rejected the request.",
-  "errorCode": "REMOTE_REJECTED",
-  "errorMessage": "The upstream service rejected the request.",
-  "retryable": false,
-  "errorCategory": "dependency"
+  "errorSchemaDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "errorResult": {
+    "category": "dependency",
+    "code": "REMOTE_REJECTED",
+    "message": "The upstream service rejected the request.",
+    "retryable": false,
+    "provider": {"requestId": "request-123"}
+  }
 }

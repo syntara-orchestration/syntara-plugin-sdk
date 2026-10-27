@@ -205,10 +205,8 @@ def test_container_result_envelope_fixtures_conform() -> None:
             "outputSchemaDigest": HASH,
             "statusCode": 1,
             "statusMessage": "The upstream service rejected the request.",
-            "errorCode": "REMOTE_REJECTED",
-            "errorMessage": "The upstream service rejected the request.",
-            "retryable": False,
-            "errorCategory": "dependency",
+            "errorSchemaDigest": HASH,
+            "errorResult": {"category": "dependency", "code": "REMOTE_REJECTED", "message": "The upstream service rejected the request.", "retryable": False},
         }
     ).valid
     # A legacy result that predates the status fields decodes as a success.
@@ -273,17 +271,13 @@ def test_container_result_envelope_rejects_invalid_payload_shapes() -> None:
     failure = dict(
         base,
         statusCode=7,
-        errorCode="REMOTE_REJECTED",
-        errorMessage="The upstream service rejected the request.",
-        retryable=True,
-        errorCategory="dependency",
+        errorSchemaDigest=HASH,
+        errorResult={"category": "dependency", "code": "REMOTE_REJECTED", "message": "The upstream service rejected the request.", "retryable": True},
     )
     assert harness.validate_runtime(failure).valid
-    assert not harness.validate_runtime({key: value for key, value in failure.items() if key != "retryable"}).valid
-    assert not harness.validate_runtime(
-        {key: value for key, value in failure.items() if key != "errorCategory"}
-    ).valid
-    assert not harness.validate_runtime(dict(failure, errorCategory="unknown")).valid
+    assert not harness.validate_runtime({key: value for key, value in failure.items() if key != "errorSchemaDigest"}).valid
+    assert not harness.validate_runtime(dict(failure, errorResult={**failure["errorResult"], "category": "unknown"})).valid
+    assert not harness.validate_runtime(dict(failure, errorResult={key: value for key, value in failure["errorResult"].items() if key != "retryable"})).valid
 
 
 def test_standard_output_wrapper_requires_object_result_and_complete_error_metadata() -> None:
@@ -292,7 +286,7 @@ def test_standard_output_wrapper_requires_object_result_and_complete_error_metad
         "result": {"issue": 42},
         "statusCode": 0,
         "statusMessage": "Completed",
-        "errorMessage": None,
+        "errorResult": None,
     }
     assert harness.validate_runtime(success).valid
     assert not harness.validate_runtime(dict(success, result=[42])).valid
@@ -302,7 +296,7 @@ def test_standard_output_wrapper_requires_object_result_and_complete_error_metad
         "result": None,
         "statusCode": 1,
         "statusMessage": "Rejected",
-        "errorMessage": {
+        "errorResult": {
             "category": "dependency",
             "code": "REMOTE_REJECTED",
             "message": "The upstream service rejected the request.",
@@ -311,14 +305,14 @@ def test_standard_output_wrapper_requires_object_result_and_complete_error_metad
     }
     assert harness.validate_runtime(failure).valid
     assert not harness.validate_runtime(
-        dict(failure, errorMessage={**failure["errorMessage"], "category": "unknown"})
+        dict(failure, errorResult={**failure["errorResult"], "category": "unknown"})
     ).valid
     assert not harness.validate_runtime(
         dict(
             failure,
-            errorMessage={
+            errorResult={
                 key: value
-                for key, value in failure["errorMessage"].items()
+                for key, value in failure["errorResult"].items()
                 if key != "retryable"
             },
         )

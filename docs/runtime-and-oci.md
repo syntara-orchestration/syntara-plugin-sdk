@@ -329,9 +329,9 @@ implementation-derived descriptors for authoring validation, while
 supported custom-runner Step kinds execute only through the factory-created
 identity and canonical installed-schema binding.
 
-The runtime owns the `StandardOutputWrapper` and `ErrorMessage` result types.
-Invalid input returns a wrapper with a nonzero status and safe error metadata;
-the implementation hook is not called. JSON Schema
+The runtime owns the `StandardOutputWrapper` and `ErrorResult` result types.
+Invalid input produces a nonzero error result when it satisfies the effective
+error schema; the implementation hook is not called. JSON Schema
 `default` values are annotations, so the registered Pydantic model supplies the
 actual default. Enums must match exactly, and unknown fields are rejected only
 when the manifest schema forbids them. Pydantic runs in strict mode after JSON
@@ -350,7 +350,13 @@ The container adapter maps a valid `StandardOutputWrapper` into the ABI's
 `ContainerResult`: business output and wrapper status/error metadata are
 serialized in the result fields, alongside the digest of the applied
 declared `spec.output` schema. A nonzero status is still a valid result and
-carries a safe error category, code, message, and retryability value.
+carries the complete structured error JSON and the canonical digest of the
+effective error schema. The SDK base requires a category, code, message, and
+retryability value and allows additional fields. The effective schema is the
+installed `spec.error`, when declared, or the SDK base schema otherwise. The
+runtime validates errors against both the base and the effective schema.
+An error that fails either schema produces no valid wrapper, including an
+input-validation error when a declared schema requires additional fields.
 `ContainerFailure` is reserved for
 cases where no valid wrapper/outcome exists, such as invalid output,
 serialization failure, or a runtime/protocol failure. Direct and container
@@ -359,9 +365,8 @@ only the container path adds ABI serialization and transport limits. The JSON
 runtime contract names this outcome `ContainerFailure`; the gRPC protocol
 carries it in a `Failure` event.
 
-For a nonzero `ContainerResult`, the error category is required and must be one
-of the categories defined by the runtime contract. A missing or unknown
-category is a protocol error. Inline output and object references are
+For a nonzero `ContainerResult`, the error and its schema digest are required.
+A missing or unknown category is a protocol error. Inline output and object references are
 mutually exclusive; either may carry a deliberate failure's optional business
 result.
 
@@ -382,7 +387,7 @@ first use, so steps run and test where the transport libraries are absent.
 with one transport handler per registered step. The adapter converts each
 `ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
 cancellation event), calls `runtime.invoke`, and maps the returned wrapper to a
-`ContainerResult`. Invalid input and deliberate `StepFailure` produce
+`ContainerResult`. Valid input-validation errors and deliberate `StepFailure` values produce
 nonzero-status results; valid output produces a zero-status result. Invalid
 output, serialization errors, and unexpected step exceptions produce no
 wrapper and become `ContainerFailure` outcomes. Each `ContainerResult` carries
@@ -408,6 +413,14 @@ error without exposing resolver details; inline and resolved values are checked
 against the caller-supplied trusted output schema before a wrapper is built. A
 terminal transport `Failure` still raises `ContainerRemoteError` and is never
 converted to a deliberate step failure.
+
+For a step-specific error contract, pass the trusted `error_schema=` to either
+wrapper API. The client verifies its digest and validates the complete error
+before reconstruction. Without that argument it uses the SDK base schema.
+Authors can supply step-specific fields with `StepFailure(...,
+error_result=ErrorResult(category="dependency", code="REMOTE_REJECTED",
+message="Rejected", retryable=True, requestId="request-1"))`.
+They can also subclass `ErrorResult` to declare typed step-specific fields.
 
 ### Installed revision mapping
 

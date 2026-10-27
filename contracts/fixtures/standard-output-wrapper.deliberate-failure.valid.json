@@ -2,10 +2,11 @@
   "result": null,
   "statusCode": 1,
   "statusMessage": "The remote service rejected the request.",
-  "errorMessage": {
+  "errorResult": {
     "category": "dependency",
     "code": "REMOTE_REJECTED",
     "message": "The remote service rejected the request.",
-    "retryable": false
+    "retryable": false,
+    "provider": {"requestId": "request-123"}
   }
 }

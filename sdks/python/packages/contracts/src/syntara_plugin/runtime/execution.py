@@ -19,7 +19,13 @@ from .bindings import (
     validate_executable_step_binding,
 )
 from .context import ExecutionContext
-from .outcome import ErrorCategory, ErrorMessage, StandardOutputWrapper, _bounded_message
+from .outcome import (
+    ErrorCategory,
+    ErrorResult,
+    StandardOutputWrapper,
+    _bounded_message,
+    error_result_base_schema,
+)
 from .validation import StepInputValidationError, validate_step_inputs
 
 _INVALID_STEP_RESPONSE = "The plugin step returned an invalid response."
@@ -48,8 +54,9 @@ class StepFailure(Exception):
         self,
         status_code: int,
         status_message: str,
-        error_message: str,
+        error_message: str | None = None,
         *,
+        error_result: ErrorResult | None = None,
         code: str = "STEP_FAILED",
         category: ErrorCategory = ErrorCategory.BUSINESS,
         retryable: bool = False,
@@ -62,12 +69,21 @@ class StepFailure(Exception):
             raise ValueError("StepFailure code must be an uppercase error identifier")
         self.status_code = status_code
         self.status_message = _bounded_message(status_message, fallback="The step failed.")
-        self.error_message = _bounded_message(error_message, fallback="The step failed.")
-        self.code = code
-        self.category = ErrorCategory(category)
+        if error_result is not None and error_message is not None:
+            raise ValueError("provide either error_result or error_message")
+        if error_result is None:
+            if error_message is None:
+                raise ValueError("StepFailure requires an error result")
+            error_result = ErrorResult(
+                category=category, code=code, message=error_message, retryable=retryable
+            )
+        self.error_result = error_result
+        self.error_message = error_result.message
+        self.code = error_result.code
+        self.category = error_result.category
         if not isinstance(retryable, bool):
             raise TypeError("StepFailure retryable must be a boolean")
-        self.retryable = retryable
+        self.retryable = error_result.retryable
         super().__init__(self.error_message)
 
 
@@ -102,8 +118,8 @@ class StepExecutor:
                 self._binding.descriptor.input_schema_source,
             )
         except StepInputValidationError as error:
-            return StandardOutputWrapper.failure(
-                ErrorMessage(
+            return self._failure(
+                ErrorResult(
                     category=ErrorCategory.VALIDATION,
                     code=FailureCode.INVALID_INPUT.value,
                     message=error.safe_message,
@@ -115,13 +131,10 @@ class StepExecutor:
         try:
             output = self._binding.step.execute(validated_inputs, context)
         except StepFailure as error:
-            return StandardOutputWrapper.failure(
+            return self._failure(
+                error.error_result,
                 status_code=error.status_code,
                 status_message=error.status_message,
-                error_message=error.error_message,
-                code=error.code,
-                category=error.category,
-                retryable=error.retryable,
             )
         except Exception:
             unexpected_step_failure = True
@@ -143,6 +156,26 @@ class StepExecutor:
             raise StepExecutionError(_INVALID_STEP_RESPONSE)
         self._validate_result(result)
         return StandardOutputWrapper.success(result)
+
+    def _failure(
+        self, error: ErrorResult, *, status_code: int = 1, status_message: str | None = None
+    ) -> StandardOutputWrapper[Mapping[str, Any]]:
+        """Apply both the SDK base and the effective installed error contract."""
+
+        try:
+            document = error.model_dump(mode="json")
+            canonical_json_bytes(document)
+            for schema in (error_result_base_schema(), self._binding.descriptor.error_schema):
+                validator = Draft202012Validator(
+                    _thaw_json_document(schema), format_checker=FormatChecker()
+                )
+                if not validator.is_valid(document):
+                    raise ValueError("invalid error result")
+        except Exception:
+            raise StepExecutionError(_INVALID_STEP_RESPONSE) from None
+        return StandardOutputWrapper.failure(
+            error, status_code=status_code, status_message=status_message
+        )
 
     def _validate_result(self, result: Mapping[str, Any]) -> None:
         """Validate serialization and output-schema conformance without leaking details."""

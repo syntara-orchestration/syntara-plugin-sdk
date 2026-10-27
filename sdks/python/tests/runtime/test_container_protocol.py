@@ -20,6 +20,8 @@ from syntara_plugin.runtime import (
 from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
 
 OUTPUT_SCHEMA_DIGEST = "sha256:" + "a" * 64
+ERROR_SCHEMA_DIGEST = "sha256:" + "b" * 64
+ERROR_RESULT = {"category": "dependency", "code": "REMOTE_REJECTED", "message": "Rejected", "retryable": True, "details": {"attempts": [1, 2]}}
 
 
 @pytest.fixture
@@ -353,53 +355,49 @@ def test_container_result_enforces_terminal_invariants() -> None:
         OUTPUT_SCHEMA_DIGEST,
         status_code=1,
         status_message="The upstream service rejected the request.",
-        error_code="REMOTE_REJECTED",
-        error_message="The upstream service rejected the request.",
-        error_category="dependency",
+        error_result=ERROR_RESULT,
+        error_schema_digest=ERROR_SCHEMA_DIGEST,
     )
     assert failure.output is None
     assert failure.object_reference is None
 
-    with pytest.raises(ValueError, match="uppercase failure category"):
+    with pytest.raises(ValueError, match="SDK base schema"):
         ContainerResult(
             OUTPUT_SCHEMA_DIGEST,
             status_code=1,
-            error_code="not-a-code",
-            error_message="m",
+            error_result={**ERROR_RESULT, "code": "not-a-code"},
+            error_schema_digest=ERROR_SCHEMA_DIGEST,
         )
 
     with pytest.raises(ValueError, match="successful result must not carry error metadata"):
-        ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 1}, error_code="REMOTE_REJECTED")
+        ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 1}, error_result=ERROR_RESULT)
 
     with pytest.raises(ValueError, match="uint32"):
         ContainerResult(
             OUTPUT_SCHEMA_DIGEST,
             status_code=4_294_967_296,
-            error_code="X",
-            error_message="m",
         )
 
     with pytest.raises(ValueError, match="failed result requires an error"):
         ContainerResult(OUTPUT_SCHEMA_DIGEST, status_code=7)
 
     with pytest.raises(ValueError, match="failed result requires an error"):
-        ContainerResult(OUTPUT_SCHEMA_DIGEST, status_code=7, error_code="REMOTE_REJECTED")
+        ContainerResult(OUTPUT_SCHEMA_DIGEST, status_code=7, error_result=ERROR_RESULT)
 
-    with pytest.raises(ValueError, match="error category"):
+    with pytest.raises(ValueError, match="SDK base schema"):
         ContainerResult(
             OUTPUT_SCHEMA_DIGEST,
             status_code=7,
-            error_code="REMOTE_REJECTED",
-            error_message="The upstream service rejected the request.",
+            error_result={key: value for key, value in ERROR_RESULT.items() if key != "category"},
+            error_schema_digest=ERROR_SCHEMA_DIGEST,
         )
 
-    with pytest.raises(ValueError, match="known error category"):
+    with pytest.raises(ValueError, match="SDK base schema"):
         ContainerResult(
             OUTPUT_SCHEMA_DIGEST,
             status_code=7,
-            error_code="REMOTE_REJECTED",
-            error_message="The upstream service rejected the request.",
-            error_category="unknown",
+            error_result={**ERROR_RESULT, "category": "unknown"},
+            error_schema_digest=ERROR_SCHEMA_DIGEST,
         )
 
 
@@ -411,10 +409,8 @@ def test_deliberate_step_failure_round_trips_as_a_result_event() -> None:
         output={"rejected": True},
         status_code=1,
         status_message="The upstream service rejected the request.",
-        error_code="REMOTE_REJECTED",
-        error_message="The upstream service rejected the request.",
-        retryable=True,
-        error_category="dependency",
+        error_result=ERROR_RESULT,
+        error_schema_digest=ERROR_SCHEMA_DIGEST,
     )
     event = _result_event("invocation-1", failure)
     decoded = _result_from_event(event)
@@ -423,10 +419,8 @@ def test_deliberate_step_failure_round_trips_as_a_result_event() -> None:
     assert decoded.status_message == "The upstream service rejected the request."
     assert decoded.output == {"rejected": True}
     assert decoded.object_reference is None
-    assert decoded.error_code == "REMOTE_REJECTED"
-    assert decoded.error_message == "The upstream service rejected the request."
-    assert decoded.retryable is True
-    assert decoded.error_category == "dependency"
+    assert decoded.error_result == ERROR_RESULT
+    assert decoded.error_schema_digest == ERROR_SCHEMA_DIGEST
 
 
 def test_object_reference_result_round_trips() -> None:
@@ -481,7 +475,7 @@ def test_success_result_with_error_metadata_is_a_protocol_error() -> None:
         result=container_pb2.Result(
             output_schema_digest=OUTPUT_SCHEMA_DIGEST,
             output_json=b'{"issue": 42}',
-            error_code="REMOTE_REJECTED",
+            error_result_json=b'{}',
         ),
     )
     with pytest.raises(ContainerRemoteError) as raised:

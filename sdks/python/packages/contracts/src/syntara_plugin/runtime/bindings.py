@@ -19,6 +19,7 @@ from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
 from syntara_plugin.contracts import canonical_json_digest, load_bundle, validate_document
 
+from .outcome import error_result_schema
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
@@ -44,7 +45,7 @@ def _freeze_json_document(value: Any) -> Any:
 
 
 def _validate_schema_references(
-    schema: Mapping[str, Any], schema_name: Literal["input_schema", "output_schema"]
+    schema: Mapping[str, Any], schema_name: Literal["input_schema", "output_schema", "error_schema"]
 ) -> None:
     resource = Resource.from_contents(
         _thaw_json_document(schema), default_specification=DRAFT202012
@@ -57,7 +58,9 @@ def _validate_schema_references(
 
 
 def _validate_resource_references(
-    resource: Resource[Any], resolver: Any, schema_name: Literal["input_schema", "output_schema"]
+    resource: Resource[Any],
+    resolver: Any,
+    schema_name: Literal["input_schema", "output_schema", "error_schema"],
 ) -> None:
     contents = resource.contents
     if not isinstance(contents, Mapping):
@@ -126,6 +129,8 @@ class _InstalledStepProvenance:
     input_schema_digest: str
     output_schema: Mapping[str, Any]
     output_schema_digest: str
+    error_schema: Mapping[str, Any]
+    error_schema_digest: str
 
 
 @dataclass(frozen=True)
@@ -141,6 +146,8 @@ class _InstalledStepDescriptorProvenance:
     input_schema_digest: str
     output_schema: Mapping[str, Any]
     output_schema_digest: str
+    error_schema: Mapping[str, Any]
+    error_schema_digest: str
 
 
 def _schema_digest(schema: Mapping[str, Any]) -> str:
@@ -386,6 +393,7 @@ class InstalledStepManifest:
     document: Mapping[str, Any] = field(init=False)
     input_schema: Mapping[str, Any] = field(init=False)
     output_schema: Mapping[str, Any] = field(init=False)
+    error_schema: Mapping[str, Any] = field(init=False)
 
     @classmethod
     def from_manifest(
@@ -394,7 +402,7 @@ class InstalledStepManifest:
         manifest: Mapping[str, Any],
         assets: Mapping[str, Mapping[str, Any]],
     ) -> InstalledStepManifest:
-        """Resolve the canonical schemas declared by ``spec.input`` and ``spec.output``."""
+        """Resolve the input, output, and effective optional error schemas."""
 
         if not _IDENTITY.fullmatch(step_identity):
             message = "step_identity must be a Syntara identity"
@@ -433,12 +441,17 @@ class InstalledStepManifest:
             raise StepBindingError(message)
         input_schema = _resolve_document_source(specification, "input", assets)
         output_schema = _resolve_document_source(specification, "output", assets)
+        error_schema = (
+            _resolve_document_source(specification, "error", assets)
+            if "error" in specification else error_result_schema()
+        )
         installed_step = InstalledStepManifest()
         object.__setattr__(installed_step, "step_identity", step_identity)
         object.__setattr__(installed_step, "kind", kind)
         object.__setattr__(installed_step, "document", _freeze_json_document(manifest))
         object.__setattr__(installed_step, "input_schema", _freeze_json_document(input_schema))
         object.__setattr__(installed_step, "output_schema", _freeze_json_document(output_schema))
+        object.__setattr__(installed_step, "error_schema", _freeze_json_document(error_schema))
         _INSTALLED_STEP_PROVENANCE.append(
             _InstalledStepProvenance(
                 manifest_ref=ref(installed_step),
@@ -449,6 +462,8 @@ class InstalledStepManifest:
                 input_schema_digest=_schema_digest(input_schema),
                 output_schema=installed_step.output_schema,
                 output_schema_digest=_schema_digest(output_schema),
+                error_schema=installed_step.error_schema,
+                error_schema_digest=_schema_digest(error_schema),
             )
         )
         return installed_step
@@ -469,6 +484,8 @@ class StepDescriptor:
     input_schema: Mapping[str, Any]
     output_schema: Mapping[str, Any]
     input_schema_source: Literal["implementation", "manifest"] = "implementation"
+    error_schema: Mapping[str, Any] = field(default_factory=error_result_schema)
+
     def __post_init__(self) -> None:
         """Validate and normalize the descriptor's identity, kind, and schemas."""
 
@@ -496,6 +513,9 @@ class StepDescriptor:
             raise StepBindingError(message)
         object.__setattr__(self, "input_schema", _freeze_json_document(self.input_schema))
         object.__setattr__(self, "output_schema", _freeze_json_document(self.output_schema))
+        if not isinstance(self.error_schema, Mapping):
+            raise StepBindingError("error_schema must be a JSON Schema mapping")
+        object.__setattr__(self, "error_schema", _freeze_json_document(self.error_schema))
 
     @property
     def category(self) -> StepCategory:
@@ -517,6 +537,8 @@ class StepDescriptor:
             and _schema_matches_digest(self.input_schema, provenance.input_schema_digest)
             and self.output_schema is provenance.output_schema
             and _schema_matches_digest(self.output_schema, provenance.output_schema_digest)
+            and self.error_schema is provenance.error_schema
+            and _schema_matches_digest(self.error_schema, provenance.error_schema_digest)
         )
 
     def require_executable_contract(self, step: BaseStep[Any, Any]) -> None:
@@ -532,6 +554,8 @@ class StepDescriptor:
             or not _schema_matches_digest(self.input_schema, provenance.input_schema_digest)
             or self.output_schema is not provenance.output_schema
             or not _schema_matches_digest(self.output_schema, provenance.output_schema_digest)
+            or self.error_schema is not provenance.error_schema
+            or not _schema_matches_digest(self.error_schema, provenance.error_schema_digest)
         ):
             message = "the descriptor was not created from an unchanged installed contract"
             raise StepBindingError(message)
@@ -584,6 +608,8 @@ class StepDescriptor:
             installed_step.input_schema, provenance.input_schema_digest
         ) or not _schema_matches_digest(
             installed_step.output_schema, provenance.output_schema_digest
+        ) or not _schema_matches_digest(
+            installed_step.error_schema, provenance.error_schema_digest
         ):
             message = "the installed Step schema was changed after installation"
             raise StepBindingError(message)
@@ -600,10 +626,12 @@ class StepDescriptor:
             kind=kind,
             input_schema=provenance.input_schema,
             output_schema=provenance.output_schema,
+            error_schema=provenance.error_schema,
         )
-        schemas: tuple[tuple[Literal["input_schema", "output_schema"], Mapping[str, Any]], ...] = (
+        schemas: tuple[tuple[Literal["input_schema", "output_schema", "error_schema"], Mapping[str, Any]], ...] = (
             ("input_schema", descriptor.input_schema),
             ("output_schema", descriptor.output_schema),
+            ("error_schema", descriptor.error_schema),
         )
         for schema_name, schema in schemas:
             try:
@@ -624,6 +652,8 @@ class StepDescriptor:
                 input_schema_digest=provenance.input_schema_digest,
                 output_schema=descriptor.output_schema,
                 output_schema_digest=provenance.output_schema_digest,
+                error_schema=descriptor.error_schema,
+                error_schema_digest=provenance.error_schema_digest,
             )
         )
         return descriptor

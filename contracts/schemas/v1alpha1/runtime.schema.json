@@ -16,10 +16,9 @@
     "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$"},
     "digestReference": {"type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$"},
     "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
-    "safeErrorMetadata": {
+    "errorResultBase": {
       "description": "Safe structured error metadata for a deliberate failure outcome.",
       "type": "object",
-      "additionalProperties": false,
       "required": ["category", "code", "message", "retryable"],
       "properties": {
         "category": {
@@ -31,28 +30,40 @@
         "retryable": {"type": "boolean"}
       }
     },
-    "standardOutputWrapper": {
-      "description": "Immutable StandardOutputWrapper; logical Result, StatusCode, StatusMessage, and ErrorMessage serialize as result, statusCode, statusMessage, and errorMessage.",
+    "errorResult": {
+      "description": "SDK fallback ErrorResult when no step-specific error schema is declared.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["result", "statusCode", "statusMessage", "errorMessage"],
+      "required": ["category", "code", "message", "retryable"],
+      "properties": {
+        "category": {"type": "string", "enum": ["validation", "authentication", "authorization", "business", "dependency", "timeout", "cancelled", "policy", "contract", "internal"]},
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "retryable": {"type": "boolean"}
+      }
+    },
+    "standardOutputWrapper": {
+      "description": "Immutable StandardOutputWrapper containing a business result or structured error result.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "statusCode", "statusMessage", "errorResult"],
       "properties": {
         "result": {"oneOf": [{"type": "object"}, {"type": "null"}]},
         "statusCode": {"type": "integer", "minimum": 0, "maximum": 4294967295},
         "statusMessage": {"type": "string", "minLength": 1, "maxLength": 4096},
-        "errorMessage": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/safeErrorMetadata"}]}
+        "errorResult": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/errorResultBase"}]}
       },
       "allOf": [
         {
           "if": {"properties": {"statusCode": {"const": 0}}},
           "then": {
-            "properties": {"result": {"not": {"type": "null"}}, "errorMessage": {"type": "null"}}
+            "properties": {"result": {"not": {"type": "null"}}, "errorResult": {"type": "null"}}
           }
         },
         {
           "if": {"properties": {"statusCode": {"minimum": 1}}},
           "then": {
-            "properties": {"errorMessage": {"$ref": "#/$defs/safeErrorMetadata"}}
+            "properties": {"errorResult": {"$ref": "#/$defs/errorResult"}}
           }
         }
       ]
@@ -78,12 +89,12 @@
       "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "sequence", "state"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerProgress"}, "invocationId": {"$ref": "#/$defs/id"}, "sequence": {"type": "integer", "minimum": 1}, "state": {"enum": ["started", "heartbeat", "progress"]}, "message": {"type": "string", "maxLength": 4096}, "percent": {"type": "number", "minimum": 0, "maximum": 100}}}]
     },
     "result": {
-      "description": "A terminal result carries an optional inline business object or object-store reference; both are mutually exclusive. Nonzero status requires complete error metadata including a known error category.",
+      "description": "A terminal result carries an optional business object or object-store reference and, on failure, a structured error and its schema digest.",
       "allOf": [
         {"$ref": "#/$defs/base"},
-        {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "outputSchemaDigest"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerResult"}, "invocationId": {"$ref": "#/$defs/id"}, "outputSchemaDigest": {"$ref": "#/$defs/sha256"}, "output": {"description": "Inline business result JSON object.", "type": "object"}, "objectReference": {"description": "Opaque reference to an externalized business result; mutually exclusive with output.", "$ref": "#/$defs/id"}, "statusCode": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "statusMessage": {"type": "string", "maxLength": 4096}, "errorCode": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$"}, "errorMessage": {"type": "string", "maxLength": 4096}, "retryable": {"type": "boolean"}, "errorCategory": {"type": "string", "enum": ["validation", "authentication", "authorization", "business", "dependency", "timeout", "cancelled", "policy", "contract", "internal"]}}, "not": {"required": ["output", "objectReference"]}},
-        {"if": {"properties": {"statusCode": {"const": 0}}}, "then": {"anyOf": [{"required": ["output"]}, {"required": ["objectReference"]}], "properties": {"errorCode": {"maxLength": 0}, "errorMessage": {"maxLength": 0}, "retryable": {"const": false}, "errorCategory": {"maxLength": 0}}}},
-        {"if": {"required": ["statusCode"], "properties": {"statusCode": {"not": {"const": 0}}}}, "then": {"required": ["errorCode", "errorMessage", "retryable", "errorCategory"], "properties": {"errorMessage": {"minLength": 1}}}}
+        {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "outputSchemaDigest"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerResult"}, "invocationId": {"$ref": "#/$defs/id"}, "outputSchemaDigest": {"$ref": "#/$defs/sha256"}, "output": {"description": "Inline business result JSON object.", "type": "object"}, "objectReference": {"description": "Opaque reference to an externalized business result; mutually exclusive with output.", "$ref": "#/$defs/id"}, "statusCode": {"type": "integer", "minimum": 0, "maximum": 4294967295}, "statusMessage": {"type": "string", "maxLength": 4096}, "errorResult": {"$ref": "#/$defs/errorResultBase"}, "errorSchemaDigest": {"$ref": "#/$defs/sha256"}}, "not": {"required": ["output", "objectReference"]}},
+        {"if": {"properties": {"statusCode": {"const": 0}}}, "then": {"anyOf": [{"required": ["output"]}, {"required": ["objectReference"]}], "not": {"anyOf": [{"required": ["errorResult"]}, {"required": ["errorSchemaDigest"]}]}}},
+        {"if": {"required": ["statusCode"], "properties": {"statusCode": {"not": {"const": 0}}}}, "then": {"required": ["errorResult", "errorSchemaDigest"]}}
       ]
     },
     "failure": {

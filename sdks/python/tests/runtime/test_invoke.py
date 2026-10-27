@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import grpc
 import pytest
 from pydantic import BaseModel, field_serializer
 from syntara_plugin.contracts import canonical_json_digest
@@ -13,21 +15,27 @@ from syntara_plugin.runtime import (
     ActionStep,
     BaseStep,
     ConformanceHarness,
+    ContainerClient,
     ContainerInvocation,
+    ContainerRemoteError,
     ContainerResult,
     ContainerRuntimeService,
     ControlStep,
+    ErrorResult,
     ExecutionContext,
     InstalledStepManifest,
     StandardOutputWrapper,
     StepBinding,
+    StepBindingError,
     StepBindings,
     StepDescriptor,
     StepExecutionError,
     StepFailure,
     StepRegistry,
     TriggerStep,
+    add_container_runtime_service,
     container_step_for_binding,
+    error_result_schema,
     invoke,
     standard_output_from_container_result,
     to_json_document,
@@ -90,6 +98,20 @@ class _FailingStep:
 
 class ActionFailureStep(_FailingStep, ActionStep[InvocationInput, InvocationOutput]):
     pass
+
+
+class DetailedFailureStep(ActionStep[InvocationInput, InvocationOutput]):
+    def run(self, inputs: InvocationInput, context: ExecutionContext) -> InvocationOutput:
+        raise StepFailure(
+            73, "Rejected", error_result=ErrorResult(
+                category="dependency", code="REMOTE_REJECTED", message="Rejected",
+                retryable=True, provider={"requestId": "req-1", "attempts": [1, 2]},
+            )
+        )
+
+
+class TypedErrorResult(ErrorResult):
+    provider: dict[str, list[str]]
 
 
 class ControlFailureStep(_FailingStep, ControlStep[InvocationInput, InvocationOutput]):
@@ -202,6 +224,8 @@ def _binding(
     input_schema: dict[str, Any] | None = None,
     output_schema: dict[str, Any] | None = None,
     configuration_schema: dict[str, Any] | None = None,
+    error_schema: dict[str, Any] | None = None,
+    error_asset: bool = False,
 ) -> StepBinding:
     """Bind a test step to an installed manifest and its trusted schemas."""
 
@@ -239,6 +263,14 @@ def _binding(
             }
         )
 
+    assets = {}
+    if error_schema is not None:
+        if error_asset:
+            specification["error"] = {"kind": "asset", "path": "schemas/error.json"}
+            assets = {"schemas/error.json": error_schema}
+        else:
+            specification["error"] = {"kind": "inline", "value": error_schema}
+
     manifest = InstalledStepManifest.from_manifest(
         identity,
         {
@@ -251,7 +283,7 @@ def _binding(
             },
             "spec": specification,
         },
-        {},
+        assets,
     )
     descriptor = StepDescriptor.for_installed_step(step, manifest)
     bindings = StepBindings()
@@ -359,7 +391,7 @@ def test_invoke_returns_canonical_success_for_each_step_kind(
         "groups": {"primary": [{"labels": ["invoke-acceptance", "stable"]}]},
     }
     document = wrapper.model_dump(mode="json", by_alias=True)
-    assert set(document) == {"result", "statusCode", "statusMessage", "errorMessage"}
+    assert set(document) == {"result", "statusCode", "statusMessage", "errorResult"}
     assert ConformanceHarness().validate_runtime(document).valid
 
 
@@ -384,7 +416,7 @@ def test_invoke_returns_typed_failure_for_each_step_kind(
     assert wrapper.result is None
     assert step.run_calls == 1
     document = wrapper.model_dump(mode="json", by_alias=True)
-    assert set(document) == {"result", "statusCode", "statusMessage", "errorMessage"}
+    assert set(document) == {"result", "statusCode", "statusMessage", "errorResult"}
     assert ConformanceHarness().validate_runtime(document).valid
 
 
@@ -394,7 +426,7 @@ def test_wrapper_rejects_invalid_status_and_result_combinations() -> None:
             result=None,
             status_code=0,
             status_message="Completed",
-            error_message=None,
+            error_result=None,
         )
 
     with pytest.raises(ValueError, match="structured error metadata"):
@@ -402,7 +434,7 @@ def test_wrapper_rejects_invalid_status_and_result_combinations() -> None:
             result=None,
             status_code=1,
             status_message="Failed",
-            error_message=None,
+            error_result=None,
         )
 
     with pytest.raises(ValueError, match="unsigned 32-bit"):
@@ -410,7 +442,7 @@ def test_wrapper_rejects_invalid_status_and_result_combinations() -> None:
             result={"value": "hello"},
             status_code=-1,
             status_message="Completed",
-            error_message=None,
+            error_result=None,
         )
 
 
@@ -642,10 +674,7 @@ def test_direct_and_container_adapter_preserve_typed_failure_metadata(
     assert isinstance(container, ContainerResult)
     assert container.status_code == direct.status_code == 73
     assert container.status_message == direct.status_message
-    assert container.error_code == error["code"]
-    assert container.error_message == error["message"]
-    assert container.retryable is error["retryable"]
-    assert container.error_category == error["category"]
+    assert container.error_result == error
     assert container.output is None
     assert standard_output_from_container_result(
         container,
@@ -669,10 +698,126 @@ def test_container_result_and_container_failure_remain_distinct() -> None:
     assert result_event.WhichOneof("event") == "result"
     result = result_event.result
     assert result.status_code == 73
-    assert result.error_code == "REMOTE_REJECTED"
+    assert b'"code":"REMOTE_REJECTED"' in result.error_result_json
     assert failure_event.WhichOneof("event") == "failure"
     assert failure_event.failure.outcome == "unknown"
     assert "unexpected failure secret sentinel" not in failure_event.failure.message
+
+
+@pytest.mark.parametrize("asset", [False, True])
+def test_custom_error_schema_preserves_complete_result_through_grpc(asset: bool) -> None:
+    schema = {
+        "type": "object",
+        "required": ["provider"],
+        "properties": {
+            "provider": {
+                "type": "object", "required": ["requestId", "attempts"],
+                "properties": {"requestId": {"const": "req-1"}, "attempts": {"type": "array"}},
+            }
+        },
+    }
+    binding = _binding(DetailedFailureStep(), "tests.detailed-error", error_schema=schema, error_asset=asset)
+    # Installation snapshots its schema, including asset-backed documents.
+    schema["required"].append("changed")
+    trusted_schema = to_json_document(binding.descriptor.error_schema)
+    assert trusted_schema["required"] == ["provider"]
+    direct = invoke(binding, {"value": "x"}, _context(binding))
+    assert direct.error_result is not None
+    error_document = direct.error_result.model_dump(mode="json")
+    assert error_document["provider"] == {"requestId": "req-1", "attempts": [1, 2]}
+    with pytest.raises(TypeError):
+        direct.error_result.provider["requestId"] = "changed"
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    registry = StepRegistry({binding.descriptor.step_identity: container_step_for_binding(binding)})
+    add_container_runtime_service(server, registry)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    try:
+        client = ContainerClient(channel)
+        result = client.execute(_invocation(binding, {"value": "x"}))
+        assert result.error_result == error_document
+        assert result.error_schema_digest == canonical_json_digest(trusted_schema)
+        assert client.execute_wrapped(
+            _invocation(binding, {"value": "x"}),
+            output_schema=to_json_document(binding.descriptor.output_schema),
+            error_schema=trusted_schema,
+        ) == direct
+        with pytest.raises(ContainerRemoteError):
+            standard_output_from_container_result(
+                result, output_schema=to_json_document(binding.descriptor.output_schema)
+            )
+        with pytest.raises(ContainerRemoteError):
+            standard_output_from_container_result(
+                result, output_schema=to_json_document(binding.descriptor.output_schema),
+                error_schema={"type": "object"},
+            )
+    finally:
+        channel.close()
+        server.stop(grace=0).wait()
+
+
+def test_default_error_schema_is_applied_and_digest_is_reported() -> None:
+    binding = _binding(ActionFailureStep(), "tests.default-error")
+    result = container_step_for_binding(binding)(_invocation(binding, {"value": "x"}))
+    assert result.error_schema_digest == canonical_json_digest(error_result_schema())
+    assert result.error_result is not None
+    assert set(result.error_result) == {"category", "code", "message", "retryable"}
+
+
+def test_default_error_schema_rejects_undeclared_step_fields() -> None:
+    binding = _binding(DetailedFailureStep(), "tests.default-error-extra")
+    with pytest.raises(StepExecutionError, match="invalid response"):
+        invoke(binding, {"value": "x"}, _context(binding))
+
+
+def test_error_result_subclass_fields_are_preserved_and_immutable() -> None:
+    provider = {"attempts": ["first"]}
+    error = TypedErrorResult(code="FAILED", message="Failed", provider=provider)
+    provider["attempts"].append("second")
+    assert error.model_dump(mode="json")["provider"] == {"attempts": ["first"]}
+    with pytest.raises(TypeError):
+        error.provider["attempts"] = []
+    with pytest.raises(AttributeError):
+        error.provider["attempts"].append("third")
+
+
+@pytest.mark.parametrize("inputs", [{"value": "x"}, {}])
+def test_error_that_violates_installed_schema_has_no_valid_outcome(inputs: dict[str, Any]) -> None:
+    binding = _binding(
+        DetailedFailureStep(), "tests.invalid-error",
+        error_schema={"type": "object", "required": ["missing"]},
+    )
+    with pytest.raises(StepExecutionError, match="invalid response"):
+        invoke(binding, inputs, _context(binding))
+    event = _terminal_event(binding, inputs)
+    assert event.WhichOneof("event") == "failure"
+    assert event.failure.code == "ABI_VIOLATION"
+
+
+def test_reconstruction_checks_error_schema_even_with_matching_digest() -> None:
+    schema = {"type": "object", "required": ["missing"]}
+    result = ContainerResult(
+        canonical_json_digest({"type": "object"}), status_code=1,
+        error_result={"category": "business", "code": "FAILED", "message": "Failed", "retryable": False},
+        error_schema_digest=canonical_json_digest(schema),
+    )
+    with pytest.raises(ContainerRemoteError):
+        standard_output_from_container_result(result, output_schema={"type": "object"}, error_schema=schema)
+
+
+@pytest.mark.parametrize("schema", [{"type": "not-a-type"}, {"$ref": "#/$defs/missing"}])
+def test_invalid_installed_error_schema_is_rejected(schema: dict[str, Any]) -> None:
+    with pytest.raises(StepBindingError, match="error_schema"):
+        _binding(DetailedFailureStep(), "tests.bad-error-schema", error_schema=schema)
+
+
+def test_changed_error_schema_invalidates_installed_binding() -> None:
+    binding = _binding(DetailedFailureStep(), "tests.changed-error-schema")
+    object.__setattr__(binding.descriptor, "error_schema", {"type": "object"})
+    with pytest.raises(StepExecutionError, match="trusted installed descriptor"):
+        invoke(binding, {"value": "x"}, _context(binding))
 
 
 def test_direct_runtime_import_does_not_load_transport_modules() -> None:

@@ -143,6 +143,7 @@ def _place_business_result(
 def _container_result(
     wrapper: StandardOutputWrapper,
     output_schema_digest: str,
+    error_schema_digest: str,
     object_store: ResultObjectStore | None,
 ) -> ContainerResult:
     """Map the complete runtime envelope onto the container ABI result.
@@ -176,10 +177,8 @@ def _container_result(
             object_reference=object_reference,
             status_code=wrapper.status_code,
             status_message=wrapper.status_message,
-            error_code=error.code if error is not None else "",
-            error_message=error.message if error is not None else "",
-            retryable=error.retryable if error is not None else False,
-            error_category=error.category.value if error is not None else "",
+            error_result=error.model_dump(mode="json") if error is not None else None,
+            error_schema_digest=error_schema_digest if error is not None else "",
         )
     except (TypeError, ValueError):
         invalid_wrapper = True
@@ -213,6 +212,7 @@ def container_step_for_binding(
 
     validate_executable_step_binding(binding.descriptor, binding.step)
     output_schema_digest = _applied_output_schema_digest(binding)
+    error_schema_digest = canonical_json_digest(_thaw_json_document(binding.descriptor.error_schema))
 
     def handler(invocation: ContainerInvocation) -> ContainerResult:
         if invocation.step_revision_id != binding.descriptor.step_identity:
@@ -233,7 +233,7 @@ def container_step_for_binding(
                 execution_failure,
                 outcome="unknown",
             )
-        return _container_result(wrapper, output_schema_digest, object_store)
+        return _container_result(wrapper, output_schema_digest, error_schema_digest, object_store)
 
     return handler
 

@@ -145,9 +145,9 @@ Schema: [`credential-recipe.schema.json`](../contracts/schemas/v1alpha1/credenti
 ingress driver, while `spec.runtime` selects the runner that implements the
 Step type. `spec.configuration` is driver-owned setup and is not runtime
 input. `spec.input` and `spec.output` are the public event and business-result
-contracts. Optional `spec.error` describes a separate declared business error
-shape; neither is an alias for the runtime wrapper's status and failure
-metadata.
+contracts. Optional `spec.error` describes the complete structured error result.
+The runtime also enforces the SDK base fields; without `spec.error`, the SDK
+base schema is used. Neither schema describes the runtime wrapper itself.
 The same category also represents a child-workflow entry in reference-mode
 composition; its declared public output is the result consumed by the parent
 `Control` step, not the results of the child's internal steps.

@@ -10,8 +10,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
+from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, load_bundle
 
 _MAX_MESSAGE_LENGTH = 4_096
 
@@ -56,10 +56,10 @@ class _FrozenList(tuple[Any, ...]):
     __hash__ = tuple.__hash__
 
 
-class ErrorMessage(BaseModel):
+class ErrorResult(BaseModel):
     """Structured, safe error metadata carried by a deliberate failure."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="allow")
 
     category: ErrorCategory = ErrorCategory.BUSINESS
     code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,127}$")
@@ -72,6 +72,45 @@ class ErrorMessage(BaseModel):
         if not isinstance(value, str):
             return "The step failed."
         return _bounded_message(value, fallback="The step failed.")
+
+    def model_post_init(self, __context: Any) -> None:
+        extras = self.__pydantic_extra__ or {}
+        _validate_json_object(extras)
+        object.__setattr__(self, "__pydantic_extra__", _freeze_json(extras))
+        for name in type(self).model_fields.keys() - ErrorResult.model_fields.keys():
+            value = getattr(self, name)
+            _validate_json_object({name: value})
+            object.__setattr__(self, name, _freeze_json(value))
+
+    @model_serializer
+    def _serialize(self) -> dict[str, Any]:
+        return {
+            "category": self.category.value,
+            "code": self.code,
+            "message": self.message,
+            "retryable": self.retryable,
+            **{
+                name: _thaw_json(getattr(self, name))
+                for name in type(self).model_fields.keys() - ErrorResult.model_fields.keys()
+            },
+            **_thaw_json(self.__pydantic_extra__ or {}),
+        }
+
+
+# Compatibility for existing Python callers; serialized contracts use ErrorResult.
+ErrorMessage = ErrorResult
+
+
+def error_result_schema() -> dict[str, Any]:
+    """Return the strict fallback schema used when no spec.error is declared."""
+
+    return load_bundle().documents["runtime.schema.json"]["$defs"]["errorResult"]
+
+
+def error_result_base_schema() -> dict[str, Any]:
+    """Return the shared schema that custom error schemas extend."""
+
+    return load_bundle().documents["runtime.schema.json"]["$defs"]["errorResultBase"]
 
 
 def _freeze_json(value: Any) -> Any:
@@ -126,7 +165,7 @@ class StandardOutputWrapper[TOutput]:
     result: TOutput | None
     status_code: int
     status_message: str
-    error_message: ErrorMessage | None
+    error_result: ErrorResult | None
 
     def __post_init__(self) -> None:
         if type(self.status_code) is not int or not 0 <= self.status_code <= 4_294_967_295:
@@ -141,11 +180,11 @@ class StandardOutputWrapper[TOutput]:
             object.__setattr__(self, "result", cast(TOutput, _freeze_json(self.result)))
 
         if self.status_code == 0:
-            if self.error_message is not None:
+            if self.error_result is not None:
                 raise ValueError("a successful outcome cannot carry an error")
             if self.result is None:
                 raise ValueError("a successful outcome requires a result")
-        elif not isinstance(self.error_message, ErrorMessage):
+        elif not isinstance(self.error_result, ErrorResult):
             raise ValueError("a failed outcome requires structured error metadata")
 
     @classmethod
@@ -161,17 +200,18 @@ class StandardOutputWrapper[TOutput]:
             result=result,
             status_code=0,
             status_message=status_message,
-            error_message=None,
+            error_result=None,
         )
 
     @classmethod
     def failure(
         cls,
-        error: ErrorMessage | None = None,
+        error: ErrorResult | None = None,
         *,
         status_code: int = 1,
         status_message: str | None = None,
-        error_message: ErrorMessage | str | None = None,
+        error_result: ErrorResult | None = None,
+        error_message: ErrorResult | str | None = None,
         code: str = "STEP_FAILED",
         category: ErrorCategory = ErrorCategory.BUSINESS,
         retryable: bool = False,
@@ -180,25 +220,24 @@ class StandardOutputWrapper[TOutput]:
     ) -> StandardOutputWrapper[TOutput]:
         """Build a deliberate failure outcome from caller-authored safe metadata.
 
-        ``error=`` and ``output=`` retain compatibility with the prior runtime
-        result API. New callers should pass ``status_message`` and
-        ``error_message`` directly.
+        ``error=`` and ``error_message=`` are compatibility aliases for
+        ``error_result=``; ``output=`` aliases ``result=``.
         """
 
-        if error is not None:
-            if error_message is not None:
-                raise ValueError("provide either error or error_message")
-            error_message = error
+        if sum(value is not None for value in (error, error_result, error_message)) > 1:
+            raise ValueError("provide only one error result")
+        if error_result is not None or error is not None:
+            error_message = error_result if error_result is not None else error
         if result is not None and output is not None:
             raise ValueError("provide either result or output")
         if result is None:
             result = output
         if status_code == 0:
             raise ValueError("a failure status_code must be nonzero")
-        if isinstance(error_message, ErrorMessage):
+        if isinstance(error_message, ErrorResult):
             structured_error = error_message
         elif isinstance(error_message, str):
-            structured_error = ErrorMessage(
+            structured_error = ErrorResult(
                 category=category,
                 code=code,
                 message=error_message,
@@ -214,7 +253,7 @@ class StandardOutputWrapper[TOutput]:
             result=result,
             status_code=status_code,
             status_message=safe_status,
-            error_message=structured_error,
+            error_result=structured_error,
         )
 
     @property
@@ -230,10 +269,16 @@ class StandardOutputWrapper[TOutput]:
         return _thaw_json(self.result) if isinstance(self.result, Mapping) else None
 
     @property
-    def error(self) -> ErrorMessage | None:
+    def error(self) -> ErrorResult | None:
         """Compatibility alias used by the existing container adapter."""
 
-        return self.error_message
+        return self.error_result
+
+    @property
+    def error_message(self) -> ErrorResult | None:
+        """Compatibility alias for the previous Python field name."""
+
+        return self.error_result
 
     def model_dump(
         self,
@@ -246,13 +291,13 @@ class StandardOutputWrapper[TOutput]:
         if mode not in {"python", "json"}:
             raise ValueError("mode must be 'python' or 'json'")
         names = (
-            ("result", "statusCode", "statusMessage", "errorMessage")
+            ("result", "statusCode", "statusMessage", "errorResult")
             if by_alias
-            else ("result", "status_code", "status_message", "error_message")
+            else ("result", "status_code", "status_message", "error_result")
         )
         error = (
-            self.error_message.model_dump(mode=mode)
-            if self.error_message is not None
+            self.error_result.model_dump(mode=mode)
+            if self.error_result is not None
             else None
         )
         return {
