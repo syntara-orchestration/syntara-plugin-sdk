@@ -24,6 +24,10 @@ ERROR_SCHEMA_DIGEST = "sha256:" + "b" * 64
 ERROR_RESULT = {"category": "dependency", "code": "REMOTE_REJECTED", "message": "Rejected", "retryable": True, "details": {"attempts": [1, 2]}}
 
 
+def test_generated_protocol_package_matches_container_abi() -> None:
+    assert container_pb2.DESCRIPTOR.package == CONTAINER_ABI.replace("/", ".")
+
+
 @pytest.fixture
 def runtime() -> tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]]:
     calls: dict[str, Any] = {}
@@ -216,7 +220,7 @@ def test_invalid_abi_is_returned_as_a_terminal_failure(
         invocation_id="invocation-1",
         workflow_run_id="workflow-run-1",
         step_revision_id="github.create-issue.v1",
-        runtime_abi="syntara.container/v999",
+        runtime_abi="syntara.container/v1alpha1",
         inputs_json=b"{}",
         credential_file_paths_json=b"{}",
         timeout_seconds=30,
@@ -226,7 +230,7 @@ def test_invalid_abi_is_returned_as_a_terminal_failure(
 
     assert len(events) == 1
     assert events[0].failure.code == FailureCode.ABI_VIOLATION.value
-    assert "v999" not in events[0].failure.message
+    assert "v1alpha1" not in events[0].failure.message
 
 
 def test_missing_workflow_run_id_is_invalid_input(
@@ -236,7 +240,7 @@ def test_missing_workflow_run_id_is_invalid_input(
     request = container_pb2.ExecuteRequest(
         invocation_id="invocation-1",
         step_revision_id="github.create-issue.v1",
-        runtime_abi="syntara.container/v1alpha1",
+        runtime_abi="syntara.container/v1alpha2",
         inputs_json=b"{}",
         credential_file_paths_json=b"{}",
         timeout_seconds=30,
@@ -257,7 +261,7 @@ def test_credential_file_paths_must_use_the_approved_secret_mount(
         invocation_id="invocation-1",
         workflow_run_id="workflow-run-1",
         step_revision_id="github.create-issue.v1",
-        runtime_abi="syntara.container/v1alpha1",
+        runtime_abi="syntara.container/v1alpha2",
         inputs_json=b"{}",
         credential_file_paths_json=b'{"github-token":"/tmp/github-token"}',
         timeout_seconds=30,

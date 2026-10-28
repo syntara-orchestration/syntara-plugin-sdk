@@ -107,7 +107,7 @@ def _validate_workloads(
             errors.append(
                 f"custom-runner target {identity!r} references a missing workload"
             )
-        elif workload.get("abi") != "syntara.container/v1alpha1":
+        elif workload.get("abi") != "syntara.container/v1alpha2":
             errors.append(
                 f"custom-runner target {identity!r} workload has an invalid ABI"
             )

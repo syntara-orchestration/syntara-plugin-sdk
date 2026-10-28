@@ -10,13 +10,12 @@ Every plugin inventory and target document starts with this envelope.
 | --- | --- |
 | `apiVersion` | Contract version. Use `syntara.io/v1alpha1`. |
 | `kind` | Document type; determines the schema and required fields. |
-| `metadata` | Human-facing identity. A plugin uses `namespace`, `name`, `version`, `displayName`, `description`, and optional `tags`. Target documents omit `namespace` and `version. |
+| `metadata` | Human-facing identity. A plugin uses `namespace`, `name`, `version`, `displayName`, and `description`. Target documents omit `namespace` and `version`. |
 | `metadata.namespace` | DNS-like publisher namespace. Plugin only. |
 | `metadata.name` | Stable, lowercase document identity. |
 | `metadata.version` | Semantic plugin release version. Plugin only. |
 | `metadata.displayName` | Short UI label. |
 | `metadata.description` | User-facing explanation of the plugin or target. |
-| `metadata.tags` | Optional, unique, lowercase labels for discovery and filtering. Use short kebab-case values such as `github`, `issue-tracking`, or `workflow-automation` (up to 32 tags). |
 
 ## Terms and execution model
 

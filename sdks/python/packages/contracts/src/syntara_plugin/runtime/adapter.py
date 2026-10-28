@@ -223,17 +223,14 @@ def container_step_for_binding(
                 outcome="not_started",
             )
         context = _execution_context(invocation)
-        execution_failure: str | None = None
         try:
             wrapper = invoke(binding, invocation.inputs, context)
         except StepExecutionError as error:
-            execution_failure = error.safe_message
-        if execution_failure is not None:
             raise ContainerInvocationError(
-                FailureCode.ABI_VIOLATION,
-                execution_failure,
-                outcome="unknown",
-            )
+                error.failure_code,
+                error.safe_message,
+                outcome=error.outcome,
+            ) from error
         return _container_result(wrapper, output_schema_digest, error_schema_digest, object_store)
 
     return handler

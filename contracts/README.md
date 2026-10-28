@@ -85,11 +85,12 @@ machine-readable reason. `retryable` communicates whether retrying may succeed.
 `spec.output` remains the schema for the successful business result, never for
 the wrapper. The separate `spec.error` schema is optional. When present, the
 runtime validates the entire error object against that schema and the SDK base
-schema; when absent, the SDK base schema is the effective schema. Both allow
-step-specific fields unless the declared schema restricts them. A failed
-container result carries the complete error object and the canonical digest of
-the effective error schema. If an error, including an input-validation error,
-does not satisfy the effective schema, no valid wrapper exists. A wrapper cannot represent an
+schema, and the declared schema may add step-specific fields. When absent, the
+SDK uses a closed fallback schema that accepts only the base fields; custom
+step-specific fields require a declared `spec.error`. A failed container result
+carries the complete error object and the canonical digest of the effective
+error schema. If an error, including an input-validation error, does not satisfy
+the effective schema, no valid wrapper exists. A wrapper cannot represent an
 invocation that produced no valid outcome. In that case the runtime emits a
 `ContainerFailure` instead: its `outcome` is `not_started`, `not_completed`, or
 `unknown`. `not_started` means execution did not begin; `not_completed` means

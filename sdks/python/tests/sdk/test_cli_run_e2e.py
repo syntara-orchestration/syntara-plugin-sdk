@@ -330,7 +330,7 @@ def test_image_mode_rejects_an_abi_mismatch(capsys) -> None:
     assert status == 1
     captured = capsys.readouterr()
     assert "does not implement the supported container ABI" in captured.err
-    assert "syntara.container/v1alpha1" in captured.err
+    assert "syntara.container/v1alpha2" in captured.err
 
 
 def test_image_mode_scrubs_a_remote_object_reference(capsys) -> None:

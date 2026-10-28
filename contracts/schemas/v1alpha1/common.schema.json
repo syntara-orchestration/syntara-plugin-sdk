@@ -14,7 +14,6 @@
     "rfc3339Timestamp": {"type": "string", "format": "date-time"},
     "repository": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"},
     "opaqueReference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
-    "tag": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
     "metadata": {
       "type": "object",
       "additionalProperties": false,
@@ -24,13 +23,7 @@
         "name": {"$ref": "#/$defs/identifier"},
         "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]*)\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
-        "description": {"type": "string", "minLength": 1, "maxLength": 2000},
-        "tags": {
-          "type": "array",
-          "items": {"$ref": "#/$defs/tag"},
-          "uniqueItems": true,
-          "maxItems": 32
-        }
+        "description": {"type": "string", "minLength": 1, "maxLength": 2000}
       }
     },
     "targetMetadata": {
@@ -40,13 +33,7 @@
       "properties": {
         "name": {"$ref": "#/$defs/identifier"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
-        "description": {"type": "string", "minLength": 1, "maxLength": 2000},
-        "tags": {
-          "type": "array",
-          "items": {"$ref": "#/$defs/tag"},
-          "uniqueItems": true,
-          "maxItems": 32
-        }
+        "description": {"type": "string", "minLength": 1, "maxLength": 2000}
       }
     },
     "documentSource": {

@@ -136,7 +136,7 @@ def test_compiled_plugin_builds_reproducible_artifact_and_catalog_entry() -> Non
     assert [target["identity"] for target in targets] == list(IDENTITIES.values())
     assert compilation.descriptor["spec"]["workloads"] == {
         "existing-step-workload": {
-            "abi": "syntara.container/v1alpha1",
+            "abi": "syntara.container/v1alpha2",
             "image": IMAGE_BINDING,
         }
     }

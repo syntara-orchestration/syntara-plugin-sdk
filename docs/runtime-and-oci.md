@@ -79,7 +79,7 @@ with all adapter-specific bootstrap details under `adapter`:
 
 ```json
 {
-  "abi": "syntara.container/v1alpha1",
+  "abi": "syntara.container/v1alpha2",
   "adapter": {
     "bindingsFactory": "acme_plugin.runtime:create_bindings"
   }
@@ -122,7 +122,7 @@ this path for Action, Control, and Trigger. `make test-integration` builds its
 plugin wheel, installs it with the Python contracts distribution, and invokes
 all three manifest-declared entry points over the container ABI. The current
 standalone Execution Plane still vendors the older `syntara.node.v1` protocol;
-until that service adopts `syntara.container/v1alpha1`, this repository proves
+until that service adopts `syntara.container/v1alpha2`, this repository proves
 the SDK adapter path but does not claim end-to-end Execution Plane dispatch.
 Automation Orchestrator's workflow selection and platform-owned runners remain
 separate platform responsibilities.
@@ -145,7 +145,12 @@ Execution Plane and a step container use to exchange execution requests,
 progress, results, and cancellation. It is not a CPU ABI. The current contract
 is defined in
 [`container.proto`](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
-and identified as `syntara.container/v1alpha1`.
+and identified as `syntara.container/v1alpha2`.
+
+The `Result` protobuf changed incompatibly: the former flattened error fields
+are reserved and complete structured errors now use new fields. The ABI is
+therefore versioned as `v1alpha2`; a `v1alpha1` workload must be upgraded before
+it can communicate with this SDK. Health negotiation checks the ABI exactly.
 
 Final workload images, rather than a reusable SDK base layer, are the OCI
 artifacts published for deployment. They must record their immutable
@@ -368,9 +373,10 @@ serialized in the result fields, alongside the digest of the applied
 declared `spec.output` schema. A nonzero status is still a valid result and
 carries the complete structured error JSON and the canonical digest of the
 effective error schema. The SDK base requires a category, code, message, and
-retryability value and allows additional fields. The effective schema is the
-installed `spec.error`, when declared, or the SDK base schema otherwise. The
-runtime validates errors against both the base and the effective schema.
+retryability value. When `spec.error` is declared, its schema may add
+step-specific fields and the runtime validates errors against both schemas.
+When `spec.error` is absent, the SDK uses a closed fallback schema that accepts
+only the base fields; custom fields require a declared `spec.error`.
 An error that fails either schema produces no valid wrapper, including an
 input-validation error when a declared schema requires additional fields.
 `ContainerFailure` is reserved for
@@ -432,14 +438,16 @@ converted to a deliberate step failure.
 
 For a step-specific error contract, pass the trusted `error_schema=` to either
 wrapper API. The client verifies its digest and validates the complete error
-before reconstruction. Without that argument it uses the SDK base schema.
-Authors can supply step-specific fields with `StepFailure(...,
+before reconstruction. Without that argument it uses the closed, base-fields-only
+fallback schema, so custom fields require a declared `spec.error`. Authors can
+supply step-specific fields with `StepFailure(...,
 error_result=ErrorResult(category="dependency", code="REMOTE_REJECTED",
 message="Rejected", retryable=True, requestId="request-1"))`.
 They can also subclass `ErrorResult` to declare typed step-specific fields.
-When using a `requestId` or similar correlation field, prefer the current
-`ExecutionContext.invocation_id` so step logs can be linked to the platform
-invocation without introducing a second identifier.
+Preserve an upstream `requestId` in declared step-specific error fields when
+it helps troubleshoot the provider call. For correlation with platform
+execution records, use `ExecutionContext.invocation_id` in step logs instead
+of generating a second execution identifier.
 
 ### Installed revision mapping
 

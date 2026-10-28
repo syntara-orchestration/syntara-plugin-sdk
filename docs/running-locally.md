@@ -277,7 +277,7 @@ obtain such a runtime:
 
    ```json
    {
-     "abi": "syntara.container/v1alpha1",
+     "abi": "syntara.container/v1alpha2",
      "adapter": {"bindingsFactory": "my_plugin.workload_runtime:create_bindings"}
    }
    ```

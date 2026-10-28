@@ -141,6 +141,51 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
     assert validate_document(bundle, "action", action)
 
 
+def test_plugin_metadata_rejects_out_of_scope_tags() -> None:
+    bundle = load_bundle()
+    plugin: dict[str, object] = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Plugin",
+        "metadata": _metadata(),
+        "spec": {
+            "documentation": {"path": "docs/README.md"},
+            "targets": ["actions/create-issue.yaml"],
+        },
+    }
+    assert validate_document(bundle, "plugin", plugin) == []
+
+    plugin["metadata"] = {**_metadata(), "tags": ["automation"]}
+
+    errors = validate_document(bundle, "plugin", plugin)
+    assert any("tags" in error for error in errors)
+
+
+def test_target_metadata_rejects_out_of_scope_tags() -> None:
+    bundle = load_bundle()
+    action = step_document(
+        "Action",
+        target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
+        {
+            "runtime": {
+                "kind": "platform-runner",
+                "driver": "http.v1",
+                "operation": {"method": "POST", "path": "/issues"},
+            },
+            "input": {"kind": "inline", "value": {"type": "object"}},
+            "output": {"kind": "inline", "value": {"type": "object"}},
+        },
+    )
+    assert validate_document(bundle, "action", action) == []
+
+    action["metadata"] = {
+        **target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
+        "tags": ["automation"],
+    }
+
+    errors = validate_document(bundle, "action", action)
+    assert any("tags" in error for error in errors)
+
+
 def test_custom_runner_action_requires_a_stable_python_entry_point() -> None:
     bundle = load_bundle()
     action = step_document(
@@ -318,7 +363,7 @@ def test_contracts_reject_legacy_images_and_unsafe_asset_paths() -> None:
         "kind": "Action",
         "metadata": _metadata(),
         "spec": {
-            "runtime": {"kind": "platform-runner", "abi": "syntara.container/v1alpha1"},
+            "runtime": {"kind": "platform-runner", "abi": "syntara.container/v1alpha2"},
             "input": {"kind": "asset", "path": "../secret.json"},
             "output": {"kind": "inline", "value": {}},
         },

@@ -102,6 +102,10 @@ def test_malicious_runtime_and_provider_fixtures_are_rejected() -> None:
     item["runtimeContext"] = ["not-an-object"]
     assert not harness.validate_runtime(item).valid
 
+    legacy_work_item = _work_item()
+    legacy_work_item["runtimeAbi"] = "syntara.container/v1alpha1"
+    assert not harness.validate_runtime(legacy_work_item).valid
+
     lease = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "CredentialLease",
@@ -304,6 +308,13 @@ def test_standard_output_wrapper_requires_object_result_and_complete_error_metad
         },
     }
     assert harness.validate_runtime(failure).valid
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+    deliberate_failure = json.loads(
+        (fixtures / "standard-output-wrapper.deliberate-failure.valid.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert harness.validate_runtime(deliberate_failure).valid
     assert not harness.validate_runtime(
         dict(failure, errorResult={**failure["errorResult"], "category": "unknown"})
     ).valid
@@ -317,3 +328,17 @@ def test_standard_output_wrapper_requires_object_result_and_complete_error_metad
             },
         )
     ).valid
+
+
+def test_standard_output_wrapper_conformance_fixtures() -> None:
+    harness = ConformanceHarness()
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+
+    for fixture_name, expected_valid in (
+        ("standard-output-wrapper.success.valid.json", True),
+        ("standard-output-wrapper.failure-missing-error.invalid.json", False),
+        ("standard-output-wrapper.no-valid-outcome.invalid.json", False),
+    ):
+        document = json.loads((fixtures / fixture_name).read_text(encoding="utf-8"))
+        validation = harness.validate_runtime(document)
+        assert validation.valid is expected_valid, f"{fixture_name}: {validation.errors}"

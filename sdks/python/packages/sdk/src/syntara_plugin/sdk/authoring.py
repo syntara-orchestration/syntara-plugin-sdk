@@ -24,7 +24,7 @@ from syntara_plugin.contracts import (
 from yaml.constructor import ConstructorError
 from yaml.tokens import AliasToken, AnchorToken
 
-DEFAULT_CONTAINER_ABI = "syntara.container/v1alpha1"
+DEFAULT_CONTAINER_ABI = "syntara.container/v1alpha2"
 DEFAULT_PROVIDER_ABI = "syntara.provider/v1alpha1"
 PLUGIN_MANIFEST_FILENAME = "plugin.yaml"
 _JSON_SUFFIX = ".json"

@@ -145,7 +145,7 @@ def create_uncancellable_timeout_bindings() -> StepBindings:
 def write_runtime_config(
     tmp_path: Path,
     *,
-    abi: str = "syntara.container/v1alpha1",
+    abi: str = "syntara.container/v1alpha2",
     adapter: object | None = None,
 ) -> Path:
     document = {
@@ -223,7 +223,7 @@ async def _service_events(
         invocation_id=invocation.invocation_id,
         workflow_run_id=invocation.workflow_run_id,
         step_revision_id=invocation.step_revision_id,
-        runtime_abi="syntara.container/v1alpha1",
+        runtime_abi="syntara.container/v1alpha2",
         inputs_json=json.dumps({"message": invocation.inputs["message"]}).encode(),
         timeout_seconds=invocation.timeout_seconds,
     )
@@ -424,7 +424,7 @@ def test_runtime_server_cancels_step_when_client_disconnects() -> None:
                 invocation_id=invocation.invocation_id,
                 workflow_run_id=invocation.workflow_run_id,
                 step_revision_id=invocation.step_revision_id,
-                runtime_abi="syntara.container/v1alpha1",
+                runtime_abi="syntara.container/v1alpha2",
                 inputs_json=json.dumps({"message": "disconnect"}).encode(),
                 timeout_seconds=30,
             )

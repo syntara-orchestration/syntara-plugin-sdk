@@ -22,6 +22,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
 from .abi import CONTAINER_ABI, FailureCode
+from .execution import StepExecutionError
 from .outcome import (
     _MAX_MESSAGE_LENGTH,
     ErrorResult,
@@ -200,9 +201,12 @@ def _resolve_container_output(
     if resolve_object_reference is None:
         raise ValueError("an object reference resolver is required for this result")
     try:
-        return resolve_object_reference(result.object_reference)
+        output = resolve_object_reference(result.object_reference)
     except Exception:
         raise ValueError("the referenced business result could not be resolved") from None
+    if output is None:
+        raise _protocol_error()
+    return output
 
 
 def _validate_container_output(
@@ -407,6 +411,15 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 cancellation.set()
             result = handler(invocation)
             yield terminal_execution_event(invocation, result)
+        except StepExecutionError as error:
+            yield failure_event(
+                invocation_id,
+                ContainerInvocationError(
+                    error.failure_code,
+                    error.safe_message,
+                    outcome=error.outcome,
+                ),
+            )
         except ContainerInvocationError as error:
             yield failure_event(invocation_id, error)
         except Exception:

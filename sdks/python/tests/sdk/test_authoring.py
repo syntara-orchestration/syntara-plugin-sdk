@@ -216,7 +216,7 @@ def test_yaml_and_typed_authoring_compile_to_identical_canonical_output(tmp_path
 
     assert yaml_result.canonical_json() == typed_result.canonical_json()
     assert yaml_result.descriptor["spec"]["targets"][0]["runtime"] == {
-        "abi": "syntara.container/v1alpha1",
+        "abi": "syntara.container/v1alpha2",
         "entryPoint": "issue_tools.actions:CreateIssue",
         "kind": "custom-runner",
         "workload": "plugin-workload",
@@ -272,25 +272,6 @@ def test_platform_runner_trigger_requires_and_preserves_matching_driver() -> Non
     compiled_trigger = result.descriptor["spec"]["targets"][0]
     assert compiled_trigger["driver"] == "webhook.v1"
     assert compiled_trigger["runtime"]["driver"] == "webhook.v1"
-
-
-def test_compiler_preserves_plugin_and_target_tags_in_descriptor_metadata() -> None:
-    plugin = _plugin()
-    plugin["metadata"]["tags"] = ["github", "issue-tracking"]
-    action = _action({"kind": "inline", "value": {"type": "object"}})
-    action["metadata"]["tags"] = ["workflow-automation", "github"]
-
-    result = compile_model(
-        _typed_plugin(plugin),
-        [Target("steps/create-issue/manifest.yaml", action)],
-        image_bindings={"plugin-workload": DIGEST},
-    )
-
-    assert result.descriptor["metadata"]["tags"] == ["github", "issue-tracking"]
-    assert result.descriptor["spec"]["targets"][0]["metadata"]["tags"] == [
-        "workflow-automation",
-        "github",
-    ]
 
 
 def test_platform_runner_trigger_with_mismatched_drivers_is_rejected() -> None:
@@ -413,7 +394,7 @@ def test_action_runner_ownership_is_orthogonal_to_action_category() -> None:
         image_bindings={"plugin-workload": DIGEST},
     )
     assert custom.descriptor["spec"]["targets"][0]["runtime"] == {
-        "abi": "syntara.container/v1alpha1",
+        "abi": "syntara.container/v1alpha2",
         "entryPoint": "steps:Transform",
         "kind": "custom-runner",
         "workload": "plugin-workload",
@@ -785,7 +766,7 @@ def test_custom_runner_accepts_digest_pinned_registry_reference_with_port(tmp_pa
     result = compile_workspace(BuildRequest(root, image_bindings={"plugin-workload": image}))
 
     assert result.descriptor["spec"]["workloads"] == {
-        "plugin-workload": {"abi": "syntara.container/v1alpha1", "image": image}
+        "plugin-workload": {"abi": "syntara.container/v1alpha2", "image": image}
     }
 
 

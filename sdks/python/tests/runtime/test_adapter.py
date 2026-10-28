@@ -369,7 +369,7 @@ def test_mismatched_runtime_context_digest_is_an_abi_violation(
         handler(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
-    assert raised.value.outcome == "unknown"
+    assert raised.value.outcome == "not_started"
 
 
 @pytest.mark.parametrize("output_schema_source", ["inline", "asset"])
@@ -566,6 +566,14 @@ def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
             client.execute_wrapped(
                 _invocation("acme.plugin.huge"), output_schema=_permissive_output_schema()
             )
+        with pytest.raises(ContainerRemoteError) as raised:
+            client.execute_wrapped(
+                _invocation("acme.plugin.huge"),
+                output_schema=_permissive_output_schema(),
+                resolve_object_reference=lambda _reference: None,
+            )
+        assert raised.value.code is FailureCode.ABI_VIOLATION
+        assert raised.value.source == "protocol"
 
         def resolve(reference: str) -> dict[str, Any]:
             assert reference == "object-store:huge-1"
@@ -629,12 +637,16 @@ def test_wrapper_round_trips_through_container_client(wrapper: StandardOutputWra
 def test_reference_resolution_rejects_invalid_output(invalid: Any) -> None:
     result = ContainerResult(_expected_digest(), object_reference="host:result")
 
-    with pytest.raises((ValueError, ContainerRemoteError)):
+    with pytest.raises(ContainerRemoteError) as raised:
         standard_output_from_container_result(
             result,
             output_schema=_permissive_output_schema(),
             resolve_object_reference=lambda _reference: invalid,
         )
+
+    assert raised.value.code is FailureCode.ABI_VIOLATION
+    assert raised.value.source == "protocol"
+    assert raised.value.outcome == "unknown"
 
 
 def test_reference_resolution_errors_are_sanitized() -> None:
@@ -743,7 +755,7 @@ def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
         handler(invocation)
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
-    assert raised.value.outcome == "unknown"
+    assert raised.value.outcome == "not_started"
 
 
 def test_container_step_rejects_a_non_step_implementation() -> None:

@@ -29,6 +29,7 @@ from .container import (
     invocation_from_request,
     terminal_execution_event,
 )
+from .execution import StepExecutionError
 from .protocol import container_pb2, container_pb2_grpc
 
 _RUNTIME_CONFIG = "SYNTARA_RUNTIME_CONFIG"
@@ -65,6 +66,15 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             context.add_done_callback(lambda _context: cancellation.set())
             result = await self._execute_step(handler, invocation)
             yield terminal_execution_event(invocation, result)
+        except StepExecutionError as error:
+            yield failure_event(
+                invocation_id,
+                ContainerInvocationError(
+                    error.failure_code,
+                    error.safe_message,
+                    outcome=error.outcome,
+                ),
+            )
         except ContainerInvocationError as error:
             yield failure_event(invocation_id, error)
         except Exception:

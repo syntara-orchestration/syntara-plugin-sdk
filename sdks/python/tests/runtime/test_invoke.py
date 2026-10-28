@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -41,6 +42,7 @@ from syntara_plugin.runtime import (
     to_json_document,
 )
 from syntara_plugin.runtime.container import _request_from_invocation
+from syntara_plugin.runtime.server import AsyncContainerRuntimeService
 
 
 class InvocationInput(BaseModel):
@@ -194,6 +196,18 @@ class UnexpectedStep(ActionStep[InvocationInput, InvocationOutput]):
     def run(self, inputs: InvocationInput, context: ExecutionContext) -> InvocationOutput:
         self.run_calls += 1
         raise RuntimeError("unexpected failure secret sentinel")
+
+
+class ExecuteCountingStep(ActionEchoStep):
+    def __init__(self) -> None:
+        super().__init__()
+        self.execute_calls = 0
+
+    def execute(
+        self, inputs: InvocationInput, context: ExecutionContext
+    ) -> InvocationOutput:
+        self.execute_calls += 1
+        return super().execute(inputs, context)
 
 
 class TriggerConfigurationStep(TriggerStep[InvocationInput, InvocationOutput]):
@@ -446,6 +460,85 @@ def test_wrapper_rejects_invalid_status_and_result_combinations() -> None:
         )
 
 
+def test_wrapper_hash_uses_its_immutable_content() -> None:
+    first = StandardOutputWrapper.success({"nested": [{"value": "same"}]})
+    second = StandardOutputWrapper.success({"nested": [{"value": "same"}]})
+
+    assert first == second
+    assert hash(first) == hash(second)
+    assert {first: "stored"}[second] == "stored"
+
+    first_failure = StandardOutputWrapper.failure(
+        ErrorResult(
+            category="dependency",
+            code="REMOTE_REJECTED",
+            message="Rejected",
+            provider={"requestId": "req-1"},
+        )
+    )
+    second_failure = StandardOutputWrapper.failure(
+        ErrorResult(
+            category="dependency",
+            code="REMOTE_REJECTED",
+            message="Rejected",
+            provider={"requestId": "req-1"},
+        )
+    )
+
+    assert first_failure == second_failure
+    assert hash(first_failure) == hash(second_failure)
+
+
+def test_wrapper_equality_distinguishes_boolean_and_number_json_values() -> None:
+    boolean_result = StandardOutputWrapper.success({"nested": [{"value": True}]})
+    numeric_result = StandardOutputWrapper.success({"nested": [{"value": 1}]})
+
+    assert boolean_result != numeric_result
+    assert len({boolean_result: "boolean", numeric_result: "number"}) == 2
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"code": "STEP_FAILED"},
+        {"category": "business"},
+        {"retryable": False},
+        {"retryable": True},
+    ],
+)
+def test_step_failure_rejects_error_result_with_metadata_overrides(
+    overrides: dict[str, object],
+) -> None:
+    error = ErrorResult(
+        category="dependency", code="REMOTE_REJECTED", message="Rejected"
+    )
+
+    with pytest.raises(ValueError, match="without code, category, or retryable overrides"):
+        StepFailure(73, "Rejected", error_result=error, **overrides)
+
+
+def test_step_failure_preserves_legacy_defaults_and_overrides() -> None:
+    defaulted = StepFailure(1, "Failed", "The operation failed.")
+    customized = StepFailure(
+        73,
+        "Rejected",
+        "The service rejected the request.",
+        code="REMOTE_REJECTED",
+        category="dependency",
+        retryable=True,
+    )
+
+    assert defaulted.error_result.model_dump(mode="json") == {
+        "category": "business",
+        "code": "STEP_FAILED",
+        "message": "The operation failed.",
+        "retryable": False,
+    }
+    assert customized.error_result.code == "REMOTE_REJECTED"
+    assert customized.error_result.category == "dependency"
+    assert customized.error_result.retryable is True
+
+
 def test_wrapper_result_is_recursively_immutable_and_detached_from_step_output() -> None:
     source = {"nested": [{"labels": ["original"]}]}
     detached = StandardOutputWrapper.success(source)
@@ -491,6 +584,37 @@ def test_invalid_input_failure_is_safe_and_does_not_echo_rejected_values() -> No
     assert step.run_calls == 0
 
 
+def test_invalid_input_error_schema_failure_is_not_started_through_container_server() -> None:
+    step = ExecuteCountingStep()
+    input_schema = copy.deepcopy(InvocationInput.model_json_schema())
+    input_schema["properties"]["value"]["minLength"] = 10
+    error_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["category", "code", "message", "retryable", "provider"],
+        "properties": {
+            "category": {"type": "string"},
+            "code": {"type": "string"},
+            "message": {"type": "string"},
+            "retryable": {"type": "boolean"},
+            "provider": {"type": "object"},
+        },
+    }
+    binding = _binding(
+        step,
+        "tests.runtime.invoke.invalid-input-error-schema",
+        input_schema=input_schema,
+        error_schema=error_schema,
+    )
+
+    event = _terminal_event(binding, {"value": "short"})
+
+    assert event.WhichOneof("event") == "failure"
+    assert event.failure.outcome == "not_started"
+    assert step.execute_calls == 0
+    assert step.run_calls == 0
+
+
 def test_unexpected_exception_is_raised_as_a_safe_execution_error() -> None:
     step = UnexpectedStep()
     binding = _binding(step, "tests.runtime.invoke.unexpected")
@@ -500,7 +624,24 @@ def test_unexpected_exception_is_raised_as_a_safe_execution_error() -> None:
 
     assert "unexpected failure secret sentinel" not in str(raised.value)
     assert raised.value.__cause__ is None
+    assert raised.value.outcome == "unknown"
     assert step.run_calls == 1
+
+
+def test_input_model_preparation_exception_is_not_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    step = ExecuteCountingStep()
+    binding = _binding(step, "tests.runtime.invoke.input-model-preparation-failure")
+
+    def fail_input_model(_step_type: type[BaseStep[Any, Any]]) -> type[BaseModel]:
+        raise RuntimeError("input model preparation failed")
+
+    monkeypatch.setattr(type(step), "input_model", classmethod(fail_input_model))
+
+    with pytest.raises(StepExecutionError) as raised:
+        invoke(binding, {"value": "hello"}, _context(binding))
+
+    assert raised.value.outcome == "not_started"
+    assert step.execute_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -580,9 +721,10 @@ def test_supplied_output_schema_digest_must_match_the_bound_descriptor() -> None
     binding = _binding(step, "tests.runtime.invoke.digest-mismatch")
     context = _context(binding, runtime_context={"outputSchemaDigest": "sha256:" + "0" * 64})
 
-    with pytest.raises(StepExecutionError, match="digest"):
+    with pytest.raises(StepExecutionError, match="digest") as raised:
         invoke(binding, {"value": "hello"}, context)
 
+    assert raised.value.outcome == "not_started"
     assert step.run_calls == 0
 
     event = _terminal_event(
@@ -592,7 +734,7 @@ def test_supplied_output_schema_digest_must_match_the_bound_descriptor() -> None
     )
     assert event.WhichOneof("event") == "failure"
     assert event.failure.code == "ABI_VIOLATION"
-    assert event.failure.outcome == "unknown"
+    assert event.failure.outcome == "not_started"
 
 
 def test_unprovenanced_binding_cannot_produce_a_wrapper() -> None:
@@ -600,10 +742,62 @@ def test_unprovenanced_binding_cannot_produce_a_wrapper() -> None:
     descriptor = StepDescriptor.for_step("tests.runtime.invoke.unbound", step)
     binding = StepBinding(descriptor, step)
 
-    with pytest.raises(StepExecutionError, match="trusted installed descriptor"):
+    with pytest.raises(StepExecutionError, match="trusted installed descriptor") as raised:
         invoke(binding, {"value": "hello"}, ExecutionContext(invocation_id="unbound"))
 
+    assert raised.value.outcome == "not_started"
     assert step.run_calls == 0
+
+
+@pytest.mark.parametrize("outcome", ["not_started", "unknown"])
+def test_container_runtime_service_preserves_step_execution_outcome(outcome: str) -> None:
+    binding = _binding(ActionEchoStep(), "tests.runtime.invoke.server-outcome")
+
+    def fail(_invocation: ContainerInvocation) -> Any:
+        raise StepExecutionError("A safe execution failure.", outcome=outcome)
+
+    service = ContainerRuntimeService(
+        StepRegistry({binding.descriptor.step_identity: fail})
+    )
+    invocation = _invocation(binding, {"value": "hello"})
+    event = next(service.Execute(_request_from_invocation(invocation), _ServicerContext()))
+
+    assert event.WhichOneof("event") == "failure"
+    assert event.failure.outcome == outcome
+
+
+class _AsyncServicerContext:
+    def add_done_callback(self, callback: Any) -> None:
+        del callback
+
+
+@pytest.mark.parametrize("outcome", ["not_started", "unknown"])
+def test_async_container_runtime_service_preserves_step_execution_outcome(
+    outcome: str,
+) -> None:
+    binding = _binding(ActionEchoStep(), "tests.runtime.invoke.async-server-outcome")
+
+    def fail(_invocation: ContainerInvocation) -> Any:
+        raise StepExecutionError("A safe execution failure.", outcome=outcome)
+
+    service = AsyncContainerRuntimeService(
+        StepRegistry({binding.descriptor.step_identity: fail})
+    )
+    invocation = _invocation(binding, {"value": "hello"})
+
+    async def read_event() -> Any:
+        events = [
+            event
+            async for event in service.Execute(
+                _request_from_invocation(invocation), _AsyncServicerContext()
+            )
+        ]
+        return events[0]
+
+    event = asyncio.run(read_event())
+
+    assert event.WhichOneof("event") == "failure"
+    assert event.failure.outcome == outcome
 
 
 def test_trigger_input_uses_spec_input_and_never_configuration() -> None:

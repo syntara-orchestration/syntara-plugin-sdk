@@ -26,7 +26,7 @@ in-process container outcomes for valid and invalid inputs.
 The repository's CI job and local integration target package the plugin wheel,
 install it beside `syntara-plugin-contracts`, build the checked-in
 `Containerfile`, start the runtime server with mutual TLS, and invoke all three
-steps over `syntara.container/v1alpha1`:
+steps over `syntara.container/v1alpha2`:
 
 ```sh
 make test-integration

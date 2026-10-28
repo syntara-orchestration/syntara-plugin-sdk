@@ -154,7 +154,7 @@ def _validate_json_object(value: object) -> None:
         raise ValueError("result must be a JSON object") from None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class StandardOutputWrapper[TOutput]:
     """A deeply immutable result envelope for one completed step invocation.
 
@@ -307,6 +307,20 @@ class StandardOutputWrapper[TOutput]:
             names[2]: self.status_message,
             names[3]: error,
         }
+
+    def _canonical_content(self) -> bytes:
+        return canonical_json_bytes(self.model_dump(mode="json"))
+
+    def __eq__(self, other: object) -> bool:
+        if type(other) is not type(self):
+            return NotImplemented
+        other_wrapper = cast(StandardOutputWrapper[Any], other)
+        return self._canonical_content() == other_wrapper._canonical_content()
+
+    def __hash__(self) -> int:
+        """Hash the canonical immutable envelope, including nested JSON data."""
+
+        return hash(self._canonical_content())
 
     def model_dump_json(self, *, by_alias: bool = True) -> str:
         """Serialize the wrapper as compact JSON using contract field names."""
