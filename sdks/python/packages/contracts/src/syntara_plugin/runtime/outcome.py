@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serial
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, load_bundle
 
 _MAX_MESSAGE_LENGTH = 4_096
+_DEFAULT_FAILURE_MESSAGE = "The step failed."
 
 
 class ErrorCategory(StrEnum):
@@ -70,8 +71,8 @@ class ErrorResult(BaseModel):
     @classmethod
     def _bound_message(cls, value: object) -> str:
         if not isinstance(value, str):
-            return "The step failed."
-        return _bounded_message(value, fallback="The step failed.")
+            return _DEFAULT_FAILURE_MESSAGE
+        return _bounded_message(value, fallback=_DEFAULT_FAILURE_MESSAGE)
 
     def model_post_init(self, __context: Any) -> None:
         extras = self.__pydantic_extra__ or {}
@@ -247,7 +248,7 @@ class StandardOutputWrapper[TOutput]:
             raise ValueError("failure requires structured error metadata")
         safe_status = _bounded_message(
             status_message if status_message is not None else structured_error.message,
-            fallback="The step failed.",
+            fallback=_DEFAULT_FAILURE_MESSAGE,
         )
         return cls(
             result=result,

@@ -148,20 +148,99 @@ class ContainerResult:
             raise ValueError("object_reference must be a Syntara identity")
 
     def _validate_status_metadata(self) -> None:
+        self._validate_status_message()
+        if self.status_code == 0:
+            self._validate_success_status_metadata()
+        else:
+            self._validate_failure_status_metadata()
+
+    def _validate_status_message(self) -> None:
         if not isinstance(self.status_message, str) or len(self.status_message) > 4_096:
             raise ValueError("status message must contain at most 4096 characters")
-        if self.status_code == 0 and (self.error_result is not None or self.error_schema_digest):
+
+    def _validate_success_status_metadata(self) -> None:
+        if self.error_result is not None or self.error_schema_digest:
             raise ValueError("a successful result must not carry error metadata")
-        if self.status_code != 0:
-            if self.error_result is None or not _OUTPUT_SCHEMA_DIGEST.fullmatch(
-                self.error_schema_digest
-            ):
-                raise ValueError("a failed result requires an error result and schema digest")
-            _validate_json_object(self.error_result)
-            document = _thaw_json_document(self.error_result)
-            if not Draft202012Validator(error_result_base_schema()).is_valid(document):
-                raise ValueError("error result must satisfy the SDK base schema")
-            object.__setattr__(self, "error_result", _freeze_json(document))
+
+    def _validate_failure_status_metadata(self) -> None:
+        if self.error_result is None or not _OUTPUT_SCHEMA_DIGEST.fullmatch(
+            self.error_schema_digest
+        ):
+            raise ValueError("a failed result requires an error result and schema digest")
+        _validate_json_object(self.error_result)
+        document = _thaw_json_document(self.error_result)
+        if not Draft202012Validator(error_result_base_schema()).is_valid(document):
+            raise ValueError("error result must satisfy the SDK base schema")
+        object.__setattr__(self, "error_result", _freeze_json(document))
+
+
+def _trusted_output_schema(output_schema: Mapping[str, Any]) -> tuple[Any, str]:
+    """Validate the trusted output schema and return it with its digest."""
+
+    try:
+        schema_document = _thaw_json_document(output_schema)
+        schema_digest = canonical_json_digest(schema_document)
+        Draft202012Validator.check_schema(schema_document)
+    except Exception:
+        raise ValueError("the trusted output schema is invalid") from None
+    return schema_document, schema_digest
+
+
+def _resolve_container_output(
+    result: ContainerResult,
+    resolve_object_reference: Callable[[str], Mapping[str, Any]] | None,
+) -> Mapping[str, Any] | None:
+    """Resolve an opaque business-result reference when the result uses one."""
+
+    if result.object_reference is None:
+        return result.output
+    if resolve_object_reference is None:
+        raise ValueError("an object reference resolver is required for this result")
+    try:
+        return resolve_object_reference(result.object_reference)
+    except Exception:
+        raise ValueError("the referenced business result could not be resolved") from None
+
+
+def _validate_container_output(
+    output: Mapping[str, Any] | None,
+    schema_document: Mapping[str, Any],
+) -> None:
+    """Validate inline or resolved business output against the trusted schema."""
+
+    if output is None:
+        return
+    try:
+        _validate_json_object(output)
+        validator = Draft202012Validator(schema_document, format_checker=FormatChecker())
+        is_valid = validator.is_valid(_thaw_json_document(output))
+    except Exception:
+        raise _protocol_error() from None
+    if not is_valid:
+        raise _protocol_error()
+
+
+def _error_from_container_result(
+    result: ContainerResult,
+    error_schema: Mapping[str, Any] | None,
+) -> ErrorResult | None:
+    """Validate and reconstruct deliberate step-failure metadata."""
+
+    if result.status_code == 0:
+        return None
+    schema = _thaw_json_document(error_schema if error_schema is not None else error_result_schema())
+    try:
+        Draft202012Validator.check_schema(schema)
+        if result.error_schema_digest != canonical_json_digest(schema):
+            raise ValueError("error schema digest mismatch")
+        error_document = _thaw_json_document(result.error_result)
+        if not Draft202012Validator(schema, format_checker=FormatChecker()).is_valid(
+            error_document
+        ):
+            raise ValueError("invalid error result")
+        return ErrorResult.model_validate(error_document)
+    except Exception:
+        raise _protocol_error() from None
 
 
 def standard_output_from_container_result(
@@ -182,57 +261,13 @@ def standard_output_from_container_result(
     addressing policy belong to the host. Resolver failures use safe messages.
     """
 
-    try:
-        schema_document = _thaw_json_document(output_schema)
-        schema_digest = canonical_json_digest(schema_document)
-        Draft202012Validator.check_schema(schema_document)
-    except Exception:
-        raise ValueError("the trusted output schema is invalid") from None
+    schema_document, schema_digest = _trusted_output_schema(output_schema)
     if result.output_schema_digest != schema_digest:
         raise _protocol_error()
 
-    output = result.output
-    if result.object_reference is not None:
-        if resolve_object_reference is None:
-            raise ValueError("an object reference resolver is required for this result")
-        resolved = False
-        try:
-            output = resolve_object_reference(result.object_reference)
-        except Exception:
-            resolved = False
-        else:
-            resolved = True
-        if not resolved:
-            raise ValueError("the referenced business result could not be resolved") from None
-
-    if output is not None:
-        invalid_output = False
-        try:
-            _validate_json_object(output)
-            validator = Draft202012Validator(schema_document, format_checker=FormatChecker())
-            invalid_output = validator.is_valid(_thaw_json_document(output)) is False
-        except Exception:
-            invalid_output = True
-        if invalid_output:
-            raise _protocol_error()
-
-    error = None
-    if result.status_code != 0:
-        schema = _thaw_json_document(
-            error_schema if error_schema is not None else error_result_schema()
-        )
-        try:
-            Draft202012Validator.check_schema(schema)
-            if result.error_schema_digest != canonical_json_digest(schema):
-                raise ValueError("error schema digest mismatch")
-            error_document = _thaw_json_document(result.error_result)
-            if not Draft202012Validator(schema, format_checker=FormatChecker()).is_valid(
-                error_document
-            ):
-                raise ValueError("invalid error result")
-            error = ErrorResult.model_validate(error_document)
-        except Exception:
-            raise _protocol_error() from None
+    output = _resolve_container_output(result, resolve_object_reference)
+    _validate_container_output(output, schema_document)
+    error = _error_from_container_result(result, error_schema)
     return StandardOutputWrapper(
         result=output,
         status_code=result.status_code,

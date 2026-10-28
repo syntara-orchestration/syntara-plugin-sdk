@@ -34,6 +34,7 @@ from .outcome import StandardOutputWrapper
 from .step import BaseStep
 
 _REFERENCE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+_INVALID_STEP_RESPONSE = "The plugin step returned an invalid response."
 # Business results above this canonical-JSON size cannot travel inline over the
 # container ABI and are externalized to an object-store reference instead.
 _MAX_INLINE_RESULT_BYTES = 1_048_576
@@ -107,7 +108,7 @@ def _place_business_result(
     if invalid_result:
         raise ContainerInvocationError(
             FailureCode.ABI_VIOLATION,
-            "The plugin step returned an invalid response.",
+            _INVALID_STEP_RESPONSE,
             outcome="unknown",
         )
     if len(payload) <= _MAX_INLINE_RESULT_BYTES:
@@ -163,7 +164,7 @@ def _container_result(
         if not isinstance(business_result, Mapping):
             raise ContainerInvocationError(
                 FailureCode.ABI_VIOLATION,
-                "The plugin step returned an invalid response.",
+                _INVALID_STEP_RESPONSE,
                 outcome="unknown",
             )
         output, object_reference = _place_business_result(business_result, object_store)
@@ -185,7 +186,7 @@ def _container_result(
     if invalid_wrapper:
         raise ContainerInvocationError(
             FailureCode.ABI_VIOLATION,
-            "The plugin step returned an invalid response.",
+            _INVALID_STEP_RESPONSE,
             outcome="unknown",
         )
 
