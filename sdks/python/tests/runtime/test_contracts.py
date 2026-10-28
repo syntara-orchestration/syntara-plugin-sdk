@@ -103,7 +103,7 @@ def test_malicious_runtime_and_provider_fixtures_are_rejected() -> None:
     assert not harness.validate_runtime(item).valid
 
     legacy_work_item = _work_item()
-    legacy_work_item["runtimeAbi"] = "syntara.container/v1alpha1"
+    legacy_work_item["runtimeAbi"] = "syntara.container/v1alpha2"
     assert not harness.validate_runtime(legacy_work_item).valid
 
     lease = {

@@ -20,7 +20,7 @@ def _target(identity: str = "acme.plugin.step") -> dict[str, object]:
         "output": {"type": "object"},
         "runtime": {
             "kind": "custom-runner",
-            "abi": "syntara.container/v1alpha2",
+            "abi": "syntara.container/v1alpha1",
             "entryPoint": "plugin:Step",
             "workload": "runner",
         },
@@ -35,7 +35,7 @@ def _descriptor(targets: list[dict[str, object]]) -> dict[str, object]:
             "targets": targets,
             "workloads": {
                 "runner": {
-                    "abi": "syntara.container/v1alpha2",
+                    "abi": "syntara.container/v1alpha1",
                     "image": "quay.io/acme/runner@sha256:" + "a" * 64,
                 }
             },

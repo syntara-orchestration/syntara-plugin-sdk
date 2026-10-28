@@ -63,7 +63,7 @@
       "additionalProperties": false,
       "required": ["abi", "image"],
       "properties": {
-        "abi": {"enum": ["syntara.container/v1alpha2", "syntara.provider/v1alpha1"]},
+        "abi": {"enum": ["syntara.container/v1alpha1", "syntara.provider/v1alpha1"]},
         "image": {"$ref": "common.schema.json#/$defs/digestImageReference"},
         "provider": {"$ref": "common.schema.json#/$defs/identifier"}
       }
@@ -88,7 +88,7 @@
       "additionalProperties": false,
       "required": ["abi", "entryPoint", "kind", "workload"],
       "properties": {
-        "abi": {"const": "syntara.container/v1alpha2"},
+        "abi": {"const": "syntara.container/v1alpha1"},
         "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
         "kind": {"const": "custom-runner"},
         "workload": {"$ref": "common.schema.json#/$defs/identifier"}

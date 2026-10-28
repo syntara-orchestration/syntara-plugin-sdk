@@ -216,7 +216,7 @@ def test_yaml_and_typed_authoring_compile_to_identical_canonical_output(tmp_path
 
     assert yaml_result.canonical_json() == typed_result.canonical_json()
     assert yaml_result.descriptor["spec"]["targets"][0]["runtime"] == {
-        "abi": "syntara.container/v1alpha2",
+        "abi": "syntara.container/v1alpha1",
         "entryPoint": "issue_tools.actions:CreateIssue",
         "kind": "custom-runner",
         "workload": "plugin-workload",
@@ -394,7 +394,7 @@ def test_action_runner_ownership_is_orthogonal_to_action_category() -> None:
         image_bindings={"plugin-workload": DIGEST},
     )
     assert custom.descriptor["spec"]["targets"][0]["runtime"] == {
-        "abi": "syntara.container/v1alpha2",
+        "abi": "syntara.container/v1alpha1",
         "entryPoint": "steps:Transform",
         "kind": "custom-runner",
         "workload": "plugin-workload",
@@ -766,7 +766,7 @@ def test_custom_runner_accepts_digest_pinned_registry_reference_with_port(tmp_pa
     result = compile_workspace(BuildRequest(root, image_bindings={"plugin-workload": image}))
 
     assert result.descriptor["spec"]["workloads"] == {
-        "plugin-workload": {"abi": "syntara.container/v1alpha2", "image": image}
+        "plugin-workload": {"abi": "syntara.container/v1alpha1", "image": image}
     }
 
 

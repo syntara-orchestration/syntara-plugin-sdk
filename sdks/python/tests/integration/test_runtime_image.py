@@ -263,7 +263,7 @@ def _build_sample_wheel(context: Path, output: Path) -> None:
 
 def _write_runtime_config(context: Path) -> None:
     document = {
-        "abi": "syntara.container/v1alpha2",
+        "abi": "syntara.container/v1alpha1",
         "adapter": {"bindingsFactory": "syntara_sample_step.runtime:create_bindings"},
     }
     (context / "runtime.json").write_text(json.dumps(document, indent=2), encoding="utf-8")

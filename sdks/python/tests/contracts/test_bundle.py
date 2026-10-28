@@ -363,7 +363,7 @@ def test_contracts_reject_legacy_images_and_unsafe_asset_paths() -> None:
         "kind": "Action",
         "metadata": _metadata(),
         "spec": {
-            "runtime": {"kind": "platform-runner", "abi": "syntara.container/v1alpha2"},
+            "runtime": {"kind": "platform-runner", "abi": "syntara.container/v1alpha1"},
             "input": {"kind": "asset", "path": "../secret.json"},
             "output": {"kind": "inline", "value": {}},
         },

@@ -220,7 +220,7 @@ def test_invalid_abi_is_returned_as_a_terminal_failure(
         invocation_id="invocation-1",
         workflow_run_id="workflow-run-1",
         step_revision_id="github.create-issue.v1",
-        runtime_abi="syntara.container/v1alpha1",
+        runtime_abi="syntara.provider/v1alpha1",
         inputs_json=b"{}",
         credential_file_paths_json=b"{}",
         timeout_seconds=30,
@@ -240,7 +240,7 @@ def test_missing_workflow_run_id_is_invalid_input(
     request = container_pb2.ExecuteRequest(
         invocation_id="invocation-1",
         step_revision_id="github.create-issue.v1",
-        runtime_abi="syntara.container/v1alpha2",
+        runtime_abi="syntara.container/v1alpha1",
         inputs_json=b"{}",
         credential_file_paths_json=b"{}",
         timeout_seconds=30,
@@ -261,7 +261,7 @@ def test_credential_file_paths_must_use_the_approved_secret_mount(
         invocation_id="invocation-1",
         workflow_run_id="workflow-run-1",
         step_revision_id="github.create-issue.v1",
-        runtime_abi="syntara.container/v1alpha2",
+        runtime_abi="syntara.container/v1alpha1",
         inputs_json=b"{}",
         credential_file_paths_json=b'{"github-token":"/tmp/github-token"}',
         timeout_seconds=30,
@@ -523,6 +523,25 @@ def test_oversized_failure_message_is_a_protocol_error() -> None:
             outcome="not_completed",
         ),
     )
+    with pytest.raises(ContainerRemoteError) as raised:
+        _remote_failure(event)
+
+    assert raised.value.source == "protocol"
+
+
+def test_empty_failure_message_is_a_protocol_error() -> None:
+    """A terminal failure must carry a bounded, nonempty message."""
+
+    from syntara_plugin.runtime.container import _remote_failure
+
+    event = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        failure=container_pb2.Failure(
+            code="REMOTE_REJECTED",
+            outcome="not_completed",
+        ),
+    )
+
     with pytest.raises(ContainerRemoteError) as raised:
         _remote_failure(event)
 

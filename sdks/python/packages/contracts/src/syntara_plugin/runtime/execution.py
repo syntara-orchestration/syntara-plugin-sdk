@@ -24,7 +24,7 @@ from .outcome import (
     ErrorCategory,
     ErrorResult,
     StandardOutputWrapper,
-    _bounded_message,
+    bounded_message,
     error_result_base_schema,
 )
 from .validation import StepInputValidationError, validate_step_inputs
@@ -56,7 +56,7 @@ class StepExecutionError(RuntimeError):
         detail: str | None = None,
         outcome: Literal["not_started", "unknown"] = "unknown",
     ) -> None:
-        self.safe_message = _bounded_message(
+        self.safe_message = bounded_message(
             safe_message,
             fallback=_UNEXPECTED_STEP_FAILURE,
         )
@@ -88,7 +88,7 @@ class StepFailure(Exception):
         if type(status_code) is not int or not 1 <= status_code <= 4_294_967_295:
             raise ValueError("StepFailure status_code must be a nonzero unsigned 32-bit integer")
         self.status_code = status_code
-        self.status_message = _bounded_message(status_message, fallback="The step failed.")
+        self.status_message = bounded_message(status_message, fallback="The step failed.")
         if error_result is not None and error_message is not None:
             raise ValueError("provide either error_result or error_message")
         if error_result is not None and any(
@@ -286,8 +286,11 @@ def invoke(
         wrapper = executor.execute(input, context)
     except StepExecutionError as error:
         execution_error = error
-    except Exception:
-        execution_error = StepExecutionError(_UNEXPECTED_STEP_FAILURE)
+    except Exception as error:
+        raise StepExecutionError(
+            _UNEXPECTED_STEP_FAILURE,
+            detail="".join(traceback.format_exception(error)).rstrip(),
+        ) from error
     if execution_error is not None:
         raise execution_error
     if wrapper is None:

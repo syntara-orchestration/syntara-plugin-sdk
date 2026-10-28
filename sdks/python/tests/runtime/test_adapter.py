@@ -307,7 +307,7 @@ def test_direct_and_container_paths_return_identical_standard_output_wrappers() 
 
     assert container == direct
     assert container.status_code == 0
-    assert container.error_message is None
+    assert container.error_result is None
 
 
 def test_container_handler_uses_the_public_runtime_invoke(monkeypatch: pytest.MonkeyPatch) -> None:

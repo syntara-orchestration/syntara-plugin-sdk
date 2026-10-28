@@ -35,7 +35,7 @@
         },
         "output": {"type": "object"},
         "runtime": {
-          "abi": "syntara.container/v1alpha2",
+          "abi": "syntara.container/v1alpha1",
           "entryPoint": "issue_tools.actions:CreateIssue",
           "kind": "custom-runner",
           "workload": "plugin-workload"
@@ -62,7 +62,7 @@
         },
         "output": {"type": "object"},
         "runtime": {
-          "abi": "syntara.container/v1alpha2",
+          "abi": "syntara.container/v1alpha1",
           "entryPoint": "issue_tools.controls:Deploy",
           "kind": "custom-runner",
           "workload": "plugin-workload"
@@ -110,7 +110,7 @@
     ],
     "workloads": {
       "plugin-workload": {
-        "abi": "syntara.container/v1alpha2",
+        "abi": "syntara.container/v1alpha1",
         "image": "quay.io/acme/issue-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     }

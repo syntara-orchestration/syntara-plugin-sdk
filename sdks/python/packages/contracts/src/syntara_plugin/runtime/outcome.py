@@ -13,7 +13,7 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, load_bundle
 
-_MAX_MESSAGE_LENGTH = 4_096
+MAX_MESSAGE_LENGTH = 4_096
 _DEFAULT_FAILURE_MESSAGE = "The step failed."
 
 
@@ -32,7 +32,7 @@ class ErrorCategory(StrEnum):
     INTERNAL = "internal"
 
 
-def _bounded_message(value: str, *, fallback: str) -> str:
+def bounded_message(value: str, *, fallback: str) -> str:
     """Return printable, bounded text suitable for a runtime diagnostic."""
 
     if not isinstance(value, str):
@@ -41,8 +41,8 @@ def _bounded_message(value: str, *, fallback: str) -> str:
     safe = safe.strip()
     if not safe:
         return fallback
-    if len(safe) > _MAX_MESSAGE_LENGTH:
-        safe = safe[: _MAX_MESSAGE_LENGTH - 3].rstrip() + "..."
+    if len(safe) > MAX_MESSAGE_LENGTH:
+        safe = safe[: MAX_MESSAGE_LENGTH - 3].rstrip() + "..."
     return safe
 
 
@@ -64,7 +64,7 @@ class ErrorResult(BaseModel):
 
     category: ErrorCategory = ErrorCategory.BUSINESS
     code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,127}$")
-    message: str = Field(min_length=1, max_length=_MAX_MESSAGE_LENGTH)
+    message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
     retryable: bool = Field(default=False, strict=True)
 
     @field_validator("message", mode="before")
@@ -72,16 +72,16 @@ class ErrorResult(BaseModel):
     def _bound_message(cls, value: object) -> str:
         if not isinstance(value, str):
             return _DEFAULT_FAILURE_MESSAGE
-        return _bounded_message(value, fallback=_DEFAULT_FAILURE_MESSAGE)
+        return bounded_message(value, fallback=_DEFAULT_FAILURE_MESSAGE)
 
     def model_post_init(self, __context: Any) -> None:
         extras = self.__pydantic_extra__ or {}
-        _validate_json_object(extras)
-        object.__setattr__(self, "__pydantic_extra__", _freeze_json(extras))
+        validate_json_object(extras)
+        object.__setattr__(self, "__pydantic_extra__", freeze_json(extras))
         for name in type(self).model_fields.keys() - ErrorResult.model_fields.keys():
             value = getattr(self, name)
-            _validate_json_object({name: value})
-            object.__setattr__(self, name, _freeze_json(value))
+            validate_json_object({name: value})
+            object.__setattr__(self, name, freeze_json(value))
 
     @model_serializer
     def _serialize(self) -> dict[str, Any]:
@@ -91,10 +91,10 @@ class ErrorResult(BaseModel):
             "message": self.message,
             "retryable": self.retryable,
             **{
-                name: _thaw_json(getattr(self, name))
+                name: thaw_json(getattr(self, name))
                 for name in type(self).model_fields.keys() - ErrorResult.model_fields.keys()
             },
-            **_thaw_json(self.__pydantic_extra__ or {}),
+            **thaw_json(self.__pydantic_extra__ or {}),
         }
 
 
@@ -114,7 +114,7 @@ def error_result_base_schema() -> dict[str, Any]:
     return load_bundle().documents["runtime.schema.json"]["$defs"]["errorResultBase"]
 
 
-def _freeze_json(value: Any) -> Any:
+def freeze_json(value: Any) -> Any:
     """Copy a JSON value into recursively immutable containers."""
 
     if isinstance(value, BaseModel):
@@ -122,9 +122,9 @@ def _freeze_json(value: Any) -> Any:
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
             raise TypeError("outcome result object keys must be strings")
-        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+        return MappingProxyType({key: freeze_json(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
-        return _FrozenList(_freeze_json(item) for item in value)
+        return _FrozenList(freeze_json(item) for item in value)
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float) and math.isfinite(value):
@@ -132,24 +132,24 @@ def _freeze_json(value: Any) -> Any:
     raise TypeError("outcome result must contain only JSON-compatible values")
 
 
-def _thaw_json(value: Any) -> Any:
+def thaw_json(value: Any) -> Any:
     """Return a detached, mutable JSON copy for legacy transport consumers."""
 
     if isinstance(value, Mapping):
-        return {key: _thaw_json(item) for key, item in value.items()}
+        return {key: thaw_json(item) for key, item in value.items()}
     if isinstance(value, tuple):
-        return [_thaw_json(item) for item in value]
+        return [thaw_json(item) for item in value]
     return value
 
 
-def _validate_json_object(value: object) -> None:
+def validate_json_object(value: object) -> None:
     """Require an object with values supported by the canonical JSON contract."""
 
     if not isinstance(value, Mapping):
         raise ValueError("result must be a JSON object")
     try:
-        frozen = _freeze_json(value)
-        canonical_json_bytes(_thaw_json(frozen))
+        frozen = freeze_json(value)
+        canonical_json_bytes(thaw_json(frozen))
     except (CanonicalJsonError, RecursionError, TypeError, ValueError):
         raise ValueError("result must be a JSON object") from None
 
@@ -174,11 +174,11 @@ class StandardOutputWrapper[TOutput]:
         object.__setattr__(
             self,
             "status_message",
-            _bounded_message(self.status_message, fallback="Completed"),
+            bounded_message(self.status_message, fallback="Completed"),
         )
         if self.result is not None:
-            _validate_json_object(self.result)
-            object.__setattr__(self, "result", cast(TOutput, _freeze_json(self.result)))
+            validate_json_object(self.result)
+            object.__setattr__(self, "result", cast(TOutput, freeze_json(self.result)))
 
         if self.status_code == 0:
             if self.error_result is not None:
@@ -246,7 +246,7 @@ class StandardOutputWrapper[TOutput]:
             )
         else:
             raise ValueError("failure requires structured error metadata")
-        safe_status = _bounded_message(
+        safe_status = bounded_message(
             status_message if status_message is not None else structured_error.message,
             fallback=_DEFAULT_FAILURE_MESSAGE,
         )
@@ -267,7 +267,7 @@ class StandardOutputWrapper[TOutput]:
     def output(self) -> Mapping[str, Any] | None:
         """Compatibility copy for mapping-shaped results used by transports."""
 
-        return _thaw_json(self.result) if isinstance(self.result, Mapping) else None
+        return thaw_json(self.result) if isinstance(self.result, Mapping) else None
 
     @property
     def error(self) -> ErrorResult | None:
@@ -302,7 +302,7 @@ class StandardOutputWrapper[TOutput]:
             else None
         )
         return {
-            names[0]: _thaw_json(self.result),
+            names[0]: thaw_json(self.result),
             names[1]: self.status_code,
             names[2]: self.status_message,
             names[3]: error,

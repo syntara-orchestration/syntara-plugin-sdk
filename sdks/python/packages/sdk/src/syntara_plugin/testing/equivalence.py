@@ -26,7 +26,7 @@ def _failure_category(outcome: StepOutcome) -> FailureCode | None:
     if isinstance(raised, ContainerInvocationError | ContainerRemoteError):
         return raised.code
     if isinstance(raised, StepExecutionError):
-        return FailureCode.ABI_VIOLATION
+        return raised.failure_code
     return FailureCode.OUTCOME_UNKNOWN
 
 

@@ -30,7 +30,7 @@ from .container import (
 )
 from .context import ExecutionContext
 from .execution import StepExecutionError
-from .outcome import StandardOutputWrapper
+from .outcome import StandardOutputWrapper, thaw_json
 from .step import BaseStep
 
 _REFERENCE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
@@ -79,16 +79,6 @@ def _applied_output_schema_digest(binding: StepBinding) -> str:
     return canonical_json_digest(_thaw_json_document(binding.descriptor.output_schema))
 
 
-def _thaw_result_value(value: Any) -> Any:
-    """Materialize immutable wrapper values as ordinary JSON containers."""
-
-    if isinstance(value, Mapping):
-        return {key: _thaw_result_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_thaw_result_value(item) for item in value]
-    return value
-
-
 def _place_business_result(
     result: Mapping[str, Any],
     object_store: ResultObjectStore | None,
@@ -102,7 +92,7 @@ def _place_business_result(
 
     invalid_result = False
     try:
-        payload = canonical_json_bytes(_thaw_result_value(result))
+        payload = canonical_json_bytes(thaw_json(result))
     except (CanonicalJsonError, RecursionError):
         invalid_result = True
     if invalid_result:

@@ -79,7 +79,7 @@ with all adapter-specific bootstrap details under `adapter`:
 
 ```json
 {
-  "abi": "syntara.container/v1alpha2",
+  "abi": "syntara.container/v1alpha1",
   "adapter": {
     "bindingsFactory": "acme_plugin.runtime:create_bindings"
   }
@@ -122,7 +122,7 @@ this path for Action, Control, and Trigger. `make test-integration` builds its
 plugin wheel, installs it with the Python contracts distribution, and invokes
 all three manifest-declared entry points over the container ABI. The current
 standalone Execution Plane still vendors the older `syntara.node.v1` protocol;
-until that service adopts `syntara.container/v1alpha2`, this repository proves
+until that service adopts `syntara.container/v1alpha1`, this repository proves
 the SDK adapter path but does not claim end-to-end Execution Plane dispatch.
 Automation Orchestrator's workflow selection and platform-owned runners remain
 separate platform responsibilities.
@@ -145,12 +145,13 @@ Execution Plane and a step container use to exchange execution requests,
 progress, results, and cancellation. It is not a CPU ABI. The current contract
 is defined in
 [`container.proto`](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
-and identified as `syntara.container/v1alpha2`.
+and identified as `syntara.container/v1alpha1`.
 
-The `Result` protobuf changed incompatibly: the former flattened error fields
-are reserved and complete structured errors now use new fields. The ABI is
-therefore versioned as `v1alpha2`; a `v1alpha1` workload must be upgraded before
-it can communicate with this SDK. Health negotiation checks the ABI exactly.
+The `Result` protobuf uses the structured error-result fields defined by this
+release. The ABI remains `v1alpha1` because this pre-1.0 alpha contract does
+not promise wire compatibility between prereleases. Existing alpha images
+must be rebuilt or upgraded with this SDK before they are used; Health checks
+the ABI identifier exactly but does not distinguish incompatible alpha builds.
 
 Final workload images, rather than a reusable SDK base layer, are the OCI
 artifacts published for deployment. They must record their immutable

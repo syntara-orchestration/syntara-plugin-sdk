@@ -24,13 +24,13 @@ from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 from .abi import CONTAINER_ABI, FailureCode
 from .execution import StepExecutionError
 from .outcome import (
-    _MAX_MESSAGE_LENGTH,
+    MAX_MESSAGE_LENGTH,
     ErrorResult,
     StandardOutputWrapper,
-    _freeze_json,
-    _validate_json_object,
     error_result_base_schema,
     error_result_schema,
+    freeze_json,
+    validate_json_object,
 )
 from .protocol import container_pb2, container_pb2_grpc
 
@@ -140,7 +140,7 @@ class ContainerResult:
             raise ValueError("a successful result requires output or object_reference")
         if has_output:
             try:
-                _validate_json_object(self.output)
+                validate_json_object(self.output)
             except (TypeError, ValueError):
                 raise ValueError("output must be a JSON object") from None
         if has_reference and (
@@ -157,9 +157,9 @@ class ContainerResult:
             self._validate_failure_status_metadata()
 
     def _validate_status_message(self) -> None:
-        if not isinstance(self.status_message, str) or len(self.status_message) > _MAX_MESSAGE_LENGTH:
+        if not isinstance(self.status_message, str) or len(self.status_message) > MAX_MESSAGE_LENGTH:
             raise ValueError(
-                f"status message must contain at most {_MAX_MESSAGE_LENGTH} characters"
+                f"status message must contain at most {MAX_MESSAGE_LENGTH} characters"
             )
 
     def _validate_success_status_metadata(self) -> None:
@@ -171,11 +171,11 @@ class ContainerResult:
             self.error_schema_digest
         ):
             raise ValueError("a failed result requires an error result and schema digest")
-        _validate_json_object(self.error_result)
+        validate_json_object(self.error_result)
         document = _thaw_json_document(self.error_result)
         if not Draft202012Validator(error_result_base_schema()).is_valid(document):
             raise ValueError("error result must satisfy the SDK base schema")
-        object.__setattr__(self, "error_result", _freeze_json(document))
+        object.__setattr__(self, "error_result", freeze_json(document))
 
 
 def _trusted_output_schema(output_schema: Mapping[str, Any]) -> tuple[Any, str]:
@@ -218,7 +218,7 @@ def _validate_container_output(
     if output is None:
         return
     try:
-        _validate_json_object(output)
+        validate_json_object(output)
         validator = Draft202012Validator(schema_document, format_checker=FormatChecker())
         is_valid = validator.is_valid(_thaw_json_document(output))
     except Exception:
@@ -294,12 +294,13 @@ class ContainerInvocationError(Exception):
         retryable: bool = False,
         outcome: str = "not_completed",
         provider_code: str = "",
+        detail: str | None = None,
     ) -> None:
         super().__init__(message)
         if not isinstance(code, FailureCode):
             raise TypeError("code must be a FailureCode")
-        if not message or len(message) > _MAX_MESSAGE_LENGTH:
-            raise ValueError(f"message must contain at most {_MAX_MESSAGE_LENGTH} characters")
+        if not message or len(message) > MAX_MESSAGE_LENGTH:
+            raise ValueError(f"message must contain at most {MAX_MESSAGE_LENGTH} characters")
         if not isinstance(retryable, bool):
             raise TypeError("retryable must be a boolean")
         if outcome not in {"not_started", "not_completed", "unknown"}:
@@ -311,6 +312,7 @@ class ContainerInvocationError(Exception):
         self.retryable = retryable
         self.outcome = outcome
         self.provider_code = provider_code
+        self.detail = detail
 
 
 class ContainerRemoteError(RuntimeError):
@@ -780,7 +782,7 @@ def _encode_json_object(value: Mapping[str, Any], field_name: str) -> bytes:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a JSON object")
     try:
-        _validate_json_object(value)
+        validate_json_object(value)
         encoded = canonical_json_bytes(_thaw_json_document(value))
     except (TypeError, ValueError):
         raise ValueError(f"{field_name} must contain JSON-compatible values") from None
@@ -859,7 +861,7 @@ def _progress_from_event(event: container_pb2.ExecutionEvent) -> ContainerProgre
         event.invocation_id == ""
         or progress.sequence < 1
         or progress.state not in _PROGRESS_STATES
-        or len(progress.message) > _MAX_MESSAGE_LENGTH
+        or len(progress.message) > MAX_MESSAGE_LENGTH
     ):
         raise _protocol_error()
     if progress.has_percent and not 0 <= progress.percent <= 100:
@@ -911,7 +913,7 @@ def _remote_failure(event: container_pb2.ExecutionEvent) -> ContainerRemoteError
         raise _protocol_error()
     if event.failure.outcome not in {"not_started", "not_completed", "unknown"}:
         raise _protocol_error()
-    if len(event.failure.message) > _MAX_MESSAGE_LENGTH:
+    if not event.failure.message or len(event.failure.message) > MAX_MESSAGE_LENGTH:
         # The ABI bounds the failure message like every other remote string;
         # an over-long message is a non-conforming peer, not a valid failure.
         raise _protocol_error()

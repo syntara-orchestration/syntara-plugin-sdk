@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package syntara.container.v1alpha2;
+package syntara.container.v1alpha1;
 
 // ABI means Application Binary Interface. Here it is the versioned, language-
 // neutral gRPC protocol between the Execution Plane (the client/launcher) and

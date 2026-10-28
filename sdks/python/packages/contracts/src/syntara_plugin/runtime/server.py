@@ -73,6 +73,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                     error.failure_code,
                     error.safe_message,
                     outcome=error.outcome,
+                    detail=error.detail,
                 ),
             )
         except ContainerInvocationError as error:
