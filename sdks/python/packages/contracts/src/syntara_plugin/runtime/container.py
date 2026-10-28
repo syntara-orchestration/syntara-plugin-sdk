@@ -859,7 +859,7 @@ def _progress_from_event(event: container_pb2.ExecutionEvent) -> ContainerProgre
         event.invocation_id == ""
         or progress.sequence < 1
         or progress.state not in _PROGRESS_STATES
-        or len(progress.message) > 4_096
+        or len(progress.message) > _MAX_MESSAGE_LENGTH
     ):
         raise _protocol_error()
     if progress.has_percent and not 0 <= progress.percent <= 100:
@@ -911,7 +911,7 @@ def _remote_failure(event: container_pb2.ExecutionEvent) -> ContainerRemoteError
         raise _protocol_error()
     if event.failure.outcome not in {"not_started", "not_completed", "unknown"}:
         raise _protocol_error()
-    if len(event.failure.message) > 4_096:
+    if len(event.failure.message) > _MAX_MESSAGE_LENGTH:
         # The ABI bounds the failure message like every other remote string;
         # an over-long message is a non-conforming peer, not a valid failure.
         raise _protocol_error()
