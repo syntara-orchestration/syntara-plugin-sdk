@@ -196,7 +196,7 @@ def _raised_outcome(
     )
 
 
-class _BoundedHandler:
+class BoundedStepHandler:
     """Run one container handler on a daemon thread with a bounded wait.
 
     grpc joins its worker pool at interpreter exit, so a step that ignores
@@ -204,7 +204,8 @@ class _BoundedHandler:
     session alive after its timeout outcome. The handler body runs on a daemon
     thread and the grpc worker waits only until the invocation timeout (plus a
     short grace), so cleanup stays bounded; the daemon thread dies with the
-    process.
+    process. The ``syntara-plugin run`` source mode shares this guarantee
+    through the same class.
     """
 
     _GRACE_SECONDS = 5.0
@@ -352,7 +353,7 @@ def invoke_step_in_container(
         context = build_execution_context()
     context = normalize_run_id(context)
     inputs, context = _prepare_invocation(inputs, context)
-    bounded_handler = _BoundedHandler(
+    bounded_handler = BoundedStepHandler(
         container_step_for_binding(binding), timeout_seconds
     )
     registry = StepRegistry({binding.descriptor.step_identity: bounded_handler})

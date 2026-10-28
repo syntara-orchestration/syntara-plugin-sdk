@@ -23,22 +23,25 @@ pytestmark = [
     ),
 ]
 
+_EXAMPLE = Path(__file__).resolve().parents[4] / "examples" / "existing-step"
+_ACTION_IDENTITY = "example.existing-step.create-ticket"
+_CONTROL_IDENTITY = "example.existing-step.normalize-records"
+_TRIGGER_IDENTITY = "example.existing-step.record-opened"
 _BASE_IMAGE = (
     "registry.access.redhat.com/ubi9/python-312@"
     "sha256:e6a10c3150624fbfd33dbd7721ef99ce7a1001b417d64427ad58515ab8044121"
 )
 
 
-def test_ubi_python_image_serves_sample_step_over_grpc(tmp_path: Path) -> None:
+def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) -> None:
     context = tmp_path / "image-context"
     wheels = context / "wheels"
     wheels.mkdir(parents=True)
 
     _build_workspace_wheel("syntara-plugin-contracts", wheels)
-    _write_sample_step(context)
-    _build_sample_wheel(context, wheels)
-    _write_runtime_config(context)
-    _write_containerfile(context)
+    _build_example_wheel(wheels)
+    shutil.copyfile(_EXAMPLE / "runtime.json", context / "runtime.json")
+    shutil.copyfile(_EXAMPLE / "Containerfile", context / "Containerfile")
 
     image_tag = f"syntara-plugin-runtime-it-{uuid.uuid4().hex}"
     container_name = f"syntara-runtime-it-{uuid.uuid4().hex}"
@@ -78,17 +81,47 @@ def test_ubi_python_image_serves_sample_step_over_grpc(tmp_path: Path) -> None:
     try:
         client = ContainerClient(channel)
         health = _wait_for_health(client)
-        result = client.execute(_invocation(), timeout_seconds=10)
-        wrapper = client.execute_wrapped(
-            _invocation(), output_schema=_echo_output_schema(), timeout_seconds=10
+        action = client.execute(
+            _invocation(
+                _ACTION_IDENTITY,
+                {"title": "hello from UBI"},
+                invocation_id="existing-action",
+            ),
+            timeout_seconds=10,
+        )
+        control = client.execute(
+            _invocation(
+                _CONTROL_IDENTITY,
+                {"records": ["Alpha", "Beta"]},
+                invocation_id="existing-control",
+            ),
+            timeout_seconds=10,
+        )
+        trigger = client.execute(
+            _invocation(
+                _TRIGGER_IDENTITY,
+                {"repository": "syntara-plugin-sdk"},
+                invocation_id="existing-trigger",
+            ),
+            timeout_seconds=10,
+        )
+        invalid = client.execute(
+            _invocation(_ACTION_IDENTITY, {}, invocation_id="existing-invalid"),
+            timeout_seconds=10,
         )
 
-        assert health == ("integration.echo.v1",)
-        assert result.output == {"message": "hello from UBI"}
-        assert wrapper.status_code == 0
-        assert wrapper.status_message == "Completed"
-        assert wrapper.result == {"message": "hello from UBI"}
-        assert wrapper.error_message is None
+        assert health == (_ACTION_IDENTITY, _CONTROL_IDENTITY, _TRIGGER_IDENTITY)
+        assert action.output == {"ticket_id": "existing-action:hello from UBI"}
+        assert control.output == {"count": 2, "normalized": ["alpha", "beta"]}
+        assert trigger.output == {
+            "event_id": "existing-run:syntara-plugin-sdk",
+            "repository": "syntara-plugin-sdk",
+        }
+        assert invalid.status_code == 1
+        assert invalid.error_result is not None
+        assert invalid.error_result["code"] == "INVALID_INPUT"
+        assert invalid.output is None
+        assert invalid.output_schema_digest == action.output_schema_digest
     finally:
         channel.close()
         subprocess.run(
@@ -112,6 +145,22 @@ def _build_workspace_wheel(package: str, output: Path) -> None:
             "build",
             "--package",
             package,
+            "--wheel",
+            "--out-dir",
+            str(output),
+            "--no-create-gitignore",
+        ],
+        check=True,
+    )
+
+
+def _build_example_wheel(output: Path) -> None:
+    subprocess.run(
+        [
+            "uv",
+            "build",
+            "--directory",
+            str(_EXAMPLE),
             "--wheel",
             "--out-dir",
             str(output),
@@ -220,34 +269,6 @@ def _write_runtime_config(context: Path) -> None:
     (context / "runtime.json").write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
-def _write_containerfile(context: Path) -> None:
-    (context / "Containerfile").write_text(
-        f"""FROM {_BASE_IMAGE}
-
-WORKDIR /app
-COPY wheels /wheels
-RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl
-USER 0
-RUN mkdir -p /etc/syntara
-COPY runtime.json /etc/syntara/runtime.json
-RUN chmod 0644 /etc/syntara/runtime.json
-
-ENV SYNTARA_RUNTIME_CONFIG=/etc/syntara/runtime.json \\
-    SYNTARA_RUNTIME_GRPC_ADDRESS=0.0.0.0:50051 \\
-    SYNTARA_RUNTIME_GRPC_TLS_CERT=/run/secrets/server.crt \\
-    SYNTARA_RUNTIME_GRPC_TLS_KEY=/run/secrets/server.key \\
-    SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=/run/secrets/client-ca.crt \\
-    PYTHONUNBUFFERED=1 \\
-    PYTHONDONTWRITEBYTECODE=1
-
-USER 1001
-EXPOSE 50051
-ENTRYPOINT ["python3.12", "-m", "syntara_plugin.runtime.server"]
-""",
-        encoding="utf-8",
-    )
-
-
 def _build_image(context: Path, image_tag: str) -> None:
     subprocess.run(
         [
@@ -271,12 +292,17 @@ def _free_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def _invocation() -> ContainerInvocation:
+def _invocation(
+    step_revision_id: str,
+    inputs: dict[str, object],
+    *,
+    invocation_id: str,
+) -> ContainerInvocation:
     return ContainerInvocation(
-        invocation_id="integration-invocation-1",
-        workflow_run_id="integration-workflow-run-1",
-        step_revision_id="integration.echo.v1",
-        inputs={"message": "hello from UBI"},
+        invocation_id=invocation_id,
+        workflow_run_id="existing-run",
+        step_revision_id=step_revision_id,
+        inputs=inputs,
         credential_file_paths={},
         timeout_seconds=30,
         runtime_context={},
@@ -391,3 +417,140 @@ def _make_tls_material_readable(certificate: Path, key: Path, client_ca: Path) -
 
 def _run_openssl(*arguments: str) -> None:
     subprocess.run(("openssl", *arguments), check=True, capture_output=True)
+
+
+def _write_managed_containerfile(context: Path) -> None:
+    """A TLS-free containerfile: loopback listener, host network friendly."""
+
+    (context / "Containerfile").write_text(
+        f"""FROM {_BASE_IMAGE}
+
+WORKDIR /app
+COPY wheels /wheels
+RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl
+USER 0
+RUN mkdir -p /etc/syntara
+COPY runtime.json /etc/syntara/runtime.json
+RUN chmod 0644 /etc/syntara/runtime.json
+
+ENV SYNTARA_RUNTIME_CONFIG=/etc/syntara/runtime.json \\
+    PYTHONUNBUFFERED=1 \\
+    PYTHONDONTWRITEBYTECODE=1
+
+USER 1001
+EXPOSE 50051
+ENTRYPOINT ["python3.12", "-m", "syntara_plugin.runtime.server"]
+""",
+        encoding="utf-8",
+    )
+
+
+def test_managed_image_mode_runs_and_cleans_up_the_workload_container(
+    tmp_path: Path, capsys
+) -> None:
+    """`run --mode image` without --address manages the container itself."""
+
+    from syntara_plugin.sdk.cli import main
+
+    context = tmp_path / "image-context"
+    wheels = context / "wheels"
+    wheels.mkdir(parents=True)
+    _build_workspace_wheel("syntara-plugin-contracts", wheels)
+    _write_sample_step(context)
+    _build_sample_wheel(context, wheels)
+    _write_runtime_config(context)
+    _write_managed_containerfile(context)
+    image_tag = f"syntara-plugin-managed-it-{uuid.uuid4().hex}"
+    _build_image(context, image_tag)
+
+    workspace = tmp_path / "ws"
+    (workspace / "steps/v1").mkdir(parents=True)
+    (workspace / "docs").mkdir()
+    (workspace / "plugin.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: integration
+  name: echo
+  version: 0.1.0
+  displayName: Echo
+  description: Managed image-mode fixture.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: {image_tag}
+  targets:
+    - steps/v1/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    (workspace / "steps/v1/manifest.yaml").write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: v1
+  displayName: Echo
+  description: Echoes one message.
+spec:
+  runtime:
+    kind: custom-runner
+    entryPoint: syntara_sample_step.runtime:EchoStep
+  input:
+    kind: inline
+    value:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+  output:
+    kind: inline
+    value:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    (workspace / "docs/README.md").write_text("# Echo\n", encoding="utf-8")
+
+    try:
+        status = main(
+            [
+                "run",
+                "--manifest",
+                str(workspace / "plugin.yaml"),
+                "--mode",
+                "image",
+                "--input",
+                '{"message": "hello managed"}',
+            ]
+        )
+    finally:
+        subprocess.run(
+            ["podman", "rmi", "--force", image_tag],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert any(line.startswith("Mode:") and line.strip().endswith("image") for line in lines)
+    assert any(line.startswith("Image:") and image_tag in line for line in lines)
+    assert '"message": "hello managed"' in captured.out
+    leftovers = subprocess.run(
+        ["podman", "ps", "-a", "--filter", "name=syntara-run-", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert not leftovers.stdout.strip()

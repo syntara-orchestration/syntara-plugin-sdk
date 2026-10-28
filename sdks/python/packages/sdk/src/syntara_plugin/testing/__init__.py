@@ -23,6 +23,7 @@ from .context_builder import build_execution_context
 from .equivalence import assert_outcomes_equivalent
 from .errors import HarnessUsageError
 from .invocation import (
+    BoundedStepHandler,
     StepOutcome,
     invoke_step,
     invoke_step_in_container,
@@ -56,6 +57,7 @@ from .payloads import (
 from .redaction import SecretLeakError, assert_no_secrets, secret_sentinel
 
 __all__ = [
+    "BoundedStepHandler",
     "ConformanceFailure",
     "ConformanceReport",
     "ChainOutcome",

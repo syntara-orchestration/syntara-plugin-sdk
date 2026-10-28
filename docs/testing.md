@@ -19,6 +19,11 @@ the auto-discovered fixtures.
 Everything below is also available as plain importable functions; the pytest
 fixtures are thin wrappers over them.
 
+For a single ad-hoc invocation without a pytest suite, use
+`syntara-plugin run`; see [Running locally](running-locally.md). Source mode
+runs the same compile, install, drift-check, and container-adapter path this
+harness uses, from the CLI.
+
 ## The four fixtures
 
 Installing the package registers a pytest plugin (the `pytest11` entry point),
@@ -176,4 +181,15 @@ repository root:
 
 ```sh
 uv run --no-sync pytest examples/python-steps/tests -q
+```
+
+[`../examples/existing-step`](../examples/existing-step) is the checked-in
+end-to-end prototype. Its suite in
+[`sdks/python/tests/integration/test_existing_step_e2e.py`](../sdks/python/tests/integration/test_existing_step_e2e.py)
+compiles the real plugin workspace, loads each manifest entry point, checks
+invalid inputs, compares direct and in-process container outcomes, and builds
+deterministic plugin and catalog artifacts:
+
+```sh
+uv run --no-sync pytest sdks/python/tests/integration/test_existing_step_e2e.py -q
 ```

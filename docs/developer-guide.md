@@ -37,8 +37,9 @@ make test-integration
 ```
 
 The test builds a temporary image from the pinned UBI Python base, installs the
-SDK runtime and a sample step from local wheels, starts the server with mutual
-TLS, and invokes the sample step over gRPC. It does not require the backend,
+SDK runtime and the checked-in [Existing Step](../examples/existing-step)
+plugin from local wheels, starts the server with mutual TLS, and invokes its
+Action, Control, and Trigger steps over gRPC. It does not require the backend,
 Kubernetes, or the Execution Plane.
 
 ## Repository map

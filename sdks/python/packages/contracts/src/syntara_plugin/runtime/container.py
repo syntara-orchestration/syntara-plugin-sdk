@@ -281,12 +281,17 @@ class ContainerRemoteError(RuntimeError):
         retryable: bool,
         outcome: str,
         source: Literal["workload", "protocol", "transport"],
+        message: str = "",
     ) -> None:
         super().__init__(INCOMPLETE_STEP_MESSAGE)
         self.code = code
         self.retryable = retryable
         self.outcome = outcome
         self.source = source
+        # The workload's safe, bounded failure message; empty when only the
+        # category is known, so consumers can display the reason without
+        # trusting it.
+        self.message = message
 
 
 ContainerStepHandler = Callable[[ContainerInvocation], ContainerResult]
@@ -855,11 +860,16 @@ def _remote_failure(event: container_pb2.ExecutionEvent) -> ContainerRemoteError
         raise _protocol_error()
     if event.failure.outcome not in {"not_started", "not_completed", "unknown"}:
         raise _protocol_error()
+    if len(event.failure.message) > 4_096:
+        # The ABI bounds the failure message like every other remote string;
+        # an over-long message is a non-conforming peer, not a valid failure.
+        raise _protocol_error()
     return ContainerRemoteError(
         code,
         retryable=event.failure.retryable,
         outcome=event.failure.outcome,
         source="workload",
+        message=event.failure.message,
     )
 
 
