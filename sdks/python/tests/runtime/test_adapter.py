@@ -693,6 +693,28 @@ def test_reference_resolution_preserves_failed_result_metadata() -> None:
     )
 
 
+def test_failed_container_result_empty_status_message_uses_error_message() -> None:
+    result = ContainerResult(
+        _expected_digest(),
+        status_code=7,
+        status_message="",
+        error_result={
+            "category": "business",
+            "code": "REMOTE_REJECTED",
+            "message": "Rejected",
+            "retryable": False,
+        },
+        error_schema_digest=canonical_json_digest(error_result_schema()),
+    )
+
+    wrapper = standard_output_from_container_result(
+        result,
+        output_schema=_permissive_output_schema(),
+    )
+
+    assert wrapper.status_message == "Rejected"
+
+
 def test_inline_container_result_reconstructs_the_standard_wrapper() -> None:
     result = ContainerResult(
         _expected_digest(),

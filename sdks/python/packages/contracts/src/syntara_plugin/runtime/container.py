@@ -233,19 +233,26 @@ def _error_from_container_result(
 ) -> ErrorResult | None:
     """Validate and reconstruct deliberate step-failure metadata."""
 
-    if result.status_code == 0:
-        return None
-    schema = _thaw_json_document(error_schema if error_schema is not None else error_result_schema())
     try:
-        Draft202012Validator.check_schema(schema)
-        if result.error_schema_digest != canonical_json_digest(schema):
-            raise ValueError("error schema digest mismatch")
+        if result.status_code == 0:
+            return None
         error_document = _thaw_json_document(result.error_result)
-        if not Draft202012Validator(schema, format_checker=FormatChecker()).is_valid(
-            error_document
-        ):
-            raise ValueError("invalid error result")
-        return ErrorResult.model_validate(error_document)
+        candidate_schemas = []
+        if error_schema is not None:
+            candidate_schemas.append(error_schema)
+        candidate_schemas.append(error_result_schema())
+        candidate_schemas.append(error_result_base_schema())
+        for candidate in candidate_schemas:
+            schema = _thaw_json_document(candidate)
+            Draft202012Validator.check_schema(schema)
+            if result.error_schema_digest != canonical_json_digest(schema):
+                continue
+            if not Draft202012Validator(schema, format_checker=FormatChecker()).is_valid(
+                error_document
+            ):
+                raise ValueError("invalid error result")
+            return ErrorResult.model_validate(error_document)
+        raise ValueError("error schema digest mismatch")
     except Exception:
         raise _protocol_error() from None
 

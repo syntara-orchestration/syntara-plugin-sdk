@@ -203,7 +203,6 @@ def container_step_for_binding(
 
     validate_executable_step_binding(binding.descriptor, binding.step)
     output_schema_digest = _applied_output_schema_digest(binding)
-    error_schema_digest = canonical_json_digest(_thaw_json_document(binding.descriptor.error_schema))
 
     def handler(invocation: ContainerInvocation) -> ContainerResult:
         if invocation.step_revision_id != binding.descriptor.step_identity:
@@ -221,7 +220,12 @@ def container_step_for_binding(
                 error.safe_message,
                 outcome=error.outcome,
             ) from error
-        return _container_result(wrapper, output_schema_digest, error_schema_digest, object_store)
+        return _container_result(
+            wrapper,
+            output_schema_digest,
+            wrapper.error_schema_digest or "",
+            object_store,
+        )
 
     return handler
 

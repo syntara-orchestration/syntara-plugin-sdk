@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -24,6 +25,7 @@ from syntara_plugin.runtime import (
     ControlStep,
     ErrorResult,
     ExecutionContext,
+    FailureCode,
     InstalledStepManifest,
     StandardOutputWrapper,
     StepBinding,
@@ -36,6 +38,7 @@ from syntara_plugin.runtime import (
     TriggerStep,
     add_container_runtime_service,
     container_step_for_binding,
+    error_result_base_schema,
     error_result_schema,
     invoke,
     standard_output_from_container_result,
@@ -584,20 +587,19 @@ def test_invalid_input_failure_is_safe_and_does_not_echo_rejected_values() -> No
     assert step.run_calls == 0
 
 
-def test_invalid_input_error_schema_failure_is_not_started_through_container_server() -> None:
+def test_invalid_input_uses_the_sdk_error_schema_with_a_strict_declared_schema() -> None:
     step = ExecuteCountingStep()
     input_schema = copy.deepcopy(InvocationInput.model_json_schema())
     input_schema["properties"]["value"]["minLength"] = 10
     error_schema = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["category", "code", "message", "retryable", "provider"],
+        "required": ["category", "code", "message", "retryable"],
         "properties": {
             "category": {"type": "string"},
             "code": {"type": "string"},
             "message": {"type": "string"},
             "retryable": {"type": "boolean"},
-            "provider": {"type": "object"},
         },
     }
     binding = _binding(
@@ -609,8 +611,19 @@ def test_invalid_input_error_schema_failure_is_not_started_through_container_ser
 
     event = _terminal_event(binding, {"value": "short"})
 
-    assert event.WhichOneof("event") == "failure"
-    assert event.failure.outcome == "not_started"
+    assert event.WhichOneof("event") == "result"
+    assert event.result.status_code == 1
+    assert json.loads(event.result.error_result_json)["code"] == FailureCode.INVALID_INPUT.value
+    assert event.result.error_schema_digest == canonical_json_digest(error_result_base_schema())
+
+    container_result = container_step_for_binding(binding)(_invocation(binding, {"value": "short"}))
+    wrapper = standard_output_from_container_result(
+        container_result,
+        output_schema=to_json_document(binding.descriptor.output_schema),
+        error_schema=error_schema,
+    )
+
+    assert wrapper.error.code == FailureCode.INVALID_INPUT.value
     assert step.execute_calls == 0
     assert step.run_calls == 0
 
@@ -977,15 +990,14 @@ def test_error_result_subclass_fields_are_preserved_and_immutable() -> None:
         error.provider["attempts"].append("third")
 
 
-@pytest.mark.parametrize("inputs", [{"value": "x"}, {}])
-def test_error_that_violates_installed_schema_has_no_valid_outcome(inputs: dict[str, Any]) -> None:
+def test_author_error_that_violates_installed_schema_has_no_valid_outcome() -> None:
     binding = _binding(
         DetailedFailureStep(), "tests.invalid-error",
         error_schema={"type": "object", "required": ["missing"]},
     )
     with pytest.raises(StepExecutionError, match="invalid response"):
-        invoke(binding, inputs, _context(binding))
-    event = _terminal_event(binding, inputs)
+        invoke(binding, {"value": "x"}, _context(binding))
+    event = _terminal_event(binding, {"value": "x"})
     assert event.WhichOneof("event") == "failure"
     assert event.failure.code == "ABI_VIOLATION"
 

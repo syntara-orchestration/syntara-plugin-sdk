@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, cast
@@ -167,6 +167,8 @@ class StandardOutputWrapper[TOutput]:
     status_code: int
     status_message: str
     error_result: ErrorResult | None
+    # Transport-only provenance; it is intentionally omitted from serialization.
+    error_schema_digest: str | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if type(self.status_code) is not int or not 0 <= self.status_code <= 4_294_967_295:
@@ -174,7 +176,18 @@ class StandardOutputWrapper[TOutput]:
         object.__setattr__(
             self,
             "status_message",
-            bounded_message(self.status_message, fallback="Completed"),
+            bounded_message(
+                self.status_message,
+                fallback=(
+                    "Completed"
+                    if self.status_code == 0
+                    else (
+                        self.error_result.message
+                        if isinstance(self.error_result, ErrorResult)
+                        else _DEFAULT_FAILURE_MESSAGE
+                    )
+                ),
+            ),
         )
         if self.result is not None:
             validate_json_object(self.result)

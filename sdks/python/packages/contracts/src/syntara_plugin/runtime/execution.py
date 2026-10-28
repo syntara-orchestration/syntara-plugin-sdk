@@ -142,16 +142,24 @@ class StepExecutor:
             raise StepBindingError(message)
         validate_executable_step_binding(binding.descriptor, binding.step)
         self._binding = binding
+        self._last_error_schema_digest: str | None = None
 
     @property
     def step_identity(self) -> str:
         return self._binding.descriptor.step_identity
+
+    @property
+    def last_error_schema_digest(self) -> str | None:
+        """Return the schema digest selected for the last wrapper error."""
+
+        return self._last_error_schema_digest
 
     def execute(
         self, inputs: Mapping[str, Any], context: ExecutionContext
     ) -> StandardOutputWrapper[Mapping[str, Any]]:
         """Validate raw input, invoke the typed hook once, and wrap its result."""
 
+        self._last_error_schema_digest = None
         try:
             validated_inputs = validate_step_inputs(
                 inputs,
@@ -167,6 +175,7 @@ class StepExecutor:
                     message=error.safe_message,
                 ),
                 outcome="not_started",
+                validate_declared_error_schema=False,
             )
         except Exception as error:
             raise StepExecutionError(
@@ -217,13 +226,24 @@ class StepExecutor:
         status_code: int = 1,
         status_message: str | None = None,
         outcome: Literal["not_started", "unknown"] = "unknown",
+        validate_declared_error_schema: bool = True,
     ) -> StandardOutputWrapper[Mapping[str, Any]]:
-        """Apply both the SDK base and the effective installed error contract."""
+        """Validate an error against the SDK base and, when applicable, its schema."""
 
         try:
             document = error.model_dump(mode="json")
             canonical_json_bytes(document)
-            for schema in (error_result_base_schema(), self._binding.descriptor.error_schema):
+            schemas = [error_result_base_schema()]
+            if validate_declared_error_schema:
+                schemas.append(self._binding.descriptor.error_schema)
+            self._last_error_schema_digest = canonical_json_digest(
+                _thaw_json_document(
+                    self._binding.descriptor.error_schema
+                    if validate_declared_error_schema
+                    else error_result_base_schema()
+                )
+            )
+            for schema in schemas:
                 validator = Draft202012Validator(
                     _thaw_json_document(schema), format_checker=FormatChecker()
                 )
@@ -257,11 +277,11 @@ class StepExecutor:
             raise StepExecutionError(_INVALID_STEP_RESPONSE)
 
 
-def invoke(
+def _invoke_with_error_schema(
     step: StepBinding,
     input: Mapping[str, Any],
     context: ExecutionContext,
-) -> StandardOutputWrapper[Mapping[str, Any]]:
+) -> tuple[StandardOutputWrapper[Mapping[str, Any]], str | None]:
     """Invoke one typed step through its trusted descriptor and schema contract.
 
     Invalid inputs and author-raised ``StepFailure`` values produce wrappers.
@@ -295,7 +315,18 @@ def invoke(
         raise execution_error
     if wrapper is None:
         raise StepExecutionError(_UNEXPECTED_STEP_FAILURE)
-    return wrapper
+    object.__setattr__(wrapper, "error_schema_digest", executor.last_error_schema_digest)
+    return wrapper, executor.last_error_schema_digest
+
+
+def invoke(
+    step: StepBinding,
+    input: Mapping[str, Any],
+    context: ExecutionContext,
+) -> StandardOutputWrapper[Mapping[str, Any]]:
+    """Invoke one typed step through its trusted descriptor and schema contract."""
+
+    return _invoke_with_error_schema(step, input, context)[0]
 
 
 def _validate_context_output_digest(
