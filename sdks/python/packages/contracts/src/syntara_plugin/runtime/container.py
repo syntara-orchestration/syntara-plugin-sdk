@@ -23,6 +23,7 @@ from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
 from .abi import CONTAINER_ABI, FailureCode
 from .outcome import (
+    _MAX_MESSAGE_LENGTH,
     ErrorResult,
     StandardOutputWrapper,
     _freeze_json,
@@ -155,8 +156,10 @@ class ContainerResult:
             self._validate_failure_status_metadata()
 
     def _validate_status_message(self) -> None:
-        if not isinstance(self.status_message, str) or len(self.status_message) > 4_096:
-            raise ValueError("status message must contain at most 4096 characters")
+        if not isinstance(self.status_message, str) or len(self.status_message) > _MAX_MESSAGE_LENGTH:
+            raise ValueError(
+                f"status message must contain at most {_MAX_MESSAGE_LENGTH} characters"
+            )
 
     def _validate_success_status_metadata(self) -> None:
         if self.error_result is not None or self.error_schema_digest:
@@ -291,8 +294,8 @@ class ContainerInvocationError(Exception):
         super().__init__(message)
         if not isinstance(code, FailureCode):
             raise TypeError("code must be a FailureCode")
-        if not message or len(message) > 4_096:
-            raise ValueError("message must contain at most 4096 characters")
+        if not message or len(message) > _MAX_MESSAGE_LENGTH:
+            raise ValueError(f"message must contain at most {_MAX_MESSAGE_LENGTH} characters")
         if not isinstance(retryable, bool):
             raise TypeError("retryable must be a boolean")
         if outcome not in {"not_started", "not_completed", "unknown"}:

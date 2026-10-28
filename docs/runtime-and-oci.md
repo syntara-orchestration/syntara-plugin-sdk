@@ -437,6 +437,9 @@ Authors can supply step-specific fields with `StepFailure(...,
 error_result=ErrorResult(category="dependency", code="REMOTE_REJECTED",
 message="Rejected", retryable=True, requestId="request-1"))`.
 They can also subclass `ErrorResult` to declare typed step-specific fields.
+When using a `requestId` or similar correlation field, prefer the current
+`ExecutionContext.invocation_id` so step logs can be linked to the platform
+invocation without introducing a second identifier.
 
 ### Installed revision mapping
 
