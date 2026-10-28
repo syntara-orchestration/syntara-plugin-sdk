@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
@@ -26,6 +27,10 @@ _EXAMPLE = Path(__file__).resolve().parents[4] / "examples" / "existing-step"
 _ACTION_IDENTITY = "example.existing-step.create-ticket"
 _CONTROL_IDENTITY = "example.existing-step.normalize-records"
 _TRIGGER_IDENTITY = "example.existing-step.record-opened"
+_BASE_IMAGE = (
+    "registry.access.redhat.com/ubi9/python-312@"
+    "sha256:e6a10c3150624fbfd33dbd7721ef99ce7a1001b417d64427ad58515ab8044121"
+)
 
 
 def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) -> None:
@@ -162,6 +167,105 @@ def _build_example_wheel(output: Path) -> None:
         ],
         check=True,
     )
+
+
+def _write_sample_step(context: Path) -> None:
+    package = context / "sample-step"
+    source = package / "src" / "syntara_sample_step"
+    source.mkdir(parents=True)
+    (package / "pyproject.toml").write_text(
+        """[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "syntara-sample-step"
+version = "0.1.0"
+dependencies = ["syntara-plugin-contracts>=0.1.0a1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/syntara_sample_step"]
+""",
+        encoding="utf-8",
+    )
+    (source / "__init__.py").write_text("", encoding="utf-8")
+    (source / "runtime.py").write_text(
+        """from pydantic import BaseModel
+from syntara_plugin.runtime import (
+    ActionStep,
+    ExecutionContext,
+    InstalledStepManifest,
+    StepBindings,
+    StepDescriptor,
+)
+
+
+class EchoInput(BaseModel):
+    message: str
+
+
+class EchoOutput(BaseModel):
+    message: str
+
+
+class EchoStep(ActionStep[EchoInput, EchoOutput]):
+    def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+        return EchoOutput(message=inputs.message)
+
+
+def create_bindings() -> StepBindings:
+    step = EchoStep()
+    installed_step = InstalledStepManifest.from_manifest(
+        "integration.echo.v1",
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "Action",
+            "metadata": {
+                "name": "echo",
+                "displayName": "Echo",
+                "description": "Echoes one message.",
+            },
+            "spec": {
+                "runtime": {
+                    "kind": "custom-runner",
+                    "entryPoint": "syntara_sample_step.runtime:EchoStep",
+                },
+                "input": {"kind": "inline", "value": EchoInput.model_json_schema()},
+                "output": {"kind": "inline", "value": EchoOutput.model_json_schema()},
+            },
+        },
+        {},
+    )
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_installed_step(step, installed_step), step)
+    return bindings
+""",
+        encoding="utf-8",
+    )
+
+
+def _build_sample_wheel(context: Path, output: Path) -> None:
+    subprocess.run(
+        [
+            "uv",
+            "build",
+            "--directory",
+            str(context / "sample-step"),
+            "--wheel",
+            "--out-dir",
+            str(output),
+            "--no-create-gitignore",
+        ],
+        check=True,
+    )
+
+
+def _write_runtime_config(context: Path) -> None:
+    document = {
+        "abi": "syntara.container/v1alpha1",
+        "adapter": {"bindingsFactory": "syntara_sample_step.runtime:create_bindings"},
+    }
+    (context / "runtime.json").write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
 def _build_image(context: Path, image_tag: str) -> None:
