@@ -611,10 +611,19 @@ syntara-plugin validate examples/python-steps/plugin.yaml
 ```
 
 The command prints `Valid:` followed by the manifest path and the descriptor
-digest. To review the compiled descriptor, inspect the workspace:
+digest. To review the compiled descriptor, inspect the workspace. Like
+`build`, `inspect` requires an immutable image binding for each custom-runner
+workload image:
 
 ```sh
-syntara-plugin inspect examples/python-steps/plugin.yaml
+syntara-plugin inspect examples/python-steps/plugin.yaml \
+  --image-binding python-steps-workload=<repository>@sha256:<digest>
+```
+
+A platform-runner plugin needs no binding:
+
+```sh
+syntara-plugin inspect examples/hello-world/plugin.yaml
 ```
 
 The command prints the compiled `PluginDescriptor` as JSON. Check the
@@ -687,27 +696,36 @@ troubleshooting, see [Run a Step locally](running-locally.md).
 The `test-init` command generates one test module per custom-runner target.
 To generate and complete a suite, follow these steps:
 
-1. Generate the tests into a scratch directory, so that the example stays
+1. Copy the example workspace, so that the example in the repository stays
    unchanged:
 
    ```sh
-   syntara-plugin test-init examples/python-steps/plugin.yaml --tests-dir /tmp/python-steps-tests
+   cp -R examples/python-steps ~/python-steps
+   ```
+
+2. Generate the tests into a directory inside the copied workspace. The
+   example already has a `tests/` directory, so use a new one:
+
+   ```sh
+   syntara-plugin test-init ~/python-steps --tests-dir ~/python-steps/generated-tests
    ```
 
    In your own plugin, omit `--tests-dir` to write the tests to the
-   workspace `tests/` directory.
+   workspace `tests/` directory. Keep the tests directory inside the
+   workspace, because the generated tests locate the workspace relative to
+   their own location.
 
-2. Run the suite:
+3. Run the suite:
 
    ```sh
-   pytest /tmp/python-steps-tests -q
+   pytest ~/python-steps/generated-tests -q
    ```
 
    For each target, the invalid-input test passes and two tests are skipped
    until you complete them. With two targets, the result is
    `2 passed, 4 skipped`.
 
-3. In each generated module, replace the placeholder in `VALID_CASES` with a
+4. In each generated module, replace the placeholder in `VALID_CASES` with a
    business-valid payload, and then remove the `@pytest.mark.skip` markers.
    For example, in `test_create_issue.py`:
 
@@ -753,8 +771,9 @@ secret, pass a `secret_sentinel()` value as input and call
 
 ### Use the reference fixtures
 
-- [`contracts/fixtures`](../contracts/fixtures) holds a valid and an invalid
-  document for every manifest kind.
+- [`contracts/fixtures`](../contracts/fixtures) holds example documents for
+  the manifest contracts, such as `trigger.valid.json` and
+  `trigger.invalid.json`.
 - `syntara_plugin.testing.payloads` provides standard payload cases and the
   `ReferenceControlStep` and `FailingReferenceStep` stand-ins.
 - The example suite runs from the repository root:
