@@ -101,12 +101,7 @@ def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlo
     """Verify the semantic links that OCI content hashing cannot express."""
 
     config_document = _json_mapping(config.content, "plugin config")
-    if config_document.get("apiVersion") != "syntara.plugin.config/v1alpha1":
-        raise ArtifactArchiveError("plugin artifact config has an unsupported apiVersion")
-    if config_document.get("kind") != "PluginArtifactConfig":
-        raise ArtifactArchiveError("plugin artifact config has an unsupported kind")
-    if config_document.get("pluginDescriptorDigest") != descriptor.descriptor.digest:
-        raise ArtifactArchiveError("plugin artifact config does not bind its plugin descriptor")
+    _verify_artifact_config_identity(config_document, descriptor.descriptor.digest)
 
     descriptor_document = _json_mapping(descriptor.content, "plugin descriptor")
     contract_bundle = load_bundle()
@@ -145,6 +140,19 @@ def _verify_plugin_contents(config: OciBlob, descriptor: OciBlob, bundle: OciBlo
     ):
         raise ArtifactArchiveError("plugin descriptor documentation does not match its asset inventory")
     _verify_content_bundle(bundle.content, asset_index)
+
+
+def _verify_artifact_config_identity(
+    config_document: Mapping[str, Any], descriptor_digest: str
+) -> None:
+    """Reject an artifact config that does not identify its plugin descriptor."""
+
+    if config_document.get("apiVersion") != "syntara.plugin.config/v1alpha1":
+        raise ArtifactArchiveError("plugin artifact config has an unsupported apiVersion")
+    if config_document.get("kind") != "PluginArtifactConfig":
+        raise ArtifactArchiveError("plugin artifact config has an unsupported kind")
+    if config_document.get("pluginDescriptorDigest") != descriptor_digest:
+        raise ArtifactArchiveError("plugin artifact config does not bind its plugin descriptor")
 
 
 def _verify_content_bundle(content: bytes, asset_index: Mapping[str, Any]) -> None:

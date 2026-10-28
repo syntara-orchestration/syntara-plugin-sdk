@@ -19,6 +19,11 @@ the auto-discovered fixtures.
 Everything below is also available as plain importable functions; the pytest
 fixtures are thin wrappers over them.
 
+For a single ad-hoc invocation without a pytest suite, use
+`syntara-plugin run`; see [Running locally](running-locally.md). Source mode
+runs the same compile, install, drift-check, and container-adapter path this
+harness uses, from the CLI.
+
 ## The four fixtures
 
 Installing the package registers a pytest plugin (the `pytest11` entry point),

@@ -12,13 +12,19 @@ import argparse
 import base64
 import binascii
 import json
+import os
 import re
+import shlex
 import sys
-from collections.abc import Mapping, Sequence
+import textwrap
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+
+import yaml
+from jsonschema import Draft202012Validator, SchemaError
 
 from .artifact import ArtifactBuildError, PluginArtifact, build_plugin_artifact
 from .artifact_archive import (
@@ -34,6 +40,7 @@ from .catalog import (
     merge_catalog_entry,
     recover_catalog_entry,
 )
+from .input_template import render_summary_lines, template_for
 from .registry import (
     CatalogIndexPublicationError,
     CatalogIndexPublicationTarget,
@@ -54,16 +61,32 @@ from .settings import (
 from .testgen import ScaffoldError, generate_step_tests
 from .workload import WorkloadBuildError, WorkloadBuildRequest, build_and_push_workload
 
+if TYPE_CHECKING:
+    from .runner import RunExecutionError, RunReport, RunTarget, RunUsageError, TlsOptions
+
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+_FIELD_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,127}$")
 _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MACHINE_READABLE_OUTPUT_HELP = "Print machine-readable output."
+_DEFAULT_MANIFEST_NAME = "plugin.yaml"
+_RUN_COMMAND_PREFIX = "syntara-plugin run "
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the authoring CLI and return its process status."""
+
+    # The gRPC C core reads its verbosity when the library loads; setting it
+    # here, before argument resolution can import the runner, keeps stderr
+    # clean on every path.
+    os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
     parser = _parser()
     arguments = parser.parse_args(argv)
+    if arguments.command == "run" and arguments.manifest is not None and arguments.manifest.is_dir():
+        # Settings discovery follows the manifest file's directory, so resolve
+        # a directory to its plugin.yaml: --manifest ws and
+        # --manifest ws/plugin.yaml must behave identically.
+        arguments.manifest = arguments.manifest / _DEFAULT_MANIFEST_NAME
     if arguments.command == "init":
         return _init_workspace(arguments)
     if arguments.command == "test-init":
@@ -75,12 +98,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _resolve_arguments(arguments, settings)
     except (SettingsError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        _print_settings_error(error, arguments)
         return 2
     if arguments.command == "validate":
         return _compile_workspace(arguments)
     if arguments.command == "inspect":
         return _inspect(arguments)
+    if arguments.command == "run":
+        return _run_command_guarded(arguments)
     if arguments.command == "build":
         return _build_artifact(arguments)
     if arguments.command == "publish":
@@ -91,6 +116,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _recover_catalog(arguments)
     parser.error("a command is required")
     return 2
+
+
+def _print_settings_error(error: SettingsError | ValueError, arguments: argparse.Namespace) -> None:
+    """Print one settings or flag failure, honoring the run command's JSON contract."""
+
+    if arguments.command == "run" and arguments.json:
+        _print_error_json("SettingsError", str(error), (), ())
+        return
+    print(f"error: {error}", file=sys.stderr)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -108,6 +142,14 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--name", help="Plugin name (default: final directory name).")
     init.add_argument("--version", default="0.1.0", help="Plugin SemVer version (default: 0.1.0).")
     init.add_argument("--action", default="request", help="Initial action name (default: request).")
+    init.add_argument(
+        "--fields",
+        metavar="FIELDS",
+        help=(
+            "Comma-separated names, JSON schema, JSON field map, or JSON file path. "
+            "File paths must not contain '..' and must resolve inside the working directory."
+        ),
+    )
 
     test_init = commands.add_parser(
         "test-init",
@@ -117,7 +159,7 @@ def _parser() -> argparse.ArgumentParser:
         "manifest",
         type=Path,
         nargs="?",
-        default=Path("plugin.yaml"),
+        default=Path(_DEFAULT_MANIFEST_NAME),
         help="Path to plugin.yaml or its directory (default: ./plugin.yaml).",
     )
     test_init.add_argument(
@@ -130,6 +172,92 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Tests directory (default: <workspace>/tests).",
+    )
+
+    run = commands.add_parser(
+        "run",
+        help="Validate inputs and run one custom-runner Step locally.",
+        description="Validate invocation inputs and run one custom-runner Step locally.",
+        epilog=textwrap.dedent(
+            """\
+            The target is the full Step identity, the module:Class entry point,
+            or a unique short name; it is inferred when the workspace declares
+            exactly one runnable target. Inputs come from --input (inline JSON)
+            or --input-file (a JSON file, - reads stdin). Without inputs the
+            command prints a schema-derived template instead of executing and
+            exits 2: the template is schema-shaped, not business-valid.
+
+            source mode (the default) compiles the workspace and executes the
+            Step through an in-process runtime. image mode runs the
+            workspace's declared workload image through Podman or Docker and
+            removes it afterwards; pass --address (and --tls-* for mutual
+            TLS) to use a runtime you started yourself instead.
+
+            example:
+              syntara-plugin run create-issue --input '{"title": "Broken build"}'
+              syntara-plugin run create-issue > input.json
+            """
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    run.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Step identity, module:Class entry point, or unique short name.",
+    )
+    run.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Path to plugin.yaml or its directory (default: ./plugin.yaml).",
+    )
+    _add_settings_argument(run)
+    run_inputs = run.add_mutually_exclusive_group()
+    run_inputs.add_argument(
+        "--input",
+        help="Inline JSON object with the invocation inputs.",
+    )
+    run_inputs.add_argument(
+        "--input-file",
+        type=Path,
+        help="JSON file with the invocation inputs; - reads stdin.",
+    )
+    run.add_argument(
+        "--mode",
+        choices=("source", "image"),
+        default="source",
+        help="source executes from the workspace; image runs the workload image through "
+        "Podman or Docker (default: source).",
+    )
+    run.add_argument(
+        "--address",
+        metavar="HOST:PORT",
+        default=None,
+        help="Use a runtime you started yourself at this address instead of running the "
+        "workload image.",
+    )
+    run.add_argument(
+        "--tls-ca",
+        type=Path,
+        help="CA bundle verifying the runtime server; --mode image only.",
+    )
+    run.add_argument(
+        "--tls-cert",
+        type=Path,
+        help="Client certificate for mutual TLS; --mode image only.",
+    )
+    run.add_argument(
+        "--tls-key",
+        type=Path,
+        help="Client private key for mutual TLS; --mode image only.",
+    )
+    run.add_argument("--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP)
+    run.add_argument(
+        "--verbose",
+        action="store_true",
+        default=None,
+        help="Show execution phases and step progress on stderr.",
     )
 
     for command, help_text in (
@@ -416,6 +544,8 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
 
     if arguments.command in {"validate", "inspect", "build"}:
         _resolve_compile_arguments(arguments, settings)
+    if arguments.command == "run":
+        _resolve_run_arguments(arguments, settings)
     if arguments.command == "publish":
         arguments.artifact = _required_path(
             arguments.artifact or settings.publish.artifact, "artifact"
@@ -447,6 +577,39 @@ def _resolve_compile_arguments(
     )
     explicit_bindings = _parse_image_bindings(arguments.image_binding or ())
     arguments.image_bindings = {**settings.build.image_bindings, **explicit_bindings}
+
+
+def _resolve_run_arguments(
+    arguments: argparse.Namespace, settings: PluginBuildSettings
+) -> None:
+    """Resolve the run command's small option set with shared precedence."""
+
+    from .runner import is_loopback_address, is_runtime_address
+
+    arguments.manifest = arguments.manifest or settings.manifest or Path(_DEFAULT_MANIFEST_NAME)
+    transport_options = (arguments.address, arguments.tls_ca, arguments.tls_cert, arguments.tls_key)
+    if arguments.mode == "source" and any(value is not None for value in transport_options):
+        raise SettingsError("--address and the --tls-* options require --mode image")
+    if arguments.address is not None and not is_runtime_address(arguments.address):
+        raise SettingsError(
+            "--address must be a HOST:PORT TCP address, for example 127.0.0.1:50051"
+        )
+    tls_files = transport_options[1:]
+    if (
+        arguments.mode == "image"
+        and arguments.address is not None
+        and not is_loopback_address(arguments.address)
+        and not any(value is not None for value in tls_files)
+    ):
+        raise SettingsError(
+            "a non-loopback --address requires mutual TLS "
+            "(--tls-ca, --tls-cert, --tls-key); the runtime server refuses "
+            "cleartext listeners off loopback"
+        )
+    if any(value is not None for value in tls_files) and not all(
+        value is not None for value in tls_files
+    ):
+        raise SettingsError("--tls-ca, --tls-cert, and --tls-key must be supplied together")
 
 
 def _resolve_publication_arguments(
@@ -669,7 +832,172 @@ def _invalid_init_argument(arguments: argparse.Namespace, name: str) -> str | No
     ):
         if not pattern.fullmatch(value):
             return f"{label} is not valid: {value!r}"
+    fields = arguments.fields
+    if fields is not None:
+        try:
+            _validate_fields(_fields_payload(fields))
+        except (OSError, SchemaError, ValueError) as error:
+            return str(error)
     return None
+
+
+def _fields_payload(value: str) -> dict[str, Any] | list[str]:
+    loaded = _read_fields_file(value)
+    if loaded is not None:
+        return _normalize_fields_document(json.loads(loaded))
+    if value.lstrip().startswith("{") or value.lstrip().startswith("["):
+        return _normalize_fields_document(json.loads(value))
+    return [field.strip() for field in value.split(",")]
+
+
+def _read_fields_file(value: str) -> str | None:
+    """Read a JSON fields file, or return None when ``value`` is inline data.
+
+    A leading ``@`` is removed before path checks. ``Path("@../secret.json")``
+    has no ``..`` part; the parent segment appears only after the prefix is
+    stripped. The candidate is joined onto the working directory and then
+    resolved to its real path, which must stay inside that directory. Absolute
+    paths replace the base during the join and symlinks are resolved, so both
+    are held to the same check and neither can stand in for ``..``. The file is
+    then opened through the path found by listing the working directory, never
+    through the path built from ``value``.
+    """
+
+    prefixed = value.startswith("@")
+    candidate = value[1:] if prefixed else value
+    if not prefixed and not candidate.endswith(".json"):
+        return None
+    if ".." in Path(candidate).parts:
+        raise ValueError("fields file must not contain '..' path traversal")
+    base_dir = os.path.realpath(os.getcwd())
+    message = "fields file must not escape the working directory through path traversal"
+    try:
+        filepath = os.path.realpath(os.path.join(base_dir, candidate))
+    except (OSError, RuntimeError) as error:
+        raise ValueError(message) from error
+    if os.path.commonpath([base_dir, filepath]) != base_dir:
+        raise ValueError(message)
+    if not prefixed and not os.path.isfile(filepath):
+        return None
+    discovered = _discover_contained_path(base_dir, os.path.relpath(filepath, base_dir))
+    if discovered is None:
+        raise ValueError(f"fields file does not exist: {candidate}")
+    with open(discovered, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _discover_contained_path(base_dir: str, relative: str) -> str | None:
+    """Return the entry path that matches ``relative`` under ``base_dir``.
+
+    Each segment is matched against the names listed in its parent directory,
+    starting at ``base_dir``. The returned path is built only from those listed
+    entries, so nothing from the caller's string reaches the filesystem call.
+    """
+
+    current = base_dir
+    for part in Path(relative).parts:
+        with os.scandir(current) as entries:
+            found = next((entry.path for entry in entries if entry.name == part), None)
+        if found is None:
+            return None
+        current = found
+    return current
+
+
+def _normalize_fields_document(
+    document: dict[str, Any] | list[str],
+) -> dict[str, Any] | list[str]:
+    if _is_field_map(document):
+        return _schema_from_field_map(document)
+    return document
+
+
+def _is_field_map(document: object) -> bool:
+    return (
+        isinstance(document, dict)
+        and bool(document)
+        and all(isinstance(value, dict) for value in document.values())
+        and not ("type" in document and "properties" in document)
+    )
+
+
+def _schema_from_field_map(document: dict[str, Any]) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    required = ["resource"]
+    for name, specification in document.items():
+        if name == "resource":
+            raise ValueError("field 'resource' is already included")
+        if not _FIELD_IDENTIFIER.fullmatch(name):
+            raise ValueError(f"field is not valid: {name!r}")
+        normalized = dict(specification)
+        normalized.pop("name", None)
+        normalized.pop("required", None)
+        properties[name] = normalized
+        if specification.get("required") is True:
+            required.append(name)
+    properties["resource"] = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Required input field.",
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required,
+        "properties": properties,
+    }
+
+
+def _validate_fields(document: dict[str, Any] | list[str]) -> None:
+    if isinstance(document, list):
+        _validate_field_names(document)
+        return
+    if not isinstance(document, dict):
+        raise ValueError("fields JSON must be an object")
+    _validate_fields_schema(document)
+
+
+def _validate_field_names(fields: list[str]) -> None:
+    if not all(isinstance(field, str) for field in fields):
+        raise ValueError("fields JSON array entries must be strings")
+    if len(fields) != len(set(fields)):
+        raise ValueError("fields must be unique")
+    for field in fields:
+        if field == "resource":
+            raise ValueError("field 'resource' is already included")
+        if not _FIELD_IDENTIFIER.fullmatch(field):
+            raise ValueError(f"field is not valid: {field!r}")
+
+
+def _validate_fields_schema(document: dict[str, Any]) -> None:
+    if document.get("type") != "object":
+        raise ValueError("fields JSON schema must have type: object")
+    required = document.get("required", [])
+    if not isinstance(required, list) or "resource" not in required:
+        raise ValueError("fields JSON schema must require resource")
+    if not all(isinstance(field, str) for field in required):
+        raise ValueError("fields JSON schema required entries must be strings")
+    properties = document.get("properties", {})
+    if not isinstance(properties, dict) or "resource" not in properties:
+        raise ValueError("fields JSON schema must define resource")
+    _validate_resource_property(properties["resource"])
+    missing_required = sorted(set(required) - set(properties))
+    if missing_required:
+        raise ValueError(
+            "fields JSON schema must define every required property: "
+            + ", ".join(missing_required)
+        )
+    Draft202012Validator.check_schema(document)
+
+
+def _validate_resource_property(resource: object) -> None:
+    """The scaffolded action interpolates resource into the HTTP request path."""
+    if not isinstance(resource, dict) or resource.get("type") != "string":
+        raise ValueError("fields JSON schema must define resource as a string")
+    minimum = resource.get("minLength")
+    if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:
+        raise ValueError("fields JSON schema must set resource minLength to at least 1")
 
 
 def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) -> None:
@@ -679,7 +1007,7 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
     (directory / action_path).parent.mkdir(parents=True)
     (directory / input_path).parent.mkdir(parents=True)
     (directory / "docs").mkdir()
-    (directory / "plugin.yaml").write_text(
+    (directory / _DEFAULT_MANIFEST_NAME).write_text(
         _plugin_template(arguments.namespace, name, arguments.version, action_path),
         encoding="utf-8",
     )
@@ -687,7 +1015,13 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
     (directory / action_path).write_text(
         _action_template(arguments.action, input_path), encoding="utf-8"
     )
-    (directory / input_path).write_text(_input_template(), encoding="utf-8")
+    payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
+    if isinstance(payload, dict):
+        (directory / input_path).write_text(
+            yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+        )
+    else:
+        (directory / input_path).write_text(_input_template(payload), encoding="utf-8")
     (directory / "docs" / "README.md").write_text(
         _readme_template(name, arguments.action), encoding="utf-8"
     )
@@ -704,20 +1038,7 @@ def _compile_workspace(arguments: argparse.Namespace) -> int:
             )
         )
     except CompilationError as error:
-        payload = {
-            "ok": False,
-            "diagnostics": [diagnostic.as_dict() for diagnostic in error.diagnostics],
-        }
-        if arguments.json:
-            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        else:
-            for diagnostic in error.diagnostics:
-                location = diagnostic.location
-                print(
-                    f"{location.file}:{location.line}:{location.column}: {diagnostic.code}: {diagnostic.message}",
-                    file=sys.stderr,
-                )
-                print(f"  fix: {diagnostic.remediation}", file=sys.stderr)
+        _print_compilation_failure(arguments, error)
         return 1
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
@@ -734,6 +1055,489 @@ def _compile_workspace(arguments: argparse.Namespace) -> int:
     else:
         print(f"Valid: {arguments.manifest} ({result.digest}, {len(result.assets)} bundled assets)")
     return 0
+
+
+def _print_compilation_failure(
+    arguments: argparse.Namespace,
+    error: CompilationError,
+    *,
+    next_steps: Sequence[str] = (),
+) -> None:
+    """Print compiler diagnostics in the format shared by validate and run."""
+
+    payload: dict[str, object] = {
+        "ok": False,
+        "diagnostics": [diagnostic.as_dict() for diagnostic in error.diagnostics],
+    }
+    if next_steps:
+        payload["next"] = list(next_steps)
+    if arguments.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+        return
+    for diagnostic in error.diagnostics:
+        location = diagnostic.location
+        print(
+            f"{location.file}:{location.line}:{location.column}: {diagnostic.code}: {diagnostic.message}",
+            file=sys.stderr,
+        )
+        print(f"  fix: {diagnostic.remediation}", file=sys.stderr)
+    if next_steps:
+        print(file=sys.stderr)
+        print("Next:", file=sys.stderr)
+        for step in next_steps:
+            print(f"  {step}", file=sys.stderr)
+
+
+def _run_command(arguments: argparse.Namespace) -> int:
+    """Validate inputs and run one custom-runner Step locally."""
+    # The execution engine pulls gRPC; importing it here keeps every command
+    # that never executes a Step free of that import cost. The template
+    # helpers are grpc-free and stay at module scope.
+    from .runner import (
+        RunExecutionError,
+        RunUsageError,
+        load_input,
+        resolve_manifest,
+        resolve_run_target,
+        run_source,
+        validate_inputs,
+    )
+
+    try:
+        manifest = resolve_manifest(arguments.manifest)
+    except RunUsageError as error:
+        _print_run_error(_localized_error(error, arguments), arguments)
+        return 2
+    try:
+        compiled = compile_workspace(BuildRequest(manifest, require_image_bindings=False))
+    except CompilationError as error:
+        _print_compilation_failure(arguments, error, next_steps=("syntara-plugin validate",))
+        return 1
+    except ValueError as error:
+        _print_value_error(error, arguments)
+        return 2
+
+    try:
+        target = resolve_run_target(compiled, arguments.target)
+        if arguments.input is None and arguments.input_file is None:
+            _print_run_template(arguments, target)
+            return 2
+        inputs, input_source = load_input(arguments.input, arguments.input_file)
+        errors = validate_inputs(target.input_schema, inputs)
+        if errors:
+            _print_input_errors(target, input_source, errors, arguments)
+            return 2
+        progress = _progress_printer(arguments)
+        if arguments.mode == "source":
+            report = run_source(
+                manifest, target, inputs, input_source, on_progress=progress
+            )
+        else:
+            report = _run_image_mode(arguments, target, inputs, input_source, progress)
+    except RunUsageError as error:
+        _print_run_error(_localized_error(error, arguments), arguments)
+        return 2
+    except RunExecutionError as error:
+        _print_run_error(_localized_error(error, arguments), arguments)
+        return 1
+    _print_run_report(arguments, report)
+    return 0 if report.ok else 1
+
+
+def _run_command_guarded(arguments: argparse.Namespace) -> int:
+    """Run one command with Ctrl-C mapped to a quiet conventional exit."""
+
+    try:
+        return _run_command(arguments)
+    except KeyboardInterrupt:
+        return 130
+
+
+def _print_value_error(error: ValueError, arguments: argparse.Namespace) -> None:
+    """Print one compile-path value failure, honoring the JSON contract."""
+
+    if arguments.json:
+        _print_error_json("ValueError", str(error), (), ())
+        return
+    print(f"error: {error}", file=sys.stderr)
+
+
+def _run_image_mode(
+    arguments: argparse.Namespace,
+    target: Any,
+    inputs: Mapping[str, Any],
+    input_source: str,
+    progress: Callable[[Any], None] | None,
+) -> Any:
+    """Execute in image mode: managed container by default, or a given runtime.
+
+    Without ``--address`` or TLS options the CLI runs the workspace's
+    declared workload image itself (Podman or Docker) and removes it
+    afterwards; passing either option means the author manages the runtime.
+    """
+
+    from .container_engine import managed_runtime
+    from .runner import DEFAULT_ADDRESS, RunExecutionError, run_image
+
+    tls = _run_tls_options(arguments)
+    if arguments.address is not None or tls is not None:
+        return run_image(
+            arguments.address or DEFAULT_ADDRESS,
+            target,
+            inputs,
+            input_source,
+            tls=tls,
+            on_progress=progress,
+            # A cold runtime server needs seconds for Python and gRPC imports.
+            startup_seconds=10.0,
+        )
+    if target.workload_image is None:
+        raise RunExecutionError(
+            "this workspace declares no workload image to run",
+            next_steps=(
+                "add spec.workload.image to plugin.yaml",
+                "or start the runtime yourself and pass --address HOST:PORT",
+            ),
+        )
+    if arguments.verbose and not arguments.json:
+        print(f"==> starting workload container {target.workload_image}", file=sys.stderr)
+    with managed_runtime(target.workload_image) as runtime:
+        return run_image(
+            runtime.address,
+            target,
+            inputs,
+            input_source,
+            tls=runtime.tls,
+            on_progress=progress,
+            image=runtime.image,
+            startup_seconds=30.0,
+            liveness=runtime.liveness,
+        )
+
+
+def _localized_error(
+    error: RunExecutionError | RunUsageError, arguments: argparse.Namespace
+) -> RunExecutionError | RunUsageError:
+    """Rewrite the runner's generic next steps into commands that run here.
+
+    ``validate`` and ``inspect`` take the manifest as a positional argument
+    and fail without one in workspaces that have no settings file, and the
+    runner's run suggestions cannot know which manifest or mode the author
+    used; the CLI can, so it localizes every suggested command.
+    """
+
+    from .runner import RunExecutionError, RunUsageError
+
+    manifest = getattr(arguments, "manifest", None)
+    manifest_suffix = f" {manifest}" if manifest is not None else ""
+    replacements = {
+        "syntara-plugin validate": f"syntara-plugin validate{manifest_suffix}",
+        "syntara-plugin inspect": f"syntara-plugin inspect{manifest_suffix}",
+    }
+    run_prefix = _run_base_options(arguments)
+    localized = tuple(
+        replacements.get(step, step)
+        if not step.startswith(_RUN_COMMAND_PREFIX)
+        else _RUN_COMMAND_PREFIX + step.removeprefix(_RUN_COMMAND_PREFIX) + run_prefix
+        for step in error.next_steps
+    )
+    return RunExecutionError(
+        error.message, failure_code=error.failure_code, detail=error.detail, next_steps=localized
+    ) if isinstance(error, RunExecutionError) else RunUsageError(
+        error.message, detail=error.detail, next_steps=localized
+    )
+
+
+def _run_option_arguments(arguments: argparse.Namespace) -> list[str]:
+    """Collect every option that keeps a suggested run command on target.
+
+    Manifest, settings, mode, address, and TLS material are all preserved so
+    the suggestion executes or connects to the same thing the author invoked.
+    """
+
+    parts: list[str] = []
+    if arguments.manifest is not None and str(arguments.manifest) != _DEFAULT_MANIFEST_NAME:
+        parts.extend(("--manifest", str(arguments.manifest)))
+    if arguments.settings is not None:
+        parts.extend(("--settings", str(arguments.settings)))
+    if arguments.mode == "image":
+        parts.extend(("--mode", "image"))
+    if arguments.address is not None:
+        parts.extend(("--address", arguments.address))
+    if arguments.tls_ca is not None:
+        parts.extend(("--tls-ca", str(arguments.tls_ca)))
+        parts.extend(("--tls-cert", str(arguments.tls_cert)))
+        parts.extend(("--tls-key", str(arguments.tls_key)))
+    return parts
+
+
+def _run_base_options(arguments: argparse.Namespace) -> str:
+    """Render the option suffix for a suggested run command, shell-quoted."""
+
+    parts = _run_option_arguments(arguments)
+    return " " + shlex.join(parts) if parts else ""
+
+
+def _print_run_error(
+    error: RunExecutionError | RunUsageError, arguments: argparse.Namespace | None = None
+) -> None:
+    """Print one run failure with its guidance and next command.
+
+    With ``--json`` the failure becomes one machine-readable error document
+    on stdout, so a consumer can parse every exit path the same way.
+    """
+
+    if arguments is not None and arguments.json:
+        _print_error_json(type(error).__name__, error.message, error.detail, error.next_steps)
+        return
+    print(f"error: {_safe_text(error.message)}", file=sys.stderr)
+    for line in error.detail:
+        print(_safe_text(line), file=sys.stderr)
+    if error.next_steps:
+        print(file=sys.stderr)
+        print("Next:", file=sys.stderr)
+        for step in error.next_steps:
+            print(f"  {step}", file=sys.stderr)
+
+
+def _print_error_json(
+    kind: str, message: str, detail: Sequence[str], next_steps: Sequence[str]
+) -> None:
+    """Print one failure as the machine-readable counterpart of the report."""
+
+    payload = {
+        "ok": False,
+        "error": {
+            "kind": kind,
+            "message": message,
+            "detail": list(detail),
+            "nextSteps": list(next_steps),
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+
+
+def _print_run_template(arguments: argparse.Namespace, target: RunTarget) -> None:
+    """Print the schema-derived template and guidance without executing."""
+
+    template = template_for(target.input_schema)
+    print(json.dumps(template, ensure_ascii=False, indent=2))
+    for line in render_summary_lines(target.identity, target.kind, target.input_schema):
+        print(_safe_text(line), file=sys.stderr)
+    print(file=sys.stderr)
+    print(
+        "The template is schema-shaped, not business-valid. Fill in real values.",
+        file=sys.stderr,
+    )
+    print(file=sys.stderr)
+    print("Nothing was executed. Next:", file=sys.stderr)
+    print(f"  {_run_command_line(arguments, target)} --input-file input.json", file=sys.stderr)
+
+
+def _print_input_errors(
+    target: RunTarget,
+    input_source: str,
+    errors: Sequence[str],
+    arguments: argparse.Namespace | None = None,
+) -> None:
+    """Print every input validation error with the fix-forward guidance."""
+
+    if arguments is not None and arguments.json:
+        _print_error_json(
+            "InvalidInput",
+            f"input does not satisfy the declared schema for {target.identity}",
+            errors,
+            (f"fix {input_source} and rerun", "or run without --input to print a template"),
+        )
+        return
+    print(
+        f"error: input does not satisfy the declared schema for {target.identity}",
+        file=sys.stderr,
+    )
+    for line in errors:
+        print(f"  {_safe_text(line)}", file=sys.stderr)
+    print(file=sys.stderr)
+    print("Nothing was executed. Next:", file=sys.stderr)
+    print(f"  fix {input_source} and rerun", file=sys.stderr)
+    print("  or run without --input/--input-file to print a template", file=sys.stderr)
+
+
+def _print_run_report(arguments: argparse.Namespace, report: RunReport) -> None:
+    """Print one completed invocation in human or machine-readable form."""
+
+    if arguments.json:
+        _print_run_report_json(report)
+        return
+
+    fields = _report_fields(report)
+    width = max(len(label) for label, _ in fields) + 2
+    for label, value in fields:
+        print(f"{_run_label(label, width)}{_safe_text(value)}")
+
+    if report.output is not None:
+        print()
+        print(_bold("Output:"))
+        rendered = json.dumps(report.output, ensure_ascii=False, indent=2)
+        print(_CONTROL_CHARACTERS.sub("", rendered))
+    elif report.object_reference is not None:
+        print()
+        print(_bold("Output reference:") + f" {_safe_text(report.object_reference)}")
+
+    if report.error_detail is not None:
+        print()
+        print(_bold("Error detail:"))
+        for line in report.error_detail.splitlines():
+            print(f"  {_safe_text(line)}")
+    elif _needs_uncaptured_hint(report):
+        print()
+        print(
+            _bold("Error detail:")
+            + " not captured; a remote runtime discards exception details. "
+            "Rerun with --mode source to see the local traceback."
+        )
+
+
+def _print_run_report_json(report: RunReport) -> None:
+    """Print one completed invocation as a single pretty-printed JSON document."""
+
+    payload: dict[str, object] = {
+        "ok": report.ok,
+        "mode": report.mode,
+        "target": report.target,
+        "image": report.image,
+        "inputSource": report.input_source,
+        "input": report.input_values,
+        "invocationId": report.invocation_id,
+        "workflowRunId": report.workflow_run_id,
+        "status": report.status,
+        "statusMessage": report.status_message,
+        "output": report.output,
+        "objectReference": report.object_reference,
+        "outcome": report.outcome,
+        "errorDetail": report.error_detail,
+    }
+    payload["error"] = (
+        None
+        if report.error is None
+        else {
+            "code": report.error.code,
+            "message": report.error.message,
+            "retryable": report.error.retryable,
+        }
+    )
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+
+
+def _report_fields(report: RunReport) -> list[tuple[str, str]]:
+    """Build the aligned label-and-value rows of one human report."""
+
+    fields: list[tuple[str, str]] = [
+        ("Target", report.target),
+        ("Mode", report.mode),
+    ]
+    if report.image is not None:
+        fields.append(("Image", report.image))
+    fields.extend(
+        [
+            ("Input", json.dumps(report.input_values, ensure_ascii=False)),
+            ("Invocation", report.invocation_id),
+        ]
+    )
+    if report.status is not None:
+        fields.append(("Status", str(report.status)))
+        if report.status_message:
+            fields.append(("Status message", report.status_message))
+    if report.error is not None:
+        retryable = str(report.error.retryable).lower()
+        fields.append(("Error", f"{report.error.code} (retryable: {retryable})"))
+        if report.error.message:
+            fields.append(("Message", report.error.message))
+    if report.outcome is not None:
+        fields.append(("Outcome", report.outcome))
+    return fields
+
+
+def _needs_uncaptured_hint(report: RunReport) -> bool:
+    """Return whether the image-mode failure should mention its missing detail."""
+
+    return (
+        report.error is not None
+        and report.error.code == "OUTCOME_UNKNOWN"
+        and report.mode == "image"
+    )
+
+
+def _run_label(label: str, width: int) -> str:
+    """Render one aligned report label, bolded on an interactive terminal."""
+
+    return _bold(f"{label + ':':<{width}}")
+
+
+def _bold(text: str) -> str:
+    """Bold on an interactive terminal; plain when piped or NO_COLOR is set."""
+
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        return text
+    return f"\033[1m{text}\033[0m"
+
+
+# Free-form text from manifests, step failures, and tracebacks is rendered to
+# the terminal; none of it may carry ANSI/OSC escape sequences, forge
+# additional report lines through embedded newlines, or spoof text with
+# bidirectional/zero-width characters. Tab is kept; newlines are flattened.
+_CONTROL_CHARACTERS = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f"
+    r"\u200b-\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029\ufeff]"
+)
+
+
+def _safe_text(text: str) -> str:
+    """Make author- or runtime-supplied text safe for one terminal line."""
+
+    flattened = _CONTROL_CHARACTERS.sub("", text).replace("\n", " ").replace("\r", " ")
+    return flattened
+
+
+def _run_command_line(arguments: argparse.Namespace, target: RunTarget) -> str:
+    """Rebuild the invoked run command so guidance is copy-pasteable.
+
+    Options that change what the next run executes or prints are preserved so
+    an author in image mode is never guided into a source-mode rerun or away
+    from the runtime they addressed. Shell-quoted so paths with spaces paste
+    correctly.
+    """
+
+    parts = ["syntara-plugin", "run", *_run_option_arguments(arguments)]
+    parts.append(arguments.target or target.metadata_name)
+    if arguments.json:
+        parts.append("--json")
+    return shlex.join(parts)  # NOSONAR - printed guidance only; shlex.join quotes every component
+
+
+def _run_tls_options(arguments: argparse.Namespace) -> TlsOptions | None:
+    from .runner import TlsOptions
+
+    files = (arguments.tls_ca, arguments.tls_cert, arguments.tls_key)
+    if all(value is None for value in files):
+        return None
+    assert arguments.tls_ca is not None
+    assert arguments.tls_cert is not None
+    assert arguments.tls_key is not None
+    return TlsOptions(ca=arguments.tls_ca, certificate=arguments.tls_cert, key=arguments.tls_key)
+
+
+def _progress_printer(arguments: argparse.Namespace) -> Callable[[Any], None] | None:
+    """Return a stderr progress printer for verbose human runs, else None."""
+
+    if arguments.json or not arguments.verbose:
+        return None
+
+    def print_progress(event: Any) -> None:
+        percent = f" {event.percent:.0f}%" if event.percent is not None else ""
+        message = f" {_safe_text(event.message)}" if event.message else ""
+        print(f"==> {event.state}{percent}{message}", file=sys.stderr)
+
+    return print_progress
 
 
 def _build_artifact(arguments: argparse.Namespace) -> int:
@@ -1444,20 +2248,24 @@ def _action_template(action: str, input_path: Path) -> str:
     )
 
 
-def _input_template() -> str:
+def _input_template(field_names: Sequence[str]) -> str:
     """Return one bounded input schema for the generated action."""
+    fields = ["resource", *field_names]
+    required = "  - resource\n"
+    properties = "".join(
+        f"  {field}:\n"
+        "    type: string\n"
+        "    minLength: 1\n"
+        "    maxLength: 128\n"
+        f"    description: {'Required' if field == 'resource' else 'Optional'} input field.\n"
+        for field in fields
+    )
     return (
         "type: object\n"
         "description: Inputs accepted by this action.\n"
         "additionalProperties: false\n"
-        "required:\n"
-        "  - resource\n"
-        "properties:\n"
-        "  resource:\n"
-        "    type: string\n"
-        "    minLength: 1\n"
-        "    maxLength: 128\n"
-        "    description: Provider resource identifier.\n"
+        f"required:\n{required}"
+        f"properties:\n{properties}"
     )
 
 

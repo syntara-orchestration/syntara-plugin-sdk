@@ -5,15 +5,41 @@ Use this guide after completing [getting started](getting-started.md). It descri
 ## The normal authoring loop
 
 ```text
-edit plugin source → validate → inspect → build archive → inspect archive
+edit plugin source → validate → inspect → run locally → build archive → inspect archive
 ```
 
+The first three steps run inside your plugin workspace:
+
 ```sh
+cd my-plugin
 syntara-plugin validate
 syntara-plugin inspect
 syntara-plugin build
 syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
+
+`run` is separate from that loop for one reason: it executes custom-runner
+Steps, and a workspace created by `init` declares a platform-runner action,
+which Syntara's managed runner executes instead. To run a Step locally you
+need a workspace that declares a custom-runner target and an input file; the
+complete, copy-pasteable workflow using the
+[python-steps example](../examples/python-steps) from a repository checkout:
+
+```sh
+# 1. Print the input contract of the target you want (nothing executes).
+syntara-plugin run --manifest examples/python-steps/plugin.yaml create-issue
+
+# 2. Save the printed template as your input file and fill in real values.
+syntara-plugin run --manifest examples/python-steps/plugin.yaml create-issue > input.json
+$EDITOR input.json
+
+# 3. Execute with the filled file.
+syntara-plugin run --manifest examples/python-steps/plugin.yaml create-issue --input-file input.json
+```
+
+Every command above runs as printed from the repository root. `run` can also
+execute a workload image you built; see [Running locally](running-locally.md)
+for both modes, target selection, and the meaning of every output field.
 
 The default build has no registry side effects. It compiles the selected manifest, validates the contracts, and writes a deterministic OCI-layout tar archive.
 

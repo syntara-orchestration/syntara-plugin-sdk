@@ -12,8 +12,33 @@ Install the released CLI or prepare an unreleased checkout by following
 ## Create your first plugin
 
 ```sh
-syntara-plugin init ./my-plugin --namespace acme
+syntara-plugin init ./my-plugin --namespace acme --fields title
 cd ./my-plugin
+```
+
+Pass a comma-separated list to `--fields` for optional input fields. For more
+control, pass an inline JSON schema, a JSON field map, or a path to a JSON
+schema file. Paths may be absolute or relative. They must not contain a `..`
+segment, and the resolved path, including symlinks, must stay inside the
+working directory. Field maps support per-field types, descriptions, defaults,
+enums, patterns, and requiredness. Add `"required": true` to a field-map entry
+when the action needs that input in addition to the built-in `resource` field.
+A full JSON schema must define `resource` as a string with `"minLength": 1`;
+the generated action interpolates it into its HTTP request path, where the
+runner requires a non-empty string.
+
+For example:
+
+```sh
+syntara-plugin init ./my-plugin --namespace acme \
+  --fields '{"url":{"type":"string","description":"Target URL","minLength":1,"maxLength":50}}'
+```
+
+To make `url` required, use:
+
+```sh
+syntara-plugin init ./my-plugin --namespace acme \
+  --fields '{"url":{"type":"string","description":"Target URL","minLength":1,"maxLength":50,"required":true}}'
 ```
 
 The generated workspace contains:
@@ -60,4 +85,5 @@ syntara-plugin build ../examples/hello-world/plugin.yaml \
 
 - Read the [plugin language reference](plugin-language.md) before changing a manifest.
 - Read the [build settings reference](build-settings.md) before configuring a registry or workload image.
+- Run one Step locally with [Running locally](running-locally.md) before writing a test suite.
 - Use the [user guide](user-guide.md) when you are ready to publish an artifact or update a catalog.

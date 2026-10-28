@@ -303,3 +303,140 @@ def _make_tls_material_readable(certificate: Path, key: Path, client_ca: Path) -
 
 def _run_openssl(*arguments: str) -> None:
     subprocess.run(("openssl", *arguments), check=True, capture_output=True)
+
+
+def _write_managed_containerfile(context: Path) -> None:
+    """A TLS-free containerfile: loopback listener, host network friendly."""
+
+    (context / "Containerfile").write_text(
+        f"""FROM {_BASE_IMAGE}
+
+WORKDIR /app
+COPY wheels /wheels
+RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl
+USER 0
+RUN mkdir -p /etc/syntara
+COPY runtime.json /etc/syntara/runtime.json
+RUN chmod 0644 /etc/syntara/runtime.json
+
+ENV SYNTARA_RUNTIME_CONFIG=/etc/syntara/runtime.json \\
+    PYTHONUNBUFFERED=1 \\
+    PYTHONDONTWRITEBYTECODE=1
+
+USER 1001
+EXPOSE 50051
+ENTRYPOINT ["python3.12", "-m", "syntara_plugin.runtime.server"]
+""",
+        encoding="utf-8",
+    )
+
+
+def test_managed_image_mode_runs_and_cleans_up_the_workload_container(
+    tmp_path: Path, capsys
+) -> None:
+    """`run --mode image` without --address manages the container itself."""
+
+    from syntara_plugin.sdk.cli import main
+
+    context = tmp_path / "image-context"
+    wheels = context / "wheels"
+    wheels.mkdir(parents=True)
+    _build_workspace_wheel("syntara-plugin-contracts", wheels)
+    _write_sample_step(context)
+    _build_sample_wheel(context, wheels)
+    _write_runtime_config(context)
+    _write_managed_containerfile(context)
+    image_tag = f"syntara-plugin-managed-it-{uuid.uuid4().hex}"
+    _build_image(context, image_tag)
+
+    workspace = tmp_path / "ws"
+    (workspace / "steps/v1").mkdir(parents=True)
+    (workspace / "docs").mkdir()
+    (workspace / "plugin.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: integration
+  name: echo
+  version: 0.1.0
+  displayName: Echo
+  description: Managed image-mode fixture.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: {image_tag}
+  targets:
+    - steps/v1/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    (workspace / "steps/v1/manifest.yaml").write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: v1
+  displayName: Echo
+  description: Echoes one message.
+spec:
+  runtime:
+    kind: custom-runner
+    entryPoint: syntara_sample_step.runtime:EchoStep
+  input:
+    kind: inline
+    value:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+  output:
+    kind: inline
+    value:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    (workspace / "docs/README.md").write_text("# Echo\n", encoding="utf-8")
+
+    try:
+        status = main(
+            [
+                "run",
+                "--manifest",
+                str(workspace / "plugin.yaml"),
+                "--mode",
+                "image",
+                "--input",
+                '{"message": "hello managed"}',
+            ]
+        )
+    finally:
+        subprocess.run(
+            ["podman", "rmi", "--force", image_tag],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert any(line.startswith("Mode:") and line.strip().endswith("image") for line in lines)
+    assert any(line.startswith("Image:") and image_tag in line for line in lines)
+    assert '"message": "hello managed"' in captured.out
+    leftovers = subprocess.run(
+        ["podman", "ps", "-a", "--filter", "name=syntara-run-", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert not leftovers.stdout.strip()

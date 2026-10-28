@@ -69,6 +69,379 @@ def test_init_creates_a_compilable_workspace_and_validate_reports_its_digest(
     assert payload["assetCount"] == 2
 
 
+def test_init_accepts_field_names_and_generates_a_valid_schema(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """CLI scaffolding turns optional-field options into schema declarations."""
+    workspace = tmp_path / "issue-tools"
+
+    assert (
+        main(
+            [
+                "init",
+                str(workspace),
+                "--fields",
+                "title,issue_count",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    schema = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert schema["required"] == ["resource"]
+    assert set(schema["properties"]) == {"resource", "title", "issue_count"}
+    assert schema["properties"]["title"]["description"] == "Optional input field."
+
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_accepts_an_inline_json_schema_with_required_fields(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """A JSON parameter can define the complete generated input schema."""
+    workspace = tmp_path / "issue-tools"
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["resource", "title"],
+        "properties": {
+            "resource": {"type": "string", "minLength": 1},
+            "title": {"type": "string", "minLength": 1},
+            "priority": {
+                "type": "string",
+                "default": "low",
+                "enum": ["low", "medium", "high"],
+            },
+        },
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 0
+    capsys.readouterr()
+    generated = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert generated == schema
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_accepts_a_json_field_map_with_standard_schema_keys(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """A field map can describe each property without a full JSON Schema."""
+    workspace = tmp_path / "issue-tools"
+    field_map = {
+        "url": {
+            "description": "description",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50,
+        }
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(field_map)]) == 0
+    capsys.readouterr()
+    schema = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert schema["required"] == ["resource"]
+    assert schema["properties"]["url"] == {
+        "description": "description",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 50,
+    }
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_accepts_a_required_field_map_entry(tmp_path: Path, capsys) -> None:
+    """Field-map entries can be marked required without a full schema."""
+    workspace = tmp_path / "issue-tools"
+    field_map = {
+        "title": {
+            "type": "string",
+            "minLength": 1,
+            "required": True,
+        }
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(field_map)]) == 0
+    capsys.readouterr()
+    schema = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert schema["required"] == ["resource", "title"]
+    assert schema["properties"]["title"] == {
+        "type": "string",
+        "minLength": 1,
+    }
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys, monkeypatch) -> None:
+    """An absolute schema path is accepted when it resolves inside the working directory."""
+    workspace = tmp_path / "issue-tools"
+    schema_path = tmp_path / "fields.json"
+    schema = {
+        "type": "object",
+        "required": ["resource", "issue_count"],
+        "properties": {
+            "resource": {"type": "string", "minLength": 1},
+            "issue_count": {"type": "integer", "minimum": 0},
+        },
+    }
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["init", str(workspace), "--fields", str(schema_path)]) == 0
+    capsys.readouterr()
+    generated = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert generated == schema
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
+
+
+def test_init_accepts_an_at_prefixed_json_schema_file(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """``@`` selects a JSON file. ``..`` inside one segment is not parent traversal."""
+    workspace = tmp_path / "issue-tools"
+    schema_path = tmp_path / "fields..json"
+    schema = {
+        "type": "object",
+        "required": ["resource", "issue_count"],
+        "properties": {
+            "resource": {"type": "string", "minLength": 1},
+            "issue_count": {"type": "integer", "minimum": 0},
+        },
+    }
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["init", str(workspace), "--fields", "@fields..json"]) == 0
+    capsys.readouterr()
+    generated = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert generated == schema
+
+
+def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeypatch) -> None:
+    """LLM-supplied ``--fields`` paths cannot escape via ``..`` or a symlink."""
+    sentinel = "fields-schema-sentinel"
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    schema = {
+        "type": "object",
+        "required": ["resource"],
+        "properties": {"resource": {"type": "string", "description": sentinel}},
+    }
+    (secret / "fields.json").write_text(json.dumps(schema), encoding="utf-8")
+    work = tmp_path / "work"
+    (work / "nested").mkdir(parents=True)
+    (work / "local.json").write_text(json.dumps(schema), encoding="utf-8")
+    (work / "link.json").symlink_to(Path("..") / "secret" / "fields.json")
+    (work / "linkdir").symlink_to(secret, target_is_directory=True)
+    (work / "nested" / "up.json").symlink_to(Path("..") / ".." / "secret" / "fields.json")
+    monkeypatch.chdir(work)
+    absolute = work / ".." / "secret" / "fields.json"
+    outside = (secret / "fields.json").resolve()
+    arguments = [
+        "../secret/fields.json",
+        "@../secret/fields.json",
+        "./../secret/fields.json",
+        "@./../secret/fields.json",
+        "nested/../../secret/fields.json",
+        "@nested/../../secret/fields.json",
+        "nested/../local.json",
+        "@nested/../local.json",
+        str(absolute),
+        f"@{absolute}",
+        str(outside),
+        f"@{outside}",
+        "link.json",
+        "@link.json",
+        "linkdir/fields.json",
+        "@linkdir/fields.json",
+        "linkdir/missing.json",
+        "@linkdir/missing.json",
+        "nested/up.json",
+        "@nested/up.json",
+    ]
+
+    for index, fields in enumerate(arguments):
+        workspace = work / f"plugin-{index}"
+        assert main(["init", str(workspace), "--fields", fields]) == 2, fields
+        captured = capsys.readouterr()
+        assert "path traversal" in captured.err
+        assert sentinel not in captured.out
+        assert sentinel not in captured.err
+        assert not workspace.exists()
+
+
+def test_init_accepts_a_fields_symlink_inside_the_working_directory(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A relative symlink is readable when its target stays in the working directory."""
+    workspace = tmp_path / "issue-tools"
+    schema_path = tmp_path / "fields.json"
+    schema = {
+        "type": "object",
+        "required": ["resource", "issue_count"],
+        "properties": {
+            "resource": {"type": "string", "minLength": 1},
+            "issue_count": {"type": "integer", "minimum": 0},
+        },
+    }
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    (tmp_path / "link.json").symlink_to(schema_path.name)
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["init", str(workspace), "--fields", "link.json"]) == 0
+    capsys.readouterr()
+    generated = yaml.safe_load(
+        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+    )
+
+    assert generated == schema
+
+
+def test_init_reads_a_fields_file_from_a_subdirectory(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Nested relative and absolute paths inside the working directory are readable."""
+    schema = {
+        "type": "object",
+        "required": ["resource", "issue_count"],
+        "properties": {
+            "resource": {"type": "string", "minLength": 1},
+            "issue_count": {"type": "integer", "minimum": 0},
+        },
+    }
+    nested = tmp_path / "schemas" / "fields.json"
+    nested.parent.mkdir()
+    nested.write_text(json.dumps(schema), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    for index, fields in enumerate(["schemas/fields.json", f"@{nested}"]):
+        workspace = tmp_path / f"issue-tools-{index}"
+        assert main(["init", str(workspace), "--fields", fields]) == 0, fields
+        capsys.readouterr()
+        generated = yaml.safe_load(
+            (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
+        )
+        assert generated == schema
+
+
+def test_init_rejects_a_missing_at_prefixed_fields_file(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """``@`` always names a file, so a missing one is an error rather than inline data."""
+    workspace = tmp_path / "issue-tools"
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["init", str(workspace), "--fields", "@missing.json"]) == 2
+    assert "fields file does not exist: missing.json" in capsys.readouterr().err
+    assert not workspace.exists()
+
+
+def test_init_rejects_a_json_schema_that_does_not_require_resource(
+    tmp_path: Path, capsys
+) -> None:
+    """The scaffold route still requires the built-in resource input."""
+    workspace = tmp_path / "invalid-schema"
+    schema = {
+        "type": "object",
+        "required": ["title"],
+        "properties": {"title": {"type": "string"}},
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 2
+    assert "must require resource" in capsys.readouterr().err
+    assert not workspace.exists()
+
+
+def test_init_rejects_a_required_property_that_is_not_defined(
+    tmp_path: Path, capsys
+) -> None:
+    """Every required input must have a matching property definition."""
+    workspace = tmp_path / "invalid-schema"
+    schema = {
+        "type": "object",
+        "required": ["resource", "title"],
+        "properties": {"resource": {"type": "string", "minLength": 1}},
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 2
+    assert "must define every required property: title" in capsys.readouterr().err
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize(
+    ("resource", "message"),
+    [
+        ({"type": "integer"}, "must define resource as a string"),
+        ({"type": ["string", "integer"]}, "must define resource as a string"),
+        (True, "must define resource as a string"),
+        ({"type": "string"}, "must set resource minLength to at least 1"),
+        ({"type": "string", "minLength": 0}, "must set resource minLength to at least 1"),
+    ],
+)
+def test_init_rejects_a_json_schema_that_redefines_resource_unusably(
+    tmp_path: Path, capsys, resource: object, message: str
+) -> None:
+    """The generated action renders resource into its path, so it must stay usable."""
+    workspace = tmp_path / "invalid-schema"
+    schema = {
+        "type": "object",
+        "required": ["resource"],
+        "properties": {"resource": resource},
+    }
+
+    assert main(["init", str(workspace), "--fields", json.dumps(schema)]) == 2
+    assert message in capsys.readouterr().err
+    assert not workspace.exists()
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ("title,title", "fields must be unique"),
+        ("resource", "field 'resource' is already included"),
+        ("1-title", "field is not valid"),
+        ("[1]", "fields JSON array entries must be strings"),
+        ("[{}]", "fields JSON array entries must be strings"),
+        ("[1, 1]", "fields JSON array entries must be strings"),
+    ],
+)
+def test_init_rejects_invalid_field_names(
+    tmp_path: Path, capsys, fields: str, message: str
+) -> None:
+    """Invalid or duplicate fields are rejected before files are written."""
+    workspace = tmp_path / "invalid-fields"
+    arguments = ["init", str(workspace), "--fields", fields]
+
+    assert main(arguments) == 2
+    assert message in capsys.readouterr().err
+    assert not workspace.exists()
+
+
 def test_manifest_adjacent_settings_win_over_an_unrelated_cwd_settings_file(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:

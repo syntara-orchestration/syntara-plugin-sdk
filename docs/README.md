@@ -10,6 +10,7 @@ Choose the guide that matches what you are doing.
 | Understand every YAML manifest field | [Plugin language reference](plugin-language.md) |
 | Configure `syntara-plugin.yaml` | [Build settings reference](build-settings.md) |
 | Test step implementations locally | [Testing reference](testing.md) |
+| Run one Step locally from source or a running image | [Running locally](running-locally.md) |
 | Contribute to the SDK or change a contract | [Developer guide](developer-guide.md) |
 | Prepare or approve a Python package release | [Release guide](releasing.md) |
 | Understand the OCI artifact and container ABI boundaries | [Runtime and OCI model](runtime-and-oci.md) |

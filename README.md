@@ -40,6 +40,16 @@ syntara-plugin build
 syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
 
+`init` generates a platform-runner action, which Syntara's managed runner
+executes; the `run` command executes custom-runner Steps locally. To try it,
+run the custom-runner example from the repository root (see
+[Running locally](docs/running-locally.md)):
+
+```sh
+syntara-plugin run --manifest examples/python-steps/plugin.yaml create-issue \
+  --input '{"title": "Broken build"}'
+```
+
 `init` creates a small plugin workspace and a non-secret
 `syntara-plugin.yaml` settings file. The default build is deterministic and
 offline: it writes a portable OCI metadata archive but does not build an image,
@@ -94,6 +104,7 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
 - [Plugin language reference](docs/plugin-language.md) — each manifest kind and field, with links to its normative schema.
 - [Build settings reference](docs/build-settings.md) — every `syntara-plugin.yaml` key and its behavior.
 - [Testing reference](docs/testing.md) — local pytest harness, fixtures, invocation helpers, and generated tests.
+- [Running locally](docs/running-locally.md) — validate inputs and run one Step from source or a running image.
 - [Developer guide](docs/developer-guide.md) — local setup, tests, contract changes, and contribution expectations.
 - [Runtime and OCI model](docs/runtime-and-oci.md) — container ABI, artifact boundaries, and ownership.
 - [Documentation index](docs/README.md) — the complete map, including design records and language-specific notes.
