@@ -10,15 +10,20 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
+from importlib.metadata import version
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
 import yaml
 from jsonschema import Draft202012Validator, SchemaError
 from syntara_plugin.contracts import (
+    STEP_KINDS,
     ContractBundle,
     load_bundle,
+    plugin_revision_id,
+    revision_errors,
     schema_digests,
+    step_revision_id,
     validate_document,
 )
 from yaml.constructor import ConstructorError
@@ -287,6 +292,7 @@ def _compile(
     descriptor_spec: dict[str, object] = {
         "assets": {key: assets[key].index_entry() for key in sorted(assets)},
         "contractBundleDigest": bundle.digest,
+        "sdkVersion": version("syntara-plugin-sdk"),
         "targets": canonical_targets,
         "workloads": _canonical_workloads(plugin.document, image_bindings),
     }
@@ -298,6 +304,17 @@ def _compile(
         "metadata": _ordered(plugin.document["metadata"]),
         "spec": descriptor_spec,
     }
+    for target in canonical_targets:
+        if target.get("kind") in STEP_KINDS:
+            target["step_revision_id"] = step_revision_id(descriptor, target)
+    descriptor_spec["plugin_revision_id"] = plugin_revision_id(descriptor)
+    for message in revision_errors(descriptor):
+        diagnostics.append(
+            _diagnostic(
+                "DESCRIPTOR_INVALID", message, PLUGIN_MANIFEST_FILENAME,
+                "Correct the compiled revision metadata.",
+            )
+        )
     for message in validate_document(bundle, "plugin_descriptor", descriptor):
         diagnostics.append(
             _diagnostic(

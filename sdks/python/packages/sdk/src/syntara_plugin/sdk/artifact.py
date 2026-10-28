@@ -17,6 +17,12 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import PurePosixPath
 
+from syntara_plugin.contracts import (
+    load_bundle,
+    validate_document,
+    validate_plugin_descriptor_semantics,
+)
+
 from .authoring import CompilationResult, CompiledAsset
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, canonical_json_bytes
 
@@ -72,6 +78,10 @@ def build_plugin_artifact(compilation: CompilationResult) -> PluginArtifact:
     """
 
     descriptor = compilation.descriptor
+    errors = validate_document(load_bundle(), "plugin_descriptor", descriptor)
+    errors.extend(validate_plugin_descriptor_semantics(descriptor))
+    if errors:
+        raise ArtifactBuildError("Invalid compiled descriptor: " + "; ".join(errors))
     metadata = descriptor.get("metadata") if isinstance(descriptor, Mapping) else None
     if descriptor.get("kind") != "PluginDescriptor" or not isinstance(metadata, Mapping):
         raise ArtifactBuildError(

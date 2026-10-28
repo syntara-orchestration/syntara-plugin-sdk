@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from syntara_plugin.contracts import (
+    canonical_json_bytes,
+    registration_manifest,
+    validate_registration_manifest,
+)
 
 _SHA256_DIGEST_PREFIX = "sha256:"
+REGISTRATION_MANIFEST_PATH = "/opt/syntara/registration-manifest.json"
 
 
 class WorkloadBuildError(RuntimeError):
@@ -27,6 +37,8 @@ class WorkloadBuildRequest:
     platform: str
     allow_insecure_loopback_http: bool = False
     auth_file: Path | None = None
+    registration_descriptor: Mapping[str, Any] | None = None
+    workload_id: str | None = None
 
     @property
     def tagged_reference(self) -> str:
@@ -52,6 +64,18 @@ def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = Fa
         raise WorkloadBuildError("workload repository must be a non-empty taggable repository")
     if not request.tag or any(character.isspace() for character in request.tag):
         raise WorkloadBuildError("workload tag must be a non-empty tag without whitespace")
+    if request.registration_descriptor is None or not request.workload_id:
+        raise WorkloadBuildError("a compiled descriptor and workload ID are required")
+    try:
+        manifest = registration_manifest(request.registration_descriptor, request.workload_id)
+        validate_registration_manifest(
+            request.registration_descriptor, request.workload_id, manifest
+        )
+        manifest_bytes = canonical_json_bytes(manifest)
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise WorkloadBuildError(f"invalid workload registration: {error}") from error
+    if not re.fullmatch(r"[A-Za-z0-9._:/-]+", request.tagged_reference):
+        raise WorkloadBuildError("invalid workload image reference for registration layer")
     if not request.platform or "/" not in request.platform:
         raise WorkloadBuildError("workload platform must be explicit, for example linux/amd64")
     if request.allow_insecure_loopback_http and not _is_loopback_repository(request.repository):
@@ -75,6 +99,30 @@ def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = Fa
         ],
         verbose=verbose,
     )
+    with tempfile.TemporaryDirectory(prefix="syntara-registration-") as directory:
+        context = Path(directory)
+        (context / "manifest.json").write_bytes(manifest_bytes)
+        containerfile = context / "Containerfile"
+        containerfile.write_text(
+            f"FROM {request.tagged_reference}\nCOPY manifest.json {REGISTRATION_MANIFEST_PATH}\n",
+            encoding="utf-8",
+        )
+        _run(
+            [
+                request.engine,
+                "build",
+                "--format",
+                "oci",
+                "--platform",
+                request.platform,
+                "--file",
+                str(containerfile),
+                "--tag",
+                request.tagged_reference,
+                str(context),
+            ],
+            verbose=verbose,
+        )
     digest_file = tempfile.NamedTemporaryFile(prefix="syntara-plugin-digest-", delete=False)
     digest_path = Path(digest_file.name)
     digest_file.close()

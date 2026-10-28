@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
+from pathlib import Path
+
 import pytest
 from syntara_plugin.contracts import (
     canonical_json_digest,
     is_digest_image_reference,
+    load_bundle,
     materialized_schemas,
+    plugin_revision_id,
+    registration_manifest,
+    revision_errors,
     schema_digests,
+    step_revision_id,
+    validate_document,
     validate_plugin_descriptor_semantics,
+    validate_registration_manifest,
 )
 
 
@@ -30,8 +41,11 @@ def _target(identity: str = "acme.plugin.step") -> dict[str, object]:
 
 
 def _descriptor(targets: list[dict[str, object]]) -> dict[str, object]:
-    return {
+    descriptor = {
+        "metadata": {"namespace": "acme", "name": "plugin", "version": "0.1.0"},
         "spec": {
+            "sdkVersion": "0.1.0a1",
+            "contractBundleDigest": "sha256:" + "b" * 64,
             "targets": targets,
             "workloads": {
                 "runner": {
@@ -41,6 +55,10 @@ def _descriptor(targets: list[dict[str, object]]) -> dict[str, object]:
             },
         }
     }
+    for target in targets:
+        target["step_revision_id"] = step_revision_id(descriptor, target)
+    descriptor["spec"]["plugin_revision_id"] = plugin_revision_id(descriptor)
+    return descriptor
 
 
 def test_materialized_schema_fields_and_digests_are_canonical() -> None:
@@ -64,6 +82,73 @@ def test_materialized_schema_fields_and_digests_are_canonical() -> None:
 
 def test_descriptor_semantics_accept_a_valid_compiled_target() -> None:
     assert validate_plugin_descriptor_semantics(_descriptor([_target()])) == ()
+
+
+def test_revision_fixture_is_a_stable_projection_vector() -> None:
+    fixture = json.loads(
+        (Path(__file__).parents[4] / "contracts/fixtures/plugin-descriptor.valid.json").read_text()
+    )
+    assert revision_errors(fixture) == ()
+    assert validate_plugin_descriptor_semantics(fixture) == ()
+    manifest = registration_manifest(fixture, "plugin-workload")
+    assert len(manifest["steps"]) == 2
+    validate_registration_manifest(fixture, "plugin-workload", manifest)
+
+    for mutation in ("entryPoint", "abi", "missing", "extra"):
+        altered = deepcopy(manifest)
+        revision = next(iter(altered["steps"]))
+        if mutation == "missing":
+            del altered["steps"][revision]
+        elif mutation == "extra":
+            altered["unexpected"] = True
+        else:
+            altered["steps"][revision][mutation] = "incorrect"
+        with pytest.raises(ValueError, match="does not match"):
+            validate_registration_manifest(fixture, "plugin-workload", altered)
+
+
+def test_revision_ids_commit_to_sdk_plugin_and_step_contracts() -> None:
+    descriptor = _descriptor([_target()])
+    original_plugin = plugin_revision_id(descriptor)
+    original_step = step_revision_id(descriptor, descriptor["spec"]["targets"][0])
+    descriptor["spec"]["sdkVersion"] = "0.1.0a2"
+    assert plugin_revision_id(descriptor) != original_plugin
+    assert step_revision_id(descriptor, descriptor["spec"]["targets"][0]) != original_step
+    assert len(revision_errors(descriptor)) == 2
+    descriptor["spec"]["plugin_revision_id"] = "sha256:" + "0" * 64
+    assert "plugin revision ID does not match its contract" in revision_errors(descriptor)
+
+
+@pytest.mark.parametrize(
+    ("workload_id", "abi", "provider", "changes_revision"),
+    [
+        ("plugin-workload", "syntara.container/v1alpha1", None, False),
+        ("provider-image", "syntara.provider/v1alpha1", "provider", True),
+        ("provider-image", "syntara.container/v1alpha1", "provider", True),
+        ("plugin-workload", "syntara.container/v1alpha1", "provider", True),
+        ("unused-image", "syntara.container/v1alpha1", None, True),
+    ],
+)
+def test_plugin_revision_tracks_non_runner_workload_images(
+    workload_id: str, abi: str, provider: str | None, changes_revision: bool
+) -> None:
+    descriptor = json.loads(
+        (Path(__file__).parents[4] / "contracts/fixtures/plugin-descriptor.valid.json").read_text()
+    )
+    workload = {
+        "abi": abi,
+        "image": "quay.io/acme/workload@sha256:" + "a" * 64,
+    }
+    if provider is not None:
+        workload["provider"] = provider
+    descriptor["spec"]["workloads"][workload_id] = workload
+    descriptor["spec"]["plugin_revision_id"] = plugin_revision_id(descriptor)
+    assert validate_document(load_bundle(), "plugin_descriptor", descriptor) == []
+    assert validate_plugin_descriptor_semantics(descriptor) == ()
+
+    original_revision = plugin_revision_id(descriptor)
+    workload["image"] = "quay.io/acme/workload@sha256:" + "b" * 64
+    assert (plugin_revision_id(descriptor) != original_revision) is changes_revision
 
 
 def test_descriptor_semantics_reject_duplicate_targets_and_stale_schema_digests() -> None:

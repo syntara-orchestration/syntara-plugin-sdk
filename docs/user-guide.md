@@ -86,6 +86,12 @@ This performs three OCI publications:
 2. The SDK publishes the plugin metadata archive to `registry.artifactRepository`.
 3. The SDK creates or advances the configured catalog index so Syntara can discover the release.
 
+Before the image is pushed, the SDK adds a generated registration manifest at
+`/opt/syntara/registration-manifest.json`. It maps each custom-runner step
+revision to its entry point and ABI. Image bindings supplied for an externally
+built image are not inspected by the SDK; the image producer must embed the
+matching manifest. See [revision identities](revision-identities.md).
+
 The feature does not yet prove custom-runner execution in the Execution Plane, secret delivery, signing, or production egress policy. See [ADR 0006](../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md).
 
 ## Administer or recover a catalog

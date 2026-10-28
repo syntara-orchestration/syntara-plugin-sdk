@@ -458,10 +458,12 @@ implementation:
 - The step identity comes from the installed descriptor. It is never inferred
   from a source filename.
 - Authors do not hard-code build-generated revision IDs.
-- The required per-step `module:Class` entry point and its digest binding are
-  owned by the separate SDK registry-binding story. In source manifests,
-  `spec.runtime.entryPoint` names that implementation identity inside the
-  digest-pinned workload image.
+- The compiled contract carries the `module:Class` entry point and required
+  ABI. `--with-workload` embeds the compiler-generated registration manifest
+  at `/opt/syntara/registration-manifest.json` in the image before pushing it.
+- Revision IDs identify compiled contracts, not image bytes. The workload image
+  is separately bound by its immutable digest in the descriptor. See
+  [revision identities](revision-identities.md) for the exact projection.
 
 See the [plugin language reference](plugin-language.md) for the manifest
 fields.

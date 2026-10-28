@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from syntara_plugin.sdk.workload import WorkloadBuildRequest, build_and_push_workload
+import pytest
+from syntara_plugin.contracts import (
+    canonical_json_bytes,
+    plugin_revision_id,
+    registration_manifest,
+    step_revision_id,
+)
+from syntara_plugin.sdk.workload import (
+    WorkloadBuildError,
+    WorkloadBuildRequest,
+    build_and_push_workload,
+)
+
+
+def _descriptor():
+    return json.loads(
+        (Path(__file__).parents[4] / "contracts/fixtures/plugin-descriptor.valid.json").read_text()
+    )
 
 
 def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, monkeypatch) -> None:
@@ -31,6 +49,8 @@ def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, mo
             repository="registry.example.test/acme/custom",
             tag="0.1.0",
             platform="linux/amd64",
+            registration_descriptor=_descriptor(),
+            workload_id="plugin-workload",
         )
     )
 
@@ -48,7 +68,7 @@ def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, mo
         "registry.example.test/acme/custom:0.1.0",
         str(context),
     ]
-    assert commands[1][:3] == ["podman", "push", "--digestfile"]
+    assert commands[2][:3] == ["podman", "push", "--digestfile"]
 
 
 def test_verbose_workload_output_uses_stderr_so_json_stdout_stays_clean(
@@ -76,6 +96,8 @@ def test_verbose_workload_output_uses_stderr_so_json_stdout_stays_clean(
             repository="registry.example.test/acme/custom",
             tag="0.1.0",
             platform="linux/amd64",
+            registration_descriptor=_descriptor(),
+            workload_id="plugin-workload",
         ),
         verbose=True,
     )
@@ -84,6 +106,86 @@ def test_verbose_workload_output_uses_stderr_so_json_stdout_stays_clean(
     assert captured.out == ""
     assert "+ podman build" in captured.err
     assert "+ podman push" in captured.err
+
+
+def test_registration_manifest_is_copied_into_final_image_before_push(
+    tmp_path: Path, monkeypatch
+) -> None:
+    context = tmp_path / "context"
+    context.mkdir()
+    containerfile = context / "Containerfile"
+    containerfile.write_text("FROM scratch\n", encoding="utf-8")
+    commands: list[list[str]] = []
+    descriptor = _descriptor()
+    manifest = canonical_json_bytes(registration_manifest(descriptor, "plugin-workload"))
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "build" and len(commands) == 2:
+            generated_context = Path(command[-1])
+            assert (generated_context / "manifest.json").read_bytes() == manifest
+            assert (generated_context / "Containerfile").read_text() == (
+                "FROM registry.example.test/acme/custom:0.1.0\n"
+                "COPY manifest.json /opt/syntara/registration-manifest.json\n"
+            )
+        if command[1] == "push":
+            Path(command[3]).write_text("sha256:" + "b" * 64, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+    build_and_push_workload(
+        WorkloadBuildRequest(
+            engine="podman",
+            context=context,
+            containerfile=containerfile,
+            repository="registry.example.test/acme/custom",
+            tag="0.1.0",
+            platform="linux/amd64",
+            registration_descriptor=descriptor,
+            workload_id="plugin-workload",
+        )
+    )
+    assert [command[1] for command in commands] == ["build", "build", "push"]
+
+
+def test_build_requires_valid_compiled_registration_before_running_podman(
+    tmp_path: Path, monkeypatch
+) -> None:
+    context = tmp_path / "context"
+    context.mkdir()
+    containerfile = context / "Containerfile"
+    containerfile.write_text("FROM scratch\n")
+    request = WorkloadBuildRequest(
+        engine="podman",
+        context=context,
+        containerfile=containerfile,
+        repository="registry.example.test/acme/custom",
+        tag="0.1.0",
+        platform="linux/amd64",
+    )
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.workload.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("Podman ran"),
+    )
+    with pytest.raises(WorkloadBuildError, match="compiled descriptor"):
+        build_and_push_workload(request)
+    from dataclasses import replace
+
+    invalid = _descriptor()
+    invalid["spec"]["plugin_revision_id"] = "sha256:" + "0" * 64
+    with pytest.raises(WorkloadBuildError, match="plugin revision ID"):
+        build_and_push_workload(
+            replace(request, registration_descriptor=invalid, workload_id="plugin-workload")
+        )
+    stale_schema = _descriptor()
+    target = stale_schema["spec"]["targets"][0]
+    target["input"] = {"type": "string"}
+    target["step_revision_id"] = step_revision_id(stale_schema, target)
+    stale_schema["spec"]["plugin_revision_id"] = plugin_revision_id(stale_schema)
+    with pytest.raises(WorkloadBuildError, match="schema digest does not match"):
+        build_and_push_workload(
+            replace(request, registration_descriptor=stale_schema, workload_id="plugin-workload")
+        )
 
 
 def test_loopback_workload_push_requires_explicit_opt_in_and_passes_tls_flag(
@@ -112,11 +214,13 @@ def test_loopback_workload_push_requires_explicit_opt_in_and_passes_tls_flag(
             tag="0.1.0",
             platform="linux/arm64",
             allow_insecure_loopback_http=True,
+            registration_descriptor=_descriptor(),
+            workload_id="plugin-workload",
         )
     )
 
     assert image == "localhost:8443/syntara-admin/custom@sha256:" + "d" * 64
-    assert commands[1][4:] == [
+    assert commands[2][4:] == [
         "--tls-verify=false",
         "localhost:8443/syntara-admin/custom:0.1.0",
     ]

@@ -7,6 +7,7 @@ from typing import Any
 
 from .canonical import canonical_json_digest
 from .image import is_digest_image_reference
+from .revisions import revision_errors
 
 _MATERIALIZED_SCHEMA_FIELDS = frozenset(
     {"configuration", "credentialSchema", "error", "input", "output"}
@@ -33,13 +34,14 @@ def schema_digests(target: Mapping[str, Any]) -> dict[str, str]:
 
 
 def validate_plugin_descriptor_semantics(
-    descriptor: Mapping[str, Any],
+    descriptor: Mapping[str, Any], *, deferred_workload: str | None = None,
 ) -> tuple[str, ...]:
     """Return stable diagnostics for semantic descriptor rules.
 
     JSON Schema validation establishes the descriptor's shape. These rules
     establish relationships between otherwise valid fields and are shared by
-    artifact publishers and installed-artifact consumers.
+    artifact publishers and installed-artifact consumers. During an image
+    build, the selected workload binding may be deferred until after the build.
     """
 
     specification = descriptor.get("spec")
@@ -57,9 +59,10 @@ def validate_plugin_descriptor_semantics(
         workloads = {}
 
     _validate_target_identities(targets, errors)
-    _validate_workloads(targets, workloads, errors)
+    _validate_workloads(targets, workloads, errors, deferred_workload)
     _validate_schema_digests(targets, errors)
     _validate_trigger_drivers(targets, errors)
+    errors.extend(revision_errors(descriptor))
     return tuple(errors)
 
 
@@ -84,6 +87,7 @@ def _validate_workloads(
     targets: list[object],
     workloads: Mapping[str, Any],
     errors: list[str],
+    deferred_workload: str | None,
 ) -> None:
     """Validate immutable workload images and custom-runner workload links."""
 
@@ -103,11 +107,13 @@ def _validate_workloads(
         identity = target.get("identity", "<unknown>")
         workload_id = runtime.get("workload")
         workload = workloads.get(workload_id) if isinstance(workload_id, str) else None
-        if not isinstance(workload, Mapping):
+        if not isinstance(workload, Mapping) and (
+            deferred_workload is None or workload_id != deferred_workload
+        ):
             errors.append(
                 f"custom-runner target {identity!r} references a missing workload"
             )
-        elif workload.get("abi") != "syntara.container/v1alpha1":
+        elif isinstance(workload, Mapping) and workload.get("abi") != "syntara.container/v1alpha1":
             errors.append(
                 f"custom-runner target {identity!r} workload has an invalid ABI"
             )
