@@ -4,20 +4,21 @@ This plugin is the checked-in end-to-end prototype. It contains one Python
 implementation each for Action, Control, and Trigger, and uses the manifest
 entry point as the single source of truth for loading each implementation.
 
-The local tests execute every step directly and through the in-process
-container adapter. The repository's opt-in Podman integration test packages
-the same plugin and executes it through the shared container runtime image.
+The SDK's end-to-end suite executes every step directly and through the
+in-process container adapter. The repository's opt-in Podman integration test
+packages the same plugin and executes it through the shared container runtime
+image.
 
-## Run locally
+## Run the SDK end-to-end suite
 
 From the repository root:
 
 ```sh
-uv run --no-sync pytest examples/existing-step/tests -q
+uv run --no-sync pytest sdks/python/tests/integration/test_existing_step_e2e.py -q
 ```
 
-The tests compile the checked-in plugin, load each implementation through the
-manifest-declared `module:Class` entry point, and compare the direct and
+The suite compiles this checked-in plugin, loads each implementation through
+the manifest-declared `module:Class` entry point, and compares the direct and
 in-process container outcomes for valid and invalid inputs.
 
 ## Run the containerized prototype

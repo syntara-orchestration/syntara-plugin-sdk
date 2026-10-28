@@ -1,7 +1,15 @@
-"""End-to-end prototype tests for direct and container adapter execution."""
+"""End-to-end contract tests for the checked-in Existing Step example.
+
+Executes the example's steps directly and through the in-process container
+adapter, and verifies reproducible artifact and catalog compilation. The
+example workspace is fixture data here, mirroring the Podman integration
+test in ``test_runtime_image.py``; the example itself stays copyable without
+these tests.
+"""
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -20,7 +28,8 @@ from syntara_plugin.testing import (
     invoke_step_in_container,
 )
 
-WORKSPACE = Path(__file__).resolve().parents[1]
+_EXAMPLE = Path(__file__).resolve().parents[4] / "examples" / "existing-step"
+sys.path.insert(0, str(_EXAMPLE / "src"))
 IMAGE_BINDING = "registry.example.test/existing-step@sha256:" + "a" * 64
 IDENTITIES = {
     "action": "example.existing-step.create-ticket",
@@ -66,7 +75,7 @@ def test_manifest_entry_points_execute_through_both_paths(
 ) -> None:
     binding = step_bindings.bind_step(
         ENTRY_POINTS[kind],
-        workspace=WORKSPACE,
+        workspace=_EXAMPLE,
         identity=IDENTITIES[kind],
     )
     context = mock_execution_context(
@@ -99,7 +108,7 @@ def test_invalid_inputs_block_both_paths_before_the_business_hook(
 ) -> None:
     binding = step_bindings.bind_step(
         ENTRY_POINTS[kind],
-        workspace=WORKSPACE,
+        workspace=_EXAMPLE,
         identity=IDENTITIES[kind],
     )
     context = mock_execution_context()
@@ -116,7 +125,7 @@ def test_invalid_inputs_block_both_paths_before_the_business_hook(
 
 def test_compiled_plugin_builds_reproducible_artifact_and_catalog_entry() -> None:
     request = BuildRequest(
-        root_manifest=WORKSPACE / "plugin.yaml",
+        root_manifest=_EXAMPLE / "plugin.yaml",
         image_bindings={"existing-step-workload": IMAGE_BINDING},
     )
     compilation = compile_workspace(request)

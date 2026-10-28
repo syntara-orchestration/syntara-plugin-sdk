@@ -22,11 +22,11 @@ The Hello World [settings file](hello-world/syntara-plugin.yaml) also shows
 the registry, publication, and catalog keys. Replace its example registry
 values before using it to publish; it intentionally contains no credential.
 
-The [Existing Step](existing-step) prototype runs without a container engine
-for local development:
+The [Existing Step](existing-step) prototype's end-to-end suite runs without a
+container engine and lives with the SDK's integration tests:
 
 ```sh
-uv run --no-sync pytest examples/existing-step/tests -q
+uv run --no-sync pytest sdks/python/tests/integration/test_existing_step_e2e.py -q
 ```
 
 Its checked-in `Containerfile` is used by the repository's opt-in Podman

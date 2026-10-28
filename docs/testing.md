@@ -162,10 +162,12 @@ uv run --no-sync pytest examples/python-steps/tests -q
 ```
 
 [`../examples/existing-step`](../examples/existing-step) is the checked-in
-end-to-end prototype. Its suite compiles the real plugin workspace, loads each
-manifest entry point, checks invalid inputs, compares direct and in-process
-container outcomes, and builds deterministic plugin and catalog artifacts:
+end-to-end prototype. Its suite in
+[`sdks/python/tests/integration/test_existing_step_e2e.py`](../sdks/python/tests/integration/test_existing_step_e2e.py)
+compiles the real plugin workspace, loads each manifest entry point, checks
+invalid inputs, compares direct and in-process container outcomes, and builds
+deterministic plugin and catalog artifacts:
 
 ```sh
-uv run --no-sync pytest examples/existing-step/tests -q
+uv run --no-sync pytest sdks/python/tests/integration/test_existing_step_e2e.py -q
 ```
