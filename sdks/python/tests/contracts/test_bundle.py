@@ -229,7 +229,13 @@ def test_platform_runner_action_rejects_a_custom_runner_entry_point() -> None:
 @pytest.mark.parametrize("kind", ["Action", "Control", "Trigger"])
 @pytest.mark.parametrize(
     "implementation",
-    ["acme.tools.run@1.2.3", "example.hello-world.hello@0.1.0", "acme.tools.run@1.2.3-rc.1"],
+    [
+        "acme.tools.run@1.2.3",
+        "example.hello-world.hello@0.1.0",
+        "acme.tools.run@1.2.3-rc.1",
+        "acme.tools.run@1.2.3-alpha.1+build.01",
+        "acme.tools.run@0.0.0-01a+001",
+    ],
 )
 def test_platform_runner_accepts_registered_step_references(kind: str, implementation: str) -> None:
     source = {"kind": "inline", "value": {"type": "object"}}
@@ -248,8 +254,13 @@ def test_platform_runner_accepts_registered_step_references(kind: str, implement
 
 @pytest.mark.parametrize(
     "implementation",
-    ["http.v1", "acme.tools.run", "acme.tools.run@1.2", "acme.tools.run@latest", "acme.tools.run@01.2.3",
-     "acme.tools.run.more@1.2.3", "Acme.tools.run@1.2.3", "acme.tools.run@1.2.3\n"],
+    [
+        "http.v1", "acme.tools.run", "acme.tools.run@1.2", "acme.tools.run@latest",
+        "acme.tools.run@01.2.3", "acme.tools.run@1.02.3", "acme.tools.run@1.2.03",
+        "acme.tools.run@1.2.3-alpha..1", "acme.tools.run@1.2.3-alpha.01",
+        "acme.tools.run@1.2.3-", "acme.tools.run@1.2.3+", "acme.tools.run@1.2.3+build..1",
+        "acme.tools.run.more@1.2.3", "Acme.tools.run@1.2.3", "acme.tools.run@1.2.3\n",
+    ],
 )
 def test_platform_runner_rejects_malformed_implementation_references(implementation: str) -> None:
     source = {"kind": "inline", "value": {"type": "object"}}
@@ -259,6 +270,30 @@ def test_platform_runner_rejects_malformed_implementation_references(implementat
          "input": source, "output": source},
     )
     assert validate_document(load_bundle(), "action", document)
+
+
+@pytest.mark.parametrize(
+    ("implementation", "valid"),
+    [
+        ("acme.tools.run@1.2.3-rc.1+build.01", True),
+        ("acme.tools.run@1.02.3", False),
+        ("acme.tools.run@1.2.03", False),
+        ("acme.tools.run@1.2.3-alpha..1", False),
+        ("acme.tools.run@1.2.3-alpha.01", False),
+    ],
+)
+def test_compiled_descriptor_validates_implementation_semver(
+    implementation: str, valid: bool
+) -> None:
+    descriptor = json.loads(
+        (Path(__file__).parents[4] / "contracts/fixtures/plugin-descriptor.valid.json").read_text()
+    )
+    target = next(
+        target for target in descriptor["spec"]["targets"]
+        if target.get("runtime", {}).get("kind") == "platform-runner"
+    )
+    target["runtime"]["implementation"] = implementation
+    assert (validate_document(load_bundle(), "plugin_descriptor", descriptor) == []) is valid
 
 
 def test_platform_runner_rejects_legacy_driver_and_custom_runner_rejects_implementation() -> None:
