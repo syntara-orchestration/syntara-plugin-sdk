@@ -55,7 +55,7 @@ def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, mo
     )
 
     assert image == "registry.example.test/acme/custom@sha256:" + "b" * 64
-    assert commands[0] == [
+    assert commands[0][:9] == [
         "podman",
         "build",
         "--format",
@@ -65,9 +65,11 @@ def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, mo
         "--file",
         str(containerfile),
         "--tag",
-        "registry.example.test/acme/custom:0.1.0",
-        str(context),
     ]
+    staging_reference = commands[0][9]
+    assert staging_reference.startswith("registry.example.test/acme/custom:syntara-stage-")
+    assert commands[0][10] == str(context)
+    assert commands[1][9] == "registry.example.test/acme/custom:0.1.0"
     assert commands[2][:3] == ["podman", "push", "--digestfile"]
 
 
@@ -125,9 +127,11 @@ def test_registration_manifest_is_copied_into_final_image_before_push(
             generated_context = Path(command[-1])
             assert (generated_context / "manifest.json").read_bytes() == manifest
             assert (generated_context / "Containerfile").read_text() == (
-                "FROM registry.example.test/acme/custom:0.1.0\n"
+                f"FROM {commands[0][9]}\n"
                 "COPY manifest.json /opt/syntara/registration-manifest.json\n"
             )
+            assert commands[0][9] != "registry.example.test/acme/custom:0.1.0"
+            assert commands[1][9] == "registry.example.test/acme/custom:0.1.0"
         if command[1] == "push":
             Path(command[3]).write_text("sha256:" + "b" * 64, encoding="utf-8")
         return SimpleNamespace(returncode=0, stderr="")

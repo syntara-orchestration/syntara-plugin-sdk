@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from syntara_plugin.contracts import (
     canonical_json_bytes,
@@ -43,6 +44,12 @@ class WorkloadBuildRequest:
     @property
     def tagged_reference(self) -> str:
         return f"{self.repository}:{self.tag}"
+
+    @property
+    def staging_reference(self) -> str:
+        """Return an invocation-unique local tag for the pre-registration image."""
+
+        return f"{self.repository}:syntara-stage-{uuid4().hex}"
 
 
 def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = False) -> str:
@@ -83,6 +90,7 @@ def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = Fa
             "insecure workload publication is restricted to localhost or 127.0.0.1"
         )
 
+    staging_reference = request.staging_reference
     _run(
         [
             request.engine,
@@ -94,7 +102,7 @@ def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = Fa
             "--file",
             str(request.containerfile),
             "--tag",
-            request.tagged_reference,
+            staging_reference,
             str(request.context),
         ],
         verbose=verbose,
@@ -104,7 +112,7 @@ def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = Fa
         (context / "manifest.json").write_bytes(manifest_bytes)
         containerfile = context / "Containerfile"
         containerfile.write_text(
-            f"FROM {request.tagged_reference}\nCOPY manifest.json {REGISTRATION_MANIFEST_PATH}\n",
+            f"FROM {staging_reference}\nCOPY manifest.json {REGISTRATION_MANIFEST_PATH}\n",
             encoding="utf-8",
         )
         _run(

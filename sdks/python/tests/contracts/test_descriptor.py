@@ -44,7 +44,7 @@ def _descriptor(targets: list[dict[str, object]]) -> dict[str, object]:
     descriptor = {
         "metadata": {"namespace": "acme", "name": "plugin", "version": "0.1.0"},
         "spec": {
-            "sdkVersion": "0.1.0a1",
+            "sdkVersion": "0.1.0-alpha.1",
             "contractBundleDigest": "sha256:" + "b" * 64,
             "targets": targets,
             "workloads": {
@@ -111,7 +111,7 @@ def test_revision_ids_commit_to_sdk_plugin_and_step_contracts() -> None:
     descriptor = _descriptor([_target()])
     original_plugin = plugin_revision_id(descriptor)
     original_step = step_revision_id(descriptor, descriptor["spec"]["targets"][0])
-    descriptor["spec"]["sdkVersion"] = "0.1.0a2"
+    descriptor["spec"]["sdkVersion"] = "0.1.0-alpha.2"
     assert plugin_revision_id(descriptor) != original_plugin
     assert step_revision_id(descriptor, descriptor["spec"]["targets"][0]) != original_step
     assert len(revision_errors(descriptor)) == 2
@@ -125,7 +125,7 @@ def test_revision_ids_commit_to_sdk_plugin_and_step_contracts() -> None:
         ("plugin-workload", "syntara.container/v1alpha1", None, False),
         ("provider-image", "syntara.provider/v1alpha1", "provider", True),
         ("provider-image", "syntara.container/v1alpha1", "provider", True),
-        ("plugin-workload", "syntara.container/v1alpha1", "provider", True),
+        ("plugin-workload", "syntara.container/v1alpha1", "provider", False),
         ("unused-image", "syntara.container/v1alpha1", None, True),
     ],
 )

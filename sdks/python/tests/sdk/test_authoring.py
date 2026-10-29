@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -22,8 +21,27 @@ from syntara_plugin.sdk import (
     compile_model,
     compile_workspace,
 )
+from syntara_plugin.sdk.authoring import _sdk_semver
 
 DIGEST = "quay.io/acme/issue-tools@sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("python_version", "semver"),
+    [
+        ("1.2.3", "1.2.3"),
+        ("1.2.3a4", "1.2.3-alpha.4"),
+        ("1.2.3b4", "1.2.3-beta.4"),
+        ("1.2.3rc4", "1.2.3-rc.4"),
+    ],
+)
+def test_sdk_version_is_compiled_as_semver(python_version: str, semver: str) -> None:
+    assert _sdk_semver(python_version) == semver
+
+
+def test_sdk_version_rejects_non_semver_compatible_python_metadata() -> None:
+    with pytest.raises(RuntimeError, match="must be a three-part release"):
+        _sdk_semver("1.2.3.post1")
 
 
 def _plugin(target: str = "steps/create-issue/manifest.yaml") -> dict[str, object]:
@@ -241,7 +259,7 @@ def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path
         "plugin-workload": "quay.io/acme/other@sha256:" + "b" * 64,
     }))
     first_spec = first.descriptor["spec"]
-    assert first_spec["sdkVersion"] == version("syntara-plugin-sdk")
+    assert first_spec["sdkVersion"] == "0.1.0-alpha.1"
     assert first.canonical_json() == repeat.canonical_json()
     assert first_spec["plugin_revision_id"] == preflight.descriptor["spec"]["plugin_revision_id"]
     assert first_spec["plugin_revision_id"] == other_image.descriptor["spec"]["plugin_revision_id"]

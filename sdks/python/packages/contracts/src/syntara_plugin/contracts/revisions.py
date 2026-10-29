@@ -50,9 +50,7 @@ def plugin_revision_id(descriptor: Mapping[str, Any]) -> str:
         and isinstance(runtime.get("workload"), str)
     }
     spec["workloads"] = {
-        key: value
-        for key, value in spec["workloads"].items()
-        if key not in runner_workloads or "provider" in value
+        key: value for key, value in spec["workloads"].items() if key not in runner_workloads
     }
     return canonical_json_digest(
         {
