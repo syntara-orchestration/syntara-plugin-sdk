@@ -90,7 +90,8 @@ Before the image is pushed, the SDK adds a generated registration manifest at
 `/opt/syntara/registration-manifest.json`. It maps each custom-runner step
 revision to its entry point and ABI. Image bindings supplied for an externally
 built image are not inspected by the SDK; the image producer must embed the
-matching manifest. See [revision identities](revision-identities.md).
+matching manifest. See the [plugin language reference](plugin-language.md) and
+the [runtime and OCI model](runtime-and-oci.md).
 
 The feature does not yet prove custom-runner execution in the Execution Plane, secret delivery, signing, or production egress policy. See [ADR 0006](../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md).
 

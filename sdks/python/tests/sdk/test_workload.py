@@ -75,8 +75,48 @@ def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, mo
     staging_reference = commands[0][9]
     assert staging_reference.startswith("registry.example.test/acme/custom:syntara-stage-")
     assert commands[0][10] == str(context)
-    assert commands[1][9] == "registry.example.test/acme/custom:0.1.0"
+    registered_reference = commands[1][9]
+    assert registered_reference.startswith("registry.example.test/acme/custom:syntara-registered-")
+    assert registered_reference != staging_reference
     assert commands[2][:3] == ["podman", "push", "--digestfile"]
+    assert commands[2][4:] == [registered_reference, "registry.example.test/acme/custom:0.1.0"]
+
+
+def test_each_workload_build_pushes_its_own_registered_image(tmp_path: Path, monkeypatch) -> None:
+    """A shared Podman store cannot retag another invocation's image before push."""
+    context = tmp_path / "context"
+    context.mkdir()
+    containerfile = context / "Containerfile"
+    containerfile.write_text("FROM scratch\n", encoding="utf-8")
+    commands: list[list[str]] = []
+    build_ids = iter(("first", "second"))
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "push":
+            Path(command[3]).write_text("sha256:" + "b" * 64, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.uuid4", lambda: SimpleNamespace(hex=next(build_ids)))
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+    request = WorkloadBuildRequest(
+        engine="podman",
+        context=context,
+        containerfile=containerfile,
+        repository="registry.example.test/acme/custom",
+        tag="0.1.0",
+        platform="linux/amd64",
+        registration_descriptor=_descriptor(),
+        workload_id="plugin-workload",
+    )
+
+    build_and_push_workload(request)
+    build_and_push_workload(request)
+
+    first_registered, second_registered = commands[1][9], commands[4][9]
+    assert first_registered != second_registered
+    assert commands[2][4:] == [first_registered, request.tagged_reference]
+    assert commands[5][4:] == [second_registered, request.tagged_reference]
 
 
 def test_verbose_workload_output_uses_stderr_so_json_stdout_stays_clean(
@@ -137,8 +177,11 @@ def test_registration_manifest_is_copied_into_final_image_before_push(
                 "COPY manifest.json /opt/syntara/registration-manifest.json\n"
             )
             assert commands[0][9] != "registry.example.test/acme/custom:0.1.0"
-            assert commands[1][9] == "registry.example.test/acme/custom:0.1.0"
+            assert commands[1][9].startswith(
+                "registry.example.test/acme/custom:syntara-registered-"
+            )
         if command[1] == "push":
+            assert command[4:] == [commands[1][9], "registry.example.test/acme/custom:0.1.0"]
             Path(command[3]).write_text("sha256:" + "b" * 64, encoding="utf-8")
         return SimpleNamespace(returncode=0, stderr="")
 
@@ -228,7 +271,8 @@ def test_loopback_workload_push_requires_explicit_opt_in_and_passes_tls_flag(
     )
 
     assert image == "localhost:8443/syntara-admin/custom@sha256:" + "d" * 64
-    assert commands[2][4:] == [
-        "--tls-verify=false",
-        "localhost:8443/syntara-admin/custom:0.1.0",
-    ]
+    assert commands[2][4] == "--tls-verify=false"
+    assert commands[2][5].startswith(
+        "localhost:8443/syntara-admin/custom:syntara-registered-"
+    )
+    assert commands[2][6] == "localhost:8443/syntara-admin/custom:0.1.0"

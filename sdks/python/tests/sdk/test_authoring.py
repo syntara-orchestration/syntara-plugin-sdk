@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -259,7 +260,7 @@ def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path
         "plugin-workload": "quay.io/acme/other@sha256:" + "b" * 64,
     }))
     first_spec = first.descriptor["spec"]
-    assert first_spec["sdkVersion"] == "0.1.0-alpha.1"
+    assert first_spec["sdkVersion"] == _sdk_semver(version("syntara-plugin-sdk"))
     assert first.canonical_json() == repeat.canonical_json()
     assert first_spec["plugin_revision_id"] == preflight.descriptor["spec"]["plugin_revision_id"]
     assert first_spec["plugin_revision_id"] == other_image.descriptor["spec"]["plugin_revision_id"]

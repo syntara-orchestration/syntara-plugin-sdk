@@ -164,6 +164,39 @@ must reject unknown fields, an unknown or unsupported `kind`, duplicate target
 identities, or a schema
 whose digest does not match its content.
 
+### Revision identities
+
+The compiler also emits `spec.plugin_revision_id`, `spec.sdkVersion`, and a
+`step_revision_id` on each Action, Control, and Trigger target. Authors do not
+write these fields. IDs are lowercase `sha256:` digests. `sdkVersion` is the
+installed `syntara-plugin-sdk` version expressed as SemVer; for example, the
+Python distribution version `0.1.0a1` compiles to `0.1.0-alpha.1`.
+
+The versioned `syntara.compiled-contract/v1` projection is hashed using SHA-256
+over canonical UTF-8 JSON: keys are sorted by Unicode code point, insignificant
+whitespace is removed, non-ASCII characters are unescaped, and non-finite
+numbers are rejected. Arrays retain order. The projection's `projection` and
+`kind` fields domain-separate it, so a changed algorithm requires a new
+projection version. Serialization follows `canonical_json_bytes`, including
+Python JSON-number rendering (`1.0`, `-0.0`, and `1e-07` remain distinct
+spellings); object keys and strings are not Unicode-normalized.
+
+The plugin projection contains `projection`, `kind: "plugin"`, and the complete
+compiled descriptor without generated IDs. It excludes every workload binding
+referenced by a custom-runner target because that image embeds the registration
+manifest containing these IDs. Provider-only and unreferenced workload bindings
+remain in the projection. The step projection contains `projection`,
+`kind: "step"`, the plugin's namespace/name/version, `sdkVersion`,
+`contractBundleDigest`, and the complete compiled target without its generated
+ID. Thus a change to a step, plugin release coordinates, SDK version, or
+contract bundle changes that step's ID; a change to another target or plugin
+documentation does not.
+
+Revision IDs identify compiled contracts, not image bytes. The workload image
+digest remains separately bound in `spec.workloads` and in the complete
+descriptor and OCI artifact. Different images can therefore share contract IDs
+and must be distinguished by their pinned image digests.
+
 ## Schema sources
 
 `input`, `output`, `error`, `configuration`, and `credentialSchema` use a document source:

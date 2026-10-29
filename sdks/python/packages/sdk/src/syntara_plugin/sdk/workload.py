@@ -45,12 +45,6 @@ class WorkloadBuildRequest:
     def tagged_reference(self) -> str:
         return f"{self.repository}:{self.tag}"
 
-    @property
-    def staging_reference(self) -> str:
-        """Return an invocation-unique local tag for the pre-registration image."""
-
-        return f"{self.repository}:syntara-stage-{uuid4().hex}"
-
 
 def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = False) -> str:
     """Build and push through Podman, returning one immutable repository digest.
@@ -61,10 +55,14 @@ def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = Fa
 
     _validate_request(request)
     manifest_bytes = _registration_manifest_bytes(request)
-    staging_reference = request.staging_reference
+    build_id = uuid4().hex
+    staging_reference = f"{request.repository}:syntara-stage-{build_id}"
+    registered_reference = f"{request.repository}:syntara-registered-{build_id}"
     _build_staging_image(request, staging_reference, verbose=verbose)
-    _build_registration_layer(request, staging_reference, manifest_bytes, verbose=verbose)
-    digest = _push_image(request, verbose=verbose)
+    _build_registration_layer(
+        request, staging_reference, registered_reference, manifest_bytes, verbose=verbose
+    )
+    digest = _push_image(request, registered_reference, verbose=verbose)
     if not _is_sha256_digest(digest):
         raise WorkloadBuildError("Podman did not report a valid sha256 image digest")
     return f"{request.repository}@{digest}"
@@ -120,7 +118,12 @@ def _build_staging_image(
 
 
 def _build_registration_layer(
-    request: WorkloadBuildRequest, staging_reference: str, manifest_bytes: bytes, *, verbose: bool
+    request: WorkloadBuildRequest,
+    staging_reference: str,
+    registered_reference: str,
+    manifest_bytes: bytes,
+    *,
+    verbose: bool,
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="syntara-registration-") as directory:
         context = Path(directory)
@@ -132,14 +135,25 @@ def _build_registration_layer(
         )
         _run(
             [
-                request.engine, "build", "--format", "oci", "--platform", request.platform,
-                "--file", str(containerfile), "--tag", request.tagged_reference, str(context),
+                request.engine,
+                "build",
+                "--format",
+                "oci",
+                "--platform",
+                request.platform,
+                "--file",
+                str(containerfile),
+                "--tag",
+                registered_reference,
+                str(context),
             ],
             verbose=verbose,
         )
 
 
-def _push_image(request: WorkloadBuildRequest, *, verbose: bool) -> str:
+def _push_image(
+    request: WorkloadBuildRequest, source_reference: str, *, verbose: bool
+) -> str:
     digest_file = tempfile.NamedTemporaryFile(prefix="syntara-plugin-digest-", delete=False)
     digest_path = Path(digest_file.name)
     digest_file.close()
@@ -149,7 +163,7 @@ def _push_image(request: WorkloadBuildRequest, *, verbose: bool) -> str:
             command.extend(("--authfile", str(request.auth_file)))
         if request.allow_insecure_loopback_http:
             command.append("--tls-verify=false")
-        command.append(request.tagged_reference)
+        command.extend((source_reference, request.tagged_reference))
         _run(command, verbose=verbose)
         return digest_path.read_text(encoding="utf-8").strip()
     except OSError as error:

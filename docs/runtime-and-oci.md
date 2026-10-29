@@ -462,8 +462,16 @@ implementation:
   ABI. `--with-workload` embeds the compiler-generated registration manifest
   at `/opt/syntara/registration-manifest.json` in the image before pushing it.
 - Revision IDs identify compiled contracts, not image bytes. The workload image
-  is separately bound by its immutable digest in the descriptor. See
-  [revision identities](revision-identities.md) for the exact projection.
+  is separately bound by its immutable digest in the descriptor.
+
+The registration manifest is canonical JSON with
+`apiVersion: syntara.registration/v1alpha1`, `kind: RegistrationManifest`,
+the plugin revision ID, SDK version, workload ID, and a `steps` object keyed by
+step revision ID. Each entry records its `entryPoint` and ABI. The SDK validates
+this mapping against the compiled descriptor before adding the image layer.
+`registration_manifest` and `validate_registration_manifest` in
+`syntara_plugin.contracts` are available to external image producers; an image
+binding alone does not prove that its image contains a matching manifest.
 
 See the [plugin language reference](plugin-language.md) for the manifest
 fields.
