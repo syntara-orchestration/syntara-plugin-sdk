@@ -398,31 +398,19 @@ a required `resource` field plus the optional `title` field that `--fields`
 adds. For every `init`
 option, see [Getting started](getting-started.md#create-your-first-plugin).
 
-To convert the generated Action to a custom runner, follow these steps:
+For a Python custom-runner Action, choose the runner when scaffolding:
 
-1. In `steps/request/manifest.yaml`, replace `driver` and `operation` with an
-   entry point:
+```sh
+syntara-plugin init ./incident-tracker --namespace acme \
+  --runner custom-runner --fields title
+```
 
-   ```yaml
-   spec:
-     runtime:
-       kind: custom-runner
-       entryPoint: incident_tracker.request:RequestStep
-   ```
-
-2. Give the output schema explicit `properties` and `required` fields.
-3. In `plugin.yaml`, declare the workload image under `spec`:
-
-   ```yaml
-   spec:
-     workload:
-       image: incident-tracker-workload
-   ```
-
-4. Create the `incident_tracker` package at the workspace root, with a
-   `request.py` module that defines `RequestStep`, as described in
-   [Implement the Step](#implement-the-step). The input model must include
-   both `resource` and `title`, matching `schemas/request.input.yaml`.
+This adds the workload declaration and build settings, a typed Python Action,
+runtime configuration, a Containerfile, and local tests. Its temporary
+single-Action binding adapter reads the packaged manifests; a public
+packaged-manifest binding helper will replace it. See [Getting started](getting-started.md#create-a-python-custom-runner)
+for running the scaffold and preparing its image. Review generated models and
+schemas together, particularly when using complex JSON Schema constructs.
 
 ## Implement the Step
 

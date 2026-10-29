@@ -135,13 +135,17 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     init = commands.add_parser(
-        "init", help="Create one safe, compilable HTTP-action plugin workspace."
+        "init", help="Create one safe, compilable Action plugin workspace."
     )
     init.add_argument("directory", type=Path, help="New empty directory for the plugin workspace.")
     init.add_argument("--namespace", default="example", help="Plugin namespace (default: example).")
     init.add_argument("--name", help="Plugin name (default: final directory name).")
     init.add_argument("--version", default="0.1.0", help="Plugin SemVer version (default: 0.1.0).")
     init.add_argument("--action", default="request", help="Initial action name (default: request).")
+    init.add_argument(
+        "--runner", choices=("platform-runner", "custom-runner"), default="platform-runner",
+        help="Action runner (default: platform-runner).",
+    )
     init.add_argument(
         "--fields",
         metavar="FIELDS",
@@ -804,6 +808,9 @@ def _init_workspace(arguments: argparse.Namespace) -> int:
         return 2
     try:
         _write_workspace(directory, arguments, name)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     except OSError as error:
         print(f"error: could not create workspace: {error}", file=sys.stderr)
         return 1
@@ -1001,6 +1008,14 @@ def _validate_resource_property(resource: object) -> None:
 
 
 def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) -> None:
+    if arguments.runner == "custom-runner":
+        from .custom_scaffold import write_custom_workspace
+
+        payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
+        schema = payload if isinstance(payload, dict) else _input_schema(payload)
+        write_custom_workspace(directory, arguments.namespace, name, arguments.version,
+                               arguments.action, schema)
+        return
     action_path = Path("steps") / arguments.action / "manifest.yaml"
     input_path = Path("schemas") / f"{arguments.action}.input.yaml"
     directory.mkdir(parents=True)
@@ -2267,6 +2282,25 @@ def _input_template(field_names: Sequence[str]) -> str:
         f"required:\n{required}"
         f"properties:\n{properties}"
     )
+
+
+def _input_schema(field_names: Sequence[str]) -> dict[str, Any]:
+    """Construct the scaffold schema without interpreting field names as YAML scalars."""
+    return {
+        "type": "object",
+        "description": "Inputs accepted by this action.",
+        "additionalProperties": False,
+        "required": ["resource"],
+        "properties": {
+            field: {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": f"{'Required' if field == 'resource' else 'Optional'} input field.",
+            }
+            for field in ("resource", *field_names)
+        },
+    }
 
 
 def _readme_template(name: str, action: str) -> str:

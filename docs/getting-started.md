@@ -54,6 +54,33 @@ my-plugin/
 The manifest selects the files that form the release. The settings file does
 not duplicate that inventory; it only supplies build and release defaults.
 
+### Create a Python custom runner
+
+Use `--runner custom-runner` to generate a Python Action instead of the default
+platform-runner Action. All the same identity and `--fields` options apply:
+
+```sh
+syntara-plugin init ./my-runner --namespace acme --runner custom-runner --fields title
+cd ./my-runner
+syntara-plugin validate
+syntara-plugin run --input '{"resource":"example","title":"hello"}'
+pytest tests -q
+```
+
+The workspace also contains a Python package, `pyproject.toml`, `runtime.json`,
+`Containerfile`, workload build settings, and generated tests. The generated
+tests skip the placeholder-dependent cases until you review their input and
+remove the skips. The model covers common object, array, and scalar field types;
+review complex JSON Schema constructs and defaults with the drift check before
+using them. The manifest remains the authoritative input validator.
+
+Before building an image, prepare `wheels/` with the plugin and its runtime
+dependencies, for example with `python -m pip wheel --wheel-dir wheels .`, and
+configure a workload registry. The generated `runtime.py` binds the one Action
+from packaged JSON-formatted YAML manifests as a temporary compatibility adapter.
+A public packaged-manifest binding helper is pending; update the adapter if
+you add targets or change manifest paths.
+
 ## Validate, inspect, and build
 
 ```sh
