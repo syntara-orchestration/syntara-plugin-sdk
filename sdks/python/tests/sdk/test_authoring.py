@@ -299,10 +299,25 @@ def test_revision_ids_change_with_step_and_plugin_contracts(tmp_path: Path) -> N
     docs_changed = _compile(root).descriptor
     assert docs_changed["spec"]["plugin_revision_id"] != changed["spec"]["plugin_revision_id"]
     assert docs_changed["spec"]["targets"][0]["step_revision_id"] == changed["spec"]["targets"][0]["step_revision_id"]
-    docs_changed["spec"]["targets"][0]["step_revision_id"] = "sha256:" + "0" * 64
-    assert any("step revision ID" in error for error in validate_plugin_descriptor_semantics(docs_changed))
+
+
+def _descriptor_with_stale_step_revision(tmp_path: Path) -> dict[str, object]:
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    root = _workspace(tmp_path, action=action)
+    descriptor = _compile(root).descriptor
+    descriptor["spec"]["targets"][0]["step_revision_id"] = "sha256:" + "0" * 64
+    return descriptor
+
+
+def test_stale_step_revision_is_reported_by_descriptor_validation(tmp_path: Path) -> None:
+    descriptor = _descriptor_with_stale_step_revision(tmp_path)
+    assert any("step revision ID" in error for error in validate_plugin_descriptor_semantics(descriptor))
+
+
+def test_stale_step_revision_is_rejected_by_registration(tmp_path: Path) -> None:
+    descriptor = _descriptor_with_stale_step_revision(tmp_path)
     with pytest.raises(ValueError, match="step revision ID"):
-        validate_registration_manifest(docs_changed, "plugin-workload", {})
+        validate_registration_manifest(descriptor, "plugin-workload", {})
 
 
 def test_authored_revision_ids_are_rejected() -> None:
