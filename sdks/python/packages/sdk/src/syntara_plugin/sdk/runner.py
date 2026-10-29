@@ -43,6 +43,7 @@ from syntara_plugin.runtime.container import (
     add_container_runtime_service,
 )
 from syntara_plugin.runtime.contract_validation import SchemaDriftError
+from syntara_plugin.runtime.execution import StepExecutionError
 from syntara_plugin.testing import BoundedStepHandler, HarnessUsageError, StepBindingsFactory
 
 from .authoring import CompilationResult
@@ -867,7 +868,16 @@ class _LocalErrorCapture:
     def __call__(self, invocation: ContainerInvocation) -> ContainerResult:
         try:
             return self._handler(invocation)
-        except ContainerInvocationError:
+        except ContainerInvocationError as error:
+            cause = error.__cause__
+            if isinstance(cause, StepExecutionError) and cause.detail:
+                self._captured.append(cause.detail)
+            elif error.detail:
+                self._captured.append(error.detail)
+            raise
+        except StepExecutionError as error:
+            if error.detail:
+                self._captured.append(error.detail)
             raise
         except BaseException as error:
             self._captured.append("".join(traceback.format_exception(error)).rstrip())
@@ -989,18 +999,19 @@ def _execute_over_channel(
         )
     result = terminal
     error: RunErrorDetail | None = None
-    if result.error_code:
+    if result.error_result is not None:
+        error_result = result.error_result
         error = RunErrorDetail(
-            code=_scrub_text(result.error_code, secrets),
-            message=_scrub_text(result.error_message, secrets),
-            retryable=result.retryable,
+            code=_scrub_text(str(error_result["code"]), secrets),
+            message=_scrub_text(str(error_result["message"]), secrets),
+            retryable=bool(error_result["retryable"]),
         )
     return RunReport(
         mode=mode,
         target=target.identity,
         input_source=input_source,
         input_values=redacted_inputs,
-        ok=result.status_code == 0 and not result.error_code,
+        ok=result.status_code == 0 and error is None,
         invocation_id=invocation_id,
         workflow_run_id=workflow_run_id,
         status=result.status_code,

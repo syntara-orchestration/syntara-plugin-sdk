@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -101,6 +102,10 @@ def test_malicious_runtime_and_provider_fixtures_are_rejected() -> None:
     item["runtimeContext"] = ["not-an-object"]
     assert not harness.validate_runtime(item).valid
 
+    legacy_work_item = _work_item()
+    legacy_work_item["runtimeAbi"] = "syntara.container/v1alpha2"
+    assert not harness.validate_runtime(legacy_work_item).valid
+
     lease = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "CredentialLease",
@@ -165,6 +170,15 @@ def test_runtime_package_does_not_depend_on_sdk_implementation() -> None:
 
 def test_container_result_envelope_fixtures_conform() -> None:
     harness = ConformanceHarness()
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+
+    for fixture_name in (
+        "runtime-result.valid.json",
+        "runtime-result-reference.valid.json",
+        "runtime-result-failure.valid.json",
+    ):
+        fixture = json.loads((fixtures / fixture_name).read_text(encoding="utf-8"))
+        assert harness.validate_runtime(fixture).valid
 
     assert harness.validate_runtime(
         {
@@ -195,9 +209,8 @@ def test_container_result_envelope_fixtures_conform() -> None:
             "outputSchemaDigest": HASH,
             "statusCode": 1,
             "statusMessage": "The upstream service rejected the request.",
-            "errorCode": "REMOTE_REJECTED",
-            "errorMessage": "The upstream service rejected the request.",
-            "retryable": False,
+            "errorSchemaDigest": HASH,
+            "errorResult": {"category": "dependency", "code": "REMOTE_REJECTED", "message": "The upstream service rejected the request.", "retryable": False},
         }
     ).valid
     # A legacy result that predates the status fields decodes as a success.
@@ -258,3 +271,74 @@ def test_container_result_envelope_rejects_invalid_payload_shapes() -> None:
     assert not harness.validate_runtime(
         dict(base, statusCode=7, errorCode="REMOTE_REJECTED")
     ).valid
+
+    failure = dict(
+        base,
+        statusCode=7,
+        errorSchemaDigest=HASH,
+        errorResult={"category": "dependency", "code": "REMOTE_REJECTED", "message": "The upstream service rejected the request.", "retryable": True},
+    )
+    assert harness.validate_runtime(failure).valid
+    assert not harness.validate_runtime({key: value for key, value in failure.items() if key != "errorSchemaDigest"}).valid
+    assert not harness.validate_runtime(dict(failure, errorResult={**failure["errorResult"], "category": "unknown"})).valid
+    assert not harness.validate_runtime(dict(failure, errorResult={key: value for key, value in failure["errorResult"].items() if key != "retryable"})).valid
+
+
+def test_standard_output_wrapper_requires_object_result_and_complete_error_metadata() -> None:
+    harness = ConformanceHarness()
+    success = {
+        "result": {"issue": 42},
+        "statusCode": 0,
+        "statusMessage": "Completed",
+        "errorResult": None,
+    }
+    assert harness.validate_runtime(success).valid
+    assert not harness.validate_runtime(dict(success, result=[42])).valid
+    assert not harness.validate_runtime(dict(success, result=42)).valid
+
+    failure = {
+        "result": None,
+        "statusCode": 1,
+        "statusMessage": "Rejected",
+        "errorResult": {
+            "category": "dependency",
+            "code": "REMOTE_REJECTED",
+            "message": "The upstream service rejected the request.",
+            "retryable": True,
+        },
+    }
+    assert harness.validate_runtime(failure).valid
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+    deliberate_failure = json.loads(
+        (fixtures / "standard-output-wrapper.deliberate-failure.valid.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert harness.validate_runtime(deliberate_failure).valid
+    assert not harness.validate_runtime(
+        dict(failure, errorResult={**failure["errorResult"], "category": "unknown"})
+    ).valid
+    assert not harness.validate_runtime(
+        dict(
+            failure,
+            errorResult={
+                key: value
+                for key, value in failure["errorResult"].items()
+                if key != "retryable"
+            },
+        )
+    ).valid
+
+
+def test_standard_output_wrapper_conformance_fixtures() -> None:
+    harness = ConformanceHarness()
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+
+    for fixture_name, expected_valid in (
+        ("standard-output-wrapper.success.valid.json", True),
+        ("standard-output-wrapper.failure-missing-error.invalid.json", False),
+        ("standard-output-wrapper.no-valid-outcome.invalid.json", False),
+    ):
+        document = json.loads((fixtures / fixture_name).read_text(encoding="utf-8"))
+        validation = harness.validate_runtime(document)
+        assert validation.valid is expected_valid, f"{fixture_name}: {validation.errors}"

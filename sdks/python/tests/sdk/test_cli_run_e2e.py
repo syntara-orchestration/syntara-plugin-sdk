@@ -84,9 +84,13 @@ def _error_code_leak(invocation: ContainerInvocation) -> ContainerResult:
     return ContainerResult(
         OUTPUT_SCHEMA_DIGEST,
         status_code=5,
-        error_code=str(invocation.inputs.get("api_token", "REJECTED")),
-        error_message="rejected",
-        retryable=False,
+        error_result={
+            "category": "business",
+            "code": str(invocation.inputs.get("api_token", "REJECTED")),
+            "message": "rejected",
+            "retryable": False,
+        },
+        error_schema_digest="sha256:" + "b" * 64,
     )
 
 
@@ -396,9 +400,10 @@ from __future__ import annotations
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
-    ContainerInvocationError,
+    ErrorCategory,
     ExecutionContext,
     FailureCode,
+    StepFailure,
 )
 
 
@@ -417,11 +422,13 @@ class OkStep(ActionStep[StepInput, StepOutput]):
 
 class FailStep(ActionStep[StepInput, StepOutput]):
     def run(self, inputs: StepInput, context: ExecutionContext) -> StepOutput:
-        raise ContainerInvocationError(
-            FailureCode.REMOTE_REJECTED,
+        raise StepFailure(
+            1,
             "The tracker rejected the request.",
+            error_message="The tracker rejected the request.",
+            code=FailureCode.REMOTE_REJECTED.value,
+            category=ErrorCategory.DEPENDENCY,
             retryable=True,
-            outcome="not_completed",
         )
 
 
@@ -576,7 +583,6 @@ def test_image_mode_reports_a_real_steps_deliberate_failure(
     assert status == 1
     assert _report_field(captured.out, "Error") == "REMOTE_REJECTED (retryable: true)"
     assert _report_field(captured.out, "Message") == "The tracker rejected the request."
-    assert _report_field(captured.out, "Outcome") == "not_completed"
     assert "Error detail:" not in captured.out
 
 

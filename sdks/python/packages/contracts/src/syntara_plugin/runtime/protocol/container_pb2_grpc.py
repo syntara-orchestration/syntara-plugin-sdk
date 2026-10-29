@@ -26,9 +26,16 @@ if _version_not_supported:
 
 
 class ContainerServiceStub(object):
-    """The container ABI is the application-data channel between the Execution
-    Plane and a plugin workload. It deliberately carries step identity and
-    bounded JSON objects, never a container command or plaintext credential.
+    """ABI means Application Binary Interface. Here it is the versioned, language-
+    neutral gRPC protocol between the Execution Plane (the client/launcher) and
+    a publisher-owned plugin workload (the server), not an OCI image's CPU or
+    operating-system compatibility. A workload in any language may participate
+    if it implements this service and the message semantics below.
+
+    The container ABI is the application-data channel. It deliberately carries
+    step identity and bounded JSON objects, never a container command or
+    plaintext credential. Health negotiates the ABI and supported step revision
+    before the Execution Plane sends Execute or Cancel.
     """
 
     def __init__(self, channel):
@@ -55,9 +62,16 @@ class ContainerServiceStub(object):
 
 
 class ContainerServiceServicer(object):
-    """The container ABI is the application-data channel between the Execution
-    Plane and a plugin workload. It deliberately carries step identity and
-    bounded JSON objects, never a container command or plaintext credential.
+    """ABI means Application Binary Interface. Here it is the versioned, language-
+    neutral gRPC protocol between the Execution Plane (the client/launcher) and
+    a publisher-owned plugin workload (the server), not an OCI image's CPU or
+    operating-system compatibility. A workload in any language may participate
+    if it implements this service and the message semantics below.
+
+    The container ABI is the application-data channel. It deliberately carries
+    step identity and bounded JSON objects, never a container command or
+    plaintext credential. Health negotiates the ABI and supported step revision
+    before the Execution Plane sends Execute or Cancel.
     """
 
     def Execute(self, request, context):
@@ -105,9 +119,16 @@ def add_ContainerServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class ContainerService(object):
-    """The container ABI is the application-data channel between the Execution
-    Plane and a plugin workload. It deliberately carries step identity and
-    bounded JSON objects, never a container command or plaintext credential.
+    """ABI means Application Binary Interface. Here it is the versioned, language-
+    neutral gRPC protocol between the Execution Plane (the client/launcher) and
+    a publisher-owned plugin workload (the server), not an OCI image's CPU or
+    operating-system compatibility. A workload in any language may participate
+    if it implements this service and the message semantics below.
+
+    The container ABI is the application-data channel. It deliberately carries
+    step identity and bounded JSON objects, never a container command or
+    plaintext credential. Health negotiates the ABI and supported step revision
+    before the Execution Plane sends Execute or Cancel.
     """
 
     @staticmethod

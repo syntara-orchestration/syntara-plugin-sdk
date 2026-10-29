@@ -460,8 +460,8 @@ def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
     assert "sensitive construction failure" not in direct_wrapper.error.message
     assert container_result.output is None
     assert container_result.status_code != 0
-    assert container_result.error_code == direct_wrapper.error.code
-    assert container_result.error_message == direct_wrapper.error.message
+    assert container_result.error_result["code"] == direct_wrapper.error.code
+    assert container_result.error_result["message"] == direct_wrapper.error.message
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0
 
@@ -498,8 +498,12 @@ def test_schema_evaluation_failure_is_a_safe_invalid_input(
         installed_step=_installed_step(_input_schema()),
     )
 
-    def fail_schema_evaluation(*_args: object, **_kwargs: object) -> object:
-        raise RuntimeError("sensitive schema failure")
+    original_iter_errors = Draft202012Validator.iter_errors
+
+    def fail_schema_evaluation(validator: Any, *args: Any, **kwargs: Any) -> Any:
+        if validator.schema == _input_schema():
+            raise RuntimeError("sensitive schema failure")
+        return original_iter_errors(validator, *args, **kwargs)
 
     monkeypatch.setattr(
         Draft202012Validator,
@@ -518,8 +522,8 @@ def test_schema_evaluation_failure_is_a_safe_invalid_input(
     assert "sensitive schema failure" not in direct_wrapper.error.message
     assert container_result.output is None
     assert container_result.status_code != 0
-    assert container_result.error_code == direct_wrapper.error.code
-    assert container_result.error_message == direct_wrapper.error.message
+    assert container_result.error_result["code"] == direct_wrapper.error.code
+    assert container_result.error_result["message"] == direct_wrapper.error.message
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0
 
@@ -539,8 +543,8 @@ def test_supported_action_adapter_maps_the_invalid_input_wrapper_to_the_envelope
     assert direct_wrapper.error is not None
     assert container_result.output is None
     assert container_result.status_code != 0
-    assert container_result.error_code == direct_wrapper.error.code
-    assert container_result.error_message == direct_wrapper.error.message
+    assert container_result.error_result["code"] == direct_wrapper.error.code
+    assert container_result.error_result["message"] == direct_wrapper.error.message
     assert container_result.output_schema_digest == canonical_json_digest({})
     assert direct_wrapper.error.code == FailureCode.INVALID_INPUT.value
     assert direct_step.run_calls == 0
@@ -759,7 +763,7 @@ def test_control_and_trigger_manifest_constraints_reject_values_pydantic_would_a
 
     assert direct_result.error is not None
     assert direct_result.error.code == FailureCode.INVALID_INPUT.value
-    assert container_result.error_code == FailureCode.INVALID_INPUT.value
+    assert container_result.error_result["code"] == FailureCode.INVALID_INPUT.value
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0
 
@@ -992,7 +996,7 @@ def test_supported_control_adapter_maps_the_invalid_input_wrapper_to_the_envelop
     )
     assert result.output is None
     assert result.status_code != 0
-    assert result.error_code == FailureCode.INVALID_INPUT.value
+    assert result.error_result["code"] == FailureCode.INVALID_INPUT.value
     assert step.run_calls == 0
 
 
@@ -1010,7 +1014,7 @@ def test_supported_trigger_adapter_maps_invalid_input_to_the_envelope() -> None:
     )
     assert result.output is None
     assert result.status_code != 0
-    assert result.error_code == FailureCode.INVALID_INPUT.value
+    assert result.error_result["code"] == FailureCode.INVALID_INPUT.value
     assert step.run_calls == 0
 
 

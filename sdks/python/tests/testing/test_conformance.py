@@ -149,4 +149,4 @@ def test_conformance_details_never_echo_secret_values() -> None:
     assert not report.passed
     for failure in report.failures:
         assert token not in failure.detail
-        assert "RuntimeError" in failure.detail
+        assert "StepExecutionError" in failure.detail

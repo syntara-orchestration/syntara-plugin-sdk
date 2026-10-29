@@ -59,13 +59,13 @@ message Result {
   uint32 status_code = 4;
   // Safe, bounded wrapper StatusMessage.
   string status_message = 5;
-  // Named failure category for a deliberate step failure; empty on success.
-  // Consumers must not invent numeric status subcodes.
-  string error_code = 6;
-  // Safe, bounded wrapper ErrorMessage; empty on success.
-  string error_message = 7;
-  // Whether a deliberate step failure may be retried.
-  bool retryable = 8;
+  // Former flattened error fields must not be reused.
+  reserved 6, 7, 8, 9;
+  reserved "error_code", "error_message", "retryable", "error_category";
+  // Canonical JSON of the complete structured ErrorResult; empty on success.
+  bytes error_result_json = 10;
+  // Canonical digest of the effective schema applied to the error result.
+  string error_schema_digest = 11;
 }
 
 // Emitted only when no valid SDK outcome can be produced, for example an ABI

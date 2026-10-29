@@ -6,8 +6,14 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
-from syntara_plugin.runtime import ActionStep, ControlStep, ExecutionContext, StepExecutionError
-from syntara_plugin.runtime.container import ContainerInvocationError
+from syntara_plugin.runtime import (
+    ActionStep,
+    ControlStep,
+    ExecutionContext,
+    StandardOutputWrapper,
+    StepExecutionError,
+    StepFailure,
+)
 from syntara_plugin.testing import (
     FIXED_SECRET_SENTINEL,
     INVALID_INPUT_CASES,
@@ -17,7 +23,6 @@ from syntara_plugin.testing import (
     invoke_step,
 )
 from syntara_plugin.testing.payloads import (
-    FailingReferenceStep,
     ReferenceControlStep,
     schema_violating_binding,
 )
@@ -53,6 +58,18 @@ class LocalActionStep(ActionStep[CaptureInput, CaptureOutput]):
 class CrashingTask(ControlStep[CaptureInput, CaptureOutput]):
     def run(self, inputs: CaptureInput, context: ExecutionContext) -> CaptureOutput:
         raise RuntimeError("the business logic crashed")
+
+
+class TypedFailureTask(ControlStep[CaptureInput, CaptureOutput]):
+    def run(self, inputs: CaptureInput, context: ExecutionContext) -> CaptureOutput:
+        raise StepFailure(
+            17,
+            "The dependency rejected this operation.",
+            "The remote service rejected the request.",
+            category="dependency",
+            code="REMOTE_REJECTED",
+            retryable=True,
+        )
 
 
 def test_valid_input_reaches_the_hook_once() -> None:
@@ -111,12 +128,17 @@ def test_invalid_input_message_never_echoes_the_rejected_value() -> None:
 
 
 def test_deliberate_failure_is_captured_with_its_code() -> None:
-    outcome = invoke_step(FailingReferenceStep(), {"title": "deploy"})
+    outcome = invoke_step(TypedFailureTask(), {"value": "deploy"})
     assert not outcome.ok
     assert outcome.run_calls == 1
-    assert isinstance(outcome.raised, ContainerInvocationError)
-    assert outcome.raised.code.value == "UPSTREAM_TRANSIENT"
-    assert outcome.raised.retryable is True
+    assert outcome.raised is None
+    assert outcome.status == 17
+    assert outcome.error is not None
+    assert outcome.error.category == "dependency"
+    assert outcome.error.code == "REMOTE_REJECTED"
+    assert outcome.error.retryable is True
+    assert isinstance(outcome.raw, StandardOutputWrapper)
+    assert outcome.raw.error_message == outcome.error
 
 
 def test_schema_invalid_output_is_captured_as_execution_error() -> None:
@@ -130,7 +152,9 @@ def test_business_crash_is_captured_without_swallowing() -> None:
     outcome = invoke_step(CrashingTask(), {})
     assert not outcome.ok
     assert outcome.run_calls == 1
-    assert isinstance(outcome.raised, RuntimeError)
+    assert isinstance(outcome.raised, StepExecutionError)
+    assert "business logic crashed" not in str(outcome.raised)
+    assert outcome.raised.__cause__ is None
 
 
 def test_entry_point_string_target_resolves_and_executes() -> None:

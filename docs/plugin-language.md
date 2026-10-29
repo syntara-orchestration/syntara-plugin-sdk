@@ -72,8 +72,8 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.domain` | Optional qualified domain identifier that groups an Action Step type independently of its runner. |
 | `spec.integrationType` | Optional qualified integration type required by the Action Step type. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |
-| `spec.output` | Required output JSON Schema source. |
-| `spec.error` | Optional error JSON Schema source for consumers that publish a declared Step type error shape. Runtime terminal failures still use the SDK-owned error envelope. |
+| `spec.output` | Required JSON Schema source for the Step type's business result. |
+| `spec.error` | Optional JSON Schema source for failure details, separate from the successful business result schema in `spec.output`. |
 
 Custom-runner Step types implement `spec.runtime.entryPoint` with the typed
 Python API; see [Typed Python steps](runtime-and-oci.md#typed-python-steps).
@@ -100,8 +100,11 @@ Schema: [`control.schema.json`](../contracts/schemas/v1alpha1/control.schema.jso
 Step type that invokes a named workflow. `spec.runtime` selects the approved
 `platform-runner` or `custom-runner`; `entryPoint` identifies a custom-runner
 implementation and `driver` identifies a platform runner. Control contracts
-define public `input` and `output` schemas and may optionally declare an
-`error` schema. Runtime terminal failures use the SDK-owned error envelope.
+define public input and business-result output schemas and may optionally
+declare a separate error schema. For a `workflow-invocation`, the parent
+Control Step consumes the child workflow's declared result; the parent's
+`spec.output` describes the result exposed by that invocation. Runtime wrapper
+failure metadata is separate from both schemas.
 
 ## `kind: IntegrationType`
 
@@ -140,10 +143,13 @@ Schema: [`credential-recipe.schema.json`](../contracts/schemas/v1alpha1/credenti
 `Trigger` refers to the Step category `trigger`. `Trigger.driver` chooses a versioned platform
 ingress driver, while `spec.runtime` selects the runner that implements the
 Step type. `spec.configuration` is driver-owned setup and is not runtime
-input. `spec.input` and `spec.output` are the public event and result
-contracts; neither schema is an alias for another. `spec.error` is optional and
-describes a declared error shape when a Step type exposes one. Runtime terminal
-failures use the SDK-owned error envelope.
+input. `spec.input` and `spec.output` are the public event and business-result
+contracts. Optional `spec.error` describes the complete structured error result.
+The runtime also enforces the SDK base fields; without `spec.error`, the SDK
+base schema is used. Neither schema describes the runtime wrapper itself.
+The same category also represents a child-workflow entry in reference-mode
+composition; its declared public output is the result consumed by the parent
+`Control` step, not the results of the child's internal steps.
 `TriggerDriver.transport` is one of
 `webhook`, `schedule`, `event-source`, or `poll`.
 

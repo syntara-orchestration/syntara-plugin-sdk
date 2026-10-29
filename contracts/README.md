@@ -61,15 +61,45 @@ non-secret runtime context, and mounted credential-file paths, and returns
 progress or one terminal result/failure. It does not select an image, command,
 execution pool, endpoint, or credential value.
 
-For this SDK revision, the container adapter's result mapping is provisional.
-`Result` currently carries the SDK output envelope explicitly: `output_json` or
-`object_reference` holds the business result, while `status_code`,
-`status_message`, `error_code`, `error_message`, and `retryable` hold the
-wrapper's status and safe error metadata. `output_schema_digest` always binds
-the step type's declared output schema to the business result, never the
-envelope itself. A nonzero `StatusCode` is a valid completed outcome and must
-carry a safe `error_code` and `error_message`; the `Failure` event is reserved
-for protocol/runtime failures where no valid outcome exists. The added `Result`
-fields are wire-compatible additions within `syntara.container/v1alpha1`; absent
-fields decode as a zero `StatusCode`, and the `runtime_abi` string pins the
-envelope version.
+`runtime.schema.json` defines the canonical `StandardOutputWrapper` JSON shape
+with exactly four required lower-camel keys: `result`, `statusCode`,
+`statusMessage`, and `errorResult`. The runtime model is immutable after
+construction; the schema rejects missing or additional serialized fields.
+These keys serialize the logical `Result`, `StatusCode`, `StatusMessage`, and
+`ErrorResult` fields, respectively.
+`result` is the business result, `statusCode` is an unsigned 32-bit outcome
+code, and `statusMessage` is a bounded, safe summary. `statusCode` is not an
+HTTP status. These field names and meanings are independent of the container
+protocol's wire encoding.
+
+A zero `statusCode` is success: `result` must be present and non-null,
+`errorResult` must be `null`, and `result` is validated against the step's
+`spec.output` schema. A nonzero `statusCode` is a deliberate failure that is
+still a valid completed outcome. It requires a structured `errorResult` and
+may have a `null` result. `errorResult` requires `category`, stable uppercase `code`, a
+bounded safe `message`, and boolean `retryable`. Its message must not expose
+credentials, secrets, raw sensitive provider responses, or tracebacks. The
+category identifies the broad failure class; the code identifies its stable,
+machine-readable reason. `retryable` communicates whether retrying may succeed.
+
+`spec.output` remains the schema for the successful business result, never for
+the wrapper. The separate `spec.error` schema is optional. When present, the
+runtime validates the entire error object against that schema and the SDK base
+schema, and the declared schema may add step-specific fields. When absent, the
+SDK uses a closed fallback schema that accepts only the base fields; custom
+step-specific fields require a declared `spec.error`. A failed container result
+carries the complete error object and the canonical digest of the effective
+error schema. If an error, including an input-validation error, does not satisfy
+the effective schema, no valid wrapper exists. A wrapper cannot represent an
+invocation that produced no valid outcome. In that case the runtime emits a
+`ContainerFailure` instead: its `outcome` is `not_started`, `not_completed`, or
+`unknown`. `not_started` means execution did not begin; `not_completed` means
+execution began and is known not to have completed; `unknown` means the runtime
+cannot determine whether execution completed. These values describe execution
+completion knowledge, not retryability. A `ContainerFailure` is not a deliberate
+step result and carries no `StandardOutputWrapper`.
+
+The wrapper schema does not redefine protobuf transport fields. The
+`ContainerService` ABI remains the protocol contract for transporting runtime
+events; any transport mapping must preserve the distinction between deliberate
+failure and no valid outcome.

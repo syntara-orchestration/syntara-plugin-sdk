@@ -118,7 +118,8 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
             "repository": "syntara-plugin-sdk",
         }
         assert invalid.status_code == 1
-        assert invalid.error_code == "INVALID_INPUT"
+        assert invalid.error_result is not None
+        assert invalid.error_result["code"] == "INVALID_INPUT"
         assert invalid.output is None
         assert invalid.output_schema_digest == action.output_schema_digest
     finally:
@@ -306,6 +307,15 @@ def _invocation(
         timeout_seconds=30,
         runtime_context={},
     )
+
+
+def _echo_output_schema() -> dict[str, object]:
+    return {
+        "properties": {"message": {"title": "Message", "type": "string"}},
+        "required": ["message"],
+        "title": "EchoOutput",
+        "type": "object",
+    }
 
 
 def _wait_for_health(client: ContainerClient) -> tuple[str, ...]:

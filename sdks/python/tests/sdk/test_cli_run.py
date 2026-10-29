@@ -16,7 +16,7 @@ _STEP_SOURCE = '''"""A custom-runner Action step used by the run command tests."
 from __future__ import annotations
 
 from pydantic import BaseModel
-from syntara_plugin.runtime import ActionStep, ExecutionContext
+from syntara_plugin.runtime import ActionStep, ErrorCategory, ExecutionContext, FailureCode, StepFailure
 
 
 class EchoInput(BaseModel):
@@ -41,9 +41,10 @@ from __future__ import annotations
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
-    ContainerInvocationError,
+    ErrorCategory,
     ExecutionContext,
     FailureCode,
+    StepFailure,
 )
 
 
@@ -57,11 +58,13 @@ class BoomOutput(BaseModel):
 
 class BoomStep(ActionStep[BoomInput, BoomOutput]):
     def run(self, inputs: BoomInput, context: ExecutionContext) -> BoomOutput:
-        raise ContainerInvocationError(
-            FailureCode.INVALID_INPUT,
+        raise StepFailure(
+            1,
             "The tracker rejected the request.",
+            error_message="The tracker rejected the request.",
+            code=FailureCode.INVALID_INPUT.value,
+            category=ErrorCategory.VALIDATION,
             retryable=False,
-            outcome="not_started",
         )
 '''
 

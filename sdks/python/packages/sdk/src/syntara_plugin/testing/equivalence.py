@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from syntara_plugin.runtime import ErrorMessage, FailureCode, StepExecutionError
+from syntara_plugin.runtime import ErrorResult, FailureCode, StepExecutionError
 from syntara_plugin.runtime.container import ContainerInvocationError, ContainerRemoteError
 
 from .invocation import StepOutcome
@@ -26,7 +26,7 @@ def _failure_category(outcome: StepOutcome) -> FailureCode | None:
     if isinstance(raised, ContainerInvocationError | ContainerRemoteError):
         return raised.code
     if isinstance(raised, StepExecutionError):
-        return FailureCode.ABI_VIOLATION
+        return raised.failure_code
     return FailureCode.OUTCOME_UNKNOWN
 
 
@@ -47,7 +47,7 @@ def _describe(value: object) -> str:
     return type(value).__name__
 
 
-def _error_brief(error: ErrorMessage | None) -> str:
+def _error_brief(error: ErrorResult | None) -> str:
     """Describe an error envelope by category only, never its message."""
 
     return "none" if error is None else f"code {error.code}"
@@ -107,7 +107,11 @@ def assert_outcomes_equivalent(direct: StepOutcome, container: StepOutcome) -> N
                 f"output differs: direct=({_describe(direct.output)}) "
                 f"container=({_describe(container.output)})"
             )
-        if direct.error != container.error:
+        direct_error = direct.error.model_dump(mode="json") if direct.error is not None else None
+        container_error = (
+            container.error.model_dump(mode="json") if container.error is not None else None
+        )
+        if direct_error != container_error:
             problems.append(
                 f"error differs: direct={_error_brief(direct.error)} "
                 f"container={_error_brief(container.error)}"

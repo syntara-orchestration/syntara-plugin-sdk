@@ -14,13 +14,13 @@ from unittest.mock import MagicMock, patch
 import grpc
 from syntara_plugin.runtime import (
     BaseStep,
-    ErrorMessage,
+    ErrorResult,
     ExecutionContext,
     FailureCode,
     StandardOutputWrapper,
     StepBinding,
     StepBindingError,
-    StepExecutor,
+    invoke,
 )
 from syntara_plugin.runtime.adapter import container_step_for_binding
 from syntara_plugin.runtime.bindings import validate_executable_step_binding
@@ -134,7 +134,7 @@ class StepOutcome:
     status: int | None
     status_message: str
     output: Mapping[str, Any] | None
-    error: ErrorMessage | None
+    error: ErrorResult | None
     run_calls: int
     raised: BaseException | None
     transport: Transport
@@ -285,10 +285,9 @@ def invoke_step(
     inputs, context = _prepare_invocation(inputs, context)
     # Construct outside the catch so harness-usage errors stay loud on both
     # paths instead of being normalized into a quiet failed outcome.
-    executor = StepExecutor(binding)
     with _counting_run(binding.step) as spy:
         try:
-            wrapper = executor.execute(inputs, context)
+            wrapper = invoke(binding, inputs, context)
         except KeyboardInterrupt:
             raise
         except BaseException as error:
@@ -383,13 +382,10 @@ def invoke_step_in_container(
                 result = client.execute(invocation)
             except ContainerRemoteError as remote_error:
                 return _raised_outcome(spy, remote_error, "container")
-        wrapper_error = None
-        if result.error_code:
-            wrapper_error = ErrorMessage(
-                code=result.error_code,
-                message=result.error_message,
-                retryable=result.retryable,
-            )
+        wrapper_error = (
+            ErrorResult.model_validate(result.error_result)
+            if result.error_result is not None else None
+        )
         return StepOutcome(
             ok=result.status_code == 0,
             status=result.status_code,

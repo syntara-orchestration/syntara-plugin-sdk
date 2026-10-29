@@ -192,7 +192,7 @@ def test_archive_reader_rejects_unpinned_workload_images(
 
     def add_invalid_workload(document: dict[str, Any]) -> None:
         document["spec"]["workloads"] = {
-            "runner": {"abi": "syntara.container/v1alpha1", "image": image}
+        "runner": {"abi": "syntara.container/v1alpha1", "image": image}
         }
 
     archive = _archive_with_descriptor_mutation(
