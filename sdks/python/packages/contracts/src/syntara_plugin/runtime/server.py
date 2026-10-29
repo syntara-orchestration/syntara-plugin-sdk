@@ -15,6 +15,7 @@ from threading import Event
 from typing import Any
 
 import grpc
+from syntara_plugin.contracts import load_bundle, validate_document
 
 from .abi import CONTAINER_ABI, FailureCode
 from .adapter import container_step_for_binding
@@ -272,53 +273,11 @@ def _read_json_object(path: Path, label: str) -> Mapping[str, Any]:
 
 def _registration_steps(path: Path) -> Mapping[str, Any]:
     manifest = _read_json_object(path, "registration manifest")
-    if not _has_valid_registration_metadata(manifest):
-        raise RuntimeServerError("registration manifest has invalid metadata")
-    steps = manifest.get("steps")
-    if not isinstance(steps, Mapping) or not steps:
-        raise RuntimeServerError("registration manifest requires steps")
-    for revision, entry in steps.items():
-        if not _has_valid_registration_step(revision, entry):
-            raise RuntimeServerError("registration manifest has an invalid step mapping")
+    if validate_document(load_bundle(), "registration_manifest", manifest):
+        raise RuntimeServerError("registration manifest violates its contract")
+    steps = manifest["steps"]
+    assert isinstance(steps, Mapping)
     return steps
-
-
-def _has_valid_registration_metadata(manifest: Mapping[str, Any]) -> bool:
-    """Check the fixed registration-manifest envelope."""
-
-    return (
-        set(manifest)
-        == {"apiVersion", "kind", "plugin_revision_id", "sdkVersion", "workload", "steps"}
-        and manifest.get("apiVersion") == "syntara.registration/v1alpha1"
-        and manifest.get("kind") == "RegistrationManifest"
-        and _is_revision(manifest.get("plugin_revision_id"))
-        and _is_nonempty_string(manifest.get("sdkVersion"))
-        and _is_nonempty_string(manifest.get("workload"))
-    )
-
-
-def _has_valid_registration_step(revision: object, entry: object) -> bool:
-    """Check one registration-manifest revision-to-implementation mapping."""
-
-    return (
-        _is_revision(revision)
-        and isinstance(entry, Mapping)
-        and set(entry) == {"entryPoint", "abi"}
-        and _is_entry_point(entry.get("entryPoint"))
-        and _is_nonempty_string(entry.get("abi"))
-    )
-
-
-def _is_revision(value: object) -> bool:
-    return isinstance(value, str) and _REVISION.fullmatch(value) is not None
-
-
-def _is_entry_point(value: object) -> bool:
-    return isinstance(value, str) and _ENTRY_POINT.fullmatch(value) is not None
-
-
-def _is_nonempty_string(value: object) -> bool:
-    return isinstance(value, str) and bool(value)
 
 
 def _resolved_execution_bindings(config: RuntimeServerConfig) -> list[_ResolvedExecutionBinding]:

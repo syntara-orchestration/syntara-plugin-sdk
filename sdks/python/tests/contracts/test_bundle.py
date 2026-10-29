@@ -51,6 +51,7 @@ def test_bundle_has_stable_digest_and_required_contracts() -> None:
         "plugin.schema.json",
         "plugin-build-settings.schema.json",
         "plugin-descriptor.schema.json",
+        "registration-manifest.schema.json",
         "runtime.schema.json",
         "step.schema.json",
         "trigger-driver.schema.json",

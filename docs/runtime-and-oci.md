@@ -501,7 +501,8 @@ The registration manifest is canonical JSON with
 `apiVersion: syntara.registration/v1alpha1`, `kind: RegistrationManifest`,
 the plugin revision ID, SDK version, workload ID, and a `steps` object keyed by
 step revision ID. Each entry records its `entryPoint` and ABI. The SDK validates
-this mapping against the compiled descriptor before adding the image layer.
+this mapping against the `registration-manifest` contract and the compiled
+descriptor before adding the image layer.
 `registration_manifest` and `validate_registration_manifest` in
 `syntara_plugin.contracts` are available to external image producers; an image
 binding alone does not prove that its image contains a matching manifest.

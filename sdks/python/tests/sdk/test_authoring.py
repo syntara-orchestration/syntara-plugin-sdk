@@ -319,7 +319,7 @@ def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path
 
 
 def _assert_registration_manifest_rejected(descriptor, manifest) -> None:
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError):
         validate_registration_manifest(descriptor, "plugin-workload", manifest)
 
 

@@ -104,6 +104,9 @@ def validate_registration_manifest(
         expected = registration_manifest(descriptor, workload_id)
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError("invalid descriptor for registration manifest") from error
+    schema_errors = validate_document(bundle, "registration_manifest", manifest)
+    if schema_errors:
+        raise ValueError("; ".join(schema_errors))
     if manifest != expected:
         raise ValueError("registration manifest does not match the compiled descriptor")
 

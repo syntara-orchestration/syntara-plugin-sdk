@@ -92,6 +92,7 @@ def test_revision_fixture_is_a_stable_projection_vector() -> None:
     assert validate_plugin_descriptor_semantics(fixture) == ()
     manifest = registration_manifest(fixture, "plugin-workload")
     assert len(manifest["steps"]) == 2
+    assert validate_document(load_bundle(), "registration_manifest", manifest) == []
     validate_registration_manifest(fixture, "plugin-workload", manifest)
 
     for mutation in ("entryPoint", "abi", "missing", "extra"):
@@ -103,7 +104,7 @@ def test_revision_fixture_is_a_stable_projection_vector() -> None:
             altered["unexpected"] = True
         else:
             altered["steps"][revision][mutation] = "incorrect"
-        with pytest.raises(ValueError, match="does not match"):
+        with pytest.raises(ValueError):
             validate_registration_manifest(fixture, "plugin-workload", altered)
 
 
