@@ -8,7 +8,7 @@ This directory is the language-neutral source of truth for the Syntara Plugin SD
   by plugin workload runtimes and the Execution Plane.
 
 The `http-operation.schema.json` contract defines the deliberately small,
-data-only operation format used by the `http.v1` platform runner: a method,
+data-only HTTP operation format for a `platform-runner` action: a method,
 an origin-less relative path template, and bounded request/response maps whose
 values are JSON Pointers or JSON literals. It does not define HTTP transport,
 credentials, a dynamic origin, headers, or executable expressions.
@@ -17,11 +17,13 @@ encodes a checked input value as exactly one path segment, preventing a value
 from becoming a separator, query, fragment, or dot segment.
 
 `http-runner-context.schema.json` defines the runtime-only form after Syntara
-has resolved an installed action: `driver: http.v1`, the inline operation, and
-the output-schema digest. It deliberately has no endpoint, credential, header,
-image reference, asset reference, or executable expression. The generic work
-item retains this as an optional bounded non-secret `runtimeContext` object so
-other approved runners can later define their own constrained context contract.
+has resolved an installed action: the context label `driver: http.v1`, the
+inline operation, and the output-schema digest. This label is not the source
+action's runner or implementation reference. The context has no endpoint,
+credential, header, image reference, asset reference, or executable expression.
+The generic work item retains this as an optional bounded non-secret
+`runtimeContext` object so other approved runners can later define their own
+constrained context contract.
 
 The generic `ContainerWorkloadRequest` has two mirrored `requestHash` fields:
 one on the work item and one on its policy snapshot. They are the SHA-256

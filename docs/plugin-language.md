@@ -82,9 +82,12 @@ preserves the reference; the AO Plugin Registry resolves its image, entry point,
 and ABI during registration. Example references are placeholders and must name
 an implementation available in the target installation.
 
-### `http.v1` operation
+### HTTP operation
 
 Schema: [`http-operation.schema.json`](../contracts/schemas/v1alpha1/http-operation.schema.json).
+An Action may declare this operation under `spec.runtime.operation`. The separate
+runtime-only HTTP context uses `driver: http.v1`; this is a context label, not
+the Action's runner or implementation reference.
 
 | Key | Meaning |
 | --- | --- |
