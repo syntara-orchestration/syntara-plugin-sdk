@@ -98,7 +98,8 @@ def _start_server(
     handlers: dict[str, Any], *, abi: str | None = None
 ) -> tuple[int, grpc.Server]:
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    registry = StepRegistry(handlers)
+    revisions = {str(t["identity"]): str(t["step_revision_id"]) for t in _compiled_targets(PYTHON_STEPS)}
+    registry = StepRegistry({revisions.get(identity, identity): handler for identity, handler in handlers.items()})
     if abi is None:
         add_container_runtime_service(server, registry)
     else:
@@ -305,8 +306,9 @@ def test_image_mode_rejects_an_unadvertised_identity(capsys) -> None:
 
     assert status == 1
     captured = capsys.readouterr()
-    assert "does not advertise 'example.python-steps.record-opened'" in captured.err
-    assert "Advertised steps: example.python-steps.create-issue" in captured.err
+    revisions = {str(t["identity"]): str(t["step_revision_id"]) for t in _compiled_targets(PYTHON_STEPS)}
+    assert f"does not advertise '{revisions[RECORD_OPENED]}'" in captured.err
+    assert f"Advertised steps: {revisions[CREATE_ISSUE]}" in captured.err
 
 
 def test_image_mode_rejects_an_abi_mismatch(capsys) -> None:
@@ -515,7 +517,7 @@ def _serve_real_steps(
     """Serve the workspace's real steps through the container adapter."""
 
     from syntara_plugin.runtime import StepBindings
-    from syntara_plugin.runtime.adapter import step_registry_from_bindings
+    from syntara_plugin.runtime.adapter import container_step_for_binding
     from syntara_plugin.testing.bindings_factory import installed_binding
 
     if str(workspace) not in sys.path:
@@ -527,7 +529,11 @@ def _serve_real_steps(
         binding = installed_binding(step, identity=f"run.{plugin_name}.{target_name}")
         bindings.bind(binding.descriptor, binding.step)
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, step_registry_from_bindings(bindings))
+    revisions = {str(t["identity"]): str(t["step_revision_id"]) for t in _compiled_targets(workspace)}
+    add_container_runtime_service(server, StepRegistry({
+        revisions[identity]: container_step_for_binding(bindings.binding(identity), step_revision_id=revisions[identity])
+        for identity in bindings.step_identities
+    }))
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     return port, server
@@ -645,7 +651,7 @@ def test_health_precedes_execute_and_the_invocation_contract_holds(
     monkeypatch.syspath_prepend(str(workspace))
     module = importlib.import_module(f"{package}.steps")
     from syntara_plugin.runtime import StepBindings
-    from syntara_plugin.runtime.adapter import step_registry_from_bindings
+    from syntara_plugin.runtime.adapter import container_step_for_binding
     from syntara_plugin.testing.bindings_factory import installed_binding
 
     bindings = StepBindings()
@@ -653,7 +659,8 @@ def test_health_precedes_execute_and_the_invocation_contract_holds(
     binding = installed_binding(step, identity=f"run.{plugin_name}.ok")
     bindings.bind(binding.descriptor, step)
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    service = _RecordingService(step_registry_from_bindings(bindings))
+    revision = next(str(t["step_revision_id"]) for t in _compiled_targets(workspace) if t["identity"] == f"run.{plugin_name}.ok")
+    service = _RecordingService(StepRegistry({revision: container_step_for_binding(binding, step_revision_id=revision)}))
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
@@ -678,7 +685,7 @@ def test_health_precedes_execute_and_the_invocation_contract_holds(
     assert status == 0
     assert service.rpc_order == ["Health", "Execute"]
     invocation = service.invocations[0]
-    assert invocation.step_revision_id == f"run.{plugin_name}.ok"
+    assert invocation.step_revision_id == revision
     assert invocation.timeout_seconds == 60
     assert invocation.runtime_context == {}
     assert invocation.credential_file_paths == {}
@@ -814,9 +821,9 @@ def test_progress_events_are_scrubbed_on_stderr(
 
     workspace = _write_progress_workspace(tmp_path / "ws")
     str(workspace.name)
-    # The identity is derived from the plugin name; rebuild it deterministically.
+    # Image dispatch uses the compiled revision.
     identity = next(
-        str(target["identity"])
+        str(target["step_revision_id"])
         for workspace_path in [workspace]
         for target in _compiled_targets(workspace_path)
     )

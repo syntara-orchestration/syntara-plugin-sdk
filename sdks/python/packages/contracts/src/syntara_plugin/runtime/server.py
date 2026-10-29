@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import signal
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -16,8 +17,8 @@ from typing import Any
 import grpc
 
 from .abi import CONTAINER_ABI, FailureCode
-from .adapter import step_registry_from_bindings
-from .bindings import StepBindings
+from .adapter import container_step_for_binding
+from .bindings import StepBindingError, StepBindings, validate_executable_step_binding
 from .container import (
     INCOMPLETE_STEP_MESSAGE,
     ContainerInvocation,
@@ -31,8 +32,16 @@ from .container import (
 )
 from .execution import StepExecutionError
 from .protocol import container_pb2, container_pb2_grpc
+from .step import BaseStep
 
 _RUNTIME_CONFIG = "SYNTARA_RUNTIME_CONFIG"
+_RESOLVED_EXECUTION = "SYNTARA_RESOLVED_EXECUTION"
+_REGISTRATION_MANIFEST = "SYNTARA_REGISTRATION_MANIFEST"
+_DEFAULT_REGISTRATION_MANIFEST = Path("/opt/syntara/registration-manifest.json")
+_REVISION = re.compile(r"^sha256:[a-f0-9]{64}$")
+_ENTRY_POINT = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$"
+)
 _GRPC_ADDRESS = "SYNTARA_RUNTIME_GRPC_ADDRESS"
 _TLS_CERTIFICATE = "SYNTARA_RUNTIME_GRPC_TLS_CERT"
 _TLS_KEY = "SYNTARA_RUNTIME_GRPC_TLS_KEY"
@@ -161,6 +170,8 @@ class RuntimeServerConfig:
     tls_certificate: Path | None = None
     tls_key: Path | None = None
     tls_client_ca: Path | None = None
+    resolved_execution_path: Path | None = None
+    registration_manifest_path: Path = _DEFAULT_REGISTRATION_MANIFEST
 
 
 def load_runtime_server_config(
@@ -173,7 +184,17 @@ def load_runtime_server_config(
     document = _runtime_document(environ, config_path)
     bindings_factory = _bindings_factory(document)
     address, certificate, key, client_ca = _listener_settings(environ)
-    return RuntimeServerConfig(bindings_factory, address, certificate, key, client_ca)
+    resolved_path = environ.get(_RESOLVED_EXECUTION, "").strip()
+    manifest_path = environ.get(_REGISTRATION_MANIFEST, "").strip()
+    return RuntimeServerConfig(
+        bindings_factory,
+        address,
+        certificate,
+        key,
+        client_ca,
+        Path(resolved_path) if resolved_path else None,
+        Path(manifest_path) if manifest_path else _DEFAULT_REGISTRATION_MANIFEST,
+    )
 
 
 def load_runtime_bindings(specification: str) -> StepBindings:
@@ -203,9 +224,10 @@ def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
     """Create and bind, but do not start, the in-container gRPC server."""
 
     bindings = load_runtime_bindings(config.bindings_factory)
+    steps = resolved_step_registry(config, bindings)
     server = grpc.aio.server()
     container_pb2_grpc.add_ContainerServiceServicer_to_server(
-        AsyncContainerRuntimeService(step_registry_from_bindings(bindings)), server
+        AsyncContainerRuntimeService(steps), server
     )
     credentials = _server_credentials(config)
     port = (
@@ -217,6 +239,127 @@ def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
         message = f"could not bind the runtime gRPC listener: {config.address}"
         raise RuntimeServerError(message)
     return server
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _read_json_object(path: Path, label: str) -> Mapping[str, Any]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+    except (OSError, UnicodeError, ValueError, RecursionError) as error:
+        raise RuntimeServerError(f"could not read valid {label}: {path}") from error
+    if not isinstance(document, Mapping):
+        raise RuntimeServerError(f"{label} must be a JSON object")
+    return document
+
+
+def _registration_steps(path: Path) -> Mapping[str, Any]:
+    manifest = _read_json_object(path, "registration manifest")
+    if (
+        set(manifest)
+        != {"apiVersion", "kind", "plugin_revision_id", "sdkVersion", "workload", "steps"}
+        or manifest.get("apiVersion") != "syntara.registration/v1alpha1"
+        or manifest.get("kind") != "RegistrationManifest"
+        or not isinstance(manifest.get("plugin_revision_id"), str)
+        or not _REVISION.fullmatch(manifest["plugin_revision_id"])
+        or not isinstance(manifest.get("sdkVersion"), str)
+        or not manifest["sdkVersion"]
+        or not isinstance(manifest.get("workload"), str)
+        or not manifest["workload"]
+    ):
+        raise RuntimeServerError("registration manifest has invalid metadata")
+    steps = manifest.get("steps")
+    if not isinstance(steps, Mapping) or not steps:
+        raise RuntimeServerError("registration manifest requires steps")
+    for revision, entry in steps.items():
+        if (
+            not isinstance(revision, str)
+            or not _REVISION.fullmatch(revision)
+            or not isinstance(entry, Mapping)
+            or set(entry) != {"entryPoint", "abi"}
+            or not isinstance(entry.get("entryPoint"), str)
+            or not _ENTRY_POINT.fullmatch(entry["entryPoint"])
+            or not isinstance(entry.get("abi"), str)
+            or not entry["abi"]
+        ):
+            raise RuntimeServerError("registration manifest has an invalid step mapping")
+    return steps
+
+
+def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) -> StepRegistry:
+    """Bind platform-supplied revisions to executable image-local bindings.
+
+    The caller supplies a trusted read-only file. The image registration
+    manifest checks custom-runner mappings; it is neither schema provenance nor
+    proof of image identity. The existing installed binding supplies schemas.
+    """
+    if config.resolved_execution_path is None:
+        raise RuntimeServerError(f"{_RESOLVED_EXECUTION} must name a resolved execution file")
+    document = _read_json_object(config.resolved_execution_path, "resolved execution data")
+    records = document.get("bindings")
+    if set(document) != {"bindings"} or not isinstance(records, list) or not records:
+        raise RuntimeServerError("resolved execution data requires a non-empty bindings array")
+    handlers: dict[str, ContainerStepHandler] = {}
+    manifest_steps: Mapping[str, Any] | None = None
+    for record in records:
+        if not isinstance(record, Mapping) or set(record) != {
+            "stepRevisionId",
+            "runtimeKind",
+            "entryPoint",
+            "abi",
+        }:
+            raise RuntimeServerError("resolved execution binding has invalid fields")
+        revision, kind, entry_point, abi = (
+            record["stepRevisionId"],
+            record["runtimeKind"],
+            record["entryPoint"],
+            record["abi"],
+        )
+        if not isinstance(revision, str) or not _REVISION.fullmatch(revision):
+            raise RuntimeServerError("resolved execution binding has an invalid step revision")
+        if revision in handlers:
+            raise RuntimeServerError("resolved execution data contains a duplicate step revision")
+        if kind not in ("custom-runner", "platform-runner"):
+            raise RuntimeServerError("resolved execution binding has an invalid runtime kind")
+        if abi != CONTAINER_ABI:
+            raise RuntimeServerError("resolved execution binding has an unsupported ABI")
+        if not isinstance(entry_point, str) or not _ENTRY_POINT.fullmatch(entry_point):
+            raise RuntimeServerError("resolved execution binding has an invalid entry point")
+        if kind == "custom-runner":
+            if manifest_steps is None:
+                manifest_steps = _registration_steps(config.registration_manifest_path)
+            if manifest_steps.get(revision) != {"entryPoint": entry_point, "abi": abi}:
+                raise RuntimeServerError("resolved custom runner does not match registration manifest")
+        module_name, _, class_name = entry_point.partition(":")
+        try:
+            implementation = getattr(importlib.import_module(module_name), class_name)
+        except Exception as error:
+            raise RuntimeServerError("resolved entry point could not be loaded") from error
+        if not isinstance(implementation, type) or not issubclass(implementation, BaseStep):
+            raise RuntimeServerError("resolved entry point must name a typed Step class")
+        matches = [
+            bindings.binding(identity)
+            for identity in bindings.step_identities
+            if type(bindings.binding(identity).step) is implementation
+        ]
+        if len(matches) != 1:
+            raise RuntimeServerError("resolved entry point must match exactly one installed binding")
+        binding = matches[0]
+        try:
+            validate_executable_step_binding(binding.descriptor, binding.step)
+            if binding.descriptor.installed_entry_point != entry_point:
+                raise StepBindingError("resolved entry point differs from the installed contract")
+            handlers[revision] = container_step_for_binding(binding, step_revision_id=revision)
+        except (StepBindingError, TypeError, ValueError) as error:
+            raise RuntimeServerError("resolved entry point has an invalid installed binding") from error
+    return StepRegistry(handlers)
 
 
 async def serve_runtime(config: RuntimeServerConfig) -> None:

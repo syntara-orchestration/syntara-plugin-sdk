@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from syntara_plugin.sdk.container_engine import (
     _generate_tls_material,
     detect_engine,
 )
-from syntara_plugin.sdk.runner import RunExecutionError
+from syntara_plugin.sdk.runner import RunExecutionError, RunTarget
 
 
 def test_detect_engine_returns_a_usable_engine() -> None:
@@ -256,6 +257,68 @@ def test_managed_runtime_attaches_the_liveness_probe(monkeypatch, tmp_path) -> N
         assert name.startswith("syntara-run-")
 
     assert commands[-1][:3] == ["podman", "rm", "--force"]
+
+
+def test_managed_runtime_mounts_selected_resolved_revision(monkeypatch, tmp_path: Path) -> None:
+    from syntara_plugin.sdk.container_engine import _TlsMaterial
+
+    material = _TlsMaterial(
+        client_ca=tmp_path / "ca.crt", client_certificate=tmp_path / "client.crt",
+        client_key=tmp_path / "client.key", server_certificate=tmp_path / "server.crt",
+        server_key=tmp_path / "server.key",
+    )
+    revision = "sha256:" + "a" * 64
+    target = RunTarget("identity", "Action", "example:Echo", "echo", {}, "image", revision)
+    mounted: list[Path] = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "run":
+            volume = next(value for value in command if ":/run/syntara/resolved.json:" in value)
+            path = Path(volume.split(":", 1)[0])
+            mounted.append(path)
+            assert json.loads(path.read_text(encoding="utf-8")) == {"bindings": [{
+                "stepRevisionId": revision, "runtimeKind": "custom-runner",
+                "entryPoint": "example:Echo", "abi": "syntara.container/v1alpha1",
+            }]}
+            assert volume.endswith(":ro,Z")
+            assert "SYNTARA_RESOLVED_EXECUTION=/run/syntara/resolved.json" in command
+        return SimpleNamespace(returncode=0, stdout="true 0\n", stderr="")
+
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+    monkeypatch.setattr(container_engine, "_select_engine", lambda image: container_engine.ContainerEngine("podman"))
+    monkeypatch.setattr(container_engine, "_generate_tls_material", lambda directory: material)
+    with container_engine.managed_runtime("image", target):
+        assert mounted[0].exists()
+    assert not mounted[0].exists()
+
+
+@pytest.mark.parametrize("method", ["write_text", "chmod"])
+def test_resolved_execution_file_failure_is_safe(monkeypatch, method: str) -> None:
+    target = RunTarget("identity", "Action", "example:Echo", "echo", {}, "image", "revision")
+    removed: list[str] = []
+    original = getattr(Path, method)
+
+    def fail_resolved(path, *args, **kwargs):
+        if path.name == "resolved.json":
+            raise OSError("private filesystem detail")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, fail_resolved)
+    monkeypatch.setattr(container_engine, "_select_engine", lambda image: container_engine.ContainerEngine("podman"))
+    monkeypatch.setattr(container_engine, "_generate_tls_material", lambda directory: object())
+    monkeypatch.setattr(container_engine, "_remove_container", lambda engine, name: removed.append(name))
+    monkeypatch.setattr(
+        container_engine, "_published_runtime",
+        lambda *args: pytest.fail("container should not start"),
+    )
+
+    with pytest.raises(RunExecutionError) as raised:
+        with container_engine.managed_runtime("image", target):
+            pytest.fail("runtime should not start")
+
+    assert "resolved execution data" in raised.value.message
+    assert "private filesystem detail" not in str(raised.value)
+    assert len(removed) == 1
 
 
 def test_a_startup_failure_still_removes_the_container(monkeypatch) -> None:

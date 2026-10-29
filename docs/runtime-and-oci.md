@@ -113,9 +113,43 @@ def create_bindings() -> StepBindings:
 ```
 
 The factory is plugin-specific, not Step-type-specific. A workload image may
-register one or more steps; the Execution Plane selects the exact step revision
-in each gRPC request. The final image, not the SDK repository, owns its
-runtime-config file and adapter package versions.
+provide one or more installed bindings. At startup the platform supplies trusted
+resolved execution data as a read-only JSON file, named by
+`SYNTARA_RESOLVED_EXECUTION`:
+
+```json
+{
+  "bindings": [{
+    "stepRevisionId": "sha256:<64 lowercase hex digits>",
+    "runtimeKind": "custom-runner",
+    "entryPoint": "acme_plugin.steps:EchoStep",
+    "abi": "syntara.container/v1alpha1"
+  }]
+}
+```
+
+Replace the placeholder with the exact compiled revision. Custom-runner entries
+must match that revision, entry point and ABI in the packaged registration
+manifest at `/opt/syntara/registration-manifest.json` (override its path with
+`SYNTARA_REGISTRATION_MANIFEST` for testing). For a platform-runner entry, the
+platform supplies the referenced implementation's entry point and ABI and the
+referencing step's own revision; that revision need not occur in the image
+manifest. The current SDK authoring schema uses a platform-runner `driver`; it
+does not compile the proposal's future implementation-reference model. This
+startup path consumes the platform-resolved entry point and ABI and does not
+resolve or compile that reference. Each entry point must import a typed `BaseStep` class matching exactly
+one executable installed binding from the factory. Missing, ambiguous, malformed,
+duplicate, or inconsistent data prevents server startup. Health advertises only
+the registered revisions, and Execute dispatches only an exact revision match.
+
+The factory must obtain authorized installed manifests and schemas; the image
+registration manifest supplies neither schema provenance nor image attestation.
+For platform-runner reuse, this adapter applies the matched installed binding's
+schemas, so the platform must ensure they are appropriate for the referencing
+step. Declarative drivers and arbitrary container handlers are not supported as
+resolved Python entry points. The final image owns its runtime-config file and
+adapter package versions; platform registration and image selection remain
+outside this SDK boundary.
 
 The checked-in [Existing Step](../examples/existing-step) prototype exercises
 this path for Action, Control, and Trigger. `make test-integration` builds its
@@ -286,10 +320,9 @@ Binding rejects malformed or duplicate identities, concrete-kind or category
 mismatches between the descriptor and the Python class, and attempts to bind a platform-managed
 driver (such as `http.v1`) as a Python implementation. `StepExecutor` repeats
 the implementation and category checks before raw-input validation, so a
-directly constructed `StepBinding` cannot bypass them. `StepBindings` is an
-local SDK lookup table, not the platform registration database; mapping an
-installed step revision to a declared identity belongs to the registry-binding
-story.
+directly constructed `StepBinding` cannot bypass them. `StepBindings` is a local
+SDK lookup table, not the platform registration database. Runtime startup maps
+the platform's resolved revisions to these existing installed bindings.
 Pydantic models are implementation types, not replacement manifests. For an
 installed custom-runner Step, the canonical installed manifest schema is the
 execution contract; comparing implementation schemas with source manifests is
@@ -387,7 +420,6 @@ execution share input validation, typed execution, and output validation;
 only the container path adds ABI serialization and transport limits. The JSON
 runtime contract names this outcome `ContainerFailure`; the gRPC protocol
 carries it in a `Failure` event.
-
 For a nonzero `ContainerResult`, the error and its schema digest are required.
 A missing or unknown category is a protocol error. Inline output and object references are
 mutually exclusive; either may carry a deliberate failure's optional business
@@ -406,8 +438,9 @@ first use, so steps run and test where the transport libraries are absent.
 
 ### Container adapter
 
-`step_registry_from_bindings(bindings)` builds a container `StepRegistry`
-with one transport handler per registered step. The adapter converts each
+`step_registry_from_bindings(bindings)` builds a local container `StepRegistry`
+keyed by binding identity. The server startup path instead keys the handlers by
+the resolved revisions. The adapter converts each
 `ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
 cancellation event), calls `runtime.invoke`, and maps the returned wrapper to a
 `ContainerResult`. Valid input-validation errors and deliberate `StepFailure` values produce

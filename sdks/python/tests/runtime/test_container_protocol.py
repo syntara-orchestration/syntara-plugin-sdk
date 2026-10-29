@@ -7,7 +7,6 @@ from typing import Any
 import grpc
 import pytest
 from syntara_plugin.runtime import (
-    ANY_STEP_REVISION,
     CONTAINER_ABI,
     ContainerClient,
     ContainerInvocation,
@@ -150,8 +149,7 @@ def test_unsupported_step_is_a_safe_not_found_failure(
     assert wrapped_error.value.source == "workload"
 
 
-def test_platform_runner_can_advertise_and_dispatch_a_control_plane_selected_step() -> None:
-    """A generic runner does not need one image build for every installed step."""
+def test_runner_advertises_and_dispatches_only_the_selected_step() -> None:
     calls: list[ContainerInvocation] = []
 
     def runner(invocation: ContainerInvocation) -> ContainerResult:
@@ -159,20 +157,24 @@ def test_platform_runner_can_advertise_and_dispatch_a_control_plane_selected_ste
         return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"handled": True})
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, StepRegistry({}, fallback_step=runner))
+    revision = "syntara.github.create-issue:" + "b" * 64
+    add_container_runtime_service(server, StepRegistry({revision: runner}))
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     client = ContainerClient(channel)
     try:
-        assert client.health() == (ANY_STEP_REVISION,)
-        result = client.execute(_invocation("syntara.github.create-issue:" + "b" * 64))
+        assert client.health() == (revision,)
+        result = client.execute(_invocation(revision))
+        with pytest.raises(ContainerRemoteError) as raised:
+            client.execute(_invocation("unknown"))
+        assert raised.value.code is FailureCode.NOT_FOUND
     finally:
         channel.close()
         server.stop(grace=0).wait()
 
     assert result.output == {"handled": True}
-    assert calls[0].step_revision_id == "syntara.github.create-issue:" + "b" * 64
+    assert calls[0].step_revision_id == revision
 
 
 def test_unhandled_step_exception_never_exposes_its_message(

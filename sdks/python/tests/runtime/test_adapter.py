@@ -11,7 +11,6 @@ import pytest
 from pydantic import BaseModel
 from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
-    ANY_STEP_REVISION,
     ActionStep,
     BaseStep,
     ContainerClient,
@@ -999,14 +998,16 @@ def test_large_invalid_payloads_remain_invalid_input_over_grpc() -> None:
     assert result.error_result["code"] == FailureCode.INVALID_INPUT.value
 
 
-def test_generic_runner_can_dispatch_a_bindings_fallback_step() -> None:
+def test_registry_dispatches_only_registered_binding_identities() -> None:
     bindings = StepBindings()
     step = ActionEchoStep()
     _bind_step(bindings, "acme.plugin.echo", step, _echo_input_schema())
 
-    steps = StepRegistry({}, fallback_step=container_step_for_bindings(bindings))
+    steps = step_registry_from_bindings(bindings)
 
-    assert steps.step_revision_ids == (ANY_STEP_REVISION,)
+    assert steps.step_revision_ids == ("acme.plugin.echo",)
     result = steps.resolve("acme.plugin.echo")(_invocation())
     assert result.output is not None
     assert result.output["message"] == "hello"
+    with pytest.raises(ContainerInvocationError):
+        steps.resolve("unknown")

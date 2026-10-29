@@ -42,6 +42,9 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
     _build_example_wheel(wheels)
     shutil.copyfile(_EXAMPLE / "runtime.json", context / "runtime.json")
     shutil.copyfile(_EXAMPLE / "Containerfile", context / "Containerfile")
+    revisions, resolved = _write_registration(context, _EXAMPLE, "existing-step-workload")
+    with (context / "Containerfile").open("a", encoding="utf-8") as stream:
+        stream.write("\nUSER 0\nCOPY registration.json /opt/syntara/registration-manifest.json\nUSER 1001\n")
 
     image_tag = f"syntara-plugin-runtime-it-{uuid.uuid4().hex}"
     container_name = f"syntara-runtime-it-{uuid.uuid4().hex}"
@@ -67,6 +70,10 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
             f"{key}:/run/secrets/server.key:ro,Z",
             "--volume",
             f"{client_ca}:/run/secrets/client-ca.crt:ro,Z",
+            "--volume",
+            f"{resolved}:/run/syntara/resolved.json:ro,Z",
+            "--env",
+            "SYNTARA_RESOLVED_EXECUTION=/run/syntara/resolved.json",
             image_tag,
         ],
         check=True,
@@ -83,7 +90,7 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
         health = _wait_for_health(client)
         action = client.execute(
             _invocation(
-                _ACTION_IDENTITY,
+                revisions[_ACTION_IDENTITY],
                 {"title": "hello from UBI"},
                 invocation_id="existing-action",
             ),
@@ -91,7 +98,7 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
         )
         control = client.execute(
             _invocation(
-                _CONTROL_IDENTITY,
+                revisions[_CONTROL_IDENTITY],
                 {"records": ["Alpha", "Beta"]},
                 invocation_id="existing-control",
             ),
@@ -99,18 +106,18 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
         )
         trigger = client.execute(
             _invocation(
-                _TRIGGER_IDENTITY,
+                revisions[_TRIGGER_IDENTITY],
                 {"repository": "syntara-plugin-sdk"},
                 invocation_id="existing-trigger",
             ),
             timeout_seconds=10,
         )
         invalid = client.execute(
-            _invocation(_ACTION_IDENTITY, {}, invocation_id="existing-invalid"),
+            _invocation(revisions[_ACTION_IDENTITY], {}, invocation_id="existing-invalid"),
             timeout_seconds=10,
         )
 
-        assert health == (_ACTION_IDENTITY, _CONTROL_IDENTITY, _TRIGGER_IDENTITY)
+        assert health == tuple(sorted(revisions.values()))
         assert action.output == {"ticket_id": "existing-action:hello from UBI"}
         assert control.output == {"count": 2, "normalized": ["alpha", "beta"]}
         assert trigger.output == {
@@ -152,6 +159,22 @@ def _build_workspace_wheel(package: str, output: Path) -> None:
         ],
         check=True,
     )
+
+
+def _write_registration(context: Path, workspace: Path, workload: str) -> tuple[dict[str, str], Path]:
+    from syntara_plugin.contracts import registration_manifest
+    from syntara_plugin.sdk.authoring import BuildRequest, compile_workspace
+
+    descriptor = compile_workspace(BuildRequest(workspace / "plugin.yaml", require_image_bindings=False)).descriptor
+    manifest = registration_manifest(descriptor, workload)
+    (context / "registration.json").write_text(json.dumps(manifest), encoding="utf-8")
+    resolved = context / "resolved.json"
+    resolved.write_text(json.dumps({"bindings": [
+        {"stepRevisionId": revision, "runtimeKind": "custom-runner", **entry}
+        for revision, entry in manifest["steps"].items()
+    ]}), encoding="utf-8")
+    resolved.chmod(0o644)
+    return {target["identity"]: target["step_revision_id"] for target in descriptor["spec"]["targets"]}, resolved
 
 
 def _build_example_wheel(output: Path) -> None:
@@ -431,6 +454,7 @@ RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl
 USER 0
 RUN mkdir -p /etc/syntara
 COPY runtime.json /etc/syntara/runtime.json
+COPY registration.json /opt/syntara/registration-manifest.json
 RUN chmod 0644 /etc/syntara/runtime.json
 
 ENV SYNTARA_RUNTIME_CONFIG=/etc/syntara/runtime.json \\
@@ -461,7 +485,6 @@ def test_managed_image_mode_runs_and_cleans_up_the_workload_container(
     _write_runtime_config(context)
     _write_managed_containerfile(context)
     image_tag = f"syntara-plugin-managed-it-{uuid.uuid4().hex}"
-    _build_image(context, image_tag)
 
     workspace = tmp_path / "ws"
     (workspace / "steps/v1").mkdir(parents=True)
@@ -520,6 +543,8 @@ spec:
         encoding="utf-8",
     )
     (workspace / "docs/README.md").write_text("# Echo\n", encoding="utf-8")
+    _write_registration(context, workspace, image_tag)
+    _build_image(context, image_tag)
 
     try:
         status = main(

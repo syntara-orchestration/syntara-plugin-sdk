@@ -1203,7 +1203,7 @@ def _run_image_mode(
         )
     if arguments.verbose and not arguments.json:
         print(f"==> starting workload container {target.workload_image}", file=sys.stderr)
-    with managed_runtime(target.workload_image) as runtime:
+    with managed_runtime(target.workload_image, target) as runtime:
         return run_image(
             runtime.address,
             target,
