@@ -272,10 +272,18 @@ def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path
     }}
     validate_registration_manifest(first.descriptor, "plugin-workload", manifest)
     manifest["steps"] = {}
+    _assert_registration_manifest_rejected(first.descriptor, manifest)
+    _assert_missing_workload_rejected(first.descriptor)
+
+
+def _assert_registration_manifest_rejected(descriptor, manifest) -> None:
     with pytest.raises(ValueError, match="does not match"):
-        validate_registration_manifest(first.descriptor, "plugin-workload", manifest)
+        validate_registration_manifest(descriptor, "plugin-workload", manifest)
+
+
+def _assert_missing_workload_rejected(descriptor) -> None:
     with pytest.raises(ValueError, match="no custom-runner steps"):
-        registration_manifest(first.descriptor, "missing")
+        registration_manifest(descriptor, "missing")
 
 
 def test_revision_ids_change_with_step_and_plugin_contracts(tmp_path: Path) -> None:

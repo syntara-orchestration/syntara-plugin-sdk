@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +25,11 @@ def _descriptor():
     return json.loads(
         (Path(__file__).parents[4] / "contracts/fixtures/plugin-descriptor.valid.json").read_text()
     )
+
+
+def _assert_workload_build_rejected(request: WorkloadBuildRequest, match: str) -> None:
+    with pytest.raises(WorkloadBuildError, match=match):
+        build_and_push_workload(request)
 
 
 def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, monkeypatch) -> None:
@@ -171,25 +177,23 @@ def test_build_requires_valid_compiled_registration_before_running_podman(
         "syntara_plugin.sdk.workload.subprocess.run",
         lambda *args, **kwargs: pytest.fail("Podman ran"),
     )
-    with pytest.raises(WorkloadBuildError, match="compiled descriptor"):
-        build_and_push_workload(request)
-    from dataclasses import replace
+    _assert_workload_build_rejected(request, "compiled descriptor")
 
     invalid = _descriptor()
     invalid["spec"]["plugin_revision_id"] = "sha256:" + "0" * 64
-    with pytest.raises(WorkloadBuildError, match="plugin revision ID"):
-        build_and_push_workload(
-            replace(request, registration_descriptor=invalid, workload_id="plugin-workload")
-        )
+    _assert_workload_build_rejected(
+        replace(request, registration_descriptor=invalid, workload_id="plugin-workload"),
+        "plugin revision ID",
+    )
     stale_schema = _descriptor()
     target = stale_schema["spec"]["targets"][0]
     target["input"] = {"type": "string"}
     target["step_revision_id"] = step_revision_id(stale_schema, target)
     stale_schema["spec"]["plugin_revision_id"] = plugin_revision_id(stale_schema)
-    with pytest.raises(WorkloadBuildError, match="schema digest does not match"):
-        build_and_push_workload(
-            replace(request, registration_descriptor=stale_schema, workload_id="plugin-workload")
-        )
+    _assert_workload_build_rejected(
+        replace(request, registration_descriptor=stale_schema, workload_id="plugin-workload"),
+        "schema digest does not match",
+    )
 
 
 def test_loopback_workload_push_requires_explicit_opt_in_and_passes_tls_flag(
