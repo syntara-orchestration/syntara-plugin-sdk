@@ -268,7 +268,10 @@ def test_managed_runtime_mounts_selected_resolved_revision(monkeypatch, tmp_path
         server_key=tmp_path / "server.key",
     )
     revision = "sha256:" + "a" * 64
-    target = RunTarget("identity", "Action", "example:Echo", "echo", {}, "image", revision)
+    target = RunTarget(
+        "identity", "Action", "example:Echo", "echo", {},
+        {"input": revision, "output": revision}, "image", revision,
+    )
     mounted: list[Path] = []
 
     def fake_run(command, **_kwargs):
@@ -279,6 +282,7 @@ def test_managed_runtime_mounts_selected_resolved_revision(monkeypatch, tmp_path
             assert json.loads(path.read_text(encoding="utf-8")) == {"bindings": [{
                 "stepRevisionId": revision, "stepIdentity": "identity", "runtimeKind": "custom-runner",
                 "entryPoint": "example:Echo", "abi": "syntara.container/v1alpha1",
+                "schemaDigests": {"input": revision, "output": revision},
             }]}
             assert volume.endswith(":ro,Z")
             assert "SYNTARA_RESOLVED_EXECUTION=/run/syntara/resolved.json" in command
@@ -294,7 +298,10 @@ def test_managed_runtime_mounts_selected_resolved_revision(monkeypatch, tmp_path
 
 @pytest.mark.parametrize("method", ["write_text", "chmod"])
 def test_resolved_execution_file_failure_is_safe(monkeypatch, method: str) -> None:
-    target = RunTarget("identity", "Action", "example:Echo", "echo", {}, "image", "revision")
+    target = RunTarget(
+        "identity", "Action", "example:Echo", "echo", {},
+        {"input": "revision", "output": "revision"}, "image", "revision",
+    )
     removed: list[str] = []
     original = getattr(Path, method)
 

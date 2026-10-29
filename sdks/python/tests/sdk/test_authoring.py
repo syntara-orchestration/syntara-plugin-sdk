@@ -127,16 +127,18 @@ def test_compile_reports_an_unavailable_sdk_distribution(monkeypatch) -> None:
         raise PackageNotFoundError
 
     monkeypatch.setattr("syntara_plugin.sdk.authoring.version", unavailable)
+    plugin = _typed_plugin(_plugin())
+    targets = [
+        Target(
+            "steps/create-issue/manifest.yaml",
+            _action({"kind": "inline", "value": {"type": "object"}}),
+        )
+    ]
 
     with pytest.raises(CompilationError) as error:
         compile_model(
-            _typed_plugin(_plugin()),
-            [
-                Target(
-                    "steps/create-issue/manifest.yaml",
-                    _action({"kind": "inline", "value": {"type": "object"}}),
-                )
-            ],
+            plugin,
+            targets,
             image_bindings={"plugin-workload": DIGEST},
         )
 
@@ -312,6 +314,7 @@ def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path
     assert manifest["steps"] == {first_spec["targets"][0]["step_revision_id"]: {
         "stepIdentity": first_spec["targets"][0]["identity"],
         "entryPoint": "issue_tools.actions:CreateIssue", "abi": "syntara.container/v1alpha1",
+        "schemaDigests": first_spec["targets"][0]["schemaDigests"],
     }}
     validate_registration_manifest(first.descriptor, "plugin-workload", manifest)
     manifest["steps"] = {}

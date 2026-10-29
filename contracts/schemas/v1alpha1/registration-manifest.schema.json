@@ -22,11 +22,12 @@
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["stepIdentity", "entryPoint", "abi"],
+        "required": ["stepIdentity", "entryPoint", "abi", "schemaDigests"],
         "properties": {
           "stepIdentity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
           "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
-          "abi": {"const": "syntara.container/v1alpha1"}
+          "abi": {"const": "syntara.container/v1alpha1"},
+          "schemaDigests": {"$ref": "common.schema.json#/$defs/stepSchemaDigests"}
         }
       }
     }

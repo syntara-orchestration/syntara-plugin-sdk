@@ -186,6 +186,7 @@ def managed_runtime(image: str, target: RunTarget | None = None) -> Iterator[Man
                             "runtimeKind": "custom-runner",
                             "entryPoint": target.entry_point,
                             "abi": CONTAINER_ABI,
+                            "schemaDigests": target.schema_digests,
                         }]}),
                         encoding="utf-8",
                     )

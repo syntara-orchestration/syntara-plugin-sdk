@@ -139,7 +139,13 @@
             "implementation": {"$ref": "step.schema.json#/$defs/implementation"},
             "kind": {"const": "platform-runner"},
             "operation": {"$ref": "#/$defs/compiledHttpOperation"}
-          }
+          },
+          "allOf": [
+            {
+              "if": {"required": ["operation"]},
+              "then": {"properties": {"implementation": {"pattern": "^syntara\\.http\\.request@"}}}
+            }
+          ]
         }
       ]
     },

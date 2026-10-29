@@ -149,6 +149,7 @@ class RunTarget:
     entry_point: str
     metadata_name: str
     input_schema: Mapping[str, Any]
+    schema_digests: Mapping[str, str]
     workload_image: str | None = None
     step_revision_id: str = ""
 
@@ -605,6 +606,7 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         entry_point=str(selected["runtime"]["entryPoint"]),
         metadata_name=str(selected["metadata"]["name"]),
         input_schema=selected["input"],
+        schema_digests=selected["schemaDigests"],
         workload_image=selected.get("runtime", {}).get("workload"),
         step_revision_id=str(selected["step_revision_id"]),
     )

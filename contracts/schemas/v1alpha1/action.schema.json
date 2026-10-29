@@ -30,6 +30,10 @@
               "then": {"required": ["implementation"], "not": {"required": ["entryPoint"]}}
             },
             {
+              "if": {"required": ["operation"]},
+              "then": {"properties": {"implementation": {"pattern": "^syntara\\.http\\.request@"}}}
+            },
+            {
               "if": {"properties": {"kind": {"const": "custom-runner"}}},
               "then": {
                 "required": ["entryPoint"],

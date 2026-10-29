@@ -16,6 +16,7 @@ from typing import Any
 import grpc
 import pytest
 from pydantic import BaseModel
+from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
     ActionStep,
     BaseStep,
@@ -159,6 +160,13 @@ def create_uncancellable_timeout_bindings() -> StepBindings:
     return installed_action_bindings("smoke.uncancellable-timeout.v1", UncancellableTimeoutStep())
 
 
+def _schema_digests(input_schema: Mapping[str, Any] | None = None) -> dict[str, str]:
+    return {
+        "input": canonical_json_digest(input_schema or EchoInput.model_json_schema()),
+        "output": canonical_json_digest(EchoOutput.model_json_schema()),
+    }
+
+
 def write_runtime_config(
     tmp_path: Path,
     *,
@@ -195,6 +203,7 @@ def resolved_file(tmp_path: Path, step_class: type[BaseStep[EchoInput, EchoOutpu
         "runtimeKind": "platform-runner",
         "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
         "abi": "syntara.container/v1alpha1",
+        "schemaDigests": _schema_digests(),
     }]}), encoding="utf-8")
     return path
 
@@ -683,18 +692,19 @@ def test_runtime_bindings_factory_must_register_a_step() -> None:
         load_runtime_bindings(f"{__name__}:empty_bindings")
 
 
-def _resolved_record(kind: str = "custom-runner") -> dict[str, str]:
+def _resolved_record(kind: str = "custom-runner") -> dict[str, object]:
     return {
         "stepRevisionId": REVISION,
         "stepIdentity": "smoke.echo.v1",
         "runtimeKind": kind,
         "entryPoint": f"{__name__}:EchoStep",
         "abi": "syntara.container/v1alpha1",
+        "schemaDigests": _schema_digests(),
     }
 
 
 def _resolved_config(
-    tmp_path: Path, records: list[dict[str, str]], *, manifest: dict[str, object] | None = None
+    tmp_path: Path, records: list[dict[str, object]], *, manifest: dict[str, object] | None = None
 ) -> RuntimeServerConfig:
     resolved = tmp_path / "resolved.json"
     resolved.write_text(json.dumps({"bindings": records}), encoding="utf-8")
@@ -710,6 +720,7 @@ def _resolved_config(
                 "stepIdentity": "smoke.echo.v1",
                 "entryPoint": f"{__name__}:EchoStep",
                 "abi": "syntara.container/v1alpha1",
+                "schemaDigests": _schema_digests(),
             }},
         }
     registration.write_text(json.dumps(manifest), encoding="utf-8")
@@ -751,7 +762,7 @@ def test_server_requires_resolved_execution_data() -> None:
 
 
 @pytest.mark.parametrize(
-    ("changes", "message"),
+        ("changes", "message"),
     [
         ({"stepRevisionId": "smoke.echo.v1"}, "contract"),
         ({"runtimeKind": "other"}, "contract"),
@@ -765,7 +776,7 @@ def test_server_requires_resolved_execution_data() -> None:
     ],
 )
 def test_invalid_resolved_bindings_fail_startup(
-    tmp_path: Path, changes: dict[str, str], message: str
+    tmp_path: Path, changes: dict[str, object], message: str
 ) -> None:
     record = _resolved_record("platform-runner") | changes
     config = _resolved_config(tmp_path, [record])
@@ -814,7 +825,7 @@ def test_entry_point_import_failure_is_reported_at_startup(tmp_path: Path, monke
         resolved_step_registry(config, bindings)
 
 
-@pytest.mark.parametrize("change", ["revision", "identity", "entry", "abi", "malformed"])
+@pytest.mark.parametrize("change", ["revision", "identity", "entry", "abi", "schemas", "malformed"])
 def test_custom_record_must_match_packaged_registration(tmp_path: Path, change: str) -> None:
     config = _resolved_config(tmp_path, [_resolved_record()])
     manifest = json.loads(config.registration_manifest_path.read_text(encoding="utf-8"))
@@ -826,6 +837,8 @@ def test_custom_record_must_match_packaged_registration(tmp_path: Path, change: 
         manifest["steps"][REVISION]["entryPoint"] = f"{__name__}:BarrierStep"
     elif change == "abi":
         manifest["steps"][REVISION]["abi"] = "syntara.container/v0"
+    elif change == "schemas":
+        manifest["steps"][REVISION]["schemaDigests"]["input"] = "sha256:" + "c" * 64
     else:
         manifest["steps"][REVISION]["unexpected"] = True
     config.registration_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -852,8 +865,9 @@ def test_resolved_identity_cannot_fall_back_to_same_class(tmp_path: Path, kind: 
         manifest["steps"][REVISION]["stepIdentity"] = "another.identity"
         config.registration_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
+    bindings = create_bindings()
     with pytest.raises(RuntimeServerError, match="no installed binding"):
-        resolved_step_registry(config, create_bindings())
+        resolved_step_registry(config, bindings)
 
 
 def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
@@ -861,7 +875,15 @@ def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
     records = [
         _resolved_record("platform-runner"),
         _resolved_record("platform-runner") | {
-            "stepRevisionId": other_revision, "stepIdentity": "another.identity"
+            "stepRevisionId": other_revision,
+            "stepIdentity": "another.identity",
+            "schemaDigests": _schema_digests(
+                {
+                    "type": "object",
+                    "properties": {"message": {"type": "string", "minLength": 6}},
+                    "required": ["message"],
+                }
+            ),
         },
     ]
     bindings = create_bindings()
@@ -883,3 +905,12 @@ def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
     )
     assert result.error_result is not None
     assert result.error_result["code"] == "INVALID_INPUT"
+
+
+def test_resolved_schema_digests_must_match_the_installed_binding(tmp_path: Path) -> None:
+    record = _resolved_record("platform-runner")
+    record["schemaDigests"] = {**_schema_digests(), "input": "sha256:" + "c" * 64}
+    bindings = create_bindings()
+
+    with pytest.raises(RuntimeServerError, match="schema digests differ"):
+        resolved_step_registry(_resolved_config(tmp_path, [record]), bindings)

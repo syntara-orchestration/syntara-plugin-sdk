@@ -36,8 +36,9 @@ reference, never a mutable tag.
 
 For `platform-runner` steps, the plugin declares an implementation from an
 already registered plugin. The AO Plugin Registry resolves its image and entry
-point; Syntara controls endpoint policy and connection delivery. An Action may
-also declare a bounded HTTP operation contract.
+point; Syntara controls endpoint policy and connection delivery. Only the
+built-in `syntara.http.request@<version>` implementation accepts an Action's
+bounded HTTP operation contract.
 
 ## Container ABI
 
@@ -126,25 +127,36 @@ resolved execution data as a read-only JSON file, named by
     "stepIdentity": "acme.echo.v1",
     "runtimeKind": "custom-runner",
     "entryPoint": "acme_plugin.steps:EchoStep",
-    "abi": "syntara.container/v1alpha1"
+    "abi": "syntara.container/v1alpha1",
+    "schemaDigests": {
+      "input": "sha256:<64 lowercase hex digits>",
+      "output": "sha256:<64 lowercase hex digits>"
+    }
   }]
 }
 ```
 
 Replace the placeholders with the exact compiled revision and installed Step
-identity. Custom-runner entries must match that revision, identity, entry point,
-and ABI in the packaged registration manifest at
+identity, plus the compiled input/output schema digests. Custom-runner entries
+must match that revision, identity, entry point, ABI, and schema digests in the
+packaged registration manifest at
 `/opt/syntara/registration-manifest.json` (override its path with
 `SYNTARA_REGISTRATION_MANIFEST` for testing). For a platform-runner entry, the
 platform supplies the referenced implementation's installed identity, entry
 point, and ABI alongside the referencing step's own revision; that revision need
 not occur in the image manifest. The compiled descriptor retains the authored
 implementation reference; the AO Plugin Registry resolves it, and this startup
-path consumes the supplied installed-binding identity, entry point, and ABI.
+path consumes the supplied installed-binding identity, entry point, ABI, and
+schema digests. The SDK rejects startup when those digests differ from the
+selected installed binding, preventing a referencing Step from validating
+against a different contract than its implementation.
 Each entry point must import a typed `BaseStep` class matching that exact
 executable installed binding from the factory. Missing, malformed, duplicate, or
-inconsistent data prevents server startup. Health advertises only the registered
-revisions, and Execute dispatches only an exact revision match.
+inconsistent data prevents server startup. This file is bootstrap data only: it
+does not contain invocation IDs, workflow-run IDs, input, timeout, credentials,
+or runtime context. Those per-invocation values are supplied in the gRPC
+`Execute` request. Health advertises only the registered revisions, and Execute
+dispatches only an exact revision match.
 
 The factory must obtain authorized installed manifests and schemas; the image
 registration manifest supplies neither schema provenance nor image attestation.
@@ -504,9 +516,10 @@ implementation:
 The registration manifest is canonical JSON with
 `apiVersion: syntara.registration/v1alpha1`, `kind: RegistrationManifest`,
 the plugin revision ID, SDK version, workload ID, and a `steps` object keyed by
-step revision ID. Each entry records its `entryPoint` and ABI. The SDK validates
-this mapping against the `registration-manifest` contract and the compiled
-descriptor before adding the image layer.
+step revision ID. Each entry records its installed Step identity, `entryPoint`,
+ABI, and declared schema digests. The SDK validates this mapping against the
+`registration-manifest` contract and the compiled descriptor before adding the
+image layer.
 `registration_manifest` and `validate_registration_manifest` in
 `syntara_plugin.contracts` are available to external image producers; an image
 binding alone does not prove that its image contains a matching manifest.

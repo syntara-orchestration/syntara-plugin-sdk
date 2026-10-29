@@ -76,6 +76,7 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
                 "stepIdentity": target["identity"],
                 "entryPoint": runtime["entryPoint"],
                 "abi": runtime["abi"],
+                "schemaDigests": target["schemaDigests"],
             }
     if not steps:
         raise ValueError(f"workload {workload_id!r} has no custom-runner steps")

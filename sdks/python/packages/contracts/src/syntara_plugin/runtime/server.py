@@ -179,6 +179,7 @@ class _ResolvedExecutionBinding:
     runtime_kind: str
     entry_point: str
     abi: str
+    schema_digests: Mapping[str, str]
 
 
 def load_runtime_server_config(
@@ -294,12 +295,17 @@ def _parse_resolved_execution_binding(record: Any) -> _ResolvedExecutionBinding:
     runtime_kind = record["runtimeKind"]
     entry_point = record["entryPoint"]
     abi = record["abi"]
+    schema_digests = record["schemaDigests"]
     assert isinstance(revision, str)
     assert isinstance(step_identity, str)
     assert isinstance(runtime_kind, str)
     assert isinstance(entry_point, str)
     assert isinstance(abi, str)
-    return _ResolvedExecutionBinding(revision, step_identity, runtime_kind, entry_point, abi)
+    assert isinstance(schema_digests, Mapping)
+    assert all(isinstance(name, str) and isinstance(digest, str) for name, digest in schema_digests.items())
+    return _ResolvedExecutionBinding(
+        revision, step_identity, runtime_kind, entry_point, abi, schema_digests
+    )
 
 
 def _validate_custom_runner_mapping(
@@ -314,6 +320,7 @@ def _validate_custom_runner_mapping(
         "stepIdentity": binding.step_identity,
         "entryPoint": binding.entry_point,
         "abi": binding.abi,
+        "schemaDigests": binding.schema_digests,
     }
     if steps.get(binding.revision) != expected:
         raise RuntimeServerError("resolved custom runner does not match registration manifest")
@@ -353,9 +360,12 @@ def _container_handler_for_resolved_binding(
         validate_executable_step_binding(installed_binding.descriptor, installed_binding.step)
         if installed_binding.descriptor.installed_entry_point != binding.entry_point:
             raise StepBindingError("resolved entry point differs from the installed contract")
+        for name, digest in binding.schema_digests.items():
+            if installed_binding.descriptor.schema_digest(name) != digest:
+                raise StepBindingError("resolved schema digests differ from the installed contract")
         return container_step_for_binding(installed_binding, step_revision_id=binding.revision)
     except (TypeError, ValueError) as error:
-        raise RuntimeServerError("resolved entry point has an invalid installed binding") from error
+        raise RuntimeServerError(f"resolved entry point has an invalid installed binding: {error}") from error
 
 
 def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) -> StepRegistry:

@@ -67,7 +67,7 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | --- | --- |
 | `spec.runtime.kind` | Required execution owner: `platform-runner` or `custom-runner`. |
 | `spec.runtime.implementation` | Required for `platform-runner`; a registered step reference in `<namespace>.<plugin>.<step>@version` form, with a SemVer 2.0.0 version (including optional prerelease and build metadata), such as `example.hello-world.hello@0.1.0`. Forbidden for `custom-runner`. |
-| `spec.runtime.operation` | Optional HTTP operation metadata for a `platform-runner` Action: an inert method, relative path, and optional mappings. Forbidden for `custom-runner`. |
+| `spec.runtime.operation` | Optional HTTP operation metadata for the built-in `syntara.http.request@<version>` platform runner: an inert method, relative path, and optional mappings. Forbidden for `custom-runner` and all other implementations. |
 | `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the Step implementation inside the digest-pinned runner image. It is an implementation identity, not a placement decision: Syntara policy may run it in the selected host execution path or delegate it to the Execution Plane. |
 | `spec.domain` | Optional qualified domain identifier that groups an Action Step type independently of its runner. |
 | `spec.integrationType` | Optional qualified integration type required by the Action Step type. A workflow selects an instance of this type, not raw credentials. |
@@ -85,7 +85,8 @@ an implementation available in the target installation.
 ### HTTP operation
 
 Schema: [`http-operation.schema.json`](../contracts/schemas/v1alpha1/http-operation.schema.json).
-An Action may declare this operation under `spec.runtime.operation`. The separate
+An Action using `syntara.http.request@<version>` may declare this operation under
+`spec.runtime.operation`. The separate
 runtime-only HTTP context uses `driver: http.v1`; this is a context label, not
 the Action's runner or implementation reference.
 

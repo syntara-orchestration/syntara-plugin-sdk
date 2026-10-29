@@ -1129,6 +1129,7 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     assert manifest["steps"][target["step_revision_id"]] == {
         "stepIdentity": target["identity"],
         "entryPoint": target["runtime"]["entryPoint"], "abi": target["runtime"]["abi"],
+        "schemaDigests": target["schemaDigests"],
     }
     assert descriptor["spec"]["workloads"]["custom-runner"]["image"] == (
         f"registry.example.test/acme/custom-runner@{_WORKLOAD_DIGEST}"

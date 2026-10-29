@@ -72,6 +72,10 @@ def test_resolved_execution_schema_is_strict() -> None:
                 "runtimeKind": "platform-runner",
                 "entryPoint": "acme_plugin.steps:CreateIssue",
                 "abi": "syntara.container/v1alpha1",
+                "schemaDigests": {
+                    "input": "sha256:" + "a" * 64,
+                    "output": "sha256:" + "b" * 64,
+                },
             }
         ]
     }
@@ -192,7 +196,7 @@ def test_target_metadata_rejects_out_of_scope_tags() -> None:
         {
             "runtime": {
                 "kind": "platform-runner",
-                "implementation": "acme.issue-tools.create-issue@0.1.0",
+                "implementation": "syntara.http.request@1.0.0",
                 "operation": {"method": "POST", "path": "/issues"},
             },
             "input": {"kind": "inline", "value": {"type": "object"}},
@@ -327,6 +331,27 @@ def test_platform_runner_rejects_legacy_driver_and_custom_runner_rejects_impleme
          "input": source, "output": source},
     )
     assert validate_document(load_bundle(), "action", document)
+
+
+def test_http_operation_requires_the_builtin_http_runner() -> None:
+    source = {"kind": "inline", "value": {"type": "object"}}
+    document = step_document(
+        "Action",
+        target_metadata("step", "Step", "A step."),
+        {
+            "runtime": {
+                "kind": "platform-runner",
+                "implementation": "acme.tools.run@1.2.3",
+                "operation": {"method": "GET", "path": "/items"},
+            },
+            "input": source,
+            "output": source,
+        },
+    )
+    assert validate_document(load_bundle(), "action", document)
+
+    document["spec"]["runtime"]["implementation"] = "syntara.http.request@1.0.0"
+    assert validate_document(load_bundle(), "action", document) == []
     document["spec"]["runtime"] = {
         "kind": "custom-runner", "entryPoint": "steps:Run",
         "implementation": "acme.tools.run@1.2.3",

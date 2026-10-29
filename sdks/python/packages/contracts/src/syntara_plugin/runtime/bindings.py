@@ -548,6 +548,16 @@ class StepDescriptor:
         provenance = _installed_step_descriptor_provenance(self)
         return provenance.entry_point if provenance is not None and self.is_installed_step else None
 
+    def schema_digest(self, name: Literal["input", "output", "error"]) -> str:
+        """Return the canonical digest of one installed contract schema."""
+
+        schema = {
+            "input": self.input_schema,
+            "output": self.output_schema,
+            "error": self.error_schema,
+        }[name]
+        return _schema_digest(schema)
+
     def require_executable_contract(self, step: BaseStep[Any, Any]) -> None:
         """Reject bindings that cannot establish their required input contract."""
 

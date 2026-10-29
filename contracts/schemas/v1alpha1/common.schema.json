@@ -6,6 +6,16 @@
     "fieldIdentifier": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"},
     "qualifiedIdentifier": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}(?:\\.[a-z][a-z0-9-]{0,62})+$"},
     "sha256Digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "stepSchemaDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output"],
+      "properties": {
+        "input": {"$ref": "#/$defs/sha256Digest"},
+        "output": {"$ref": "#/$defs/sha256Digest"},
+        "error": {"$ref": "#/$defs/sha256Digest"}
+      }
+    },
     "digestImageReference": {
       "type": "string",
       "maxLength": 327,
