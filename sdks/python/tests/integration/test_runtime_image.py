@@ -256,6 +256,7 @@ def create_bindings() -> StepBindings:
                 },
                 "input": {"kind": "inline", "value": EchoInput.model_json_schema()},
                 "output": {"kind": "inline", "value": EchoOutput.model_json_schema()},
+                "error": {"kind": "inline", "value": {"type": "object"}},
             },
         },
         {},
@@ -523,16 +524,20 @@ spec:
     kind: inline
     value:
       type: object
+      title: EchoInput
       properties:
         message:
+          title: Message
           type: string
       required: [message]
   output:
     kind: inline
     value:
       type: object
+      title: EchoOutput
       properties:
         message:
+          title: Message
           type: string
       required: [message]
   error:
