@@ -371,7 +371,7 @@ def test_installed_platform_runner_cannot_be_bound_to_python(
     )
     manifest["spec"]["runtime"] = {
         "kind": "platform-runner",
-        "driver": "transform.v1",
+        "implementation": "syntara.transform.run@1.0.0",
     }
 
     with pytest.raises(StepBindingError, match="custom-runner"):

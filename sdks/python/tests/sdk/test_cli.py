@@ -497,7 +497,7 @@ def test_inspect_prints_the_canonical_descriptor_for_the_generated_workspace(
     assert main(["inspect", str(workspace / "plugin.yaml")]) == 0
     descriptor = json.loads(capsys.readouterr().out)
     assert descriptor["metadata"]["name"] == "status-tools"
-    assert descriptor["spec"]["targets"][0]["runtime"]["driver"] == "http.v1"
+    assert descriptor["spec"]["targets"][0]["runtime"]["implementation"] == "syntara.http.request@1.0.0"
 
 
 def test_inspect_reads_the_verified_metadata_from_a_built_archive(tmp_path: Path, capsys) -> None:

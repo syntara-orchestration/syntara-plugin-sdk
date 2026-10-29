@@ -34,9 +34,10 @@ records a custom-runner action's logical image ID and binds it to an immutable
 `repository@sha256:...` reference. The Execution Plane uses that resolved
 reference, never a mutable tag.
 
-For `platform-runner` actions, Syntara owns the runner image, endpoint policy,
-and connection delivery. The plugin declares only an approved driver and its
-bounded operation contract.
+For `platform-runner` steps, the plugin declares an implementation from an
+already registered plugin. The AO Plugin Registry resolves its image and entry
+point; Syntara controls endpoint policy and connection delivery. An Action may
+also declare a bounded HTTP operation contract.
 
 ## Container ABI
 
@@ -134,10 +135,9 @@ manifest at `/opt/syntara/registration-manifest.json` (override its path with
 `SYNTARA_REGISTRATION_MANIFEST` for testing). For a platform-runner entry, the
 platform supplies the referenced implementation's entry point and ABI and the
 referencing step's own revision; that revision need not occur in the image
-manifest. The current SDK authoring schema uses a platform-runner `driver`; it
-does not compile the proposal's future implementation-reference model. This
-startup path consumes the platform-resolved entry point and ABI and does not
-resolve or compile that reference. Each entry point must import a typed `BaseStep` class matching exactly
+manifest. The compiled descriptor retains the authored implementation reference;
+the AO Plugin Registry resolves it, and this startup path consumes the supplied
+entry point and ABI. Each entry point must import a typed `BaseStep` class matching exactly
 one executable installed binding from the factory. Missing, ambiguous, malformed,
 duplicate, or inconsistent data prevents server startup. Health advertises only
 the registered revisions, and Execute dispatches only an exact revision match.

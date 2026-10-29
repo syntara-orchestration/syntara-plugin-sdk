@@ -119,6 +119,17 @@ def test_revision_ids_commit_to_sdk_plugin_and_step_contracts() -> None:
     assert "plugin revision ID does not match its contract" in revision_errors(descriptor)
 
 
+def test_platform_implementation_changes_step_and_plugin_revision() -> None:
+    target = _target()
+    target["runtime"] = {"kind": "platform-runner", "implementation": "acme.tools.run@1.0.0"}
+    descriptor = _descriptor([target])
+    original_step = step_revision_id(descriptor, target)
+    original_plugin = plugin_revision_id(descriptor)
+    target["runtime"]["implementation"] = "acme.tools.run@2.0.0"
+    assert step_revision_id(descriptor, target) != original_step
+    assert plugin_revision_id(descriptor) != original_plugin
+
+
 @pytest.mark.parametrize(
     ("workload_id", "abi", "provider", "changes_revision"),
     [
@@ -177,23 +188,21 @@ def test_descriptor_semantics_reject_custom_runner_without_a_container_workload(
     assert "custom-runner target 'acme.plugin.step' workload has an invalid ABI" in errors
 
 
-def test_descriptor_semantics_reject_trigger_driver_mismatch() -> None:
+def test_descriptor_semantics_accept_trigger_driver_and_implementation() -> None:
     target = _target()
     target.update(
         {
             "kind": "Trigger",
             "configuration": {"type": "object"},
             "driver": "webhook.v1",
-            "runtime": {"kind": "platform-runner", "driver": "schedule.v1"},
+            "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
         }
     )
     target["schemaDigests"] = schema_digests(target)
 
     errors = validate_plugin_descriptor_semantics(_descriptor([target]))
 
-    assert errors == (
-        "trigger target 'acme.plugin.step' driver does not match its platform-runner runtime driver",
-    )
+    assert errors == ()
 
 
 @pytest.mark.parametrize(

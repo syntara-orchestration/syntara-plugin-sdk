@@ -2234,7 +2234,7 @@ def _settings_template(name: str) -> str:
 
 
 def _action_template(action: str, input_path: Path) -> str:
-    """Return a compilable, non-product-specific ``http.v1`` action."""
+    """Return a compilable example action referencing a registered implementation."""
     return (
         "apiVersion: syntara.io/v1alpha1\n"
         "kind: Action\n"
@@ -2245,7 +2245,7 @@ def _action_template(action: str, input_path: Path) -> str:
         "spec:\n"
         "  runtime:\n"
         "    kind: platform-runner\n"
-        "    driver: http.v1\n"
+        "    implementation: syntara.http.request@1.0.0\n"
         "    operation:\n"
         "      method: GET\n"
         "      path: /resources/{input.resource}\n"

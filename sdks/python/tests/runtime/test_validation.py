@@ -956,7 +956,7 @@ def test_check_target_binding_passes_matching_step() -> None:
 def test_check_target_binding_rejects_platform_runner_targets() -> None:
     bindings = _issue_bindings()
     target = _matching_target(CreateIssueStep)
-    target["runtime"] = {"kind": "platform-runner", "driver": "http.v1"}
+    target["runtime"] = {"kind": "platform-runner", "implementation": "syntara.http.request@1.0.0"}
 
     binding = bindings.binding("acme.issue-tools.create-issue")
     with pytest.raises(ValueError, match="custom-runner"):
@@ -1123,7 +1123,7 @@ def test_check_plugin_bindings_reports_missing_and_undeclared() -> None:
 
 def test_check_plugin_bindings_skips_platform_runner_targets() -> None:
     target = _matching_target(CreateIssueStep)
-    target["runtime"] = {"kind": "platform-runner", "driver": "http.v1"}
+    target["runtime"] = {"kind": "platform-runner", "implementation": "syntara.http.request@1.0.0"}
     descriptor = {"spec": {"targets": [target]}}
 
     reports = check_plugin_bindings(descriptor, _issue_bindings())

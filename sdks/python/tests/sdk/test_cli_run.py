@@ -243,7 +243,7 @@ metadata:
 spec:
   runtime:
     kind: platform-runner
-    driver: http.v1
+    implementation: syntara.http.request@1.0.0
     operation:
       method: GET
       path: /request

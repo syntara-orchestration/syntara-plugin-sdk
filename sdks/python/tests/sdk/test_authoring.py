@@ -101,7 +101,7 @@ def _trigger() -> dict[str, object]:
         target_metadata("issue-opened", "Issue opened", "Receives issue-opened events."),
         {
             "driver": "webhook.v1",
-            "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
+            "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
             "configuration": {
                 "kind": "inline",
                 "value": {"type": "object", "properties": {"secret": {"type": "string"}}},
@@ -328,7 +328,7 @@ def test_authored_revision_ids_are_rejected() -> None:
         compile_model(_typed_plugin(_plugin()), [Target("steps/create-issue/manifest.yaml", action)], image_bindings={"plugin-workload": DIGEST})
 
 
-def test_platform_runner_action_requires_and_preserves_its_versioned_driver() -> None:
+def test_platform_runner_action_preserves_its_implementation() -> None:
     plugin = _plugin()
     plugin["spec"] = {
         "documentation": {"path": "docs/README.md"},
@@ -339,7 +339,7 @@ def test_platform_runner_action_requires_and_preserves_its_versioned_driver() ->
     assert isinstance(specification, dict)
     specification["runtime"] = {
         "kind": "platform-runner",
-        "driver": "http.v1",
+        "implementation": "syntara.http.request@1.0.0",
         "operation": _http_operation(),
     }
 
@@ -349,7 +349,7 @@ def test_platform_runner_action_requires_and_preserves_its_versioned_driver() ->
     )
 
     assert result.descriptor["spec"]["targets"][0]["runtime"] == {
-        "driver": "http.v1",
+        "implementation": "syntara.http.request@1.0.0",
         "kind": "platform-runner",
         "operation": {
             "method": "POST",
@@ -361,7 +361,7 @@ def test_platform_runner_action_requires_and_preserves_its_versioned_driver() ->
     assert result.descriptor["spec"]["workloads"] == {}
 
 
-def test_platform_runner_trigger_requires_and_preserves_matching_driver() -> None:
+def test_platform_runner_trigger_preserves_implementation_and_ingress_driver() -> None:
     plugin = _plugin("triggers/issue-opened.yaml")
     plugin["spec"] = {
         "documentation": {"path": "docs/README.md"},
@@ -376,10 +376,28 @@ def test_platform_runner_trigger_requires_and_preserves_matching_driver() -> Non
 
     compiled_trigger = result.descriptor["spec"]["targets"][0]
     assert compiled_trigger["driver"] == "webhook.v1"
-    assert compiled_trigger["runtime"]["driver"] == "webhook.v1"
+    assert compiled_trigger["runtime"]["implementation"] == "syntara.webhook.event@1.0.0"
 
 
-def test_platform_runner_trigger_with_mismatched_drivers_is_rejected() -> None:
+def test_platform_runner_control_preserves_reference_without_resolved_binding() -> None:
+    plugin = _plugin("controls/invoke.yaml")
+    plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
+        "targets": ["controls/invoke.yaml"],
+    }
+    control = _control()
+    control["spec"]["runtime"] = {
+        "kind": "platform-runner", "implementation": "example.hello-world.hello@0.1.0"
+    }
+
+    result = compile_model(_typed_plugin(plugin), [Target("controls/invoke.yaml", control)])
+    assert result.descriptor["spec"]["targets"][0]["runtime"] == {
+        "kind": "platform-runner", "implementation": "example.hello-world.hello@0.1.0"
+    }
+    assert result.descriptor["spec"]["workloads"] == {}
+
+
+def test_platform_runner_trigger_driver_is_independent_of_implementation() -> None:
     plugin = _plugin("triggers/issue-opened.yaml")
     plugin["spec"] = {
         "documentation": {"path": "docs/README.md"},
@@ -390,13 +408,10 @@ def test_platform_runner_trigger_with_mismatched_drivers_is_rejected() -> None:
     assert isinstance(specification, dict)
     specification["driver"] = "schedule.v1"
 
-    with pytest.raises(CompilationError) as error:
-        compile_model(
-            _typed_plugin(plugin),
-            [Target("triggers/issue-opened.yaml", trigger)],
-        )
-
-    assert "TRIGGER_DRIVER_MISMATCH" in {item.code for item in error.value.diagnostics}
+    result = compile_model(_typed_plugin(plugin), [Target("triggers/issue-opened.yaml", trigger)])
+    compiled = result.descriptor["spec"]["targets"][0]
+    assert compiled["driver"] == "schedule.v1"
+    assert compiled["runtime"]["implementation"] == "syntara.webhook.event@1.0.0"
 
 
 def test_compiler_emits_kind_and_deterministic_schema_digests_for_all_step_categories() -> None:
@@ -480,7 +495,7 @@ def test_action_runner_ownership_is_orthogonal_to_action_category() -> None:
     platform_action = _action({"kind": "inline", "value": {"type": "object"}})
     platform_action_spec = platform_action["spec"]
     assert isinstance(platform_action_spec, dict)
-    platform_action_spec["runtime"] = {"kind": "platform-runner", "driver": "transform.v1"}
+    platform_action_spec["runtime"] = {"kind": "platform-runner", "implementation": "syntara.transform.run@1.0.0"}
     managed = compile_model(
         _typed_plugin(platform_plugin),
         [
@@ -545,7 +560,7 @@ def test_compiler_canonicalizes_connection_types_and_binds_an_action_to_them() -
     assert isinstance(action_spec, dict)
     action_spec["runtime"] = {
         "kind": "platform-runner",
-        "driver": "http.v1",
+        "implementation": "syntara.http.request@1.0.0",
         "operation": _http_operation(),
     }
     action_spec["integrationType"] = "acme.issue-tools.github-connection"
@@ -593,7 +608,7 @@ def test_compiler_rejects_a_connection_type_link_to_another_plugin_or_missing_ty
     }
 
 
-def test_platform_runner_action_without_a_versioned_driver_is_rejected() -> None:
+def test_platform_runner_action_without_an_implementation_is_rejected() -> None:
     plugin = _plugin()
     plugin["spec"] = {
         "documentation": {"path": "docs/README.md"},
@@ -625,7 +640,7 @@ def test_http_operation_assets_are_typed_and_bound_to_the_nested_operation_field
     assert isinstance(specification, dict)
     specification["runtime"] = {
         "kind": "platform-runner",
-        "driver": "http.v1",
+        "implementation": "syntara.http.request@1.0.0",
         "operation": _http_operation(asset_maps=True),
     }
     root = _workspace(tmp_path, action=action)
@@ -659,7 +674,7 @@ def test_http_operation_rejects_an_invalid_mapping_source() -> None:
     assert isinstance(specification, dict)
     specification["runtime"] = {
         "kind": "platform-runner",
-        "driver": "http.v1",
+        "implementation": "syntara.http.request@1.0.0",
         "operation": {
             "method": "POST",
             "path": "/repos/{input.owner}/{input.repository}/issues",
@@ -793,7 +808,7 @@ def test_declared_workload_requires_a_binding_without_custom_runner_steps() -> N
     assert isinstance(action_spec, dict)
     action_spec["runtime"] = {
         "kind": "platform-runner",
-        "driver": "http.v1",
+        "implementation": "syntara.http.request@1.0.0",
         "operation": _http_operation(),
     }
     typed_plugin = _typed_plugin(plugin)

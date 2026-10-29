@@ -228,24 +228,24 @@ def test_archive_reader_rejects_a_custom_runner_without_a_workload_entry(
         read_plugin_artifact_archive(archive)
 
 
-def test_archive_reader_rejects_a_trigger_with_mismatched_platform_drivers(
+def test_archive_reader_rejects_a_trigger_with_an_invalid_implementation(
     tmp_path: Path,
 ) -> None:
-    """A published Trigger cannot advertise different ingress and runtime drivers."""
+    """A published Trigger must name a registered step identity."""
 
     artifact = _artifact(tmp_path)
 
-    def mismatch_trigger_driver(document: dict[str, Any]) -> None:
+    def invalid_implementation(document: dict[str, Any]) -> None:
         target = document["spec"]["targets"][0]
         target["kind"] = "Trigger"
         target["configuration"] = {"type": "object"}
         target["driver"] = "webhook.v1"
-        target["runtime"] = {"kind": "platform-runner", "driver": "schedule.v1"}
+        target["runtime"] = {"kind": "platform-runner", "implementation": "schedule.v1"}
         target["schemaDigests"] = schema_digests(target)
 
     archive = _archive_with_descriptor_mutation(
-        artifact, tmp_path, "trigger-driver-mismatch.oci.tar", mismatch_trigger_driver
+        artifact, tmp_path, "invalid-implementation.oci.tar", invalid_implementation
     )
 
-    with pytest.raises(ArtifactArchiveError, match="driver does not match"):
+    with pytest.raises(ArtifactArchiveError, match="plugin descriptor"):
         read_plugin_artifact_archive(archive)

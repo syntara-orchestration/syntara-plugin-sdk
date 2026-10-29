@@ -205,7 +205,7 @@ def test_platform_runner_target_is_not_validated_against_bindings() -> None:
     assert isinstance(specification, dict)
     specification["runtime"] = {
         "kind": "platform-runner",
-        "driver": "http.v1",
+        "implementation": "syntara.http.request@1.0.0",
         "operation": {
             "method": "POST",
             "path": "/repos/{input.owner}/{input.repository}/issues",

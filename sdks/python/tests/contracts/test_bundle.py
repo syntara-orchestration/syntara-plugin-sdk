@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from syntara_plugin.contracts import (
@@ -109,7 +110,7 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
         {
             "runtime": {
                 "kind": "platform-runner",
-                "driver": "http.v1",
+                "implementation": "syntara.http.request@1.0.0",
                 "operation": {
                     "method": "POST",
                     "path": "/repos/{input.owner}/{input.repository}/issues",
@@ -126,7 +127,7 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
         target_metadata("pull-request", "Pull request", "Receives pull requests."),
         {
             "driver": "webhook.v1",
-            "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
+            "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
             "configuration": {"kind": "inline", "value": {"type": "object"}},
             "input": {"kind": "inline", "value": {"type": "object"}},
             "output": {"kind": "asset", "path": "schemas/pull-request.output.json"},
@@ -211,7 +212,7 @@ def test_platform_runner_action_rejects_a_custom_runner_entry_point() -> None:
         {
             "runtime": {
                 "kind": "platform-runner",
-                "driver": "http.v1",
+                "implementation": "syntara.http.request@1.0.0",
                 "operation": {"method": "POST", "path": "/repos/{input.owner}/issues"},
                 "entryPoint": "github.actions:CreateIssue",
             },
@@ -223,6 +224,56 @@ def test_platform_runner_action_rejects_a_custom_runner_entry_point() -> None:
     assert "entryPoint" in " ".join(validate_document(bundle, "action", action))
     del action["spec"]["runtime"]["entryPoint"]
     assert validate_document(bundle, "action", action) == []
+
+
+@pytest.mark.parametrize("kind", ["Action", "Control", "Trigger"])
+@pytest.mark.parametrize(
+    "implementation",
+    ["acme.tools.run@1.2.3", "example.hello-world.hello@0.1.0", "acme.tools.run@1.2.3-rc.1"],
+)
+def test_platform_runner_accepts_registered_step_references(kind: str, implementation: str) -> None:
+    source = {"kind": "inline", "value": {"type": "object"}}
+    spec: dict[str, Any] = {
+        "runtime": {"kind": "platform-runner", "implementation": implementation},
+        "input": source,
+        "output": source,
+    }
+    if kind == "Control":
+        spec["invocation"] = {"kind": "orchestration"}
+    elif kind == "Trigger":
+        spec.update({"driver": "webhook.v1", "configuration": source})
+    document = step_document(kind, target_metadata("step", "Step", "A step."), spec)
+    assert validate_document(load_bundle(), kind.lower(), document) == []
+
+
+@pytest.mark.parametrize(
+    "implementation",
+    ["http.v1", "acme.tools.run", "acme.tools.run@1.2", "acme.tools.run@latest", "acme.tools.run@01.2.3",
+     "acme.tools.run.more@1.2.3", "Acme.tools.run@1.2.3", "acme.tools.run@1.2.3\n"],
+)
+def test_platform_runner_rejects_malformed_implementation_references(implementation: str) -> None:
+    source = {"kind": "inline", "value": {"type": "object"}}
+    document = step_document(
+        "Action", target_metadata("step", "Step", "A step."),
+        {"runtime": {"kind": "platform-runner", "implementation": implementation},
+         "input": source, "output": source},
+    )
+    assert validate_document(load_bundle(), "action", document)
+
+
+def test_platform_runner_rejects_legacy_driver_and_custom_runner_rejects_implementation() -> None:
+    source = {"kind": "inline", "value": {"type": "object"}}
+    document = step_document(
+        "Action", target_metadata("step", "Step", "A step."),
+        {"runtime": {"kind": "platform-runner", "driver": "http.v1"},
+         "input": source, "output": source},
+    )
+    assert validate_document(load_bundle(), "action", document)
+    document["spec"]["runtime"] = {
+        "kind": "custom-runner", "entryPoint": "steps:Run",
+        "implementation": "acme.tools.run@1.2.3",
+    }
+    assert validate_document(load_bundle(), "action", document)
 
 
 @pytest.mark.parametrize(
@@ -274,7 +325,7 @@ def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
         target_metadata("trigger", "Trigger", "Receives events."),
         {
             "driver": "webhook.v1",
-            "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
+            "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
             "configuration": source,
             "input": source,
             "output": source,
@@ -311,7 +362,7 @@ def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantic
         metadata,
         {
             "driver": "webhook.v1",
-            "runtime": {"kind": "platform-runner", "driver": "webhook.v1"},
+            "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
             "configuration": {
                 "kind": "inline",
                 "value": {"type": "object", "properties": {"secret": {"type": "string"}}},

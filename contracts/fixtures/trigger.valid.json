@@ -10,7 +10,7 @@
     "driver": "webhook.v1",
     "runtime": {
       "kind": "platform-runner",
-      "driver": "webhook.v1"
+      "implementation": "syntara.webhook.event@1.0.0"
     },
     "configuration": {
       "kind": "inline",
