@@ -18,6 +18,7 @@ import shlex
 import sys
 import textwrap
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,6 +26,7 @@ from urllib.parse import urlparse
 
 import yaml
 from jsonschema import Draft202012Validator, SchemaError
+from syntara_plugin.contracts import registration_manifest, validate_registration_manifest
 
 from .artifact import ArtifactBuildError, PluginArtifact, build_plugin_artifact
 from .artifact_archive import (
@@ -1575,23 +1577,29 @@ def _build_archive(
     # Validate the complete authoring workspace before any remote side effect.
     # A custom runner binding is intentionally deferred until Podman returns
     # its registry digest, so preflight checks every other source contract.
+    preflight: CompilationResult | None = None
     if arguments.with_workload:
-        compile_workspace(
+        preflight = compile_workspace(
             BuildRequest(
                 arguments.manifest,
                 image_bindings=image_bindings,
                 require_image_bindings=False,
             )
         )
-    workload_image, workload_request = _build_workload(arguments, image_bindings)
+    workload_image, workload_request = _build_workload(arguments, image_bindings, preflight)
     result = compile_workspace(BuildRequest(arguments.manifest, image_bindings=image_bindings))
+    if preflight is not None and (
+        result.descriptor["spec"]["plugin_revision_id"]
+        != preflight.descriptor["spec"]["plugin_revision_id"]
+    ):
+        raise WorkloadBuildError("workspace changed during workload build; rebuild the image")
     artifact = build_plugin_artifact(result)
     output = write_plugin_artifact_archive(artifact, arguments.output)
     return result, artifact, output, workload_image, workload_request
 
 
 def _build_workload(
-    arguments: argparse.Namespace, image_bindings: dict[str, str]
+    arguments: argparse.Namespace, image_bindings: dict[str, str], preflight: CompilationResult | None
 ) -> tuple[str | None, WorkloadBuildRequest | None]:
     if not arguments.with_workload:
         return None, None
@@ -1600,6 +1608,15 @@ def _build_workload(
         allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         auth_file=arguments.registry_auth_file,
     )
+    assert preflight is not None
+    missing = set(preflight.deferred_image_bindings) - {image_id}
+    if missing:
+        raise WorkloadBuildError(
+            "missing image bindings before workload build: " + ", ".join(sorted(missing))
+        )
+    manifest = registration_manifest(preflight.descriptor, image_id)
+    validate_registration_manifest(preflight.descriptor, image_id, manifest)
+    request = replace(request, registration_descriptor=preflight.descriptor, workload_id=image_id)
     _phase(arguments, "Building and pushing the custom runner image")
     image = build_and_push_workload(request, verbose=arguments.verbose)
     image_bindings[image_id] = image

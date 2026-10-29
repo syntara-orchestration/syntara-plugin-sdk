@@ -1119,6 +1119,16 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     assert built["credentials"].password == "not-printed"
     assert built["request"].platform == "linux/amd64"
     descriptor = json.loads(built["artifact"].plugin_manifest.content)
+    from syntara_plugin.contracts import registration_manifest
+
+    manifest = registration_manifest(
+        built["request"].registration_descriptor, built["request"].workload_id
+    )
+    target = descriptor["spec"]["targets"][0]
+    assert manifest["plugin_revision_id"] == descriptor["spec"]["plugin_revision_id"]
+    assert manifest["steps"][target["step_revision_id"]] == {
+        "entryPoint": target["runtime"]["entryPoint"], "abi": target["runtime"]["abi"],
+    }
     assert descriptor["spec"]["workloads"]["custom-runner"]["image"] == (
         f"registry.example.test/acme/custom-runner@{_WORKLOAD_DIGEST}"
     )
@@ -1160,6 +1170,39 @@ build:
     assert main(["build", "--settings", str(settings), "--with-workload"]) == 1
     assert calls == []
     assert "SCHEMA_INVALID" in capsys.readouterr().err
+
+
+def test_build_rejects_workspace_changes_after_image_build(tmp_path: Path, capsys, monkeypatch) -> None:
+    workspace = _custom_runner_workspace(tmp_path)
+    settings = workspace / SETTINGS_FILENAME
+    settings.write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: PluginBuildSettings
+manifest: plugin.yaml
+registry:
+  origin: https://registry.example.test
+  workloadRepository: acme/custom-runner
+build:
+  artifactOutput: dist/custom.oci.tar
+  workload:
+    engine: podman
+    context: .
+    containerfile: Containerfile
+    tag: 0.1.0
+    platform: linux/amd64
+    imageId: custom-runner
+""",
+        encoding="utf-8",
+    )
+
+    def mutate_workspace(request, *, verbose):
+        (workspace / "docs/README.md").write_text("# Changed during build\n")
+        return f"registry.example.test/acme/custom-runner@{_WORKLOAD_DIGEST}"
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli.build_and_push_workload", mutate_workspace)
+    assert main(["build", "--settings", str(settings), "--with-workload"]) == 1
+    assert "workspace changed during workload build" in capsys.readouterr().err
+    assert not (workspace / "dist/custom.oci.tar").exists()
 
 
 def test_catalog_update_derives_and_publishes_a_catalog_entry_from_a_verified_archive(

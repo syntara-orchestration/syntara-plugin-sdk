@@ -18,7 +18,9 @@
         "size": 14
       }
     },
-    "contractBundleDigest": "sha256:ea688406ce7c11690975998ccfbef52c4e374db7d61fc3d081dcd6f0854b0873",
+    "contractBundleDigest": "sha256:1410dba7a2b26efc5f2f36f363682ec546657172fc27c987709f3c61dff208c8",
+    "plugin_revision_id": "sha256:ba37cac9f96cdda2f977a7ea129bbb590917ea442a53a6dc1559da265fdb9461",
+    "sdkVersion": "0.1.0-alpha.1",
     "documentation": {
       "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
       "path": "docs/README.md"
@@ -45,6 +47,7 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "steps/create-issue.yaml",
+        "step_revision_id": "sha256:c82407aeb7713999cee1b7da1fcab80716518fa1319c8037424b1e876321f5fb",
         "version": "0.1.0"
       },
       {
@@ -72,6 +75,7 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "controls/invoke.yaml",
+        "step_revision_id": "sha256:260e8d306c69cfee5df6c70abf305676ce1a99591b45916797d91438c7927801",
         "version": "0.1.0"
       },
       {
@@ -105,6 +109,7 @@
           "output": "sha256:9165019f477995f6b0f38b7225ae22d3aee26feabba71afb8a2552918ebce43a"
         },
         "sourcePath": "triggers/issue-opened.yaml",
+        "step_revision_id": "sha256:f3f2a7b019c4ab69f7d83c31ef5d50d5e5dcbf281d583281feb9a723d3404ed4",
         "version": "0.1.0"
       }
     ],

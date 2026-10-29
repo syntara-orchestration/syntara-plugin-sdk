@@ -11,8 +11,13 @@
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["assets", "contractBundleDigest", "targets", "workloads"],
+      "required": ["assets", "contractBundleDigest", "plugin_revision_id", "sdkVersion", "targets", "workloads"],
       "properties": {
+        "plugin_revision_id": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+        "sdkVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
         "assets": {
           "type": "object",
           "additionalProperties": {"$ref": "#/$defs/asset"}
@@ -80,6 +85,7 @@
         "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
         "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
         "sourcePath": {"type": "string"},
+        "step_revision_id": {"$ref": "common.schema.json#/$defs/sha256Digest"},
         "version": {"type": "string"}
       }
     },
@@ -154,8 +160,9 @@
         {
           "type": "object",
           "unevaluatedProperties": false,
-          "required": ["kind", "input", "output", "runtime", "schemaDigests"],
+          "required": ["kind", "input", "output", "runtime", "schemaDigests", "step_revision_id"],
           "properties": {
+            "step_revision_id": {"$ref": "common.schema.json#/$defs/sha256Digest"},
             "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
             "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
             "sourcePath": {"type": "string"},
@@ -183,8 +190,9 @@
         {
           "type": "object",
           "unevaluatedProperties": false,
-          "required": ["kind", "input", "invocation", "output", "runtime", "schemaDigests"],
+          "required": ["kind", "input", "invocation", "output", "runtime", "schemaDigests", "step_revision_id"],
           "properties": {
+            "step_revision_id": {"$ref": "common.schema.json#/$defs/sha256Digest"},
             "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
             "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
             "sourcePath": {"type": "string"},
@@ -211,8 +219,9 @@
         {
           "type": "object",
           "unevaluatedProperties": false,
-          "required": ["kind", "configuration", "driver", "input", "output", "runtime", "schemaDigests"],
+          "required": ["kind", "configuration", "driver", "input", "output", "runtime", "schemaDigests", "step_revision_id"],
           "properties": {
+            "step_revision_id": {"$ref": "common.schema.json#/$defs/sha256Digest"},
             "identity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
             "metadata": {"$ref": "common.schema.json#/$defs/targetMetadata"},
             "sourcePath": {"type": "string"},

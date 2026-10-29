@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 from contracts.helpers import step_document, target_metadata
-from syntara_plugin.contracts import canonical_json_digest, load_bundle, validate_document
+from syntara_plugin.contracts import (
+    canonical_json_digest,
+    load_bundle,
+    registration_manifest,
+    validate_document,
+    validate_plugin_descriptor_semantics,
+    validate_registration_manifest,
+)
 from syntara_plugin.sdk import (
     BuildRequest,
     CompilationError,
@@ -14,8 +22,27 @@ from syntara_plugin.sdk import (
     compile_model,
     compile_workspace,
 )
+from syntara_plugin.sdk.authoring import _sdk_semver
 
 DIGEST = "quay.io/acme/issue-tools@sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("python_version", "semver"),
+    [
+        ("1.2.3", "1.2.3"),
+        ("1.2.3a4", "1.2.3-alpha.4"),
+        ("1.2.3b4", "1.2.3-beta.4"),
+        ("1.2.3rc4", "1.2.3-rc.4"),
+    ],
+)
+def test_sdk_version_is_compiled_as_semver(python_version: str, semver: str) -> None:
+    assert _sdk_semver(python_version) == semver
+
+
+def test_sdk_version_rejects_non_semver_compatible_python_metadata() -> None:
+    with pytest.raises(RuntimeError, match="must be a three-part release"):
+        _sdk_semver("1.2.3.post1")
 
 
 def _plugin(target: str = "steps/create-issue/manifest.yaml") -> dict[str, object]:
@@ -221,6 +248,84 @@ def test_yaml_and_typed_authoring_compile_to_identical_canonical_output(tmp_path
         "kind": "custom-runner",
         "workload": "plugin-workload",
     }
+
+
+def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path: Path) -> None:
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    root = _workspace(tmp_path, action=action)
+    preflight = compile_workspace(BuildRequest(root, require_image_bindings=False))
+    first = _compile(root)
+    repeat = _compile(root)
+    other_image = compile_workspace(BuildRequest(root, image_bindings={
+        "plugin-workload": "quay.io/acme/other@sha256:" + "b" * 64,
+    }))
+    first_spec = first.descriptor["spec"]
+    assert first_spec["sdkVersion"] == _sdk_semver(version("syntara-plugin-sdk"))
+    assert first.canonical_json() == repeat.canonical_json()
+    assert first_spec["plugin_revision_id"] == preflight.descriptor["spec"]["plugin_revision_id"]
+    assert first_spec["plugin_revision_id"] == other_image.descriptor["spec"]["plugin_revision_id"]
+    assert first_spec["targets"][0]["step_revision_id"] == other_image.descriptor["spec"]["targets"][0]["step_revision_id"]
+    assert first.digest != other_image.digest
+    manifest = registration_manifest(preflight.descriptor, "plugin-workload")
+    assert manifest == registration_manifest(first.descriptor, "plugin-workload")
+    assert manifest["steps"] == {first_spec["targets"][0]["step_revision_id"]: {
+        "entryPoint": "issue_tools.actions:CreateIssue", "abi": "syntara.container/v1alpha1",
+    }}
+    validate_registration_manifest(first.descriptor, "plugin-workload", manifest)
+    manifest["steps"] = {}
+    _assert_registration_manifest_rejected(first.descriptor, manifest)
+    _assert_missing_workload_rejected(first.descriptor)
+
+
+def _assert_registration_manifest_rejected(descriptor, manifest) -> None:
+    with pytest.raises(ValueError, match="does not match"):
+        validate_registration_manifest(descriptor, "plugin-workload", manifest)
+
+
+def _assert_missing_workload_rejected(descriptor) -> None:
+    with pytest.raises(ValueError, match="no custom-runner steps"):
+        registration_manifest(descriptor, "missing")
+
+
+def test_revision_ids_change_with_step_and_plugin_contracts(tmp_path: Path) -> None:
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    root = _workspace(tmp_path, action=action)
+    original = _compile(root).descriptor
+    action["spec"]["runtime"]["entryPoint"] = "issue_tools.actions:Other"
+    (tmp_path / "steps/create-issue/manifest.yaml").write_text(_yaml(action))
+    changed = _compile(root).descriptor
+    assert changed["spec"]["targets"][0]["step_revision_id"] != original["spec"]["targets"][0]["step_revision_id"]
+    assert changed["spec"]["plugin_revision_id"] != original["spec"]["plugin_revision_id"]
+    (tmp_path / "docs/README.md").write_text("# Changed\n")
+    docs_changed = _compile(root).descriptor
+    assert docs_changed["spec"]["plugin_revision_id"] != changed["spec"]["plugin_revision_id"]
+    assert docs_changed["spec"]["targets"][0]["step_revision_id"] == changed["spec"]["targets"][0]["step_revision_id"]
+
+
+def _descriptor_with_stale_step_revision(tmp_path: Path) -> dict[str, object]:
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    root = _workspace(tmp_path, action=action)
+    descriptor = _compile(root).descriptor
+    descriptor["spec"]["targets"][0]["step_revision_id"] = "sha256:" + "0" * 64
+    return descriptor
+
+
+def test_stale_step_revision_is_reported_by_descriptor_validation(tmp_path: Path) -> None:
+    descriptor = _descriptor_with_stale_step_revision(tmp_path)
+    assert any("step revision ID" in error for error in validate_plugin_descriptor_semantics(descriptor))
+
+
+def test_stale_step_revision_is_rejected_by_registration(tmp_path: Path) -> None:
+    descriptor = _descriptor_with_stale_step_revision(tmp_path)
+    with pytest.raises(ValueError, match="step revision ID"):
+        validate_registration_manifest(descriptor, "plugin-workload", {})
+
+
+def test_authored_revision_ids_are_rejected() -> None:
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action["spec"]["step_revision_id"] = "sha256:" + "0" * 64
+    with pytest.raises(CompilationError):
+        compile_model(_typed_plugin(_plugin()), [Target("steps/create-issue/manifest.yaml", action)], image_bindings={"plugin-workload": DIGEST})
 
 
 def test_platform_runner_action_requires_and_preserves_its_versioned_driver() -> None:

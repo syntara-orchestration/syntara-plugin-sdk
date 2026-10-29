@@ -10,15 +10,20 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
+from importlib.metadata import version
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
 import yaml
 from jsonschema import Draft202012Validator, SchemaError
 from syntara_plugin.contracts import (
+    STEP_KINDS,
     ContractBundle,
     load_bundle,
+    plugin_revision_id,
+    revision_errors,
     schema_digests,
+    step_revision_id,
     validate_document,
 )
 from yaml.constructor import ConstructorError
@@ -37,6 +42,11 @@ _MAX_DOCUMENT_BYTES = 1024 * 1024
 _MAX_DOCUMENT_DEPTH = 100
 _MAX_DOCUMENT_NODES = 10_000
 _RECURSIVE_ALIAS_REMEDIATION = "Replace the recursive alias with finite data."
+_PYTHON_SDK_PRE_RELEASE = re.compile(
+    r"^(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)"
+    r"(?:(?P<phase>a|b|rc)(?P<serial>0|[1-9][0-9]*))?$"
+)
+_SEMVER_PRE_RELEASE_PHASE = {"a": "alpha", "b": "beta", "rc": "rc"}
 
 
 @dataclass(frozen=True, order=True)
@@ -68,6 +78,22 @@ class CompilationError(Exception):
     def __init__(self, diagnostics: Sequence[Diagnostic]) -> None:
         self.diagnostics = tuple(sorted(diagnostics))
         super().__init__("; ".join(f"{item.code}: {item.message}" for item in self.diagnostics))
+
+
+def _sdk_semver(distribution_version: str) -> str:
+    """Convert the SDK's controlled PEP 440 release version to SemVer."""
+
+    match = _PYTHON_SDK_PRE_RELEASE.fullmatch(distribution_version)
+    if match is None:
+        raise RuntimeError(
+            "syntara-plugin-sdk version must be a three-part release with an optional "
+            "a, b, or rc pre-release suffix to compile a SemVer sdkVersion"
+        )
+    release = ".".join(match.group(name) for name in ("major", "minor", "patch"))
+    phase = match.group("phase")
+    if phase is None:
+        return release
+    return f"{release}-{_SEMVER_PRE_RELEASE_PHASE[phase]}.{match.group('serial')}"
 
 
 @dataclass(frozen=True)
@@ -287,6 +313,7 @@ def _compile(
     descriptor_spec: dict[str, object] = {
         "assets": {key: assets[key].index_entry() for key in sorted(assets)},
         "contractBundleDigest": bundle.digest,
+        "sdkVersion": _sdk_semver(version("syntara-plugin-sdk")),
         "targets": canonical_targets,
         "workloads": _canonical_workloads(plugin.document, image_bindings),
     }
@@ -298,6 +325,17 @@ def _compile(
         "metadata": _ordered(plugin.document["metadata"]),
         "spec": descriptor_spec,
     }
+    for target in canonical_targets:
+        if target.get("kind") in STEP_KINDS:
+            target["step_revision_id"] = step_revision_id(descriptor, target)
+    descriptor_spec["plugin_revision_id"] = plugin_revision_id(descriptor)
+    for message in revision_errors(descriptor):
+        diagnostics.append(
+            _diagnostic(
+                "DESCRIPTOR_INVALID", message, PLUGIN_MANIFEST_FILENAME,
+                "Correct the compiled revision metadata.",
+            )
+        )
     for message in validate_document(bundle, "plugin_descriptor", descriptor):
         diagnostics.append(
             _diagnostic(
