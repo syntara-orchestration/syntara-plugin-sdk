@@ -18,7 +18,7 @@ import grpc
 
 from .abi import CONTAINER_ABI, FailureCode
 from .adapter import container_step_for_binding
-from .bindings import StepBindingError, StepBindings, validate_executable_step_binding
+from .bindings import StepBinding, StepBindingError, StepBindings, validate_executable_step_binding
 from .container import (
     INCOMPLETE_STEP_MESSAGE,
     ContainerInvocation,
@@ -174,6 +174,16 @@ class RuntimeServerConfig:
     registration_manifest_path: Path = _DEFAULT_REGISTRATION_MANIFEST
 
 
+@dataclass(frozen=True)
+class _ResolvedExecutionBinding:
+    """One validated, platform-supplied container dispatch binding."""
+
+    revision: str
+    runtime_kind: str
+    entry_point: str
+    abi: str
+
+
 def load_runtime_server_config(
     environ: Mapping[str, str] = os.environ,
     *,
@@ -293,6 +303,103 @@ def _registration_steps(path: Path) -> Mapping[str, Any]:
     return steps
 
 
+def _resolved_execution_bindings(config: RuntimeServerConfig) -> list[_ResolvedExecutionBinding]:
+    if config.resolved_execution_path is None:
+        raise RuntimeServerError(f"{_RESOLVED_EXECUTION} must name a resolved execution file")
+    document = _read_json_object(config.resolved_execution_path, "resolved execution data")
+    records = document.get("bindings")
+    if set(document) != {"bindings"} or not isinstance(records, list) or not records:
+        raise RuntimeServerError("resolved execution data requires a non-empty bindings array")
+    return [_parse_resolved_execution_binding(record) for record in records]
+
+
+def _parse_resolved_execution_binding(record: Any) -> _ResolvedExecutionBinding:
+    fields = {"stepRevisionId", "runtimeKind", "entryPoint", "abi"}
+    if not isinstance(record, Mapping) or set(record) != fields:
+        raise RuntimeServerError("resolved execution binding has invalid fields")
+    revision = record["stepRevisionId"]
+    runtime_kind = record["runtimeKind"]
+    entry_point = record["entryPoint"]
+    abi = record["abi"]
+    _validate_resolved_revision(revision)
+    _validate_runtime_kind(runtime_kind)
+    _validate_resolved_abi(abi)
+    _validate_resolved_entry_point(entry_point)
+    return _ResolvedExecutionBinding(revision, runtime_kind, entry_point, abi)
+
+
+def _validate_resolved_revision(value: Any) -> None:
+    if not isinstance(value, str) or not _REVISION.fullmatch(value):
+        raise RuntimeServerError("resolved execution binding has an invalid step revision")
+
+
+def _validate_runtime_kind(value: Any) -> None:
+    if value not in ("custom-runner", "platform-runner"):
+        raise RuntimeServerError("resolved execution binding has an invalid runtime kind")
+
+
+def _validate_resolved_abi(value: Any) -> None:
+    if value != CONTAINER_ABI:
+        raise RuntimeServerError("resolved execution binding has an unsupported ABI")
+
+
+def _validate_resolved_entry_point(value: Any) -> None:
+    if not isinstance(value, str) or not _ENTRY_POINT.fullmatch(value):
+        raise RuntimeServerError("resolved execution binding has an invalid entry point")
+
+
+def _validate_custom_runner_mapping(
+    binding: _ResolvedExecutionBinding,
+    manifest_steps: Mapping[str, Any] | None,
+    manifest_path: Path,
+) -> Mapping[str, Any] | None:
+    if binding.runtime_kind != "custom-runner":
+        return manifest_steps
+    steps = manifest_steps or _registration_steps(manifest_path)
+    expected = {"entryPoint": binding.entry_point, "abi": binding.abi}
+    if steps.get(binding.revision) != expected:
+        raise RuntimeServerError("resolved custom runner does not match registration manifest")
+    return steps
+
+
+def _load_typed_step(entry_point: str) -> type[BaseStep[Any, Any]]:
+    module_name, _, class_name = entry_point.partition(":")
+    try:
+        implementation = getattr(importlib.import_module(module_name), class_name)
+    except Exception as error:
+        raise RuntimeServerError("resolved entry point could not be loaded") from error
+    if not isinstance(implementation, type) or not issubclass(implementation, BaseStep):
+        raise RuntimeServerError("resolved entry point must name a typed Step class")
+    return implementation
+
+
+def _installed_binding_for_step(
+    bindings: StepBindings,
+    implementation: type[BaseStep[Any, Any]],
+) -> StepBinding:
+    matches = [
+        bindings.binding(identity)
+        for identity in bindings.step_identities
+        if type(bindings.binding(identity).step) is implementation
+    ]
+    if len(matches) != 1:
+        raise RuntimeServerError("resolved entry point must match exactly one installed binding")
+    return matches[0]
+
+
+def _container_handler_for_resolved_binding(
+    binding: _ResolvedExecutionBinding,
+    installed_binding: StepBinding,
+) -> ContainerStepHandler:
+    try:
+        validate_executable_step_binding(installed_binding.descriptor, installed_binding.step)
+        if installed_binding.descriptor.installed_entry_point != binding.entry_point:
+            raise StepBindingError("resolved entry point differs from the installed contract")
+        return container_step_for_binding(installed_binding, step_revision_id=binding.revision)
+    except (StepBindingError, TypeError, ValueError) as error:
+        raise RuntimeServerError("resolved entry point has an invalid installed binding") from error
+
+
 def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) -> StepRegistry:
     """Bind platform-supplied revisions to executable image-local bindings.
 
@@ -300,65 +407,19 @@ def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) 
     manifest checks custom-runner mappings; it is neither schema provenance nor
     proof of image identity. The existing installed binding supplies schemas.
     """
-    if config.resolved_execution_path is None:
-        raise RuntimeServerError(f"{_RESOLVED_EXECUTION} must name a resolved execution file")
-    document = _read_json_object(config.resolved_execution_path, "resolved execution data")
-    records = document.get("bindings")
-    if set(document) != {"bindings"} or not isinstance(records, list) or not records:
-        raise RuntimeServerError("resolved execution data requires a non-empty bindings array")
     handlers: dict[str, ContainerStepHandler] = {}
     manifest_steps: Mapping[str, Any] | None = None
-    for record in records:
-        if not isinstance(record, Mapping) or set(record) != {
-            "stepRevisionId",
-            "runtimeKind",
-            "entryPoint",
-            "abi",
-        }:
-            raise RuntimeServerError("resolved execution binding has invalid fields")
-        revision, kind, entry_point, abi = (
-            record["stepRevisionId"],
-            record["runtimeKind"],
-            record["entryPoint"],
-            record["abi"],
-        )
-        if not isinstance(revision, str) or not _REVISION.fullmatch(revision):
-            raise RuntimeServerError("resolved execution binding has an invalid step revision")
-        if revision in handlers:
+    for binding in _resolved_execution_bindings(config):
+        if binding.revision in handlers:
             raise RuntimeServerError("resolved execution data contains a duplicate step revision")
-        if kind not in ("custom-runner", "platform-runner"):
-            raise RuntimeServerError("resolved execution binding has an invalid runtime kind")
-        if abi != CONTAINER_ABI:
-            raise RuntimeServerError("resolved execution binding has an unsupported ABI")
-        if not isinstance(entry_point, str) or not _ENTRY_POINT.fullmatch(entry_point):
-            raise RuntimeServerError("resolved execution binding has an invalid entry point")
-        if kind == "custom-runner":
-            if manifest_steps is None:
-                manifest_steps = _registration_steps(config.registration_manifest_path)
-            if manifest_steps.get(revision) != {"entryPoint": entry_point, "abi": abi}:
-                raise RuntimeServerError("resolved custom runner does not match registration manifest")
-        module_name, _, class_name = entry_point.partition(":")
-        try:
-            implementation = getattr(importlib.import_module(module_name), class_name)
-        except Exception as error:
-            raise RuntimeServerError("resolved entry point could not be loaded") from error
-        if not isinstance(implementation, type) or not issubclass(implementation, BaseStep):
-            raise RuntimeServerError("resolved entry point must name a typed Step class")
-        matches = [
-            bindings.binding(identity)
-            for identity in bindings.step_identities
-            if type(bindings.binding(identity).step) is implementation
-        ]
-        if len(matches) != 1:
-            raise RuntimeServerError("resolved entry point must match exactly one installed binding")
-        binding = matches[0]
-        try:
-            validate_executable_step_binding(binding.descriptor, binding.step)
-            if binding.descriptor.installed_entry_point != entry_point:
-                raise StepBindingError("resolved entry point differs from the installed contract")
-            handlers[revision] = container_step_for_binding(binding, step_revision_id=revision)
-        except (StepBindingError, TypeError, ValueError) as error:
-            raise RuntimeServerError("resolved entry point has an invalid installed binding") from error
+        manifest_steps = _validate_custom_runner_mapping(
+            binding, manifest_steps, config.registration_manifest_path
+        )
+        implementation = _load_typed_step(binding.entry_point)
+        installed_binding = _installed_binding_for_step(bindings, implementation)
+        handlers[binding.revision] = _container_handler_for_resolved_binding(
+            binding, installed_binding
+        )
     return StepRegistry(handlers)
 
 
