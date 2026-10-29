@@ -910,7 +910,8 @@ def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
 def test_resolved_schema_digests_must_match_the_installed_binding(tmp_path: Path) -> None:
     record = _resolved_record("platform-runner")
     record["schemaDigests"] = {**_schema_digests(), "input": "sha256:" + "c" * 64}
+    config = _resolved_config(tmp_path, [record])
     bindings = create_bindings()
 
     with pytest.raises(RuntimeServerError, match="schema digests differ"):
-        resolved_step_registry(_resolved_config(tmp_path, [record]), bindings)
+        resolved_step_registry(config, bindings)
