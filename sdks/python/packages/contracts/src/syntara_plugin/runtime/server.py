@@ -40,7 +40,7 @@ _REGISTRATION_MANIFEST = "SYNTARA_REGISTRATION_MANIFEST"
 _DEFAULT_REGISTRATION_MANIFEST = Path("/opt/syntara/registration-manifest.json")
 _REVISION = re.compile(r"^sha256:[a-f0-9]{64}$")
 _ENTRY_POINT = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$"
+    r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$", re.ASCII
 )
 _GRPC_ADDRESS = "SYNTARA_RUNTIME_GRPC_ADDRESS"
 _TLS_CERTIFICATE = "SYNTARA_RUNTIME_GRPC_TLS_CERT"
@@ -263,7 +263,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def _read_json_object(path: Path, label: str) -> Mapping[str, Any]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
-    except (OSError, UnicodeError, ValueError, RecursionError) as error:
+    except (OSError, ValueError, RecursionError) as error:
         raise RuntimeServerError(f"could not read valid {label}: {path}") from error
     if not isinstance(document, Mapping):
         raise RuntimeServerError(f"{label} must be a JSON object")
@@ -396,7 +396,7 @@ def _container_handler_for_resolved_binding(
         if installed_binding.descriptor.installed_entry_point != binding.entry_point:
             raise StepBindingError("resolved entry point differs from the installed contract")
         return container_step_for_binding(installed_binding, step_revision_id=binding.revision)
-    except (StepBindingError, TypeError, ValueError) as error:
+    except (TypeError, ValueError) as error:
         raise RuntimeServerError("resolved entry point has an invalid installed binding") from error
 
 

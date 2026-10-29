@@ -347,8 +347,11 @@ def test_runtime_server_serves_health_and_executes_a_bound_step(tmp_path: Path) 
 
             assert health == (REVISION,)
             assert result.output == {"message": "hello"}
+            unknown_invocation = replace(
+                _invocation(), step_revision_id="sha256:" + "c" * 64
+            )
             with pytest.raises(ContainerRemoteError) as raised:
-                await asyncio.to_thread(client.execute, replace(_invocation(), step_revision_id="sha256:" + "c" * 64))
+                await asyncio.to_thread(client.execute, unknown_invocation)
             assert raised.value.code is FailureCode.NOT_FOUND
         finally:
             channel.close()
@@ -721,8 +724,10 @@ def test_platform_resolved_revision_needs_no_registration_manifest(tmp_path: Pat
 
 
 def test_server_requires_resolved_execution_data() -> None:
+    config = RuntimeServerConfig(f"{__name__}:create_bindings")
+    bindings = create_bindings()
     with pytest.raises(RuntimeServerError, match="RESOLVED_EXECUTION"):
-        resolved_step_registry(RuntimeServerConfig(f"{__name__}:create_bindings"), create_bindings())
+        resolved_step_registry(config, bindings)
 
 
 @pytest.mark.parametrize(
@@ -743,29 +748,35 @@ def test_invalid_resolved_bindings_fail_startup(
     tmp_path: Path, changes: dict[str, str], message: str
 ) -> None:
     record = _resolved_record("platform-runner") | changes
+    config = _resolved_config(tmp_path, [record])
+    bindings = create_bindings()
     with pytest.raises(RuntimeServerError, match=message):
-        resolved_step_registry(_resolved_config(tmp_path, [record]), create_bindings())
+        resolved_step_registry(config, bindings)
 
 
 def test_duplicate_resolved_revision_fails_startup(tmp_path: Path) -> None:
     record = _resolved_record("platform-runner")
+    config = _resolved_config(tmp_path, [record, record])
+    bindings = create_bindings()
     with pytest.raises(RuntimeServerError, match="duplicate step revision"):
-        resolved_step_registry(_resolved_config(tmp_path, [record, record]), create_bindings())
+        resolved_step_registry(config, bindings)
 
 
 def test_duplicate_json_keys_fail_startup(tmp_path: Path) -> None:
     config = _resolved_config(tmp_path, [_resolved_record()])
     assert config.resolved_execution_path is not None
     config.resolved_execution_path.write_text('{"bindings": [], "bindings": []}', encoding="utf-8")
+    bindings = create_bindings()
     with pytest.raises(RuntimeServerError, match="valid resolved execution"):
-        resolved_step_registry(config, create_bindings())
+        resolved_step_registry(config, bindings)
 
 
 def test_duplicate_registration_keys_fail_startup(tmp_path: Path) -> None:
     config = _resolved_config(tmp_path, [_resolved_record()])
     config.registration_manifest_path.write_text('{"steps": {}, "steps": {}}', encoding="utf-8")
+    bindings = create_bindings()
     with pytest.raises(RuntimeServerError, match="valid registration manifest"):
-        resolved_step_registry(config, create_bindings())
+        resolved_step_registry(config, bindings)
 
 
 def test_entry_point_import_failure_is_reported_at_startup(tmp_path: Path, monkeypatch) -> None:
@@ -793,8 +804,9 @@ def test_custom_record_must_match_packaged_registration(tmp_path: Path, change: 
     else:
         manifest["steps"][REVISION]["unexpected"] = True
     config.registration_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    bindings = create_bindings()
     with pytest.raises(RuntimeServerError, match="registration manifest"):
-        resolved_step_registry(config, create_bindings())
+        resolved_step_registry(config, bindings)
 
 
 def test_untrusted_or_ambiguous_binding_is_rejected(tmp_path: Path) -> None:

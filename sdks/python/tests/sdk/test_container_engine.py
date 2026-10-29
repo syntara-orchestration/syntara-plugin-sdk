@@ -312,10 +312,12 @@ def test_resolved_execution_file_failure_is_safe(monkeypatch, method: str) -> No
         lambda *args: pytest.fail("container should not start"),
     )
 
+    entered_runtime = False
     with pytest.raises(RunExecutionError) as raised:
         with container_engine.managed_runtime("image", target):
-            pytest.fail("runtime should not start")
+            entered_runtime = True
 
+    assert not entered_runtime
     assert "resolved execution data" in raised.value.message
     assert "private filesystem detail" not in str(raised.value)
     assert len(removed) == 1

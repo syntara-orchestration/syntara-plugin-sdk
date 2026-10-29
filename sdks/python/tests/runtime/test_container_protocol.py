@@ -166,8 +166,9 @@ def test_runner_advertises_and_dispatches_only_the_selected_step() -> None:
     try:
         assert client.health() == (revision,)
         result = client.execute(_invocation(revision))
+        unknown_invocation = _invocation("unknown")
         with pytest.raises(ContainerRemoteError) as raised:
-            client.execute(_invocation("unknown"))
+            client.execute(unknown_invocation)
         assert raised.value.code is FailureCode.NOT_FOUND
     finally:
         channel.close()
