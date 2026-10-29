@@ -114,6 +114,24 @@ Control Step consumes the child workflow's declared result; the parent's
 `spec.output` describes the result exposed by that invocation. Runtime wrapper
 failure metadata is separate from both schemas.
 
+### Subworkflow composition
+
+A synchronous subworkflow call needs no new Step category. The parent side is
+a Control with `spec.invocation.kind: workflow-invocation` and the `workflow.v1`
+platform runner; the child side is a Trigger on the `subworkflow.v1` driver,
+which declares its platform driver in `spec.driver` and its executor separately
+in `spec.runtime`.
+
+`spec.invocation.workflow` is a qualified identifier with no version segment,
+so a parent names a child workflow but cannot pin a published version of it;
+version resolution is a control-plane concern. Nothing in these contracts binds
+the parent's `spec.input` to the child Trigger's declared event payload, or the
+child's terminal result to the parent's `spec.output`. Both agreements are
+authoring obligations that an author verifies with their own tests.
+
+See [`examples/subworkflow-composition`](../examples/subworkflow-composition)
+for a worked parent-and-child workspace.
+
 ## `kind: IntegrationType`
 
 Schema: [`integration.schema.json`](../contracts/schemas/v1alpha1/integration.schema.json). An integration type describes the reusable connection shape a user can create.

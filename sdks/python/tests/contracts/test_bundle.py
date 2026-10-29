@@ -596,3 +596,62 @@ def test_catalog_contract_rejects_incomplete_accepted_status_and_naive_time() ->
             source_id="local-quay",
             now=datetime(2026, 10, 6, 13, 0, 0),
         )
+
+
+def _subworkflow_fixture(name: str) -> dict[str, object]:
+    path = Path(__file__).parents[4] / "contracts" / "fixtures" / name
+    document: dict[str, object] = json.loads(path.read_text())
+    return document
+
+
+def test_subworkflow_composition_maps_onto_existing_control_and_trigger_contracts() -> None:
+    bundle = load_bundle()
+    parent = _subworkflow_fixture("subworkflow-call.valid.json")
+    child = _subworkflow_fixture("subworkflow-trigger.valid.json")
+
+    # Parent-side subworkflow_call is a Control that invokes a named workflow
+    # through the workflow.v1 platform runner. Child-side subworkflow_trigger
+    # is a Trigger. Neither needs a new Step category or schema.
+    assert validate_document(bundle, "control", parent) == []
+    assert validate_document(bundle, "step", parent) == []
+    assert validate_document(bundle, "trigger", child) == []
+    assert validate_document(bundle, "step", child) == []
+
+    parent_spec = parent["spec"]
+    assert isinstance(parent_spec, dict)
+    child_spec = child["spec"]
+    assert isinstance(child_spec, dict)
+
+    # The parent's declared input is the child's declared event payload. The
+    # contracts express both sides but do not themselves bind one to the other;
+    # agreement is an authoring obligation, not a validated constraint.
+    assert parent_spec["input"]["value"]["properties"].keys() == (
+        child_spec["input"]["value"]["properties"].keys()
+    )
+    assert parent_spec["invocation"] == {
+        "kind": "workflow-invocation",
+        "workflow": "acme.release.publish-artifact",
+    }
+    assert parent_spec["runtime"] == {"kind": "platform-runner", "driver": "workflow.v1"}
+
+
+def test_subworkflow_composition_gaps_are_rejected_by_current_contracts() -> None:
+    bundle = load_bundle()
+
+    # AAP-95476 gap: invocation.workflow is a version-less qualified identifier,
+    # so a parent cannot pin a published child version in the contract.
+    pinned = _subworkflow_fixture("subworkflow-call.invalid.json")
+    pinned_errors = validate_document(bundle, "control", pinned)
+    assert [error.split(":")[0] for error in pinned_errors] == ["spec/invocation/workflow"]
+
+    # AAP-95476 gap: TriggerDriver.spec.transport has no value for a driver
+    # fired by a parent workflow rather than by an external transport.
+    driver = _subworkflow_fixture("subworkflow-trigger-driver.invalid.json")
+    driver_errors = validate_document(bundle, "trigger_driver", driver)
+    assert [error.split(":")[0] for error in driver_errors] == ["spec/transport"]
+
+    # AAP-95476 gap: InstalledIdentity.spec.target.kind excludes control, so an
+    # installed subworkflow_call Control has no installed-identity form.
+    identity = _subworkflow_fixture("subworkflow-call-identity.invalid.json")
+    identity_errors = validate_document(bundle, "installed_identity", identity)
+    assert [error.split(":")[0] for error in identity_errors] == ["spec/target/kind"]

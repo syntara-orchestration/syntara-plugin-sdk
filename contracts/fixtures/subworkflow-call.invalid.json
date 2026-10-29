@@ -1,0 +1,43 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Control",
+  "metadata": {
+    "name": "call-publish-artifact",
+    "displayName": "Call publish artifact",
+    "description": "Attempts to pin the child workflow to an explicit published version."
+  },
+  "spec": {
+    "invocation": {
+      "kind": "workflow-invocation",
+      "workflow": "acme.release.publish-artifact@2.1.0"
+    },
+    "runtime": {
+      "kind": "platform-runner",
+      "driver": "workflow.v1"
+    },
+    "input": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {"type": "string"},
+          "channel": {"type": "string"}
+        },
+        "required": ["artifact", "channel"]
+      }
+    },
+    "output": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "releaseId": {"type": "string"},
+          "publishedAt": {"type": "string"}
+        },
+        "required": ["releaseId", "publishedAt"]
+      }
+    }
+  }
+}

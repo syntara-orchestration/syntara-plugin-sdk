@@ -354,6 +354,9 @@ spec:
 
 For a `workflow-invocation` example, see
 [`contracts/fixtures/control.valid.json`](../contracts/fixtures/control.valid.json).
+For a complete parent-and-child workspace, including the child-side Trigger
+that starts the invoked workflow, see
+[`examples/subworkflow-composition`](../examples/subworkflow-composition).
 
 ### Write schemas that explain themselves
 

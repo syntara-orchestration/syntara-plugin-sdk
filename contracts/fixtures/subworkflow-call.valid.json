@@ -1,0 +1,70 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Control",
+  "metadata": {
+    "name": "call-publish-artifact",
+    "displayName": "Call publish artifact",
+    "description": "Synchronously invokes the publish-artifact child workflow and surfaces its declared result."
+  },
+  "spec": {
+    "invocation": {
+      "kind": "workflow-invocation",
+      "workflow": "acme.release.publish-artifact"
+    },
+    "runtime": {
+      "kind": "platform-runner",
+      "driver": "workflow.v1"
+    },
+    "input": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "description": "Parameters the parent workflow passes to the child workflow.",
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "type": "string",
+            "description": "Artifact name to publish."
+          },
+          "channel": {
+            "type": "string",
+            "description": "Release channel to publish into."
+          }
+        },
+        "required": ["artifact", "channel"]
+      }
+    },
+    "output": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "description": "Result the child workflow surfaces to its parent.",
+        "additionalProperties": false,
+        "properties": {
+          "releaseId": {
+            "type": "string",
+            "description": "Identifier of the published release."
+          },
+          "publishedAt": {
+            "type": "string",
+            "description": "RFC 3339 timestamp of the publication."
+          }
+        },
+        "required": ["releaseId", "publishedAt"]
+      }
+    },
+    "error": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "description": "Business failure reported by the child workflow.",
+        "properties": {
+          "childRunId": {
+            "type": "string",
+            "description": "Run identifier of the child workflow that failed."
+          }
+        }
+      }
+    }
+  }
+}

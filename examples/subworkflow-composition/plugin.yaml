@@ -1,0 +1,17 @@
+apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: example
+  name: subworkflow-composition
+  version: 0.1.0
+  displayName: Subworkflow composition
+  description: Parent-side and child-side Step types for synchronous subworkflow composition.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: subworkflow-composition-workload
+  targets:
+    - steps/call-publish-artifact/manifest.yaml
+    - steps/publish-artifact-requested/manifest.yaml
+    - steps/publish-artifact/manifest.yaml
