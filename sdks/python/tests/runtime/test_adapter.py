@@ -408,10 +408,13 @@ def test_safe_sdk_execution_error_becomes_a_container_failure_event() -> None:
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     try:
         client = ContainerClient(channel)
+        invocation = _invocation()
         with pytest.raises(ContainerRemoteError) as raised:
-            client.execute(_invocation())
+            client.execute(invocation)
+        wrapped_invocation = _invocation()
+        output_schema = _permissive_output_schema()
         with pytest.raises(ContainerRemoteError):
-            client.execute_wrapped(_invocation(), output_schema=_permissive_output_schema())
+            client.execute_wrapped(wrapped_invocation, output_schema=output_schema)
     finally:
         channel.close()
         server.stop(grace=0).wait()
@@ -518,9 +521,10 @@ def test_object_store_failure_does_not_retain_the_backend_exception() -> None:
         ),
         object_store=FailingObjectStore(),
     )
+    invocation = _invocation("acme.plugin.huge")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(_invocation("acme.plugin.huge"))
+        handler(invocation)
 
     assert sentinel not in str(raised.value)
     assert raised.value.__cause__ is None
@@ -562,14 +566,15 @@ def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
     try:
         client = ContainerClient(channel)
         result = client.execute(_invocation("acme.plugin.huge"))
+        wrapped_invocation = _invocation("acme.plugin.huge")
+        output_schema = _permissive_output_schema()
         with pytest.raises(ValueError, match="resolver is required"):
-            client.execute_wrapped(
-                _invocation("acme.plugin.huge"), output_schema=_permissive_output_schema()
-            )
+            client.execute_wrapped(wrapped_invocation, output_schema=output_schema)
+        unresolved_invocation = _invocation("acme.plugin.huge")
         with pytest.raises(ContainerRemoteError) as raised:
             client.execute_wrapped(
-                _invocation("acme.plugin.huge"),
-                output_schema=_permissive_output_schema(),
+                unresolved_invocation,
+                output_schema=output_schema,
                 resolve_object_reference=lambda _reference: None,
             )
         assert raised.value.code is FailureCode.ABI_VIOLATION
@@ -636,11 +641,12 @@ def test_wrapper_round_trips_through_container_client(wrapper: StandardOutputWra
 @pytest.mark.parametrize("invalid", [None, [1], {"value": float("nan")}])
 def test_reference_resolution_rejects_invalid_output(invalid: Any) -> None:
     result = ContainerResult(_expected_digest(), object_reference="host:result")
+    output_schema = _permissive_output_schema()
 
     with pytest.raises(ContainerRemoteError) as raised:
         standard_output_from_container_result(
             result,
-            output_schema=_permissive_output_schema(),
+            output_schema=output_schema,
             resolve_object_reference=lambda _reference: invalid,
         )
 
@@ -655,10 +661,11 @@ def test_reference_resolution_errors_are_sanitized() -> None:
     def fail(_reference: str) -> dict[str, Any]:
         raise LookupError("resolver backend secret detail")
 
+    output_schema = _permissive_output_schema()
     with pytest.raises(ValueError, match="could not be resolved") as raised:
         standard_output_from_container_result(
             result,
-            output_schema=_permissive_output_schema(),
+            output_schema=output_schema,
             resolve_object_reference=fail,
         )
 
@@ -728,10 +735,12 @@ def test_inline_container_result_reconstructs_the_standard_wrapper() -> None:
 
 
 def test_reconstruction_rejects_a_result_for_a_different_trusted_schema() -> None:
+    result = ContainerResult(_expected_digest(), output={"value": "hello"})
+    output_schema = {"type": "object", "required": ["value"]}
     with pytest.raises(ContainerRemoteError) as raised:
         standard_output_from_container_result(
-            ContainerResult(_expected_digest(), output={"value": "hello"}),
-            output_schema={"type": "object", "required": ["value"]},
+            result,
+            output_schema=output_schema,
         )
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
@@ -752,11 +761,12 @@ def test_reconstruction_rejects_output_that_violates_the_trusted_schema(
         if use_reference
         else ContainerResult(_expected_digest(schema), output={"unexpected": True})
     )
+    output_schema = schema
 
     with pytest.raises(ContainerRemoteError) as raised:
         standard_output_from_container_result(
             result,
-            output_schema=schema,
+            output_schema=output_schema,
             resolve_object_reference=lambda _reference: {"unexpected": True},
         )
 

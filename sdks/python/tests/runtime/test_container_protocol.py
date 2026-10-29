@@ -141,9 +141,10 @@ def test_unsupported_step_is_a_safe_not_found_failure(
     assert "delete-organization" not in str(raised.value)
     assert calls == {}
 
+    wrapped_invocation = _invocation("github.delete-organization.v1")
     with pytest.raises(ContainerRemoteError) as wrapped_error:
         client.execute_wrapped(
-            _invocation("github.delete-organization.v1"), output_schema={"type": "object"}
+            wrapped_invocation, output_schema={"type": "object"}
         )
     assert wrapped_error.value.code is FailureCode.NOT_FOUND
     assert wrapped_error.value.source == "workload"
@@ -202,9 +203,10 @@ def test_normalized_transport_error_does_not_retain_the_rpc_exception() -> None:
 
     client = ContainerClient.__new__(ContainerClient)
     client._stub = FailingStub()
+    invocation = _invocation("github.create-issue.v1")
 
     with pytest.raises(ContainerRemoteError) as raised:
-        client.execute(_invocation("github.create-issue.v1"))
+        client.execute(invocation)
 
     assert raised.value.source == "transport"
     assert raised.value.code is FailureCode.UPSTREAM_TRANSIENT
@@ -388,11 +390,14 @@ def test_container_result_enforces_terminal_invariants() -> None:
     with pytest.raises(ValueError, match="failed result requires an error"):
         ContainerResult(OUTPUT_SCHEMA_DIGEST, status_code=7, error_result=ERROR_RESULT)
 
+    invalid_error_result = {
+        key: value for key, value in ERROR_RESULT.items() if key != "category"
+    }
     with pytest.raises(ValueError, match="SDK base schema"):
         ContainerResult(
             OUTPUT_SCHEMA_DIGEST,
             status_code=7,
-            error_result={key: value for key, value in ERROR_RESULT.items() if key != "category"},
+            error_result=invalid_error_result,
             error_schema_digest=ERROR_SCHEMA_DIGEST,
         )
 

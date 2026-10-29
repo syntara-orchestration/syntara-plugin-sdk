@@ -173,21 +173,17 @@ class StandardOutputWrapper[TOutput]:
     def __post_init__(self) -> None:
         if type(self.status_code) is not int or not 0 <= self.status_code <= 4_294_967_295:
             raise ValueError("status_code must be an unsigned 32-bit integer")
+        fallback = "Completed"
+        if self.status_code != 0:
+            fallback = (
+                self.error_result.message
+                if isinstance(self.error_result, ErrorResult)
+                else _DEFAULT_FAILURE_MESSAGE
+            )
         object.__setattr__(
             self,
             "status_message",
-            bounded_message(
-                self.status_message,
-                fallback=(
-                    "Completed"
-                    if self.status_code == 0
-                    else (
-                        self.error_result.message
-                        if isinstance(self.error_result, ErrorResult)
-                        else _DEFAULT_FAILURE_MESSAGE
-                    )
-                ),
-            ),
+            bounded_message(self.status_message, fallback=fallback),
         )
         if self.result is not None:
             validate_json_object(self.result)

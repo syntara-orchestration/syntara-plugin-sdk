@@ -41,6 +41,48 @@ _UNSET_CATEGORY: ErrorCategory = cast(ErrorCategory, _UNSET)
 _UNSET_RETRYABLE: bool = cast(bool, _UNSET)
 
 
+def _validate_step_failure_code(code: object) -> str:
+    if (
+        not isinstance(code, str)
+        or not code.isascii()
+        or not code.replace("_", "A").isalnum()
+        or not code[0:1].isalpha()
+        or code != code.upper()
+        or len(code) > 128
+    ):
+        raise ValueError("StepFailure code must be an uppercase error identifier")
+    return code
+
+
+def _resolve_step_failure_error(
+    error_message: str | None,
+    error_result: ErrorResult | None,
+    code: str,
+    category: ErrorCategory,
+    retryable: bool,
+) -> ErrorResult:
+    if error_result is not None:
+        if error_message is not None:
+            raise ValueError("provide either error_result or error_message")
+        if any(value is not _UNSET for value in (code, category, retryable)):
+            raise ValueError("provide error_result without code, category, or retryable overrides")
+        return error_result
+
+    if error_message is None:
+        raise ValueError("StepFailure requires an error result")
+    effective_code = "STEP_FAILED" if code is _UNSET_CODE else _validate_step_failure_code(code)
+    effective_category = ErrorCategory.BUSINESS if category is _UNSET_CATEGORY else category
+    effective_retryable = False if retryable is _UNSET_RETRYABLE else retryable
+    if not isinstance(effective_retryable, bool):
+        raise TypeError("StepFailure retryable must be a boolean")
+    return ErrorResult(
+        category=effective_category,
+        code=effective_code,
+        message=error_message,
+        retryable=effective_retryable,
+    )
+
+
 class StepExecutionError(RuntimeError):
     """A safe SDK failure without a result wrapper and with execution certainty.
 
@@ -89,43 +131,18 @@ class StepFailure(Exception):
             raise ValueError("StepFailure status_code must be a nonzero unsigned 32-bit integer")
         self.status_code = status_code
         self.status_message = bounded_message(status_message, fallback="The step failed.")
-        if error_result is not None and error_message is not None:
-            raise ValueError("provide either error_result or error_message")
-        if error_result is not None and any(
-            value is not _UNSET for value in (code, category, retryable)
-        ):
-            raise ValueError("provide error_result without code, category, or retryable overrides")
-        if error_result is None:
-            if error_message is None:
-                raise ValueError("StepFailure requires an error result")
-            effective_code = "STEP_FAILED" if code is _UNSET else code
-            effective_category = ErrorCategory.BUSINESS if category is _UNSET else category
-            effective_retryable = False if retryable is _UNSET else retryable
-            if (
-                not isinstance(effective_code, str)
-                or not effective_code.isascii()
-                or not effective_code.replace("_", "A").isalnum()
-            ):
-                raise ValueError("StepFailure code must be an uppercase error identifier")
-            if (
-                not effective_code[0:1].isalpha()
-                or effective_code != effective_code.upper()
-                or len(effective_code) > 128
-            ):
-                raise ValueError("StepFailure code must be an uppercase error identifier")
-            if not isinstance(effective_retryable, bool):
-                raise TypeError("StepFailure retryable must be a boolean")
-            error_result = ErrorResult(
-                category=effective_category,
-                code=effective_code,
-                message=error_message,
-                retryable=effective_retryable,
-            )
-        self.error_result = error_result
-        self.error_message = error_result.message
-        self.code = error_result.code
-        self.category = error_result.category
-        self.retryable = error_result.retryable
+        resolved_error = _resolve_step_failure_error(
+            error_message,
+            error_result,
+            code,
+            category,
+            retryable,
+        )
+        self.error_result = resolved_error
+        self.error_message = resolved_error.message
+        self.code = resolved_error.code
+        self.category = resolved_error.category
+        self.retryable = resolved_error.retryable
         super().__init__(self.error_message)
 
 

@@ -631,9 +631,10 @@ def test_invalid_input_uses_the_sdk_error_schema_with_a_strict_declared_schema()
 def test_unexpected_exception_is_raised_as_a_safe_execution_error() -> None:
     step = UnexpectedStep()
     binding = _binding(step, "tests.runtime.invoke.unexpected")
+    context = _context(binding)
 
     with pytest.raises(StepExecutionError) as raised:
-        invoke(binding, {"value": "hello"}, _context(binding))
+        invoke(binding, {"value": "hello"}, context)
 
     assert "unexpected failure secret sentinel" not in str(raised.value)
     assert raised.value.__cause__ is None
@@ -649,9 +650,10 @@ def test_input_model_preparation_exception_is_not_started(monkeypatch: pytest.Mo
         raise RuntimeError("input model preparation failed")
 
     monkeypatch.setattr(type(step), "input_model", classmethod(fail_input_model))
+    context = _context(binding)
 
     with pytest.raises(StepExecutionError) as raised:
-        invoke(binding, {"value": "hello"}, _context(binding))
+        invoke(binding, {"value": "hello"}, context)
 
     assert raised.value.outcome == "not_started"
     assert step.execute_calls == 0
@@ -679,9 +681,10 @@ def test_output_model_and_declared_schema_mismatches_have_no_wrapper(
     step: BaseStep[Any, Any], identity: str, output_schema: dict[str, Any] | None
 ) -> None:
     binding = _binding(step, identity, output_schema=output_schema)
+    context = _context(binding)
 
     with pytest.raises(StepExecutionError) as raised:
-        invoke(binding, {"value": "too-long"}, _context(binding))
+        invoke(binding, {"value": "too-long"}, context)
 
     assert str(raised.value)
     assert "unexpected" not in str(raised.value)
@@ -695,9 +698,10 @@ def test_output_model_and_declared_schema_mismatches_have_no_wrapper(
 def test_non_finite_output_has_no_wrapper_or_container_result() -> None:
     step = NonFiniteStep()
     binding = _binding(step, "tests.runtime.invoke.non-finite")
+    context = _context(binding)
 
     with pytest.raises(StepExecutionError):
-        invoke(binding, {"value": "hello"}, _context(binding))
+        invoke(binding, {"value": "hello"}, context)
 
     event = _terminal_event(binding, {"value": "hello"})
     assert event.WhichOneof("event") == "failure"
@@ -709,9 +713,10 @@ def test_non_finite_output_has_no_wrapper_or_container_result() -> None:
 def test_output_serialization_failure_is_safe_and_has_no_wrapper() -> None:
     step = UnserializableStep()
     binding = _binding(step, "tests.runtime.invoke.serialization")
+    context = _context(binding)
 
     with pytest.raises(StepExecutionError) as raised:
-        invoke(binding, {"value": "hello"}, _context(binding))
+        invoke(binding, {"value": "hello"}, context)
 
     assert "serialization secret sentinel" not in str(raised.value)
     assert step.run_calls == 1
@@ -754,9 +759,10 @@ def test_unprovenanced_binding_cannot_produce_a_wrapper() -> None:
     step = ActionEchoStep()
     descriptor = StepDescriptor.for_step("tests.runtime.invoke.unbound", step)
     binding = StepBinding(descriptor, step)
+    context = ExecutionContext(invocation_id="unbound")
 
     with pytest.raises(StepExecutionError, match="trusted installed descriptor") as raised:
-        invoke(binding, {"value": "hello"}, ExecutionContext(invocation_id="unbound"))
+        invoke(binding, {"value": "hello"}, context)
 
     assert raised.value.outcome == "not_started"
     assert step.run_calls == 0
@@ -951,13 +957,14 @@ def test_custom_error_schema_preserves_complete_result_through_grpc(asset: bool)
             output_schema=to_json_document(binding.descriptor.output_schema),
             error_schema=trusted_schema,
         ) == direct
+        output_schema = to_json_document(binding.descriptor.output_schema)
         with pytest.raises(ContainerRemoteError):
             standard_output_from_container_result(
-                result, output_schema=to_json_document(binding.descriptor.output_schema)
+                result, output_schema=output_schema
             )
         with pytest.raises(ContainerRemoteError):
             standard_output_from_container_result(
-                result, output_schema=to_json_document(binding.descriptor.output_schema),
+                result, output_schema=output_schema,
                 error_schema={"type": "object"},
             )
     finally:
@@ -975,8 +982,9 @@ def test_default_error_schema_is_applied_and_digest_is_reported() -> None:
 
 def test_default_error_schema_rejects_undeclared_step_fields() -> None:
     binding = _binding(DetailedFailureStep(), "tests.default-error-extra")
+    context = _context(binding)
     with pytest.raises(StepExecutionError, match="invalid response"):
-        invoke(binding, {"value": "x"}, _context(binding))
+        invoke(binding, {"value": "x"}, context)
 
 
 def test_error_result_subclass_fields_are_preserved_and_immutable() -> None:
@@ -995,8 +1003,9 @@ def test_author_error_that_violates_installed_schema_has_no_valid_outcome() -> N
         DetailedFailureStep(), "tests.invalid-error",
         error_schema={"type": "object", "required": ["missing"]},
     )
+    context = _context(binding)
     with pytest.raises(StepExecutionError, match="invalid response"):
-        invoke(binding, {"value": "x"}, _context(binding))
+        invoke(binding, {"value": "x"}, context)
     event = _terminal_event(binding, {"value": "x"})
     assert event.WhichOneof("event") == "failure"
     assert event.failure.code == "ABI_VIOLATION"
@@ -1015,15 +1024,17 @@ def test_reconstruction_checks_error_schema_even_with_matching_digest() -> None:
 
 @pytest.mark.parametrize("schema", [{"type": "not-a-type"}, {"$ref": "#/$defs/missing"}])
 def test_invalid_installed_error_schema_is_rejected(schema: dict[str, Any]) -> None:
+    step = DetailedFailureStep()
     with pytest.raises(StepBindingError, match="error_schema"):
-        _binding(DetailedFailureStep(), "tests.bad-error-schema", error_schema=schema)
+        _binding(step, "tests.bad-error-schema", error_schema=schema)
 
 
 def test_changed_error_schema_invalidates_installed_binding() -> None:
     binding = _binding(DetailedFailureStep(), "tests.changed-error-schema")
     object.__setattr__(binding.descriptor, "error_schema", {"type": "object"})
+    context = _context(binding)
     with pytest.raises(StepExecutionError, match="trusted installed descriptor"):
-        invoke(binding, {"value": "x"}, _context(binding))
+        invoke(binding, {"value": "x"}, context)
 
 
 def test_direct_runtime_import_does_not_load_transport_modules() -> None:
