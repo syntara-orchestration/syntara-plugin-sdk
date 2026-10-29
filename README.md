@@ -40,16 +40,18 @@ syntara-plugin build
 syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
 
-`init` generates a platform-runner action with an example implementation
-reference; replace it with a registered step type available in your installation.
-The `run` command executes one custom-runner step type locally. To try it,
-run the custom-runner example from the repository root (see
-[Running locally](docs/running-locally.md)):
+`init` defaults to a platform-runner action, which Syntara's managed runner
+executes. It also supports scaffolding and running a Python custom-runner
+Action locally:
 
 ```sh
-syntara-plugin run --manifest examples/python-steps/plugin.yaml create-issue \
-  --input '{"title": "Broken build"}'
+syntara-plugin init ./my-runner --namespace acme --runner custom-runner
+syntara-plugin run --manifest ./my-runner/plugin.yaml --input '{"resource": "example"}'
 ```
+
+The generated runtime loads the packaged plugin manifests through the
+packaged-manifest binding helper. See [Getting started](docs/getting-started.md)
+for local tests and image preparation.
 
 `init` creates a small plugin workspace and a non-secret
 `syntara-plugin.yaml` settings file. The default build is deterministic and
