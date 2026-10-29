@@ -704,7 +704,9 @@ def test_custom_resolved_revision_dispatches_with_installed_schema(tmp_path: Pat
     assert registry.step_revision_ids == (REVISION,)
     assert registry.resolve(REVISION)(_invocation()).output == {"message": "hello"}
     invalid = replace(_invocation(), inputs={})
-    assert registry.resolve(REVISION)(invalid).error_code == "INVALID_INPUT"
+    result = registry.resolve(REVISION)(invalid)
+    assert result.error_result is not None
+    assert result.error_result["code"] == "INVALID_INPUT"
     with pytest.raises(ContainerInvocationError) as error:
         registry.resolve("smoke.echo.v1")
     assert error.value.code is FailureCode.NOT_FOUND
