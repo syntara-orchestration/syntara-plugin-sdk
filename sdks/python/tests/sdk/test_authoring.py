@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import pytest
@@ -120,6 +120,47 @@ def _trigger() -> dict[str, object]:
 
 def _typed_plugin(document: dict[str, object]) -> Plugin:
     return Plugin(document, assets={"docs/README.md": b"# Issue tools\n"})
+
+
+def test_compile_reports_an_unavailable_sdk_distribution(monkeypatch) -> None:
+    def unavailable(_: str) -> str:
+        raise PackageNotFoundError
+
+    monkeypatch.setattr("syntara_plugin.sdk.authoring.version", unavailable)
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(_plugin()),
+            [
+                Target(
+                    "steps/create-issue/manifest.yaml",
+                    _action({"kind": "inline", "value": {"type": "object"}}),
+                )
+            ],
+            image_bindings={"plugin-workload": DIGEST},
+        )
+
+    assert {diagnostic.code for diagnostic in error.value.diagnostics} == {
+        "SDK_VERSION_UNAVAILABLE"
+    }
+
+
+def test_compile_reports_a_non_semver_sdk_distribution(monkeypatch) -> None:
+    monkeypatch.setattr("syntara_plugin.sdk.authoring.version", lambda _: "0.1.0a1.dev3")
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(_plugin()),
+            [
+                Target(
+                    "steps/create-issue/manifest.yaml",
+                    _action({"kind": "inline", "value": {"type": "object"}}),
+                )
+            ],
+            image_bindings={"plugin-workload": DIGEST},
+        )
+
+    assert {diagnostic.code for diagnostic in error.value.diagnostics} == {"SDK_VERSION_INVALID"}
 
 
 def _integration() -> dict[str, object]:

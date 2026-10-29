@@ -80,6 +80,10 @@ def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, mo
     assert registered_reference != staging_reference
     assert commands[2][:3] == ["podman", "push", "--digestfile"]
     assert commands[2][4:] == [registered_reference, "registry.example.test/acme/custom:0.1.0"]
+    assert commands[3:] == [
+        ["podman", "rmi", registered_reference],
+        ["podman", "rmi", staging_reference],
+    ]
 
 
 def test_each_workload_build_pushes_its_own_registered_image(tmp_path: Path, monkeypatch) -> None:
@@ -113,10 +117,12 @@ def test_each_workload_build_pushes_its_own_registered_image(tmp_path: Path, mon
     build_and_push_workload(request)
     build_and_push_workload(request)
 
-    first_registered, second_registered = commands[1][9], commands[4][9]
+    registered_references = [command[9] for command in commands if command[1] == "build"][1::2]
+    pushes = [command for command in commands if command[1] == "push"]
+    first_registered, second_registered = registered_references
     assert first_registered != second_registered
-    assert commands[2][4:] == [first_registered, request.tagged_reference]
-    assert commands[5][4:] == [second_registered, request.tagged_reference]
+    assert pushes[0][4:] == [first_registered, request.tagged_reference]
+    assert pushes[1][4:] == [second_registered, request.tagged_reference]
 
 
 def test_verbose_workload_output_uses_stderr_so_json_stdout_stays_clean(
@@ -198,7 +204,75 @@ def test_registration_manifest_is_copied_into_final_image_before_push(
             workload_id="plugin-workload",
         )
     )
-    assert [command[1] for command in commands] == ["build", "build", "push"]
+    assert [command[1] for command in commands] == ["build", "build", "push", "rmi", "rmi"]
+
+
+def test_temporary_images_are_removed_after_a_failed_push(tmp_path: Path, monkeypatch) -> None:
+    context = tmp_path / "context"
+    context.mkdir()
+    containerfile = context / "Containerfile"
+    containerfile.write_text("FROM scratch\n", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "push":
+            return SimpleNamespace(returncode=1, stderr="push denied")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+    request = WorkloadBuildRequest(
+        engine="podman",
+        context=context,
+        containerfile=containerfile,
+        repository="registry.example.test/acme/custom",
+        tag="0.1.0",
+        platform="linux/amd64",
+        registration_descriptor=_descriptor(),
+        workload_id="plugin-workload",
+    )
+
+    with pytest.raises(WorkloadBuildError, match="push denied"):
+        build_and_push_workload(request)
+
+    staging_reference, registered_reference = commands[0][9], commands[1][9]
+    assert commands[-2:] == [
+        ["podman", "rmi", registered_reference],
+        ["podman", "rmi", staging_reference],
+    ]
+
+
+def test_cleanup_failures_do_not_mask_a_push_failure(tmp_path: Path, monkeypatch) -> None:
+    context = tmp_path / "context"
+    context.mkdir()
+    containerfile = context / "Containerfile"
+    containerfile.write_text("FROM scratch\n", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "push":
+            return SimpleNamespace(returncode=1, stderr="push denied")
+        if command[1] == "rmi":
+            raise OSError("cleanup unavailable")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+    request = WorkloadBuildRequest(
+        engine="podman",
+        context=context,
+        containerfile=containerfile,
+        repository="registry.example.test/acme/custom",
+        tag="0.1.0",
+        platform="linux/amd64",
+        registration_descriptor=_descriptor(),
+        workload_id="plugin-workload",
+    )
+
+    with pytest.raises(WorkloadBuildError, match="push denied"):
+        build_and_push_workload(request)
+
+    assert [command[1] for command in commands[-2:]] == ["rmi", "rmi"]
 
 
 def test_build_requires_valid_compiled_registration_before_running_podman(

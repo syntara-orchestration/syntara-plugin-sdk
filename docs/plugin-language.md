@@ -195,10 +195,26 @@ manifest containing these IDs. Provider-only and unreferenced workload bindings
 remain in the projection. The step projection contains `projection`,
 `kind: "step"`, the plugin's namespace/name/version, `sdkVersion`,
 `contractBundleDigest`, and the complete compiled target without its generated
-ID. Thus a change to a step, plugin release coordinates, SDK version, or
-contract bundle changes that step's ID; a change to another target or plugin
-documentation does not. A platform-runner implementation reference is part of
-its compiled target and therefore participates in both revision projections.
+ID.
+
+**Step revision change rule:** The compiler creates a new `step_revision_id`
+when any part of that projection changes. This includes the plugin
+namespace/name/release version; the Step type's category and input, output, or
+error contracts; its runtime kind, ABI, and declared entry point or
+implementation reference; the exact `sdkVersion`; and the contract-bundle
+digest. A platform-runner implementation reference is part of the compiled
+target and therefore participates in both revision projections.
+
+A Step type revision does not change for a workload image repository, image
+digest, or registration-time image selection; for another Step type; or for
+plugin documentation. The latter two changes can create a new
+`plugin_revision_id` without changing this Step type's revision.
+
+Recompiling the same author inputs with a different SDK version or contract
+bundle intentionally creates a distinct Step type revision. Existing published
+revisions remain valid. Before a new custom-runner revision can execute, its
+selected workload image must contain a registration-manifest mapping for that
+new revision.
 
 Revision IDs identify compiled contracts, not image bytes. The workload image
 digest remains separately bound in `spec.workloads` and in the complete

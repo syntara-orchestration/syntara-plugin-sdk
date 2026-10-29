@@ -10,7 +10,7 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
@@ -94,6 +94,35 @@ def _sdk_semver(distribution_version: str) -> str:
     if phase is None:
         return release
     return f"{release}-{_SEMVER_PRE_RELEASE_PHASE[phase]}.{match.group('serial')}"
+
+
+def _compiled_sdk_version(diagnostics: list[Diagnostic]) -> str | None:
+    """Return the compiler's SemVer version or append a stable diagnostic."""
+
+    try:
+        distribution_version = version("syntara-plugin-sdk")
+    except PackageNotFoundError:
+        diagnostics.append(
+            _diagnostic(
+                "SDK_VERSION_UNAVAILABLE",
+                "Cannot determine the installed syntara-plugin-sdk version.",
+                PLUGIN_MANIFEST_FILENAME,
+                "Install syntara-plugin-sdk before compiling this plugin.",
+            )
+        )
+        return None
+    try:
+        return _sdk_semver(distribution_version)
+    except RuntimeError:
+        diagnostics.append(
+            _diagnostic(
+                "SDK_VERSION_INVALID",
+                f"Installed syntara-plugin-sdk version {distribution_version!r} is not SemVer-compatible.",
+                PLUGIN_MANIFEST_FILENAME,
+                "Use an SDK release with a three-part version and optional a, b, or rc prerelease suffix.",
+            )
+        )
+        return None
 
 
 @dataclass(frozen=True)
@@ -310,10 +339,13 @@ def _compile(
     _validate_unique_target_identities(canonical_targets, diagnostics)
     if diagnostics:
         raise CompilationError(diagnostics)
+    sdk_version = _compiled_sdk_version(diagnostics)
+    if diagnostics:
+        raise CompilationError(diagnostics)
     descriptor_spec: dict[str, object] = {
         "assets": {key: assets[key].index_entry() for key in sorted(assets)},
         "contractBundleDigest": bundle.digest,
-        "sdkVersion": _sdk_semver(version("syntara-plugin-sdk")),
+        "sdkVersion": sdk_version,
         "targets": canonical_targets,
         "workloads": _canonical_workloads(plugin.document, image_bindings),
     }
