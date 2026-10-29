@@ -337,7 +337,7 @@ def _constraint_value(schema: dict[str, Any], keyword: str) -> object:
 
 
 def _runtime(package: str, target: str, input_path: str) -> str:
-    return f'''"""Temporary single-Action adapter pending the AAP-97120 binding helper."""
+    return f'''"""Temporary single-Action adapter pending the binding helper."""
 
 import json
 from importlib.resources import files
@@ -439,7 +439,7 @@ Before building the image, prepare `wheels/` with this package and its runtime
 dependencies, for example `python -m pip wheel --wheel-dir wheels .`. Configure a
 workload registry in `syntara-plugin.yaml` before using `build --with-workload`.
 
-The single-Action `runtime.py` binding adapter is temporary pending AAP-97120's
-public packaged-manifest helper. It reads the scaffold's JSON-formatted YAML
+The single-Action `runtime.py` binding adapter is temporary pending the public
+packaged-manifest binding helper. It reads the scaffold's JSON-formatted YAML
 manifests and input asset; update it when adding targets or changing their paths.
 """

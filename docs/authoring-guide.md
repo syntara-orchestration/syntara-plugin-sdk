@@ -407,8 +407,8 @@ syntara-plugin init ./incident-tracker --namespace acme \
 
 This adds the workload declaration and build settings, a typed Python Action,
 runtime configuration, a Containerfile, and local tests. Its temporary
-single-Action binding adapter reads the packaged manifests; AAP-97120 will
-provide a public helper to replace it. See [Getting started](getting-started.md#create-a-python-custom-runner)
+single-Action binding adapter reads the packaged manifests; a public
+packaged-manifest binding helper will replace it. See [Getting started](getting-started.md#create-a-python-custom-runner)
 for running the scaffold and preparing its image. Review generated models and
 schemas together, particularly when using complex JSON Schema constructs.
 

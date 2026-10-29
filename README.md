@@ -49,7 +49,7 @@ syntara-plugin run --manifest ./my-runner/plugin.yaml --input '{"resource": "exa
 ```
 
 The generated runtime uses a temporary single-Action binding adapter pending
-the packaged-manifest helper in AAP-97120. See [Getting started](docs/getting-started.md)
+the packaged-manifest binding helper. See [Getting started](docs/getting-started.md)
 for local tests and image preparation.
 
 `init` creates a small plugin workspace and a non-secret

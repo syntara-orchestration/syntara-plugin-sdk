@@ -78,8 +78,8 @@ Before building an image, prepare `wheels/` with the plugin and its runtime
 dependencies, for example with `python -m pip wheel --wheel-dir wheels .`, and
 configure a workload registry. The generated `runtime.py` binds the one Action
 from packaged JSON-formatted YAML manifests as a temporary compatibility adapter.
-A public packaged-manifest binding helper is pending AAP-97120; update the
-adapter if you add targets or change manifest paths.
+A public packaged-manifest binding helper is pending; update the adapter if
+you add targets or change manifest paths.
 
 ## Validate, inspect, and build
 
