@@ -116,7 +116,8 @@ def create_bindings() -> StepBindings:
 The factory is plugin-specific, not Step-type-specific. A workload image may
 provide one or more installed bindings. At startup the platform supplies trusted
 resolved execution data as a read-only JSON file, named by
-`SYNTARA_RESOLVED_EXECUTION`:
+`SYNTARA_RESOLVED_EXECUTION`. The file must conform to the versioned
+`resolved-execution` contract:
 
 ```json
 {

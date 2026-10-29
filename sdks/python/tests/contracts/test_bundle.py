@@ -52,6 +52,7 @@ def test_bundle_has_stable_digest_and_required_contracts() -> None:
         "plugin-build-settings.schema.json",
         "plugin-descriptor.schema.json",
         "registration-manifest.schema.json",
+        "resolved-execution.schema.json",
         "runtime.schema.json",
         "step.schema.json",
         "trigger-driver.schema.json",
@@ -60,6 +61,23 @@ def test_bundle_has_stable_digest_and_required_contracts() -> None:
         "control.schema.json",
     }
     assert RuntimeContractBundle is SdkContractBundle
+
+
+def test_resolved_execution_schema_is_strict() -> None:
+    document = {
+        "bindings": [
+            {
+                "stepRevisionId": "sha256:" + "a" * 64,
+                "runtimeKind": "platform-runner",
+                "entryPoint": "acme_plugin.steps:CreateIssue",
+                "abi": "syntara.container/v1alpha1",
+            }
+        ]
+    }
+
+    assert validate_document(load_bundle(), "resolved_execution", document) == []
+    document["bindings"][0]["unexpected"] = True
+    assert validate_document(load_bundle(), "resolved_execution", document)
 
 
 def test_plugin_build_settings_schema_is_descriptive_and_strict() -> None:

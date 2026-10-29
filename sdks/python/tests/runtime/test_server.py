@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import socket
 import subprocess
@@ -733,15 +734,15 @@ def test_server_requires_resolved_execution_data() -> None:
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"stepRevisionId": "smoke.echo.v1"}, "revision"),
-        ({"runtimeKind": "other"}, "runtime kind"),
-        ({"abi": "syntara.container/v0"}, "ABI"),
-        ({"entryPoint": "bad-entry"}, "entry point"),
+        ({"stepRevisionId": "smoke.echo.v1"}, "contract"),
+        ({"runtimeKind": "other"}, "contract"),
+        ({"abi": "syntara.container/v0"}, "contract"),
+        ({"entryPoint": "bad-entry"}, "contract"),
         ({"entryPoint": "missing.module:Step"}, "could not be loaded"),
         ({"entryPoint": f"{__name__}:EchoInput"}, "typed Step"),
         ({"entryPoint": f"{__name__}:BarrierStep"}, "exactly one"),
         ({"entryPoint": f"{__name__}:EchoAlias"}, "invalid installed binding"),
-        ({"extra": "field"}, "invalid fields"),
+        ({"extra": "field"}, "contract"),
     ],
 )
 def test_invalid_resolved_bindings_fail_startup(
@@ -782,9 +783,12 @@ def test_duplicate_registration_keys_fail_startup(tmp_path: Path) -> None:
 def test_entry_point_import_failure_is_reported_at_startup(tmp_path: Path, monkeypatch) -> None:
     config = _resolved_config(tmp_path, [_resolved_record("platform-runner")])
     bindings = create_bindings()
+    original_import = importlib.import_module
 
     def fail_import(module: str) -> None:
-        raise RuntimeError("import failed")
+        if module == __name__:
+            raise RuntimeError("import failed")
+        return original_import(module)
 
     monkeypatch.setattr("syntara_plugin.runtime.server.importlib.import_module", fail_import)
     with pytest.raises(RuntimeServerError, match="could not be loaded"):

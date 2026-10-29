@@ -6,7 +6,6 @@ import asyncio
 import importlib
 import json
 import os
-import re
 import signal
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -39,10 +38,6 @@ _RUNTIME_CONFIG = "SYNTARA_RUNTIME_CONFIG"
 _RESOLVED_EXECUTION = "SYNTARA_RESOLVED_EXECUTION"
 _REGISTRATION_MANIFEST = "SYNTARA_REGISTRATION_MANIFEST"
 _DEFAULT_REGISTRATION_MANIFEST = Path("/opt/syntara/registration-manifest.json")
-_REVISION = re.compile(r"^sha256:[a-f0-9]{64}$")
-_ENTRY_POINT = re.compile(
-    r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$", re.ASCII
-)
 _GRPC_ADDRESS = "SYNTARA_RUNTIME_GRPC_ADDRESS"
 _TLS_CERTIFICATE = "SYNTARA_RUNTIME_GRPC_TLS_CERT"
 _TLS_KEY = "SYNTARA_RUNTIME_GRPC_TLS_KEY"
@@ -284,45 +279,24 @@ def _resolved_execution_bindings(config: RuntimeServerConfig) -> list[_ResolvedE
     if config.resolved_execution_path is None:
         raise RuntimeServerError(f"{_RESOLVED_EXECUTION} must name a resolved execution file")
     document = _read_json_object(config.resolved_execution_path, "resolved execution data")
-    records = document.get("bindings")
-    if set(document) != {"bindings"} or not isinstance(records, list) or not records:
-        raise RuntimeServerError("resolved execution data requires a non-empty bindings array")
+    if validate_document(load_bundle(), "resolved_execution", document):
+        raise RuntimeServerError("resolved execution data violates its contract")
+    records = document["bindings"]
+    assert isinstance(records, list)
     return [_parse_resolved_execution_binding(record) for record in records]
 
 
 def _parse_resolved_execution_binding(record: Any) -> _ResolvedExecutionBinding:
-    fields = {"stepRevisionId", "runtimeKind", "entryPoint", "abi"}
-    if not isinstance(record, Mapping) or set(record) != fields:
-        raise RuntimeServerError("resolved execution binding has invalid fields")
+    assert isinstance(record, Mapping)
     revision = record["stepRevisionId"]
     runtime_kind = record["runtimeKind"]
     entry_point = record["entryPoint"]
     abi = record["abi"]
-    _validate_resolved_revision(revision)
-    _validate_runtime_kind(runtime_kind)
-    _validate_resolved_abi(abi)
-    _validate_resolved_entry_point(entry_point)
+    assert isinstance(revision, str)
+    assert isinstance(runtime_kind, str)
+    assert isinstance(entry_point, str)
+    assert isinstance(abi, str)
     return _ResolvedExecutionBinding(revision, runtime_kind, entry_point, abi)
-
-
-def _validate_resolved_revision(value: Any) -> None:
-    if not isinstance(value, str) or not _REVISION.fullmatch(value):
-        raise RuntimeServerError("resolved execution binding has an invalid step revision")
-
-
-def _validate_runtime_kind(value: Any) -> None:
-    if value not in ("custom-runner", "platform-runner"):
-        raise RuntimeServerError("resolved execution binding has an invalid runtime kind")
-
-
-def _validate_resolved_abi(value: Any) -> None:
-    if value != CONTAINER_ABI:
-        raise RuntimeServerError("resolved execution binding has an unsupported ABI")
-
-
-def _validate_resolved_entry_point(value: Any) -> None:
-    if not isinstance(value, str) or not _ENTRY_POINT.fullmatch(value):
-        raise RuntimeServerError("resolved execution binding has an invalid entry point")
 
 
 def _validate_custom_runner_mapping(
