@@ -258,35 +258,56 @@ def _model(schema: dict[str, Any], name: str, classes: list[str]) -> None:
     used: set[str] = set()
     for index, (key, raw) in enumerate(properties.items()):
         prop = raw if isinstance(raw, dict) else {}
-        field = key if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", key) else f"field_{index}"
-        if (
-            keyword.iskeyword(field)
-            or field.startswith("model_")
-            or field.startswith("ActionInput")
-            or field
-            in {"Annotated", "Any", "Literal", "BaseModel", "ConfigDict", "Field", "WithJsonSchema"}
-            or hasattr(builtins, field)
-            or hasattr(BaseModel, field)
-            or field in used
-        ):
-            field = f"field_{index}"
-        while field in used:
-            field += "_"
-        used.add(field)
+        field = _model_field_name(key, index, used)
         annotation = _annotation(prop, f"{name}Field{index}", classes)
         optional = key not in required
-        default = (
-            repr(prop["default"])
-            if optional and "default" in prop
-            else ("None" if optional else "...")
-        )
-        constraints = _constraints(prop)
-        validate_default = ", validate_default=True" if optional and "default" in prop else ""
-        lines.append(
-            f"    {field}: {annotation} = Field({default}, alias={key!r}"
-            f"{constraints}{validate_default})"
-        )
+        lines.append(_model_field(field, key, prop, annotation, optional))
     classes.append("\n".join(lines))
+
+
+def _model_field_name(key: str, index: int, used: set[str]) -> str:
+    field = key if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", key) else f"field_{index}"
+    reserved = {
+        "Annotated",
+        "Any",
+        "Literal",
+        "BaseModel",
+        "ConfigDict",
+        "Field",
+        "WithJsonSchema",
+    }
+    if (
+        keyword.iskeyword(field)
+        or field.startswith("model_")
+        or field.startswith("ActionInput")
+        or field in reserved
+        or hasattr(builtins, field)
+        or hasattr(BaseModel, field)
+        or field in used
+    ):
+        field = f"field_{index}"
+    while field in used:
+        field += "_"
+    used.add(field)
+    return field
+
+
+def _model_field(
+    field: str, key: str, schema: dict[str, Any], annotation: str, optional: bool
+) -> str:
+    default = _model_field_default(schema, optional)
+    constraints = _constraints(schema)
+    validate_default = ", validate_default=True" if optional and "default" in schema else ""
+    return (
+        f"    {field}: {annotation} = Field({default}, alias={key!r}"
+        f"{constraints}{validate_default})"
+    )
+
+
+def _model_field_default(schema: dict[str, Any], optional: bool) -> str:
+    if optional and "default" in schema:
+        return repr(schema["default"])
+    return "None" if optional else "..."
 
 
 def _annotation(schema: dict[str, Any], name: str, classes: list[str]) -> str:
