@@ -144,83 +144,114 @@ _FIELD_CONSTRAINTS = {
 
 def _validate_model_schema(schema: dict[str, Any]) -> None:
     """Reject schemas that cannot be represented safely before writing any files."""
+    _validate_finite_values(schema, "$")
+    _validate_schema_node(schema, "$")
 
-    def finite(value: object, path: str) -> None:
-        if isinstance(value, float) and not math.isfinite(value):
-            raise ValueError(f"fields schema {path}: non-finite JSON numbers are not supported")
-        if isinstance(value, float) and "e" in repr(value).lower():
-            raise ValueError(f"fields schema {path}: scientific notation is not supported")
-        if isinstance(value, dict):
-            for key, child in value.items():
-                finite(child, f"{path}.{key}")
-        elif isinstance(value, list):
-            for index, child in enumerate(value):
-                finite(child, f"{path}[{index}]")
 
-    def visit(node: object, path: str) -> None:
-        if not isinstance(node, dict):
-            raise ValueError(f"fields schema {path}: expected a schema object")
-        kind = node.get("type")
-        if not isinstance(kind, str) or kind not in _KEYWORDS:
-            raise ValueError(f"fields schema {path}: unsupported or missing type {kind!r}")
-        unsupported = sorted(set(node) - _ANNOTATIONS - _KEYWORDS[kind] - {"type"})
-        if unsupported:
-            raise ValueError(f"fields schema {path}: unsupported keyword {unsupported[0]!r}")
-        if "default" in node:
-            errors = list(
-                Draft202012Validator(node, format_checker=FormatChecker()).iter_errors(
-                    node["default"]
-                )
-            )
-            if errors:
-                raise ValueError(f"fields schema {path}: invalid default: {errors[0].message}")
-            validate_default_types(node, node["default"], path)
-        if "enum" in node:
-            enum = node["enum"]
-            if not isinstance(enum, list) or not enum:
-                raise ValueError(f"fields schema {path}: enum must contain at least one value")
-            if not all(isinstance(value, str) for value in enum):
-                raise ValueError(f"fields schema {path}: only string enums are supported")
-        if kind == "integer":
-            for bound in sorted(_KEYWORDS["integer"]):
-                value = node.get(bound)
-                if isinstance(value, float) and not value.is_integer():
-                    raise ValueError(
-                        f"fields schema {path}: fractional integer bound {bound!r} is unsupported"
-                    )
-        if kind == "object":
-            if node.get("additionalProperties", True) not in (True, False):
-                raise ValueError(
-                    f"fields schema {path}: schema-valued additionalProperties is unsupported"
-                )
-            properties = node.get("properties", {})
-            if not isinstance(properties, dict):
-                raise ValueError(f"fields schema {path}: properties must be an object")
-            missing = set(node.get("required", [])) - set(properties)
-            if missing:
-                raise ValueError(f"fields schema {path}: required properties must be defined")
-            for key, child in properties.items():
-                visit(child, f"{path}.properties[{key!r}]")
-        elif kind == "array" and "items" in node:
-            visit(node["items"], f"{path}.items")
+def _validate_finite_values(value: object, path: str) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"fields schema {path}: non-finite JSON numbers are not supported")
+    if isinstance(value, float) and "e" in repr(value).lower():
+        raise ValueError(f"fields schema {path}: scientific notation is not supported")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _validate_finite_values(child, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_finite_values(child, f"{path}[{index}]")
 
-    def validate_default_types(node: dict[str, Any], value: object, path: str) -> None:
-        # JSON Schema accepts 1.0 as an integer, while a strict Pydantic int does not.
-        if node.get("type") == "integer" and isinstance(value, float):
-            raise ValueError(f"fields schema {path}: integer default must use an integer value")
-        if node.get("type") == "object" and isinstance(value, dict):
-            properties = node.get("properties", {})
-            for key, child in value.items():
-                if isinstance(properties.get(key), dict):
-                    validate_default_types(properties[key], child, f"{path}.{key}")
-        if node.get("type") == "array" and isinstance(value, list):
-            items = node.get("items")
-            if isinstance(items, dict):
-                for index, child in enumerate(value):
-                    validate_default_types(items, child, f"{path}[{index}]")
 
-    finite(schema, "$")
-    visit(schema, "$")
+def _validate_schema_node(node: object, path: str) -> None:
+    if not isinstance(node, dict):
+        raise ValueError(f"fields schema {path}: expected a schema object")
+    kind = _schema_kind(node, path)
+    _validate_supported_keywords(node, kind, path)
+    _validate_default(node, path)
+    _validate_enum(node, path)
+    if kind == "integer":
+        _validate_integer_bounds(node, path)
+    if kind == "object":
+        _validate_object_schema(node, path)
+    elif kind == "array" and "items" in node:
+        _validate_schema_node(node["items"], f"{path}.items")
+
+
+def _schema_kind(node: dict[str, Any], path: str) -> str:
+    kind = node.get("type")
+    if not isinstance(kind, str) or kind not in _KEYWORDS:
+        raise ValueError(f"fields schema {path}: unsupported or missing type {kind!r}")
+    return kind
+
+
+def _validate_supported_keywords(node: dict[str, Any], kind: str, path: str) -> None:
+    unsupported = sorted(set(node) - _ANNOTATIONS - _KEYWORDS[kind] - {"type"})
+    if unsupported:
+        raise ValueError(f"fields schema {path}: unsupported keyword {unsupported[0]!r}")
+
+
+def _validate_default(node: dict[str, Any], path: str) -> None:
+    if "default" not in node:
+        return
+    errors = list(
+        Draft202012Validator(node, format_checker=FormatChecker()).iter_errors(node["default"])
+    )
+    if errors:
+        raise ValueError(f"fields schema {path}: invalid default: {errors[0].message}")
+    _validate_default_types(node, node["default"], path)
+
+
+def _validate_enum(node: dict[str, Any], path: str) -> None:
+    if "enum" not in node:
+        return
+    enum = node["enum"]
+    if not isinstance(enum, list) or not enum:
+        raise ValueError(f"fields schema {path}: enum must contain at least one value")
+    if not all(isinstance(value, str) for value in enum):
+        raise ValueError(f"fields schema {path}: only string enums are supported")
+
+
+def _validate_integer_bounds(node: dict[str, Any], path: str) -> None:
+    for bound in sorted(_KEYWORDS["integer"]):
+        value = node.get(bound)
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"fields schema {path}: fractional integer bound {bound!r} is unsupported")
+
+
+def _validate_object_schema(node: dict[str, Any], path: str) -> None:
+    if node.get("additionalProperties", True) not in (True, False):
+        raise ValueError(f"fields schema {path}: schema-valued additionalProperties is unsupported")
+    properties = node.get("properties", {})
+    if not isinstance(properties, dict):
+        raise ValueError(f"fields schema {path}: properties must be an object")
+    missing = set(node.get("required", [])) - set(properties)
+    if missing:
+        raise ValueError(f"fields schema {path}: required properties must be defined")
+    for key, child in properties.items():
+        _validate_schema_node(child, f"{path}.properties[{key!r}]")
+
+
+def _validate_default_types(node: dict[str, Any], value: object, path: str) -> None:
+    # JSON Schema accepts 1.0 as an integer, while a strict Pydantic int does not.
+    if node.get("type") == "integer" and isinstance(value, float):
+        raise ValueError(f"fields schema {path}: integer default must use an integer value")
+    if node.get("type") == "object" and isinstance(value, dict):
+        _validate_object_default_types(node, value, path)
+    if node.get("type") == "array" and isinstance(value, list):
+        _validate_array_default_types(node, value, path)
+
+
+def _validate_object_default_types(node: dict[str, Any], value: dict[str, Any], path: str) -> None:
+    properties = node.get("properties", {})
+    for key, child in value.items():
+        if isinstance(properties.get(key), dict):
+            _validate_default_types(properties[key], child, f"{path}.{key}")
+
+
+def _validate_array_default_types(node: dict[str, Any], value: list[Any], path: str) -> None:
+    items = node.get("items")
+    if isinstance(items, dict):
+        for index, child in enumerate(value):
+            _validate_default_types(items, child, f"{path}[{index}]")
 
 
 def _display_name(name: str) -> str:
