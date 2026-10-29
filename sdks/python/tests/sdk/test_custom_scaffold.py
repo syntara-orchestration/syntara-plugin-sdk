@@ -256,11 +256,12 @@ def test_custom_schema_file_and_drift_detection(
     )
     monkeypatch.syspath_prepend(str(workspace))
     entry_point = "syntara_step_schema_file.step:ActionImplementation"
-    StepBindingsFactory(strict=True).bind_step(entry_point, workspace=workspace)
+    bindings_factory = StepBindingsFactory(strict=True)
+    bindings_factory.bind_step(entry_point, workspace=workspace)
     schema["properties"]["count"]["type"] = "string"
     (workspace / "schemas/request.input.yaml").write_text(json.dumps(schema), encoding="utf-8")
     with pytest.raises(SchemaDriftError):
-        StepBindingsFactory(strict=True).bind_step(entry_point, workspace=workspace)
+        bindings_factory.bind_step(entry_point, workspace=workspace)
 
 
 def test_custom_field_names_that_look_like_yaml_values(tmp_path: Path) -> None:
