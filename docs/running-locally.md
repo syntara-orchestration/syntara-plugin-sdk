@@ -293,8 +293,9 @@ obtain such a runtime:
    contains one complete, copy-pasteable factory, and
    [the runtime and OCI model](runtime-and-oci.md) describes the adapter
    contract and the format of the trusted resolved execution file. Its revision
-   must match the local compiled target, and custom runners must match the
-   image's packaged registration manifest. This is also the image pattern the managed path expects:
+   and installed Step identity must match the local compiled target, and custom
+   runners must match the image's packaged registration manifest. This is also
+   the image pattern the managed path expects:
    install the `syntara-plugin-contracts` wheel on a Python base image, copy
    your plugin sources and runtime config, and set `SYNTARA_RUNTIME_CONFIG`
    and `PYTHONPATH`. Managed image mode supplies the selected local compiled

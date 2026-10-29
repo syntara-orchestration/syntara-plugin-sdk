@@ -72,7 +72,11 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
             revision = target["step_revision_id"]
             if revision in steps:
                 raise ValueError("duplicate step revision in registration manifest")
-            steps[revision] = {"entryPoint": runtime["entryPoint"], "abi": runtime["abi"]}
+            steps[revision] = {
+                "stepIdentity": target["identity"],
+                "entryPoint": runtime["entryPoint"],
+                "abi": runtime["abi"],
+            }
     if not steps:
         raise ValueError(f"workload {workload_id!r} has no custom-runner steps")
     return {

@@ -310,6 +310,7 @@ def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path
     manifest = registration_manifest(preflight.descriptor, "plugin-workload")
     assert manifest == registration_manifest(first.descriptor, "plugin-workload")
     assert manifest["steps"] == {first_spec["targets"][0]["step_revision_id"]: {
+        "stepIdentity": first_spec["targets"][0]["identity"],
         "entryPoint": "issue_tools.actions:CreateIssue", "abi": "syntara.container/v1alpha1",
     }}
     validate_registration_manifest(first.descriptor, "plugin-workload", manifest)

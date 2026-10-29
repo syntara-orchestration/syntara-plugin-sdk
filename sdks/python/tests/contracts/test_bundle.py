@@ -68,6 +68,7 @@ def test_resolved_execution_schema_is_strict() -> None:
         "bindings": [
             {
                 "stepRevisionId": "sha256:" + "a" * 64,
+                "stepIdentity": "acme.plugin.step",
                 "runtimeKind": "platform-runner",
                 "entryPoint": "acme_plugin.steps:CreateIssue",
                 "abi": "syntara.container/v1alpha1",
@@ -76,6 +77,9 @@ def test_resolved_execution_schema_is_strict() -> None:
     }
 
     assert validate_document(load_bundle(), "resolved_execution", document) == []
+    identity = document["bindings"][0].pop("stepIdentity")
+    assert validate_document(load_bundle(), "resolved_execution", document)
+    document["bindings"][0]["stepIdentity"] = identity
     document["bindings"][0]["unexpected"] = True
     assert validate_document(load_bundle(), "resolved_execution", document)
 

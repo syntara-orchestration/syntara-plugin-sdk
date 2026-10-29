@@ -175,6 +175,7 @@ class _ResolvedExecutionBinding:
     """One validated, platform-supplied container dispatch binding."""
 
     revision: str
+    step_identity: str
     runtime_kind: str
     entry_point: str
     abi: str
@@ -289,14 +290,16 @@ def _resolved_execution_bindings(config: RuntimeServerConfig) -> list[_ResolvedE
 def _parse_resolved_execution_binding(record: Any) -> _ResolvedExecutionBinding:
     assert isinstance(record, Mapping)
     revision = record["stepRevisionId"]
+    step_identity = record["stepIdentity"]
     runtime_kind = record["runtimeKind"]
     entry_point = record["entryPoint"]
     abi = record["abi"]
     assert isinstance(revision, str)
+    assert isinstance(step_identity, str)
     assert isinstance(runtime_kind, str)
     assert isinstance(entry_point, str)
     assert isinstance(abi, str)
-    return _ResolvedExecutionBinding(revision, runtime_kind, entry_point, abi)
+    return _ResolvedExecutionBinding(revision, step_identity, runtime_kind, entry_point, abi)
 
 
 def _validate_custom_runner_mapping(
@@ -307,7 +310,11 @@ def _validate_custom_runner_mapping(
     if binding.runtime_kind != "custom-runner":
         return manifest_steps
     steps = manifest_steps or _registration_steps(manifest_path)
-    expected = {"entryPoint": binding.entry_point, "abi": binding.abi}
+    expected = {
+        "stepIdentity": binding.step_identity,
+        "entryPoint": binding.entry_point,
+        "abi": binding.abi,
+    }
     if steps.get(binding.revision) != expected:
         raise RuntimeServerError("resolved custom runner does not match registration manifest")
     return steps
@@ -326,16 +333,16 @@ def _load_typed_step(entry_point: str) -> type[BaseStep[Any, Any]]:
 
 def _installed_binding_for_step(
     bindings: StepBindings,
+    step_identity: str,
     implementation: type[BaseStep[Any, Any]],
 ) -> StepBinding:
-    matches = [
-        bindings.binding(identity)
-        for identity in bindings.step_identities
-        if type(bindings.binding(identity).step) is implementation
-    ]
-    if len(matches) != 1:
-        raise RuntimeServerError("resolved entry point must match exactly one installed binding")
-    return matches[0]
+    try:
+        installed_binding = bindings.binding(step_identity)
+    except StepBindingError as error:
+        raise RuntimeServerError("resolved step identity has no installed binding") from error
+    if type(installed_binding.step) is not implementation:
+        raise RuntimeServerError("resolved entry point does not match the installed binding")
+    return installed_binding
 
 
 def _container_handler_for_resolved_binding(
@@ -367,7 +374,9 @@ def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) 
             binding, manifest_steps, config.registration_manifest_path
         )
         implementation = _load_typed_step(binding.entry_point)
-        installed_binding = _installed_binding_for_step(bindings, implementation)
+        installed_binding = _installed_binding_for_step(
+            bindings, binding.step_identity, implementation
+        )
         handlers[binding.revision] = _container_handler_for_resolved_binding(
             binding, installed_binding
         )

@@ -1127,6 +1127,7 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     target = descriptor["spec"]["targets"][0]
     assert manifest["plugin_revision_id"] == descriptor["spec"]["plugin_revision_id"]
     assert manifest["steps"][target["step_revision_id"]] == {
+        "stepIdentity": target["identity"],
         "entryPoint": target["runtime"]["entryPoint"], "abi": target["runtime"]["abi"],
     }
     assert descriptor["spec"]["workloads"]["custom-runner"]["image"] == (

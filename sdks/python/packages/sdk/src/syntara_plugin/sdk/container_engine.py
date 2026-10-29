@@ -182,6 +182,7 @@ def managed_runtime(image: str, target: RunTarget | None = None) -> Iterator[Man
                     resolved_path.write_text(
                         json.dumps({"bindings": [{
                             "stepRevisionId": target.step_revision_id,
+                            "stepIdentity": target.identity,
                             "runtimeKind": "custom-runner",
                             "entryPoint": target.entry_point,
                             "abi": CONTAINER_ABI,

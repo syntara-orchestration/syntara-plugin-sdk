@@ -123,6 +123,7 @@ resolved execution data as a read-only JSON file, named by
 {
   "bindings": [{
     "stepRevisionId": "sha256:<64 lowercase hex digits>",
+    "stepIdentity": "acme.echo.v1",
     "runtimeKind": "custom-runner",
     "entryPoint": "acme_plugin.steps:EchoStep",
     "abi": "syntara.container/v1alpha1"
@@ -130,18 +131,20 @@ resolved execution data as a read-only JSON file, named by
 }
 ```
 
-Replace the placeholder with the exact compiled revision. Custom-runner entries
-must match that revision, entry point and ABI in the packaged registration
-manifest at `/opt/syntara/registration-manifest.json` (override its path with
+Replace the placeholders with the exact compiled revision and installed Step
+identity. Custom-runner entries must match that revision, identity, entry point,
+and ABI in the packaged registration manifest at
+`/opt/syntara/registration-manifest.json` (override its path with
 `SYNTARA_REGISTRATION_MANIFEST` for testing). For a platform-runner entry, the
-platform supplies the referenced implementation's entry point and ABI and the
-referencing step's own revision; that revision need not occur in the image
-manifest. The compiled descriptor retains the authored implementation reference;
-the AO Plugin Registry resolves it, and this startup path consumes the supplied
-entry point and ABI. Each entry point must import a typed `BaseStep` class matching exactly
-one executable installed binding from the factory. Missing, ambiguous, malformed,
-duplicate, or inconsistent data prevents server startup. Health advertises only
-the registered revisions, and Execute dispatches only an exact revision match.
+platform supplies the referenced implementation's installed identity, entry
+point, and ABI alongside the referencing step's own revision; that revision need
+not occur in the image manifest. The compiled descriptor retains the authored
+implementation reference; the AO Plugin Registry resolves it, and this startup
+path consumes the supplied installed-binding identity, entry point, and ABI.
+Each entry point must import a typed `BaseStep` class matching that exact
+executable installed binding from the factory. Missing, malformed, duplicate, or
+inconsistent data prevents server startup. Health advertises only the registered
+revisions, and Execute dispatches only an exact revision match.
 
 The factory must obtain authorized installed manifests and schemas; the image
 registration manifest supplies neither schema provenance nor image attestation.

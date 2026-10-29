@@ -13,9 +13,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["stepRevisionId", "runtimeKind", "entryPoint", "abi"],
+        "required": ["stepRevisionId", "stepIdentity", "runtimeKind", "entryPoint", "abi"],
         "properties": {
           "stepRevisionId": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+          "stepIdentity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
           "runtimeKind": {"enum": ["custom-runner", "platform-runner"]},
           "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
           "abi": {"const": "syntara.container/v1alpha1"}

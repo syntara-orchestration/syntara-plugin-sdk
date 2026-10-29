@@ -95,7 +95,7 @@ def test_revision_fixture_is_a_stable_projection_vector() -> None:
     assert validate_document(load_bundle(), "registration_manifest", manifest) == []
     validate_registration_manifest(fixture, "plugin-workload", manifest)
 
-    for mutation in ("entryPoint", "abi", "missing", "extra"):
+    for mutation in ("stepIdentity", "entryPoint", "abi", "missing", "extra"):
         altered = deepcopy(manifest)
         revision = next(iter(altered["steps"]))
         if mutation == "missing":
