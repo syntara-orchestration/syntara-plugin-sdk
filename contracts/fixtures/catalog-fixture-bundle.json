@@ -1,7 +1,7 @@
 {
   "fixtureBundleVersion": "syntara.catalog-fixtures/v1alpha1",
-  "contractBundleDigest": "sha256:03a545dd45bee76f8d4453bbfce24104f381fc6db93679aba3e4299853a7fedd",
-  "fixtureContentDigest": "sha256:bfe3c8b95555330f7a728f9dfac03c49d3345e9810fc4311688e43ad872b1fd5",
+  "contractBundleDigest": "sha256:c2537116305b460d0635ca2e53cc2ca5b7b044d04daee87d67810bd265f25cfe",
+  "fixtureContentDigest": "sha256:d9ea091dd9b7138b83648c649f5f17853f6320bbdac65a39ca7a161329843528",
   "catalogCases": [
     {"path": "catalog/valid-20.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 41, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": []},
     {"path": "catalog/expired.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_INDEX_EXPIRED"]},

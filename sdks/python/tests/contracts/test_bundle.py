@@ -169,7 +169,7 @@ def test_target_metadata_rejects_out_of_scope_tags() -> None:
         {
             "runtime": {
                 "kind": "platform-runner",
-                "driver": "http.v1",
+                "implementation": "acme.issue-tools.create-issue@0.1.0",
                 "operation": {"method": "POST", "path": "/issues"},
             },
             "input": {"kind": "inline", "value": {"type": "object"}},
