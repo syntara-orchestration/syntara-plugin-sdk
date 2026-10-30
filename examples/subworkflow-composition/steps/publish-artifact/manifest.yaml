@@ -20,20 +20,20 @@ spec:
         channel:
           type: string
           description: Release channel to publish into.
-        parent_run_id:
+        parentRunId:
           type: string
           description: Run identifier of the invoking parent workflow.
-      required: [artifact, channel, parent_run_id]
+      required: [artifact, channel, parentRunId]
   output:
     kind: inline
     value:
       type: object
       description: The child workflow's declared result.
       properties:
-        release_id:
+        releaseId:
           type: string
           description: Identifier of the published release.
-        published_at:
+        publishedAt:
           type: string
           description: RFC 3339 timestamp of the publication.
-      required: [release_id, published_at]
+      required: [releaseId, publishedAt]

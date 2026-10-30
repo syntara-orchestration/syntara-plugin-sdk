@@ -30,10 +30,10 @@ spec:
       type: object
       description: The result the child workflow surfaces to its parent.
       properties:
-        release_id:
+        releaseId:
           type: string
           description: Identifier of the published release.
-        published_at:
+        publishedAt:
           type: string
           description: RFC 3339 timestamp of the publication.
-      required: [release_id, published_at]
+      required: [releaseId, publishedAt]

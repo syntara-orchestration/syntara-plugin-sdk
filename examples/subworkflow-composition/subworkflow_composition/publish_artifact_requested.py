@@ -18,7 +18,7 @@ class PublishArtifactRequestedOutput(BaseModel):
 
     artifact: str
     channel: str
-    parent_run_id: str
+    parentRunId: str
 
 
 class PublishArtifactRequestedStep(
@@ -38,5 +38,5 @@ class PublishArtifactRequestedStep(
         return PublishArtifactRequestedOutput(
             artifact=inputs.artifact,
             channel=inputs.channel,
-            parent_run_id=context.workflow_run_id or "no-parent-run",
+            parentRunId=context.workflow_run_id or "no-parent-run",
         )

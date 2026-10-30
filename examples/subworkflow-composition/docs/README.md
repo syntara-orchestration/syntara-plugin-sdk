@@ -13,7 +13,7 @@ child workflow's terminal step.
 
 Add **Call publish artifact** to a parent workflow and supply the artifact name
 and the release channel. The step waits for the child workflow to finish and
-returns its `release_id` and `published_at` values, so later steps in the
+returns its `releaseId` and `publishedAt` values, so later steps in the
 parent workflow can read them directly.
 
 The child workflow is selected by name, not by version. The platform resolves

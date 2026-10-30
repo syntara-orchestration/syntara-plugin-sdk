@@ -30,8 +30,8 @@ class CallPublishArtifactInput(BaseModel):
 class CallPublishArtifactOutput(BaseModel):
     """The result the child workflow surfaces to its parent."""
 
-    release_id: str
-    published_at: str
+    releaseId: str
+    publishedAt: str
 
 
 class CallPublishArtifactStep(
@@ -58,5 +58,5 @@ class CallPublishArtifactStep(
             PublishArtifactInput(**event.model_dump()), context
         )
         return CallPublishArtifactOutput(
-            release_id=result.release_id, published_at=result.published_at
+            releaseId=result.releaseId, publishedAt=result.publishedAt
         )

@@ -41,6 +41,28 @@ def test_parent_declares_a_workflow_invocation_of_the_child() -> None:
     }
 
 
+def _load(relative_path: str) -> dict:
+    return yaml.safe_load((WORKSPACE / relative_path).read_text(encoding="utf-8"))
+
+
+def _without_descriptions(schema: object) -> object:
+    """Drop ``description`` keys: they differ by perspective, not by contract.
+
+    Everything else — types, formats, nested schemas, defaults, enums,
+    ``required`` — must match across the parent/child boundary.
+    """
+
+    if isinstance(schema, dict):
+        return {
+            key: _without_descriptions(value)
+            for key, value in schema.items()
+            if key != "description"
+        }
+    if isinstance(schema, list):
+        return [_without_descriptions(item) for item in schema]
+    return schema
+
+
 def test_parent_input_and_child_trigger_input_declare_the_same_parameters() -> None:
     """Parameter passing is an authoring obligation, not a validated constraint.
 
@@ -49,31 +71,55 @@ def test_parent_input_and_child_trigger_input_declare_the_same_parameters() -> N
     has to write themselves.
     """
 
-    parent = yaml.safe_load(
-        (WORKSPACE / "steps/call-publish-artifact/manifest.yaml").read_text(encoding="utf-8")
-    )
-    child = yaml.safe_load(
-        (WORKSPACE / "steps/publish-artifact-requested/manifest.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert (
-        parent["spec"]["input"]["value"]["properties"].keys()
-        == child["spec"]["input"]["value"]["properties"].keys()
+    parent = _load("steps/call-publish-artifact/manifest.yaml")
+    child = _load("steps/publish-artifact-requested/manifest.yaml")
+    assert _without_descriptions(parent["spec"]["input"]["value"]) == _without_descriptions(
+        child["spec"]["input"]["value"]
     )
 
 
 def test_parent_output_and_child_result_declare_the_same_result() -> None:
     """The parent surfaces the child workflow's terminal result, unenforced."""
 
-    parent = yaml.safe_load(
-        (WORKSPACE / "steps/call-publish-artifact/manifest.yaml").read_text(encoding="utf-8")
-    )
-    terminal = yaml.safe_load(
-        (WORKSPACE / "steps/publish-artifact/manifest.yaml").read_text(encoding="utf-8")
-    )
+    parent = _load("steps/call-publish-artifact/manifest.yaml")
+    terminal = _load("steps/publish-artifact/manifest.yaml")
     parent_output = parent["spec"]["output"]["value"]
     terminal_output = terminal["spec"]["output"]["value"]
     # Descriptions differ by perspective; the result contract must not.
-    assert parent_output["properties"].keys() == terminal_output["properties"].keys()
-    assert parent_output["required"] == terminal_output["required"]
+    assert _without_descriptions(parent_output) == _without_descriptions(terminal_output)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda schema: schema["properties"]["releaseId"].update(
+                {"type": "integer"}
+            ),
+            id="field-type-drift",
+        ),
+        pytest.param(
+            lambda schema: schema["properties"]["publishedAt"].update(
+                {"format": "date-time-strict"}
+            ),
+            id="constraint-drift",
+        ),
+        pytest.param(
+            lambda schema: schema["required"].remove("publishedAt"),
+            id="required-drift",
+        ),
+    ],
+)
+def test_result_comparison_detects_schema_drift(mutate) -> None:
+    """The deep comparison must fail when a field type or constraint diverges.
+
+    Guards the guard: if the equality check above ever degrades back to
+    comparing property names only, these mutations would slip through.
+    """
+
+    parent = _load("steps/call-publish-artifact/manifest.yaml")
+    drifted = _load("steps/publish-artifact/manifest.yaml")
+    mutate(drifted["spec"]["output"]["value"])
+    assert _without_descriptions(parent["spec"]["output"]["value"]) != _without_descriptions(
+        drifted["spec"]["output"]["value"]
+    )

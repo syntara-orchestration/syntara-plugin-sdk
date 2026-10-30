@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+from jsonschema import Draft202012Validator
 from subworkflow_composition.publish_artifact import PUBLISHED_AT
 from syntara_plugin.testing import (
     assert_outcomes_equivalent,
@@ -14,6 +17,9 @@ from syntara_plugin.testing import (
 )
 
 WORKSPACE = Path(__file__).resolve().parents[1]
+CALL_CONTRACT = (
+    WORKSPACE.parent.parent / "contracts" / "fixtures" / "subworkflow-call.valid.json"
+)
 
 PARENT = "subworkflow_composition.call_publish_artifact:CallPublishArtifactStep"
 TRIGGER = (
@@ -22,7 +28,7 @@ TRIGGER = (
 TERMINAL = "subworkflow_composition.publish_artifact:PublishArtifactStep"
 
 PARAMETERS = {"artifact": "syntara-cli", "channel": "stable"}
-CHILD_RESULT = {"release_id": "stable:syntara-cli", "published_at": PUBLISHED_AT}
+CHILD_RESULT = {"releaseId": "stable:syntara-cli", "publishedAt": PUBLISHED_AT}
 
 
 def test_child_trigger_emits_the_invocation_event(
@@ -34,7 +40,7 @@ def test_child_trigger_emits_the_invocation_event(
     )
     assert outcome.ok
     assert outcome.run_calls == 1
-    assert outcome.output == {**PARAMETERS, "parent_run_id": "parent-run-1"}
+    assert outcome.output == {**PARAMETERS, "parentRunId": "parent-run-1"}
 
 
 def test_child_trigger_rejects_a_payload_missing_a_parameter(
@@ -56,6 +62,19 @@ def test_parent_control_surfaces_the_child_workflow_result(
     assert outcome.ok
     assert outcome.run_calls == 1
     assert outcome.output == CHILD_RESULT
+
+
+def test_parent_output_payload_validates_against_the_call_contract() -> None:
+    """The emitted result satisfies the canonical subworkflow-call contract.
+
+    Guards against naming or shape drift between the example's Python
+    serialization and the fixture that pins the contract-true output.
+    """
+
+    contract = json.loads(CALL_CONTRACT.read_text(encoding="utf-8"))
+    schema = contract["spec"]["output"]["value"]
+    errors = Draft202012Validator(schema).iter_errors(CHILD_RESULT)
+    assert not list(errors)
 
 
 def test_child_workflow_seam_accepts_the_trigger_event(step_bindings) -> None:
@@ -87,11 +106,23 @@ def test_running_the_child_workflow_reaches_the_parent_declared_result(
     assert outcome.output == CHILD_RESULT
 
 
-def test_parent_direct_and_container_paths_are_equivalent(
-    mock_execution_context, step_bindings
+@pytest.mark.parametrize(
+    "entry_point",
+    [
+        pytest.param(PARENT, id="parent-control"),
+        pytest.param(TRIGGER, id="child-trigger"),
+        pytest.param(TERMINAL, id="terminal-action"),
+    ],
+)
+def test_direct_and_container_paths_are_equivalent(
+    entry_point, mock_execution_context, step_bindings
 ) -> None:
-    binding = step_bindings.bind_step(PARENT, workspace=WORKSPACE)
-    context = mock_execution_context(invocation_id="subworkflow-equivalence")
+    """Every step in the composition behaves the same in both run paths."""
+
+    binding = step_bindings.bind_step(entry_point, workspace=WORKSPACE)
+    context = mock_execution_context(
+        invocation_id="subworkflow-equivalence", workflow_run_id="parent-run-1"
+    )
     direct = invoke_step(binding, PARAMETERS, context=context)
     container = invoke_step_in_container(binding, PARAMETERS, context=context)
     assert_outcomes_equivalent(direct, container)

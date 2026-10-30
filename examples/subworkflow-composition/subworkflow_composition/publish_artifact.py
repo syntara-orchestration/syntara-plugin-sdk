@@ -15,14 +15,14 @@ class PublishArtifactInput(BaseModel):
 
     artifact: str
     channel: str
-    parent_run_id: str
+    parentRunId: str
 
 
 class PublishArtifactOutput(BaseModel):
     """The child workflow's declared result; mirrors the parent's output schema."""
 
-    release_id: str
-    published_at: str
+    releaseId: str
+    publishedAt: str
 
 
 class PublishArtifactStep(ActionStep[PublishArtifactInput, PublishArtifactOutput]):
@@ -32,6 +32,6 @@ class PublishArtifactStep(ActionStep[PublishArtifactInput, PublishArtifactOutput
         self, inputs: PublishArtifactInput, context: ExecutionContext
     ) -> PublishArtifactOutput:
         return PublishArtifactOutput(
-            release_id=f"{inputs.channel}:{inputs.artifact}",
-            published_at=PUBLISHED_AT,
+            releaseId=f"{inputs.channel}:{inputs.artifact}",
+            publishedAt=PUBLISHED_AT,
         )

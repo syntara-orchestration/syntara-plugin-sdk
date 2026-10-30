@@ -39,7 +39,7 @@ spec:
         channel:
           type: string
           description: Release channel to publish into.
-        parent_run_id:
+        parentRunId:
           type: string
           description: Run identifier of the invoking parent workflow.
-      required: [artifact, channel, parent_run_id]
+      required: [artifact, channel, parentRunId]
