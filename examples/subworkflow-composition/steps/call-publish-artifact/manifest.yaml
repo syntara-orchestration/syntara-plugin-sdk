@@ -1,0 +1,40 @@
+apiVersion: syntara.io/v1alpha1
+kind: Control
+metadata:
+  name: call-publish-artifact
+  displayName: Call publish artifact
+  description: Invokes the publish-artifact child workflow and surfaces its declared result.
+spec:
+  invocation:
+    kind: workflow-invocation
+    workflow: example.release.publish-artifact
+  runtime:
+    kind: custom-runner
+    entryPoint: subworkflow_composition.call_publish_artifact:CallPublishArtifactStep
+  input:
+    kind: inline
+    value:
+      type: object
+      description: Parameters the parent workflow passes to the child workflow.
+      additionalProperties: false
+      properties:
+        artifact:
+          type: string
+          description: Artifact name to publish.
+        channel:
+          type: string
+          description: Release channel to publish into.
+      required: [artifact, channel]
+  output:
+    kind: inline
+    value:
+      type: object
+      description: The result the child workflow surfaces to its parent.
+      properties:
+        releaseId:
+          type: string
+          description: Identifier of the published release.
+        publishedAt:
+          type: string
+          description: RFC 3339 timestamp of the publication.
+      required: [releaseId, publishedAt]

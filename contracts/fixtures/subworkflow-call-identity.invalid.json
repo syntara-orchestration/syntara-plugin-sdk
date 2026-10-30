@@ -1,0 +1,15 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "InstalledIdentity",
+  "metadata": {
+    "name": "call-publish-artifact",
+    "displayName": "Call publish artifact",
+    "description": "An installed subworkflow-call Control revision."
+  },
+  "spec": {
+    "plugin": {"namespace": "acme", "name": "release-tools", "version": "1.0.0", "artifactDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"},
+    "target": {"kind": "control", "name": "call-publish-artifact"},
+    "revisionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "registryGeneration": 1
+  }
+}

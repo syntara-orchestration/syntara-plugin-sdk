@@ -84,6 +84,27 @@ def _inferred_kind(document: Mapping[str, Any]) -> str:
     raise ValueError(message)
 
 
+def schema_without_descriptions(schema: Any) -> Any:
+    """Return a copy of a JSON Schema with every ``description`` key dropped.
+
+    Descriptions differ by perspective (parent versus child, caller versus
+    callee), so they are excluded when two declared schemas must agree.
+    Everything else — types, formats, nested schemas, defaults, enums,
+    ``required`` — is kept, so an equality check on the result compares the
+    full contract shape and not just property names.
+    """
+
+    if isinstance(schema, Mapping):
+        return {
+            key: schema_without_descriptions(value)
+            for key, value in schema.items()
+            if key != "description"
+        }
+    if isinstance(schema, list):
+        return [schema_without_descriptions(item) for item in schema]
+    return schema
+
+
 class ManifestValidator:
     """Validate manifest documents against the canonical schema bundle.
 

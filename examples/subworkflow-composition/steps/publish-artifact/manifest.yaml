@@ -1,0 +1,36 @@
+apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: publish-artifact
+  displayName: Publish artifact
+  description: Terminal step of the child workflow; produces the result its parent consumes.
+spec:
+  runtime:
+    kind: custom-runner
+    entryPoint: subworkflow_composition.publish_artifact:PublishArtifactStep
+  input:
+    kind: inline
+    value:
+      type: object
+      description: The event payload emitted by the subworkflow trigger.
+      properties:
+        artifact:
+          type: string
+          description: Artifact name to publish.
+        channel:
+          type: string
+          description: Release channel to publish into.
+      required: [artifact, channel]
+  output:
+    kind: inline
+    value:
+      type: object
+      description: The child workflow's declared result.
+      properties:
+        releaseId:
+          type: string
+          description: Identifier of the published release.
+        publishedAt:
+          type: string
+          description: RFC 3339 timestamp of the publication.
+      required: [releaseId, publishedAt]

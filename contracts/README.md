@@ -49,6 +49,27 @@ use `load_fixture_bundle()` to load its manifest-listed documents and verify the
 fixture-content digest before running their own smoke checks. Consumers in
 other languages consume the same files from the released contract bundle.
 
+The `subworkflow-*` fixtures cover synchronous subworkflow composition. A
+parent-side call is a `Control` whose `spec.invocation.kind` is
+`workflow-invocation` and whose runtime is the `syntara.workflow.invoke@1.0.0`
+platform-runner implementation;
+a child-side entry point is a `Trigger` on the `subworkflow.v1` driver that
+carries the child workflow's parameter schema in `spec.configuration` and
+passes its input through unchanged. Both valid fixtures use existing contracts
+unchanged. They express the composition seams but are not a confirmed fit for
+AO's ANSTRAT-2347 implementation: `spec.invocation` has no trigger selector
+(AO requires a `trigger_node_id`), `spec.invocation.workflow` is a
+`qualifiedIdentifier` where AO references a UUID `workflow_id`, and the
+parent's output is the child's declared result rather than AO's child
+execution metadata. The invalid fixtures
+pin known gaps rather than authoring mistakes: `spec.invocation.workflow` is a
+version-less qualified identifier and cannot pin a published child version,
+`TriggerDriver.spec.transport` has no value for a driver fired by a parent
+workflow, and `InstalledIdentity.spec.target.kind` excludes `control`. Each is
+rejected for exactly one reason; see
+[`examples/subworkflow-composition`](../examples/subworkflow-composition) for
+the runnable counterpart.
+
 Language-specific SDKs under `sdks/` may package these files for local access, but they must not maintain copies or alter contract semantics. See [ADR 0001](../.sdlc/adrs/0001-language-sdk-layout.md) for the repository layout decision.
 
 The Python contracts build stages this canonical tree into its wheel and source

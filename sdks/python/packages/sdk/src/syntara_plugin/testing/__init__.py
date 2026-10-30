@@ -38,6 +38,7 @@ from .manifests import (
     ManifestValidationError,
     ManifestValidator,
     compile_manifest,
+    schema_without_descriptions,
 )
 from .payloads import (
     DELIBERATE_FAILURE_CASES,
@@ -96,6 +97,7 @@ __all__ = [
     "parse_entry_point",
     "resolve_step",
     "schema_violating_binding",
+    "schema_without_descriptions",
     "secret_sentinel",
     "SecretLeakError",
 ]

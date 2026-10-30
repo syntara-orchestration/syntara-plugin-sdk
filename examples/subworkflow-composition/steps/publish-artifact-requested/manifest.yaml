@@ -1,0 +1,57 @@
+apiVersion: syntara.io/v1alpha1
+kind: Trigger
+metadata:
+  name: publish-artifact-requested
+  displayName: Publish artifact requested
+  description: Starts the publish-artifact workflow when a parent workflow invokes it.
+spec:
+  driver: subworkflow.v1
+  runtime:
+    kind: custom-runner
+    entryPoint: subworkflow_composition.publish_artifact_requested:PublishArtifactRequestedStep
+  configuration:
+    kind: inline
+    value:
+      type: object
+      description: >-
+        The child workflow's parameter schema, carried per workflow and passed
+        through to the child run unchanged.
+      additionalProperties: false
+      properties:
+        artifact:
+          type: string
+          description: Artifact name to publish.
+        channel:
+          type: string
+          description: Release channel to publish into.
+      required: [artifact, channel]
+  input:
+    kind: inline
+    value:
+      type: object
+      description: >-
+        The child workflow's parameters, passed through unchanged from the
+        invoking parent. Defined per workflow by spec.configuration, not fixed
+        per Step type.
+      additionalProperties: false
+      properties:
+        artifact:
+          type: string
+          description: Artifact name to publish.
+        channel:
+          type: string
+          description: Release channel to publish into.
+      required: [artifact, channel]
+  output:
+    kind: inline
+    value:
+      type: object
+      description: Event payload handed to the child workflow's first step.
+      properties:
+        artifact:
+          type: string
+          description: Artifact name to publish.
+        channel:
+          type: string
+          description: Release channel to publish into.
+      required: [artifact, channel]

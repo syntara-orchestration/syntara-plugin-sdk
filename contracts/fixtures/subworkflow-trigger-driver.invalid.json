@@ -1,0 +1,14 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "TriggerDriver",
+  "metadata": {
+    "name": "subworkflow",
+    "displayName": "Subworkflow",
+    "description": "Syntara-owned driver that starts a child workflow on parent invocation."
+  },
+  "spec": {
+    "id": "subworkflow.v1",
+    "transport": "workflow",
+    "events": ["subworkflow.invoked"]
+  }
+}
