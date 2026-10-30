@@ -17,6 +17,7 @@ from syntara_plugin.contracts import (
 )
 from syntara_plugin.runtime import ContractBundle as RuntimeContractBundle
 from syntara_plugin.sdk import ContractBundle as SdkContractBundle
+from syntara_plugin.testing import schema_without_descriptions
 
 from .helpers import step_document, target_metadata
 
@@ -625,9 +626,11 @@ def test_subworkflow_composition_maps_onto_existing_control_and_trigger_contract
 
     # The parent's declared input is the child's declared event payload. The
     # contracts express both sides but do not themselves bind one to the other;
-    # agreement is an authoring obligation, not a validated constraint.
-    assert parent_spec["input"]["value"]["properties"].keys() == (
-        child_spec["input"]["value"]["properties"].keys()
+    # agreement is an authoring obligation, not a validated constraint. Compare
+    # the complete schemas, not just property names: descriptions differ by
+    # perspective, types, formats, and required must not.
+    assert schema_without_descriptions(parent_spec["input"]["value"]) == (
+        schema_without_descriptions(child_spec["input"]["value"])
     )
     assert parent_spec["invocation"] == {
         "kind": "workflow-invocation",
@@ -637,6 +640,24 @@ def test_subworkflow_composition_maps_onto_existing_control_and_trigger_contract
         "kind": "platform-runner",
         "implementation": "syntara.workflow.invoke@1.0.0",
     }
+
+
+def test_subworkflow_input_comparison_detects_schema_drift() -> None:
+    """The deep input comparison must fail when a field type or constraint diverges.
+
+    Guards the guard: if the check above ever degrades back to comparing
+    property names only, this mutation — the child's ``channel`` becoming an
+    optional integer — would slip through.
+    """
+
+    parent = _subworkflow_fixture("subworkflow-call.valid.json")
+    drifted = _subworkflow_fixture("subworkflow-trigger.valid.json")
+    channel = drifted["spec"]["input"]["value"]["properties"]["channel"]
+    channel["type"] = "integer"
+    drifted["spec"]["input"]["value"]["required"].remove("channel")
+    assert schema_without_descriptions(parent["spec"]["input"]["value"]) != (
+        schema_without_descriptions(drifted["spec"]["input"]["value"])
+    )
 
 
 def test_subworkflow_composition_gaps_are_rejected_by_current_contracts() -> None:

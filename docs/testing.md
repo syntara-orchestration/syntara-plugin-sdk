@@ -154,6 +154,13 @@ engine: no branching, parallelism, fan-in, retries, or persistence. When a
 chain needs control flow, implement it as a `ControlStep.run()` and test the
 step.
 
+`schema_without_descriptions(schema)` returns a copy of a JSON Schema with
+every `description` key dropped, so two schemas that must agree — a parent
+Control's declared input and a child Trigger's event payload, for example —
+can be compared for their full shape (types, formats, nested schemas,
+defaults, enums, `required`) rather than just property names. Descriptions
+differ by perspective, so they are the one part excluded.
+
 ## Generated tests
 
 `syntara-plugin test-init` scaffolds a test module per custom-runner Action

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from syntara_plugin.testing import schema_without_descriptions
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 
@@ -45,24 +46,6 @@ def _load(relative_path: str) -> dict:
     return yaml.safe_load((WORKSPACE / relative_path).read_text(encoding="utf-8"))
 
 
-def _without_descriptions(schema: object) -> object:
-    """Drop ``description`` keys: they differ by perspective, not by contract.
-
-    Everything else — types, formats, nested schemas, defaults, enums,
-    ``required`` — must match across the parent/child boundary.
-    """
-
-    if isinstance(schema, dict):
-        return {
-            key: _without_descriptions(value)
-            for key, value in schema.items()
-            if key != "description"
-        }
-    if isinstance(schema, list):
-        return [_without_descriptions(item) for item in schema]
-    return schema
-
-
 def test_parent_input_and_child_trigger_input_declare_the_same_parameters() -> None:
     """Parameter passing is an authoring obligation, not a validated constraint.
 
@@ -73,8 +56,8 @@ def test_parent_input_and_child_trigger_input_declare_the_same_parameters() -> N
 
     parent = _load("steps/call-publish-artifact/manifest.yaml")
     child = _load("steps/publish-artifact-requested/manifest.yaml")
-    assert _without_descriptions(parent["spec"]["input"]["value"]) == _without_descriptions(
-        child["spec"]["input"]["value"]
+    assert schema_without_descriptions(parent["spec"]["input"]["value"]) == (
+        schema_without_descriptions(child["spec"]["input"]["value"])
     )
 
 
@@ -86,7 +69,9 @@ def test_parent_output_and_child_result_declare_the_same_result() -> None:
     parent_output = parent["spec"]["output"]["value"]
     terminal_output = terminal["spec"]["output"]["value"]
     # Descriptions differ by perspective; the result contract must not.
-    assert _without_descriptions(parent_output) == _without_descriptions(terminal_output)
+    assert schema_without_descriptions(parent_output) == schema_without_descriptions(
+        terminal_output
+    )
 
 
 @pytest.mark.parametrize(
@@ -120,6 +105,6 @@ def test_result_comparison_detects_schema_drift(mutate) -> None:
     parent = _load("steps/call-publish-artifact/manifest.yaml")
     drifted = _load("steps/publish-artifact/manifest.yaml")
     mutate(drifted["spec"]["output"]["value"])
-    assert _without_descriptions(parent["spec"]["output"]["value"]) != _without_descriptions(
-        drifted["spec"]["output"]["value"]
+    assert schema_without_descriptions(parent["spec"]["output"]["value"]) != (
+        schema_without_descriptions(drifted["spec"]["output"]["value"])
     )
