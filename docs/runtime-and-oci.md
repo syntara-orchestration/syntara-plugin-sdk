@@ -58,6 +58,16 @@ The ABI carries approved credential-file paths, not credential values. The
 launcher is responsible for authorizing the paths and making the files
 available to the workload; those host-side policies are outside this SDK.
 
+An approved path is one under `/var/run/syntara/secrets/`, enforced on both
+the sending and the receiving side. There is one deliberate, default-off
+exception: a client and a runtime may each be given one local credential
+directory, and then also accept a file directly inside it. Nothing on a host
+can write under `/var/run` without privilege, so `syntara-plugin run` uses
+this for its in-process loopback runtime in source mode; see
+[Running locally](running-locally.md#supplying-credentials). A deployed
+workload never sets it and accepts approved mount paths only. Image mode
+needs no exception: it mounts the file at the approved path.
+
 Credential values must never appear in business output, wrapper status or
 error fields, raised error messages, or logs. Pass approved file paths or
 handles through the runtime boundary; do not copy secret values into inputs or
@@ -247,7 +257,8 @@ contract: **Step type -> Category -> Runner -> Execution**.
 bounded non-secret runtime data, and a cooperative cancellation signal. It
 intentionally exposes no protobuf, gRPC, container, worker, or Execution Plane
 types, and no raw credential values; typed credential access is tracked
-separately.
+separately. A credential delivered to a local run therefore arrives as a file
+the launcher mounted, but no accessor hands its path to step code yet.
 
 ### Contract drift validation
 

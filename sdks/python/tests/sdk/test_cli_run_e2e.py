@@ -14,6 +14,7 @@ import sys
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -857,3 +858,281 @@ def _compiled_targets(workspace: Path) -> list[dict[str, Any]]:
 
     result = compile_workspace(BuildRequest(workspace / "plugin.yaml", require_image_bindings=False))
     return list(result.descriptor["spec"]["targets"])
+
+
+_CREDENTIAL_TOKEN = "tok-abcdef123456"
+_CREDENTIAL_NAME = "run.tracker.api-token"
+_CREDENTIAL_INTEGRATION = "run.tracker.connection"
+
+
+def _write_credential_e2e_workspace(root: Path) -> tuple[Path, str, str]:
+    """One workspace whose Action reaches a credential recipe through its integration."""
+
+    suffix = uuid.uuid4().hex[:8]
+    package = f"cred_e2e_{suffix}"
+    plugin_name = f"cred-e2e-{suffix}"
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / package).mkdir(parents=True, exist_ok=True)
+    (root / "steps/ok").mkdir(parents=True, exist_ok=True)
+    (root / "steps/ok/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: ok
+  displayName: ok
+  description: Credential e2e fixture.
+spec:
+  integrationType: {_CREDENTIAL_INTEGRATION}
+  runtime:
+    kind: custom-runner
+    entryPoint: {package}.steps:OkStep
+  input:
+    kind: inline
+    value: {_E2E_INPUT_SCHEMA}
+  output:
+    kind: inline
+    value: {_E2E_OUTPUT_SCHEMA}
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    (root / "steps/connection").mkdir(parents=True, exist_ok=True)
+    (root / "steps/connection/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: IntegrationType
+metadata:
+  name: connection
+  displayName: Tracker connection
+  description: Connects a tracker.
+spec:
+  id: {_CREDENTIAL_INTEGRATION}
+  endpointKinds: [tracker-cloud]
+  credentialTypes: [{_CREDENTIAL_NAME}]
+  configuration:
+    kind: inline
+    value: {{type: object}}
+""",
+        encoding="utf-8",
+    )
+    (root / "steps/recipe").mkdir(parents=True, exist_ok=True)
+    (root / "steps/recipe/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: CredentialRecipe
+metadata:
+  name: api-token
+  displayName: API token
+  description: A tracker API token.
+spec:
+  id: {_CREDENTIAL_NAME}
+  integrationType: {_CREDENTIAL_INTEGRATION}
+  credentialSchema:
+    kind: inline
+    value:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: {{type: string, minLength: 8}}
+  secretFields: [token]
+  issuance:
+    kind: static-bearer.v1
+""",
+        encoding="utf-8",
+    )
+    (root / "plugin.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: run
+  name: {plugin_name}
+  version: 0.1.0
+  displayName: Credential e2e
+  description: Credential e2e fixture.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: cred-workload
+  targets:
+    - steps/ok/manifest.yaml
+    - steps/connection/manifest.yaml
+    - steps/recipe/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    (root / "docs/README.md").write_text("# Credential e2e\n", encoding="utf-8")
+    (root / f"{package}/__init__.py").write_text("", encoding="utf-8")
+    (root / f"{package}/steps.py").write_text(_E2E_STEPS_SOURCE, encoding="utf-8")
+    return root, package, plugin_name
+
+
+def _recording_handler(seen: dict[str, Any]) -> Any:
+    """Wrap the real step handler, inspecting the delivery as the Step would.
+
+    The step-side credential accessor is a later story, so this reads the
+    delivered file directly: it proves the path on the ABI names a real,
+    readable file holding the supplied value for exactly the invocation's
+    lifetime.
+    """
+
+    from syntara_plugin.sdk import runner as runner_module
+
+    original = runner_module.container_step_for_binding
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        handler = original(*args, **kwargs)
+
+        def recording(invocation: ContainerInvocation) -> ContainerResult:
+            seen["credential_file_paths"] = dict(invocation.credential_file_paths)
+            seen["files"] = {
+                name: Path(path).read_bytes()
+                for name, path in invocation.credential_file_paths.items()
+            }
+            seen["modes"] = {
+                name: Path(path).stat().st_mode & 0o777
+                for name, path in invocation.credential_file_paths.items()
+            }
+            seen["directory_modes"] = {
+                name: Path(path).parent.stat().st_mode & 0o777
+                for name, path in invocation.credential_file_paths.items()
+            }
+            return handler(invocation)
+
+        return recording
+
+    return wrapper
+
+
+def test_source_mode_delivers_the_credential_as_a_file_on_the_abi(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The Step is reached with a path, and that path holds the supplied value."""
+
+    from syntara_plugin.sdk import runner as runner_module
+
+    workspace, _package, _plugin = _write_credential_e2e_workspace(tmp_path / "ws")
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        runner_module, "container_step_for_binding", _recording_handler(seen)
+    )
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(_CREDENTIAL_TOKEN))
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "ok",
+            "--input",
+            '{"title": "Hello"}',
+            "--credential",
+            f"{_CREDENTIAL_NAME}=-",
+        ]
+    )
+
+    assert status == 0
+    delivered = seen["credential_file_paths"]
+    assert list(delivered) == [_CREDENTIAL_NAME]
+    assert json.loads(seen["files"][_CREDENTIAL_NAME]) == {"token": _CREDENTIAL_TOKEN}
+    # Owner-only in source mode: the Step runs as this user.
+    assert seen["modes"][_CREDENTIAL_NAME] == 0o600
+    assert seen["directory_modes"][_CREDENTIAL_NAME] == 0o700
+    # The file exists only for the invocation.
+    assert not Path(delivered[_CREDENTIAL_NAME]).exists()
+    captured = capsys.readouterr()
+    assert _CREDENTIAL_TOKEN not in captured.out
+    assert _CREDENTIAL_TOKEN not in captured.err
+
+
+def test_image_mode_sends_the_approved_mount_path_and_mounts_the_file(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Image mode sends the in-container path and hands the engine the host file."""
+
+    from syntara_plugin.sdk import container_engine as engine_module
+    from syntara_plugin.sdk.container_engine import ContainerEngine, ManagedRuntime
+
+    workspace, package, plugin_name = _write_credential_e2e_workspace(tmp_path / "ws")
+    monkeypatch.syspath_prepend(str(workspace))
+    module = importlib.import_module(f"{package}.steps")
+    from syntara_plugin.runtime import StepBindings
+    from syntara_plugin.runtime.adapter import container_step_for_binding
+    from syntara_plugin.testing.bindings_factory import installed_binding
+
+    bindings = StepBindings()
+    step = module.OkStep()
+    binding = installed_binding(step, identity=f"run.{plugin_name}.ok")
+    bindings.bind(binding.descriptor, step)
+    revision = next(
+        str(t["step_revision_id"])
+        for t in _compiled_targets(workspace)
+        if t["identity"] == f"run.{plugin_name}.ok"
+    )
+    service = _RecordingService(
+        StepRegistry(
+            {revision: container_step_for_binding(binding, step_revision_id=revision)}
+        )
+    )
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    mounted: dict[str, Any] = {}
+
+    @contextmanager
+    def fake_managed_runtime(
+        image: str, target: Any = None, credential_files: Any = None
+    ) -> Any:
+        mounted["files"] = dict(credential_files or {})
+        mounted["contents"] = {
+            name: Path(path).read_bytes() for name, path in (credential_files or {}).items()
+        }
+        mounted["modes"] = {
+            name: Path(path).stat().st_mode & 0o777
+            for name, path in (credential_files or {}).items()
+        }
+        yield ManagedRuntime(
+            engine=ContainerEngine(command="podman"),
+            image=image,
+            container_name="test",
+            address=f"127.0.0.1:{port}",
+        )
+
+    monkeypatch.setattr(engine_module, "managed_runtime", fake_managed_runtime)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(_CREDENTIAL_TOKEN))
+
+    try:
+        status = main(
+            [
+                "run",
+                "--manifest",
+                str(workspace / "plugin.yaml"),
+                "ok",
+                "--mode",
+                "image",
+                "--input",
+                '{"title": "Hello"}',
+                "--credential",
+                f"{_CREDENTIAL_NAME}=-",
+            ]
+        )
+    finally:
+        _stop(server)
+
+    assert status == 0
+    # The ABI carries the approved mount path, exactly as production does.
+    assert service.invocations[0].credential_file_paths == {
+        _CREDENTIAL_NAME: f"/var/run/syntara/secrets/{_CREDENTIAL_NAME}"
+    }
+    # The engine is handed a host file holding the value...
+    assert json.loads(mounted["contents"][_CREDENTIAL_NAME]) == {"token": _CREDENTIAL_TOKEN}
+    # ...readable by the container's runtime user, as the TLS material is.
+    assert mounted["modes"][_CREDENTIAL_NAME] == 0o644
+    # ...and gone once the run ends.
+    assert not Path(mounted["files"][_CREDENTIAL_NAME]).exists()
+    captured = capsys.readouterr()
+    assert _CREDENTIAL_TOKEN not in captured.out
+    assert _CREDENTIAL_TOKEN not in captured.err

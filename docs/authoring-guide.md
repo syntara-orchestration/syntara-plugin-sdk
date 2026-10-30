@@ -379,9 +379,13 @@ practices:
 > such as `api_token`. It is not a credential delivery mechanism. Production
 > credentials belong in an
 > [`IntegrationType`](plugin-language.md#kind-integrationtype) and its
-> [`CredentialRecipe`](plugin-language.md#kind-credentialrecipe). Credential
-> delivery to custom runners is not available in this SDK revision, so do
-> not copy the example's `api_token` input for real credentials.
+> [`CredentialRecipe`](plugin-language.md#kind-credentialrecipe), and
+> `syntara-plugin run --credential` delivers one of those locally as a
+> read-only file; see
+> [Supplying credentials](running-locally.md#supplying-credentials).
+> Production delivery by the Execution Plane, and the typed accessor a Step
+> would read the file through, are still follow-on work. Either way, do not
+> copy the example's `api_token` input for real credentials.
 
 For every manifest field, see the
 [Plugin language reference](plugin-language.md).

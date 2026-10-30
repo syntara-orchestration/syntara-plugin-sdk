@@ -11,9 +11,11 @@ environment-derived credentials, or plaintext secret material.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Literal, NoReturn
 
@@ -37,6 +39,7 @@ from .protocol import container_pb2, container_pb2_grpc
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 _CREDENTIAL_PATH = re.compile(r"^/var/run/syntara/secrets/[A-Za-z0-9._-]+$")
+_CREDENTIAL_FILE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 _PROVIDER_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
@@ -382,10 +385,18 @@ class StepRegistry:
 
 
 class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
-    """gRPC implementation of the language-neutral container ABI."""
+    """gRPC implementation of the language-neutral container ABI.
 
-    def __init__(self, steps: StepRegistry) -> None:
+    ``local_credential_directory`` is the default-off exception described on
+    :func:`_is_approved_credential_path`; a deployed workload leaves it unset
+    and accepts approved secret mount paths only.
+    """
+
+    def __init__(
+        self, steps: StepRegistry, local_credential_directory: Path | None = None
+    ) -> None:
         self._steps = steps
+        self._local_credential_directory = local_credential_directory
         self._active: dict[str, Event] = {}
         self._active_lock = Lock()
 
@@ -395,7 +406,9 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         cancellation: Event | None = None
         invocation_id = request.invocation_id
         try:
-            invocation, cancellation = invocation_from_request(request)
+            invocation, cancellation = invocation_from_request(
+                request, self._local_credential_directory
+            )
             handler = self._steps.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
             # Deadline expiry and a disconnected Execution Plane both become a
@@ -495,11 +508,13 @@ def terminal_execution_event(
 
 
 def add_container_runtime_service(
-    server: grpc.Server, steps: StepRegistry
+    server: grpc.Server,
+    steps: StepRegistry,
+    local_credential_directory: Path | None = None,
 ) -> ContainerRuntimeService:
     """Register the generic runtime service on a plugin workload gRPC server."""
 
-    service = ContainerRuntimeService(steps)
+    service = ContainerRuntimeService(steps, local_credential_directory)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
     return service
 
@@ -510,10 +525,21 @@ class ContainerClient:
     Callers supply an already configured gRPC channel.  That keeps transport
     policy, including mTLS and workload-network rules, with the Execution Plane
     rather than in untrusted plugin code.
+
+    ``local_credential_directory`` is the default-off exception described on
+    :func:`_is_approved_credential_path`; the Execution Plane leaves it unset
+    and sends approved secret mount paths only.
     """
 
-    def __init__(self, channel: grpc.Channel) -> None:
+    # A class-level default so the production rule also applies to a client
+    # built without running __init__.
+    _local_credential_directory: Path | None = None
+
+    def __init__(
+        self, channel: grpc.Channel, local_credential_directory: Path | None = None
+    ) -> None:
         self._channel = channel
+        self._local_credential_directory = local_credential_directory
         self._stub = container_pb2_grpc.ContainerServiceStub(channel)
 
     def health(self, *, timeout_seconds: float | None = None) -> tuple[str, ...]:
@@ -582,7 +608,7 @@ class ContainerClient:
     ) -> Iterator[ContainerProgress | ContainerResult]:
         """Invoke a step and yield progress followed by exactly one result."""
 
-        request = _request_from_invocation(invocation)
+        request = _request_from_invocation(invocation, self._local_credential_directory)
         deadline = _execution_deadline(invocation, timeout_seconds)
         saw_terminal = False
         rpc_failure: ContainerRemoteError | None = None
@@ -630,6 +656,7 @@ class ContainerClient:
 
 def invocation_from_request(
     request: container_pb2.ExecuteRequest,
+    local_credential_directory: Path | None = None,
 ) -> tuple[ContainerInvocation, Event]:
     try:
         _require_identity(request.invocation_id, "invocation_id")
@@ -655,7 +682,9 @@ def invocation_from_request(
         )
     inputs = _decode_json_object(request.inputs_json, "inputs")
     runtime_context = _decode_json_object(request.runtime_context_json, "runtime context")
-    credential_file_paths = _decode_credential_file_paths(request.credential_file_paths_json)
+    credential_file_paths = _decode_credential_file_paths(
+        request.credential_file_paths_json, local_credential_directory
+    )
     cancellation = Event()
     return (
         ContainerInvocation(
@@ -672,7 +701,10 @@ def invocation_from_request(
     )
 
 
-def _request_from_invocation(invocation: ContainerInvocation) -> container_pb2.ExecuteRequest:
+def _request_from_invocation(
+    invocation: ContainerInvocation,
+    local_credential_directory: Path | None = None,
+) -> container_pb2.ExecuteRequest:
     _require_identity(invocation.invocation_id, "invocation_id")
     _require_identity(invocation.workflow_run_id, "workflow_run_id")
     _require_identity(invocation.step_revision_id, "step_revision_id")
@@ -684,7 +716,9 @@ def _request_from_invocation(invocation: ContainerInvocation) -> container_pb2.E
         step_revision_id=invocation.step_revision_id,
         runtime_abi=CONTAINER_ABI,
         inputs_json=_encode_json_object(invocation.inputs, "inputs"),
-        credential_file_paths_json=_encode_credential_file_paths(invocation.credential_file_paths),
+        credential_file_paths_json=_encode_credential_file_paths(
+            invocation.credential_file_paths, local_credential_directory
+        ),
         timeout_seconds=invocation.timeout_seconds,
         runtime_context_json=_encode_json_object(invocation.runtime_context, "runtime context"),
     )
@@ -751,7 +785,32 @@ def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, An
     return result
 
 
-def _decode_credential_file_paths(value: bytes) -> dict[str, str]:
+def _is_approved_credential_path(path: Any, local_directory: Path | None) -> bool:
+    """Whether a credential file path is one this runtime accepts.
+
+    The approved secret mount is the only path a deployed workload ever sees.
+    ``local_directory`` is the deliberate, default-off exception for a local
+    loopback run, where client and runtime share one process and no caller can
+    write under ``/var/run``: a file directly inside that private directory is
+    accepted as well. Both sides are resolved before comparison, so neither a
+    ``..`` segment nor a symlink can name a file outside it.
+    """
+
+    if not isinstance(path, str):
+        return False
+    if _CREDENTIAL_PATH.fullmatch(path):
+        return True
+    if local_directory is None:
+        return False
+    candidate = Path(os.path.realpath(path))
+    if not _CREDENTIAL_FILE_NAME.fullmatch(candidate.name):
+        return False
+    return candidate.parent == Path(os.path.realpath(local_directory))
+
+
+def _decode_credential_file_paths(
+    value: bytes, local_directory: Path | None = None
+) -> dict[str, str]:
     paths = _decode_json_object(value, "credential file paths")
     for name, path in paths.items():
         if not isinstance(name, str) or not _IDENTITY.fullmatch(name):
@@ -760,7 +819,7 @@ def _decode_credential_file_paths(value: bytes) -> dict[str, str]:
                 "Credential file names must be Syntara identities.",
                 outcome="not_started",
             )
-        if not isinstance(path, str) or not _CREDENTIAL_PATH.fullmatch(path):
+        if not _is_approved_credential_path(path, local_directory):
             raise ContainerInvocationError(
                 FailureCode.INVALID_INPUT,
                 "Credential file paths must be approved secret mount paths.",
@@ -782,11 +841,13 @@ def _encode_json_object(value: Mapping[str, Any], field_name: str) -> bytes:
     return encoded
 
 
-def _encode_credential_file_paths(value: Mapping[str, str]) -> bytes:
+def _encode_credential_file_paths(
+    value: Mapping[str, str], local_directory: Path | None = None
+) -> bytes:
     for name, path in value.items():
         if not isinstance(name, str) or not _IDENTITY.fullmatch(name):
             raise ValueError("credential file names must be Syntara identities")
-        if not isinstance(path, str) or not _CREDENTIAL_PATH.fullmatch(path):
+        if not _is_approved_credential_path(path, local_directory):
             raise ValueError("credential file paths must be approved secret mount paths")
     return _encode_json_object(value, "credential file paths")
 

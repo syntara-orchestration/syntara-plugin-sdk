@@ -30,7 +30,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -38,7 +38,7 @@ from typing import Any
 
 from syntara_plugin.runtime.abi import CONTAINER_ABI
 
-from .runner import RunExecutionError, RunTarget, TlsOptions
+from .runner import CREDENTIAL_MOUNT_DIRECTORY, RunExecutionError, RunTarget, TlsOptions
 
 _ENGINE_COMMANDS = ("podman", "docker")
 _SELF_MANAGED_NEXT_STEP = "or start the runtime yourself and pass --address HOST:PORT"
@@ -140,7 +140,11 @@ def _select_engine(image: str) -> ContainerEngine:
 
 
 @contextmanager
-def managed_runtime(image: str, target: RunTarget | None = None) -> Iterator[ManagedRuntime]:
+def managed_runtime(
+    image: str,
+    target: RunTarget | None = None,
+    credential_files: Mapping[str, str] | None = None,
+) -> Iterator[ManagedRuntime]:
     """Run one workload image for the duration of the block, then remove it.
 
     Raises :class:`RunExecutionError` with author-facing guidance when no
@@ -153,6 +157,11 @@ def managed_runtime(image: str, target: RunTarget | None = None) -> Iterator[Man
     The container is started without ``--rm`` and removed only after the
     block, so a container that exits early keeps its exit status and log
     readable for the liveness probe and for post-mortem inspection.
+
+    ``credential_files`` maps a credential name to the host file holding its
+    value; each is mounted read-only at the ABI's approved secret mount. The
+    values are never copied into the image and never become environment
+    variables, so the Step reads them exactly as it will in production.
     """
 
     engine = _select_engine(image)
@@ -200,9 +209,9 @@ def managed_runtime(image: str, target: RunTarget | None = None) -> Iterator[Man
                         ),
                     ) from error
             runtime = replace(
-                _published_runtime(engine, image, name, material, resolved_path)
-                if resolved_path is not None
-                else _published_runtime(engine, image, name, material),
+                _published_runtime(
+                    engine, image, name, material, resolved_path, credential_files or {}
+                ),
                 liveness=_container_liveness(engine, name, image),
             )
             yield runtime
@@ -211,12 +220,36 @@ def managed_runtime(image: str, target: RunTarget | None = None) -> Iterator[Man
             _remove_container(engine, name)
 
 
+def _credential_mount_arguments(
+    credential_files: Mapping[str, str], mount_mode: str
+) -> list[str]:
+    """Mount each supplied credential read-only at the approved secret mount.
+
+    The value stays in its host file: nothing is copied into the image and no
+    environment variable carries it, which is what makes a local run behave
+    like production. ``/var/run`` is a symlink to ``/run`` in most images and
+    both engines resolve the mount target inside the container, so the
+    approved path works unchanged.
+    """
+
+    arguments: list[str] = []
+    for credential_name, host_path in sorted(credential_files.items()):
+        arguments.extend(
+            (
+                "--volume",
+                f"{host_path}:{CREDENTIAL_MOUNT_DIRECTORY}/{credential_name}:{mount_mode}",
+            )
+        )
+    return arguments
+
+
 def _published_runtime(
     engine: ContainerEngine,
     image: str,
     name: str,
     material: _TlsMaterial,
     resolved_path: Path | None = None,
+    credential_files: Mapping[str, str] | None = None,
 ) -> ManagedRuntime:
     """Run the container on a published loopback port with generated mTLS."""
 
@@ -265,6 +298,7 @@ def _published_runtime(
                     if resolved_path is not None
                     else []
                 ),
+                *_credential_mount_arguments(credential_files or {}, mount_mode),
                 image,
             ],
             capture_output=True,

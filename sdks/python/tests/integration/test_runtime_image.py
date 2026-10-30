@@ -174,7 +174,12 @@ def _write_registration(context: Path, workspace: Path, workload: str) -> tuple[
         for revision, entry in manifest["steps"].items()
     ]}), encoding="utf-8")
     resolved.chmod(0o644)
-    return {target["identity"]: target["step_revision_id"] for target in descriptor["spec"]["targets"]}, resolved
+    # Integration and credential targets are not steps and carry no revision.
+    return {
+        target["identity"]: target["step_revision_id"]
+        for target in descriptor["spec"]["targets"]
+        if "step_revision_id" in target
+    }, resolved
 
 
 def _build_example_wheel(output: Path) -> None:
@@ -214,7 +219,10 @@ packages = ["src/syntara_sample_step"]
     )
     (source / "__init__.py").write_text("", encoding="utf-8")
     (source / "runtime.py").write_text(
-        """from pydantic import BaseModel
+        """import hashlib
+from pathlib import Path
+
+from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
     ExecutionContext,
@@ -222,6 +230,8 @@ from syntara_plugin.runtime import (
     StepBindings,
     StepDescriptor,
 )
+
+CREDENTIAL = Path("/var/run/syntara/secrets/integration.echo.token")
 
 
 class EchoInput(BaseModel):
@@ -234,7 +244,18 @@ class EchoOutput(BaseModel):
 
 class EchoStep(ActionStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
-        return EchoOutput(message=inputs.message)
+        # The step-side accessor is a later story, so this reads the delivered
+        # file directly. It reports a digest and whether the mount is
+        # writable, never the value: proving delivery must not print a secret.
+        if not CREDENTIAL.exists():
+            return EchoOutput(message=inputs.message)
+        digest = hashlib.sha256(CREDENTIAL.read_bytes()).hexdigest()
+        try:
+            with CREDENTIAL.open("a"):
+                writable = True
+        except OSError:
+            writable = False
+        return EchoOutput(message=f"{inputs.message}|{digest}|writable={writable}")
 
 
 def create_bindings() -> StepBindings:
@@ -577,6 +598,201 @@ spec:
     assert any(line.startswith("Mode:") and line.strip().endswith("image") for line in lines)
     assert any(line.startswith("Image:") and image_tag in line for line in lines)
     assert '"message": "hello managed"' in captured.out
+    leftovers = subprocess.run(
+        ["podman", "ps", "-a", "--filter", "name=syntara-run-", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert not leftovers.stdout.strip()
+
+
+_CREDENTIAL_RECIPE = "integration.echo.token"
+_CREDENTIAL_INTEGRATION = "integration.echo.connection"
+_CREDENTIAL_TOKEN = "tok-abcdef123456"
+
+
+def _write_credential_workspace(workspace: Path, image_tag: str) -> None:
+    """The managed-mode workspace, with an integration reaching one recipe."""
+
+    (workspace / "steps/v1").mkdir(parents=True)
+    (workspace / "steps/connection").mkdir(parents=True)
+    (workspace / "steps/recipe").mkdir(parents=True)
+    (workspace / "docs").mkdir()
+    (workspace / "plugin.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: integration
+  name: echo
+  version: 0.1.0
+  displayName: Echo
+  description: Managed image-mode credential fixture.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: {image_tag}
+  targets:
+    - steps/v1/manifest.yaml
+    - steps/connection/manifest.yaml
+    - steps/recipe/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    (workspace / "steps/v1/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: v1
+  displayName: Echo
+  description: Echoes one message.
+spec:
+  integrationType: {_CREDENTIAL_INTEGRATION}
+  runtime:
+    kind: custom-runner
+    entryPoint: syntara_sample_step.runtime:EchoStep
+  input:
+    kind: inline
+    value:
+      type: object
+      title: EchoInput
+      properties:
+        message:
+          title: Message
+          type: string
+      required: [message]
+  output:
+    kind: inline
+    value:
+      type: object
+      title: EchoOutput
+      properties:
+        message:
+          title: Message
+          type: string
+      required: [message]
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    (workspace / "steps/connection/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: IntegrationType
+metadata:
+  name: connection
+  displayName: Echo connection
+  description: Connects the echo service.
+spec:
+  id: {_CREDENTIAL_INTEGRATION}
+  endpointKinds: [echo-cloud]
+  credentialTypes: [{_CREDENTIAL_RECIPE}]
+  configuration:
+    kind: inline
+    value: {{type: object}}
+""",
+        encoding="utf-8",
+    )
+    (workspace / "steps/recipe/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: CredentialRecipe
+metadata:
+  name: token
+  displayName: Echo token
+  description: An echo service token.
+spec:
+  id: {_CREDENTIAL_RECIPE}
+  integrationType: {_CREDENTIAL_INTEGRATION}
+  credentialSchema:
+    kind: inline
+    value:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: {{type: string, minLength: 8}}
+  secretFields: [token]
+  issuance:
+    kind: static-bearer.v1
+""",
+        encoding="utf-8",
+    )
+    (workspace / "docs/README.md").write_text("# Echo\n", encoding="utf-8")
+
+
+def test_managed_image_mode_delivers_a_credential_as_a_read_only_file(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The whole chain in a real container: stdin to a read-only ABI mount.
+
+    The Step reads the approved mount path it was given over the ABI and
+    reports a digest of the file, so this proves the value arrived intact,
+    read-only, and without ever being printed.
+    """
+
+    import hashlib
+    from io import StringIO
+
+    from syntara_plugin.contracts import canonical_json_bytes
+    from syntara_plugin.sdk.cli import main
+
+    context = tmp_path / "image-context"
+    wheels = context / "wheels"
+    wheels.mkdir(parents=True)
+    _build_workspace_wheel("syntara-plugin-contracts", wheels)
+    _write_sample_step(context)
+    _build_sample_wheel(context, wheels)
+    _write_runtime_config(context)
+    _write_managed_containerfile(context)
+    image_tag = f"syntara-plugin-credential-it-{uuid.uuid4().hex}"
+
+    workspace = tmp_path / "ws"
+    _write_credential_workspace(workspace, image_tag)
+    _write_registration(context, workspace, image_tag)
+    _build_image(context, image_tag)
+
+    expected = hashlib.sha256(
+        canonical_json_bytes({"token": _CREDENTIAL_TOKEN})
+    ).hexdigest()
+    monkeypatch.setattr("sys.stdin", StringIO(_CREDENTIAL_TOKEN))
+
+    try:
+        status = main(
+            [
+                "run",
+                "--manifest",
+                str(workspace / "plugin.yaml"),
+                "--mode",
+                "image",
+                "--input",
+                '{"message": "hello credential"}',
+                "--credential",
+                f"{_CREDENTIAL_RECIPE}=-",
+            ]
+        )
+    finally:
+        subprocess.run(
+            ["podman", "rmi", "--force", image_tag],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    # The file the Step read holds exactly the document the CLI delivered...
+    assert f"hello credential|{expected}|writable=False" in captured.out
+    # ...the report names the credential without its value...
+    assert any(
+        line.startswith("Credentials:") and _CREDENTIAL_RECIPE in line
+        for line in captured.out.splitlines()
+    )
+    # ...and the value itself never appears anywhere.
+    assert _CREDENTIAL_TOKEN not in captured.out
+    assert _CREDENTIAL_TOKEN not in captured.err
     leftovers = subprocess.run(
         ["podman", "ps", "-a", "--filter", "name=syntara-run-", "--format", "{{.Names}}"],
         capture_output=True,

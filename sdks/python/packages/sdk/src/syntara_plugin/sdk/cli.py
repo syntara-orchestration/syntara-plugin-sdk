@@ -195,6 +195,13 @@ def _parser() -> argparse.ArgumentParser:
             removes it afterwards; pass --address (and --tls-* for mutual
             TLS) to use a runtime you started yourself instead.
 
+            --credential NAME=SOURCE supplies a credential the Step's
+            integration type declares, reading it from standard input (-), a
+            file outside the workspace (file:PATH), or the environment
+            (env:VAR). It is delivered as a read-only file at the approved
+            secret mount, exactly as production delivers it, and never as an
+            environment variable inside the Step.
+
             example:
               syntara-plugin run create-issue --input '{"title": "Broken build"}'
               syntara-plugin run create-issue > input.json
@@ -224,6 +231,14 @@ def _parser() -> argparse.ArgumentParser:
         "--input-file",
         type=Path,
         help="JSON file with the invocation inputs; - reads stdin.",
+    )
+    run.add_argument(
+        "--credential",
+        metavar="NAME=SOURCE",
+        action="append",
+        default=None,
+        help="Supply one credential the Step's integration type declares; repeatable. "
+        "SOURCE is - (standard input), file:PATH, or env:VAR. An inline value is refused.",
     )
     run.add_argument(
         "--mode",
@@ -612,6 +627,13 @@ def _resolve_run_arguments(
         value is not None for value in tls_files
     ):
         raise SettingsError("--tls-ca, --tls-cert, and --tls-key must be supplied together")
+    if arguments.credential and any(value is not None for value in transport_options):
+        # Only a container this command started can be given a mount; a
+        # runtime the author manages must be given its own credential files.
+        raise SettingsError(
+            "--credential cannot be used with --address or the --tls-* options: "
+            "the CLI does not own that runtime and cannot mount a credential into it"
+        )
 
 
 def _resolve_publication_arguments(
@@ -1098,7 +1120,10 @@ def _run_command(arguments: argparse.Namespace) -> int:
     from .runner import (
         RunExecutionError,
         RunUsageError,
+        load_credentials,
         load_input,
+        parse_credential_options,
+        reachable_credential_recipes,
         resolve_manifest,
         resolve_run_target,
         run_source,
@@ -1121,21 +1146,39 @@ def _run_command(arguments: argparse.Namespace) -> int:
 
     try:
         target = resolve_run_target(compiled, arguments.target)
+        # Parsing before the template check keeps a malformed --credential a
+        # usage error rather than something the template path silently drops.
+        specs = parse_credential_options(arguments.credential)
         if arguments.input is None and arguments.input_file is None:
+            # Nothing executes, so no credential is read: --credential NAME=-
+            # must not block on stdin while printing a template.
             _print_run_template(arguments, target)
             return 2
+        if any(spec.kind == "stdin" for spec in specs) and str(arguments.input_file) == "-":
+            raise RunUsageError(
+                "only one of --input-file - and --credential NAME=- can read standard input",
+                next_steps=("supply the input in a file, or the credential with file: or env:",),
+            )
         inputs, input_source = load_input(arguments.input, arguments.input_file)
         errors = validate_inputs(target.input_schema, inputs)
         if errors:
             _print_input_errors(target, input_source, errors, arguments)
             return 2
+        credentials, warnings = load_credentials(
+            specs, reachable_credential_recipes(compiled, target), target,
+            workspace=manifest.parent,
+        )
+        _print_run_warnings(warnings)
         progress = _progress_printer(arguments)
         if arguments.mode == "source":
             report = run_source(
-                manifest, target, inputs, input_source, on_progress=progress
+                manifest, target, inputs, input_source,
+                on_progress=progress, credentials=credentials,
             )
         else:
-            report = _run_image_mode(arguments, target, inputs, input_source, progress)
+            report = _run_image_mode(
+                arguments, target, inputs, input_source, progress, credentials
+            )
     except RunUsageError as error:
         _print_run_error(_localized_error(error, arguments), arguments)
         return 2
@@ -1155,6 +1198,17 @@ def _run_command_guarded(arguments: argparse.Namespace) -> int:
         return 130
 
 
+def _print_run_warnings(warnings: Sequence[str]) -> None:
+    """Print pre-execution warnings on stderr, where the human channels live.
+
+    Warnings stay on stderr under --json too: stdout owes that consumer
+    exactly one JSON document, and a warning is not part of it.
+    """
+
+    for warning in warnings:
+        print(_safe_text(warning), file=sys.stderr)
+
+
 def _print_value_error(error: ValueError, arguments: argparse.Namespace) -> None:
     """Print one compile-path value failure, honoring the JSON contract."""
 
@@ -1170,16 +1224,23 @@ def _run_image_mode(
     inputs: Mapping[str, Any],
     input_source: str,
     progress: Callable[[Any], None] | None,
+    credentials: Sequence[Any] = (),
 ) -> Any:
     """Execute in image mode: managed container by default, or a given runtime.
 
     Without ``--address`` or TLS options the CLI runs the workspace's
     declared workload image itself (Podman or Docker) and removes it
     afterwards; passing either option means the author manages the runtime.
+
+    Credentials exist as files only while the container runs: they are
+    written into a private directory, mounted read-only at the approved
+    secret mount, and removed when the block ends. ``--credential`` is
+    rejected earlier for a runtime the author manages, which this command
+    cannot mount anything into.
     """
 
     from .container_engine import managed_runtime
-    from .runner import DEFAULT_ADDRESS, RunExecutionError, run_image
+    from .runner import DEFAULT_ADDRESS, RunExecutionError, credential_files, run_image
 
     tls = _run_tls_options(arguments)
     if arguments.address is not None or tls is not None:
@@ -1203,18 +1264,20 @@ def _run_image_mode(
         )
     if arguments.verbose and not arguments.json:
         print(f"==> starting workload container {target.workload_image}", file=sys.stderr)
-    with managed_runtime(target.workload_image, target) as runtime:
-        return run_image(
-            runtime.address,
-            target,
-            inputs,
-            input_source,
-            tls=runtime.tls,
-            on_progress=progress,
-            image=runtime.image,
-            startup_seconds=30.0,
-            liveness=runtime.liveness,
-        )
+    with credential_files(credentials, container_readable=True) as (_, host_paths):
+        with managed_runtime(target.workload_image, target, host_paths) as runtime:
+            return run_image(
+                runtime.address,
+                target,
+                inputs,
+                input_source,
+                tls=runtime.tls,
+                on_progress=progress,
+                image=runtime.image,
+                startup_seconds=30.0,
+                liveness=runtime.liveness,
+                credentials=credentials,
+            )
 
 
 def _localized_error(
@@ -1409,6 +1472,7 @@ def _print_run_report_json(report: RunReport) -> None:
         "image": report.image,
         "inputSource": report.input_source,
         "input": report.input_values,
+        "credentials": list(report.credentials),
         "invocationId": report.invocation_id,
         "workflowRunId": report.workflow_run_id,
         "status": report.status,
@@ -1439,12 +1503,11 @@ def _report_fields(report: RunReport) -> list[tuple[str, str]]:
     ]
     if report.image is not None:
         fields.append(("Image", report.image))
-    fields.extend(
-        [
-            ("Input", json.dumps(report.input_values, ensure_ascii=False)),
-            ("Invocation", report.invocation_id),
-        ]
-    )
+    fields.append(("Input", json.dumps(report.input_values, ensure_ascii=False)))
+    if report.credentials:
+        # Names only: the report is one of the surfaces a value must not reach.
+        fields.append(("Credentials", ", ".join(report.credentials)))
+    fields.append(("Invocation", report.invocation_id))
     if report.status is not None:
         fields.append(("Status", str(report.status)))
         if report.status_message:

@@ -82,7 +82,11 @@ contracts. The protobuf file is the normative in-container application-data
 protocol: it selects a step revision, carries bounded JSON input, bounded
 non-secret runtime context, and mounted credential-file paths, and returns
 progress or one terminal result/failure. It does not select an image, command,
-execution pool, endpoint, or credential value.
+execution pool, endpoint, or credential value. A credential-file path must be
+under the approved secret mount `/var/run/syntara/secrets/`, enforced when the
+request is both encoded and decoded; the one default-off exception, used by
+`syntara-plugin run` in source mode, is described in
+[ADR 0009](../.sdlc/adrs/0009-local-credential-delivery.md).
 
 `runtime.schema.json` defines the canonical `StandardOutputWrapper` JSON shape
 with exactly four required lower-camel keys: `result`, `statusCode`,

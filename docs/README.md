@@ -37,3 +37,4 @@ The accepted design decisions live in [`../.sdlc/adrs`](../.sdlc/adrs):
 - [Custom-runner preview scope](../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md)
 - [SDK local test harness](../.sdlc/adrs/0007-sdk-testing-harness.md)
 - [Testing harness inside the SDK distribution](../.sdlc/adrs/0008-testing-harness-inside-sdk.md)
+- [Local credential delivery](../.sdlc/adrs/0009-local-credential-delivery.md)

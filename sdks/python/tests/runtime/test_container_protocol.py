@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Event
 from typing import Any
 
@@ -16,6 +18,7 @@ from syntara_plugin.runtime import (
     StepRegistry,
     add_container_runtime_service,
 )
+from syntara_plugin.runtime.container import _request_from_invocation
 from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
 
 OUTPUT_SCHEMA_DIGEST = "sha256:" + "a" * 64
@@ -277,6 +280,155 @@ def test_credential_file_paths_must_use_the_approved_secret_mount(
     assert len(events) == 1
     assert events[0].failure.code == FailureCode.INVALID_INPUT.value
     assert "/tmp" not in events[0].failure.message
+
+
+def _credential_request(path: str) -> container_pb2.ExecuteRequest:
+    return container_pb2.ExecuteRequest(
+        invocation_id="invocation-1",
+        workflow_run_id="workflow-run-1",
+        step_revision_id="github.create-issue.v1",
+        runtime_abi="syntara.container/v1alpha1",
+        inputs_json=b"{}",
+        credential_file_paths_json=json.dumps({"github-token": path}).encode("utf-8"),
+        timeout_seconds=30,
+    )
+
+
+def test_a_local_credential_directory_is_refused_unless_the_runtime_opts_in(
+    runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
+    tmp_path: Path,
+) -> None:
+    """The production rule is the default: opting in is the only way past it."""
+
+    _client, stub, _calls = runtime
+    token = tmp_path / "github-token"
+    token.write_text("{}", encoding="utf-8")
+
+    events = list(stub.Execute(_credential_request(str(token))))
+
+    assert len(events) == 1
+    assert events[0].failure.code == FailureCode.INVALID_INPUT.value
+    assert str(tmp_path) not in events[0].failure.message
+
+
+def test_an_opted_in_runtime_accepts_a_file_in_its_local_credential_directory(
+    tmp_path: Path,
+) -> None:
+    calls: dict[str, Any] = {}
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        calls["invocation"] = invocation
+        return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 42})
+
+    token = tmp_path / "github-token"
+    token.write_text("{}", encoding="utf-8")
+    server = grpc.server(ThreadPoolExecutor(max_workers=1))
+    add_container_runtime_service(
+        server, StepRegistry({"github.create-issue.v1": handler}), tmp_path
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        stub = container_pb2_grpc.ContainerServiceStub(channel)
+        events = list(stub.Execute(_credential_request(str(token))))
+    finally:
+        server.stop(None)
+
+    assert [event.WhichOneof("event") for event in events] == ["result"]
+    assert calls["invocation"].credential_file_paths == {"github-token": str(token)}
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["escapes-the-directory", "reaches-a-nested-file", "leaves-through-a-symlink"],
+)
+def test_an_opted_in_runtime_still_refuses_paths_outside_its_directory(
+    tmp_path: Path, name: str
+) -> None:
+    """The opt-in names one directory, not a way around the rule."""
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "github-token").write_text("{}", encoding="utf-8")
+    if name == "escapes-the-directory":
+        path = str(allowed / ".." / "elsewhere" / "github-token")
+    elif name == "reaches-a-nested-file":
+        nested = allowed / "nested"
+        nested.mkdir()
+        (nested / "github-token").write_text("{}", encoding="utf-8")
+        path = str(nested / "github-token")
+    else:
+        link = allowed / "github-token"
+        link.symlink_to(elsewhere / "github-token")
+        path = str(link)
+    server = grpc.server(ThreadPoolExecutor(max_workers=1))
+    add_container_runtime_service(server, StepRegistry({"github.create-issue.v1": _ok}), allowed)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        stub = container_pb2_grpc.ContainerServiceStub(channel)
+        events = list(stub.Execute(_credential_request(path)))
+    finally:
+        server.stop(None)
+
+    assert len(events) == 1
+    assert events[0].failure.code == FailureCode.INVALID_INPUT.value
+
+
+def test_an_opted_in_runtime_still_accepts_the_approved_secret_mount(tmp_path: Path) -> None:
+    calls: dict[str, Any] = {}
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        calls["invocation"] = invocation
+        return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 42})
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=1))
+    add_container_runtime_service(
+        server, StepRegistry({"github.create-issue.v1": handler}), tmp_path
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        stub = container_pb2_grpc.ContainerServiceStub(channel)
+        events = list(stub.Execute(_credential_request("/var/run/syntara/secrets/github-token")))
+    finally:
+        server.stop(None)
+
+    assert [event.WhichOneof("event") for event in events] == ["result"]
+    assert calls["invocation"].credential_file_paths == {
+        "github-token": "/var/run/syntara/secrets/github-token"
+    }
+
+
+def test_a_client_sends_a_local_credential_path_only_when_it_opts_in(tmp_path: Path) -> None:
+    """The client enforces the same rule, so a bad path never reaches the wire."""
+
+    token = tmp_path / "github-token"
+    token.write_text("{}", encoding="utf-8")
+    invocation = ContainerInvocation(
+        invocation_id="invocation-1",
+        workflow_run_id="workflow-run-1",
+        step_revision_id="github.create-issue.v1",
+        inputs={},
+        credential_file_paths={"github-token": str(token)},
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="approved secret mount paths"):
+        _request_from_invocation(invocation)
+
+    request = _request_from_invocation(invocation, tmp_path)
+
+    assert json.loads(request.credential_file_paths_json) == {"github-token": str(token)}
+
+
+def _ok(_invocation: ContainerInvocation) -> ContainerResult:
+    return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 42})
 
 
 def test_cancellation_reaches_the_selected_step() -> None:

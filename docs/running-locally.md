@@ -121,7 +121,7 @@ Inputs arrive in one of three ways:
 
 | Path | Command | Notes |
 | --- | --- | --- |
-| Template | no `--input`/`--input-file` | Prints the template and exits `2`; nothing executes. |
+| Template | no `--input`/`--input-file` | Prints the template and exits `2`; nothing executes, so no `--credential` is read. |
 | Inline JSON | `--input '{"title": "Broken build"}'` | Convenient for quick, non-sensitive values. |
 | File or stdin | `--input-file input.json` / `--input-file -` | Preferred for larger payloads and secrets. |
 
@@ -180,6 +180,10 @@ the summary, and their values are redacted everywhere they could surface:
 - the template and field summary never print a declared default, example, or
   enum value of a sensitive field.
 
+A credential supplied with `--credential` is scrubbed the same way: the value
+you gave, and the values of the recipe's declared `secretFields`, are added
+to the same set. See [Supplying credentials](#supplying-credentials).
+
 Scrubbing matches the value case-insensitively. Redaction is driven by the
 declared schema and the values you supplied, so it cannot catch everything:
 a secret hard-coded in step source, transformed before it is echoed (for
@@ -194,12 +198,91 @@ managed container dies before becoming healthy, its last log lines are
 printed to explain why; those lines come from the image itself and are not
 secret-scrubbed, so they carry whatever the image printed.
 
+## Supplying credentials
+
+A Step that declares an `integrationType` reaches the credential recipes that
+integration type lists in `credentialTypes`. `--credential NAME=SOURCE`
+supplies one of them for this run; repeat the option for several. `NAME` is
+the recipe's full identifier, and the recipe must be declared in this
+workspace, because a local run compiles nothing else.
+
+| Source | Command | Notes |
+| --- | --- | --- |
+| Standard input | `--credential NAME=-` | The primary path: the value never reaches disk or your shell history. One credential per run can use it. |
+| File | `--credential NAME=file:PATH` | Several per run. Refused when the path is inside the workspace; warns when other local users can read it. |
+| Environment | `--credential NAME=env:VAR` | Convenient in a local shell or CI. The CLI reads the variable; the Step never sees one. |
+| Inline | — | Refused. A value on the command line is visible in your shell history and in `/proc/<pid>/cmdline`, the same reason `--input-file` exists. |
+
+```sh
+printf '%s' "$TOKEN" | syntara-plugin run --manifest plugin.yaml create-issue \
+  --input-file input.json --credential example.tracker.api-token=-
+```
+
+Everything is checked before anything executes: `NAME` must resolve to a
+reachable recipe, and the value must satisfy that recipe's
+`credentialSchema`. A value that parses as a JSON object is taken as the
+complete credential document; any other text is a raw value, wrapped into the
+single field the recipe declares. A recipe with several fields has no
+unambiguous wrapping, so it requires the full document:
+
+```text
+error: the value supplied for example.tracker.api-token does not satisfy its credential schema
+example.tracker.api-token/token: minLength constraint is not satisfied
+```
+
+Every field of a credential is secret, so a validation error names the field
+and the violated constraint and never the value.
+
+### How it is delivered
+
+Both modes deliver the credential the way production will: as a **read-only
+file**, with only its path crossing the container ABI. The value is never an
+environment variable inside the Step or the container, and never travels on
+the wire, so Step code behaves the same locally and in production.
+
+- **image mode** writes the document into a private per-invocation directory
+  and bind-mounts it read-only at `/var/run/syntara/secrets/<name>`, the
+  ABI's approved secret mount. Nothing is copied into the image.
+- **source mode** runs the Step in this process, which cannot write under
+  `/var/run` without privilege, so the file stays in that private directory
+  and its real path crosses the loopback ABI. This one in-process transport
+  is told to accept that directory; every other client and runtime keeps the
+  production rule. See the
+  [local credential delivery ADR](../.sdlc/adrs/0009-local-credential-delivery.md).
+
+The directory is created readable only by you and removed when the invocation
+ends. The value is held in memory until then and is written nowhere else: not
+into the workspace, the artifact, or any other file.
+
+The report names what was supplied, never its value, and `--json` carries the
+same list under `credentials`:
+
+```text
+Target:         example.tracker.create-issue
+Mode:           source
+Input:          {"title": "Broken build"}
+Credentials:    example.tracker.api-token
+```
+
+The supplied value, and the values of the recipe's declared `secretFields`,
+join the set the run masks, so they are scrubbed from the report, `--json`,
+errors, hints, progress, step output, and tracebacks exactly as a sensitive
+input is.
+
+Two limits are worth knowing. `--credential` cannot be combined with
+`--address` or the `--tls-*` options: that runtime is yours, and the command
+cannot mount anything into it. And the Step cannot yet *read* what is
+delivered — the typed credential accessor is a separate story, so today the
+file arrives at the documented path and nothing in the SDK hands that path to
+step code.
+
 ## Execution modes
 
 Both modes execute through the SDK's `ContainerClient` over real gRPC, call
 `Health` first to verify the container ABI and that the runtime advertises the
 requested Step, and use a 60 second invocation timeout with an empty runtime
-context and no credential file paths.
+context and the credential file paths described above (none unless
+`--credential` is supplied).
 
 ### Source mode (default)
 
@@ -297,7 +380,8 @@ obtain such a runtime:
    runners must match the image's packaged registration manifest. This bootstrap
    file identifies installed bindings only; the gRPC request supplies the
    invocation/run IDs, input, timeout, credential file paths, and runtime
-   context. This is also the image pattern the managed path expects:
+   context. A runtime you start this way cannot be given `--credential`: the
+   command does not own it and cannot mount a file into it. This is also the image pattern the managed path expects:
    install the `syntara-plugin-contracts` wheel on a Python base image, copy
    your plugin sources and runtime config, and set `SYNTARA_RUNTIME_CONFIG`
    and `PYTHONPATH`. Managed image mode supplies the selected local compiled
@@ -386,7 +470,8 @@ under `--verbose`, and warnings. The document has three shapes:
   failure): `ok`, `mode`, `target`, `image`, `inputSource`, `input` with
   sensitive fields masked, `invocationId`, `workflowRunId`, `status`,
   `statusMessage`, `output`, `objectReference`, `outcome`, `errorDetail`,
-  and `error` with `code`, `message`, and `retryable`.
+  `credentials` (the names supplied, never their values), and `error` with
+  `code`, `message`, and `retryable`.
 - **Usage or setup failure** (exit 2: invalid input, missing manifest, bad
   flag combination): `ok: false` and `error` with `kind`, `message`,
   `detail` (the validation lines), and `nextSteps`.
@@ -417,6 +502,12 @@ Every failure prints the problem and the next command. The complete map:
 | Input not a JSON object, malformed, or oversized | The expectation and the limit. | 2 |
 | Transport options in source mode | `--address` and `--tls-*` require `--mode image`. | 2 |
 | Partial TLS material | The three options must be supplied together. | 2 |
+| `--credential` with `--address`/`--tls-*` | The CLI cannot mount into a runtime you manage. | 2 |
+| Inline credential value | The three sources, and why an inline value is refused. | 2 |
+| Unknown credential name | The recipes reachable through the Step's integration type. | 2 |
+| Credential fails its schema | Each violated field and constraint, never the value. | 2 |
+| Credential file unreadable, empty, or inside the workspace | The path and what to do about it. | 2 |
+| Two sources reading standard input | Which options collided, and the alternatives. | 2 |
 | Target is platform-runner | Declarative targets cannot run locally; see `inspect`. | 2 |
 | Step module fails to import | The exception with its file and line, then `validate`. | 1 |
 | openssl missing for the managed container | Install openssl, or pass `--address` to a runtime you started. | 1 |
