@@ -14,11 +14,15 @@ class PublishArtifactRequestedInput(BaseModel):
 
 
 class PublishArtifactRequestedOutput(BaseModel):
-    """The event handed to the child workflow's first step."""
+    """The event handed to the child workflow's first step.
+
+    Deliberately carries no parent-run identifier: ``ExecutionContext`` has no
+    parent-run field, and the run the trigger executes in is the child's.
+    Parent/child run correlation is a runtime-context gap (AAP-94805).
+    """
 
     artifact: str
     channel: str
-    parentRunId: str
 
 
 class PublishArtifactRequestedStep(
@@ -38,5 +42,4 @@ class PublishArtifactRequestedStep(
         return PublishArtifactRequestedOutput(
             artifact=inputs.artifact,
             channel=inputs.channel,
-            parentRunId=context.workflow_run_id or "no-parent-run",
         )

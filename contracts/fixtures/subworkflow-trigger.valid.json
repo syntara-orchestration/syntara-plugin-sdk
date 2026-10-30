@@ -16,15 +16,29 @@
       "kind": "inline",
       "value": {
         "type": "object",
-        "description": "A subworkflow trigger has no external transport configuration to declare.",
-        "additionalProperties": false
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "type": "string",
+            "description": "Artifact name to publish."
+          },
+          "channel": {
+            "type": "string",
+            "description": "Release channel to publish into."
+          }
+        },
+        "required": [
+          "artifact",
+          "channel"
+        ],
+        "description": "The child workflow's parameter schema, carried per workflow (AO's parameters.input_schema) and passed through to the child run unchanged."
       }
     },
     "input": {
       "kind": "inline",
       "value": {
         "type": "object",
-        "description": "Parameters supplied by the invoking parent workflow. Mirrors the parent Control's spec.input.",
+        "description": "The child workflow's parameters, passed through unchanged from the invoking parent. Defined per workflow by spec.configuration, not fixed per Step type.",
         "additionalProperties": false,
         "properties": {
           "artifact": {
@@ -56,16 +70,11 @@
           "channel": {
             "type": "string",
             "description": "Release channel to publish into."
-          },
-          "parentRunId": {
-            "type": "string",
-            "description": "Run identifier of the invoking parent workflow."
           }
         },
         "required": [
           "artifact",
-          "channel",
-          "parentRunId"
+          "channel"
         ]
       }
     }

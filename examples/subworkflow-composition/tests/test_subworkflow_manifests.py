@@ -38,7 +38,7 @@ def test_parent_declares_a_workflow_invocation_of_the_child() -> None:
     )
     assert parent["spec"]["invocation"] == {
         "kind": "workflow-invocation",
-        "workflow": "example.subworkflow-composition.publish-artifact",
+        "workflow": "example.release.publish-artifact",
     }
 
 
@@ -57,6 +57,21 @@ def test_parent_input_and_child_trigger_input_declare_the_same_parameters() -> N
     parent = _load("steps/call-publish-artifact/manifest.yaml")
     child = _load("steps/publish-artifact-requested/manifest.yaml")
     assert schema_without_descriptions(parent["spec"]["input"]["value"]) == (
+        schema_without_descriptions(child["spec"]["input"]["value"])
+    )
+
+
+def test_child_trigger_input_passes_the_workflow_parameters_through() -> None:
+    """The trigger's input is the workflow's parameter schema, passed through.
+
+    AO's subworkflow_trigger carries the child contract as the per-workflow
+    parameter schema (``parameters.input_schema``) and does not fix input per
+    Step type: ``spec.configuration`` defines the parameters and ``spec.input``
+    mirrors them unchanged.
+    """
+
+    child = _load("steps/publish-artifact-requested/manifest.yaml")
+    assert schema_without_descriptions(child["spec"]["configuration"]["value"]) == (
         schema_without_descriptions(child["spec"]["input"]["value"])
     )
 

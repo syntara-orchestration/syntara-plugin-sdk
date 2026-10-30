@@ -34,13 +34,20 @@ CHILD_RESULT = {"releaseId": "stable:syntara-cli", "publishedAt": PUBLISHED_AT}
 def test_child_trigger_emits_the_invocation_event(
     mock_execution_context, step_bindings
 ) -> None:
+    """The event carries the parameters only, no parent-run identifier.
+
+    ``ExecutionContext`` has no parent-run field, so the trigger cannot know
+    its parent's run; parent/child run correlation is a runtime-context gap
+    (AAP-94805), not something the event payload can carry.
+    """
+
     binding = step_bindings.bind_step(TRIGGER, workspace=WORKSPACE)
     outcome = invoke_step(
-        binding, PARAMETERS, context=mock_execution_context(workflow_run_id="parent-run-1")
+        binding, PARAMETERS, context=mock_execution_context(workflow_run_id="child-run-1")
     )
     assert outcome.ok
     assert outcome.run_calls == 1
-    assert outcome.output == {**PARAMETERS, "parentRunId": "parent-run-1"}
+    assert outcome.output == PARAMETERS
 
 
 def test_child_trigger_rejects_a_payload_missing_a_parameter(
@@ -100,7 +107,7 @@ def test_running_the_child_workflow_reaches_the_parent_declared_result(
     outcome = chain_steps(
         [trigger, terminal],
         PARAMETERS,
-        context=mock_execution_context(workflow_run_id="parent-run-1"),
+        context=mock_execution_context(workflow_run_id="child-run-1"),
     )
     assert outcome.ok, outcome.seam_issues
     assert outcome.output == CHILD_RESULT
@@ -121,7 +128,7 @@ def test_direct_and_container_paths_are_equivalent(
 
     binding = step_bindings.bind_step(entry_point, workspace=WORKSPACE)
     context = mock_execution_context(
-        invocation_id="subworkflow-equivalence", workflow_run_id="parent-run-1"
+        invocation_id="subworkflow-equivalence", workflow_run_id="run-1"
     )
     direct = invoke_step(binding, PARAMETERS, context=context)
     container = invoke_step_in_container(binding, PARAMETERS, context=context)

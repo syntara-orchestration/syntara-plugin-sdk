@@ -7,7 +7,7 @@ metadata:
 spec:
   invocation:
     kind: workflow-invocation
-    workflow: example.subworkflow-composition.publish-artifact
+    workflow: example.release.publish-artifact
   runtime:
     kind: custom-runner
     entryPoint: subworkflow_composition.call_publish_artifact:CallPublishArtifactStep
@@ -16,6 +16,7 @@ spec:
     value:
       type: object
       description: Parameters the parent workflow passes to the child workflow.
+      additionalProperties: false
       properties:
         artifact:
           type: string

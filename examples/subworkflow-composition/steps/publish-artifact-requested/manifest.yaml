@@ -13,12 +13,27 @@ spec:
     kind: inline
     value:
       type: object
-      description: A subworkflow trigger declares no external transport configuration.
+      description: >-
+        The child workflow's parameter schema, carried per workflow and passed
+        through to the child run unchanged.
+      additionalProperties: false
+      properties:
+        artifact:
+          type: string
+          description: Artifact name to publish.
+        channel:
+          type: string
+          description: Release channel to publish into.
+      required: [artifact, channel]
   input:
     kind: inline
     value:
       type: object
-      description: Parameters supplied by the invoking parent workflow.
+      description: >-
+        The child workflow's parameters, passed through unchanged from the
+        invoking parent. Defined per workflow by spec.configuration, not fixed
+        per Step type.
+      additionalProperties: false
       properties:
         artifact:
           type: string
@@ -39,7 +54,4 @@ spec:
         channel:
           type: string
           description: Release channel to publish into.
-        parentRunId:
-          type: string
-          description: Run identifier of the invoking parent workflow.
-      required: [artifact, channel, parentRunId]
+      required: [artifact, channel]

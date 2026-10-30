@@ -15,7 +15,6 @@ class PublishArtifactInput(BaseModel):
 
     artifact: str
     channel: str
-    parentRunId: str
 
 
 class PublishArtifactOutput(BaseModel):

@@ -120,7 +120,22 @@ A synchronous subworkflow call needs no new Step category. The parent side is
 a Control with `spec.invocation.kind: workflow-invocation` and the
 `syntara.workflow.invoke@1.0.0` platform-runner implementation; the child side
 is a Trigger on the `subworkflow.v1` driver, which declares its platform driver
-in `spec.driver` and its executor separately in `spec.runtime`.
+in `spec.driver` and its executor separately in `spec.runtime`. The child
+Trigger carries the child workflow's parameter schema in `spec.configuration`
+and passes its input through to the child run unchanged, so the parameters are
+defined per workflow rather than fixed per Step type.
+
+These contracts express the composition seams, but they are **not yet a
+confirmed fit** for AO's ANSTRAT-2347 implementation. Recorded gaps:
+
+- `spec.invocation` has no trigger selector. AO's `sub_workflow` node requires
+  a `trigger_node_id`, because a child workflow can have several Subworkflow
+  Triggers.
+- `spec.invocation.workflow` is a `qualifiedIdentifier`; AO references the
+  child by a UUID `workflow_id`, which no qualified identifier matches.
+- The parent's `spec.output` is the child's declared business result. AO's
+  `sub_workflow` result is child execution metadata (`child_execution_id`,
+  `child_workflow_version`, `child_status`, step-keyed `outputs`).
 
 `spec.invocation.workflow` is a qualified identifier with no version segment,
 so a parent names a child workflow but cannot pin a published version of it;
@@ -128,6 +143,12 @@ version resolution is a control-plane concern. Nothing in these contracts binds
 the parent's `spec.input` to the child Trigger's declared event payload, or the
 child's terminal result to the parent's `spec.output`. Both agreements are
 authoring obligations that an author verifies with their own tests.
+
+The trigger's event payload carries no parent-run identifier: `ExecutionContext`
+has no parent-run field, so a Step executing in the child run cannot know the
+parent's run id, and stamping the current `workflow_run_id` would name the
+child's own run. Parent/child run correlation is a runtime-context gap
+(AAP-94805) to be resolved by the execution plane, not by the event payload.
 
 See [`examples/subworkflow-composition`](../examples/subworkflow-composition)
 for a worked parent-and-child workspace.
