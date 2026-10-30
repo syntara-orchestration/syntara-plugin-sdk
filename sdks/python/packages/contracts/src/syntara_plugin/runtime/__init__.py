@@ -78,7 +78,6 @@ if TYPE_CHECKING:
         step_registry_from_bindings,
     )
     from .container import (
-        ANY_STEP_REVISION,
         ContainerClient,
         ContainerInvocation,
         ContainerInvocationError,
@@ -98,7 +97,6 @@ _CONTAINER_MODULE = ".container"
 _ADAPTER_MODULE = ".adapter"
 
 _LAZY_EXPORTS = {
-    "ANY_STEP_REVISION": _CONTAINER_MODULE,
     "ContainerClient": _CONTAINER_MODULE,
     "ContainerInvocation": _CONTAINER_MODULE,
     "ContainerInvocationError": _CONTAINER_MODULE,
@@ -134,7 +132,6 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    "ANY_STEP_REVISION",
     "ManifestInputValidationError",
     "ActionStep",
     "BaseStep",

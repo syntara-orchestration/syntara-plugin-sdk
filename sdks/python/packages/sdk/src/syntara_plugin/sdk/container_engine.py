@@ -21,6 +21,7 @@ the workload died instead of a generic timeout.
 
 from __future__ import annotations
 
+import json
 import shutil
 import signal
 import socket
@@ -35,7 +36,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .runner import RunExecutionError, TlsOptions
+from syntara_plugin.runtime.abi import CONTAINER_ABI
+
+from .runner import RunExecutionError, RunTarget, TlsOptions
 
 _ENGINE_COMMANDS = ("podman", "docker")
 _SELF_MANAGED_NEXT_STEP = "or start the runtime yourself and pass --address HOST:PORT"
@@ -137,7 +140,7 @@ def _select_engine(image: str) -> ContainerEngine:
 
 
 @contextmanager
-def managed_runtime(image: str) -> Iterator[ManagedRuntime]:
+def managed_runtime(image: str, target: RunTarget | None = None) -> Iterator[ManagedRuntime]:
     """Run one workload image for the duration of the block, then remove it.
 
     Raises :class:`RunExecutionError` with author-facing guidance when no
@@ -172,8 +175,34 @@ def managed_runtime(image: str) -> Iterator[ManagedRuntime]:
         # leave the named container behind. Removal is best effort, so a
         # failure before creation is harmless.
         try:
+            resolved_path: Path | None = None
+            if target is not None:
+                resolved_path = Path(temporary) / "resolved.json"
+                try:
+                    resolved_path.write_text(
+                        json.dumps({"bindings": [{
+                            "stepRevisionId": target.step_revision_id,
+                            "stepIdentity": target.identity,
+                            "runtimeKind": "custom-runner",
+                            "entryPoint": target.entry_point,
+                            "abi": CONTAINER_ABI,
+                            "schemaDigests": target.schema_digests,
+                        }]}),
+                        encoding="utf-8",
+                    )
+                    resolved_path.chmod(0o644)
+                except OSError as error:
+                    raise RunExecutionError(
+                        "could not prepare resolved execution data for the managed workload container",
+                        next_steps=(
+                            "check the permissions and available space in the temporary directory",
+                            _SELF_MANAGED_NEXT_STEP,
+                        ),
+                    ) from error
             runtime = replace(
-                _published_runtime(engine, image, name, material),
+                _published_runtime(engine, image, name, material, resolved_path)
+                if resolved_path is not None
+                else _published_runtime(engine, image, name, material),
                 liveness=_container_liveness(engine, name, image),
             )
             yield runtime
@@ -183,7 +212,11 @@ def managed_runtime(image: str) -> Iterator[ManagedRuntime]:
 
 
 def _published_runtime(
-    engine: ContainerEngine, image: str, name: str, material: _TlsMaterial
+    engine: ContainerEngine,
+    image: str,
+    name: str,
+    material: _TlsMaterial,
+    resolved_path: Path | None = None,
 ) -> ManagedRuntime:
     """Run the container on a published loopback port with generated mTLS."""
 
@@ -222,6 +255,16 @@ def _published_runtime(
                 "SYNTARA_RUNTIME_GRPC_TLS_KEY=/run/secrets/server.key",
                 "--env",
                 "SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=/run/secrets/client-ca.crt",
+                *(
+                    [
+                        "--volume",
+                        f"{resolved_path}:/run/syntara/resolved.json:{mount_mode}",
+                        "--env",
+                        "SYNTARA_RESOLVED_EXECUTION=/run/syntara/resolved.json",
+                    ]
+                    if resolved_path is not None
+                    else []
+                ),
                 image,
             ],
             capture_output=True,

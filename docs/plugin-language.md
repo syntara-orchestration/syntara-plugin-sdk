@@ -32,11 +32,11 @@ platform control plane.
 
 ```text
 Step type -> Category -> Runner -> Execution
-Launch AAP Job Template -> action -> platform-runner (aap.v1) -> launches the selected job template
-HTTP Request -> action -> platform-runner (http.v1) -> sends the configured request
+Launch AAP Job Template -> action -> platform-runner -> launches the selected job template
+HTTP Request -> action -> platform-runner -> sends the configured request
 Create GitHub Issue -> action -> custom-runner -> the pinned runner invokes the typed implementation
-Launch production inventory sync -> control -> platform-runner (workflow.v1) -> invokes the selected workflow in the control plane
-Pull request webhook -> trigger -> platform-runner (webhook.v1) -> webhook ingress delivers the event in the control plane
+Launch production inventory sync -> control -> platform-runner -> invokes the selected workflow in the control plane
+Pull request webhook -> trigger -> platform-runner -> webhook ingress delivers the event in the control plane
 ```
 
 Use a Control Step type for orchestration behavior in the control plane, such
@@ -66,8 +66,8 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | Key | Meaning |
 | --- | --- |
 | `spec.runtime.kind` | Required execution owner: `platform-runner` or `custom-runner`. |
-| `spec.runtime.driver` | Required for `platform-runner`; names an approved versioned driver, such as `http.v1`. Forbidden for `custom-runner`. |
-| `spec.runtime.operation` | Required for `http.v1`; declares an inert HTTP method, relative path, and optional mappings. Forbidden for `custom-runner`. |
+| `spec.runtime.implementation` | Required for `platform-runner`; a registered step reference in `<namespace>.<plugin>.<step>@version` form, with a SemVer 2.0.0 version (including optional prerelease and build metadata), such as `example.hello-world.hello@0.1.0`. Forbidden for `custom-runner`. |
+| `spec.runtime.operation` | Optional HTTP operation metadata for the built-in `syntara.http.request@<version>` platform runner: an inert method, relative path, and optional mappings. Forbidden for `custom-runner` and all other implementations. |
 | `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the Step implementation inside the digest-pinned runner image. It is an implementation identity, not a placement decision: Syntara policy may run it in the selected host execution path or delegate it to the Execution Plane. |
 | `spec.domain` | Optional qualified domain identifier that groups an Action Step type independently of its runner. |
 | `spec.integrationType` | Optional qualified integration type required by the Action Step type. A workflow selects an instance of this type, not raw credentials. |
@@ -77,10 +77,18 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 
 Custom-runner Step types implement `spec.runtime.entryPoint` with the typed
 Python API; see [Typed Python steps](runtime-and-oci.md#typed-python-steps).
+Platform-runner references identify a step in any registered plugin. Compilation
+preserves the reference; the AO Plugin Registry resolves its image, entry point,
+and ABI during registration. Example references are placeholders and must name
+an implementation available in the target installation.
 
-### `http.v1` operation
+### HTTP operation
 
 Schema: [`http-operation.schema.json`](../contracts/schemas/v1alpha1/http-operation.schema.json).
+An Action using `syntara.http.request@<version>` may declare this operation under
+`spec.runtime.operation`. The separate
+runtime-only HTTP context uses `driver: http.v1`; this is a context label, not
+the Action's runner or implementation reference.
 
 | Key | Meaning |
 | --- | --- |
@@ -99,7 +107,7 @@ Schema: [`control.schema.json`](../contracts/schemas/v1alpha1/control.schema.jso
 `workflow-invocation` together with `spec.invocation.workflow` for a Control
 Step type that invokes a named workflow. `spec.runtime` selects the approved
 `platform-runner` or `custom-runner`; `entryPoint` identifies a custom-runner
-implementation and `driver` identifies a platform runner. Control contracts
+implementation and `implementation` identifies a platform runner. Control contracts
 define public input and business-result output schemas and may optionally
 declare a separate error schema. For a `workflow-invocation`, the parent
 Control Step consumes the child workflow's declared result; the parent's
@@ -188,9 +196,26 @@ manifest containing these IDs. Provider-only and unreferenced workload bindings
 remain in the projection. The step projection contains `projection`,
 `kind: "step"`, the plugin's namespace/name/version, `sdkVersion`,
 `contractBundleDigest`, and the complete compiled target without its generated
-ID. Thus a change to a step, plugin release coordinates, SDK version, or
-contract bundle changes that step's ID; a change to another target or plugin
-documentation does not.
+ID.
+
+**Step revision change rule:** The compiler creates a new `step_revision_id`
+when any part of that projection changes. This includes the plugin
+namespace/name/release version; the Step type's category and input, output, or
+error contracts; its runtime kind, ABI, and declared entry point or
+implementation reference; the exact `sdkVersion`; and the contract-bundle
+digest. A platform-runner implementation reference is part of the compiled
+target and therefore participates in both revision projections.
+
+A Step type revision does not change for a workload image repository, image
+digest, or registration-time image selection; for another Step type; or for
+plugin documentation. The latter two changes can create a new
+`plugin_revision_id` without changing this Step type's revision.
+
+Recompiling the same author inputs with a different SDK version or contract
+bundle intentionally creates a distinct Step type revision. Existing published
+revisions remain valid. Before a new custom-runner revision can execute, its
+selected workload image must contain a registration-manifest mapping for that
+new revision.
 
 Revision IDs identify compiled contracts, not image bytes. The workload image
 digest remains separately bound in `spec.workloads` and in the complete

@@ -21,13 +21,17 @@
           "properties": {
             "kind": {"enum": ["platform-runner", "custom-runner"]},
             "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
-            "driver": {"$ref": "step.schema.json#/$defs/driver"},
+            "implementation": {"$ref": "step.schema.json#/$defs/implementation"},
             "operation": {"$ref": "http-operation.schema.json#/$defs/operation"}
           },
           "allOf": [
             {
               "if": {"properties": {"kind": {"const": "platform-runner"}}},
-              "then": {"required": ["driver"], "not": {"required": ["entryPoint"]}}
+              "then": {"required": ["implementation"], "not": {"required": ["entryPoint"]}}
+            },
+            {
+              "if": {"required": ["operation"]},
+              "then": {"properties": {"implementation": {"pattern": "^syntara\\.http\\.request@"}}}
             },
             {
               "if": {"properties": {"kind": {"const": "custom-runner"}}},
@@ -35,22 +39,11 @@
                 "required": ["entryPoint"],
                 "not": {
                   "anyOf": [
-                    {"required": ["driver"]},
+                    {"required": ["implementation"]},
                     {"required": ["operation"]}
                   ]
                 }
               }
-            },
-            {
-              "if": {
-                "required": ["driver"],
-                "properties": {"driver": {"const": "http.v1"}}
-              },
-              "then": {"required": ["operation"]}
-            },
-            {
-              "if": {"required": ["operation"]},
-              "then": {"properties": {"driver": {"const": "http.v1"}}}
             }
           ]
         },

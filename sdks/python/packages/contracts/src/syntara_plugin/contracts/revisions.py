@@ -10,6 +10,7 @@ from .canonical import canonical_json_digest
 
 REVISION_PROJECTION_VERSION = "syntara.compiled-contract/v1"
 STEP_KINDS = frozenset({"Action", "Control", "Trigger"})
+_EXECUTABLE_SCHEMA_NAMES = frozenset({"input", "output", "error"})
 
 
 def step_revision_id(descriptor: Mapping[str, Any], target: Mapping[str, Any]) -> str:
@@ -72,7 +73,12 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
             revision = target["step_revision_id"]
             if revision in steps:
                 raise ValueError("duplicate step revision in registration manifest")
-            steps[revision] = {"entryPoint": runtime["entryPoint"], "abi": runtime["abi"]}
+            steps[revision] = {
+                "stepIdentity": target["identity"],
+                "entryPoint": runtime["entryPoint"],
+                "abi": runtime["abi"],
+                "schemaDigests": _executable_schema_digests(target),
+            }
     if not steps:
         raise ValueError(f"workload {workload_id!r} has no custom-runner steps")
     return {
@@ -82,6 +88,23 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
         "sdkVersion": spec["sdkVersion"],
         "workload": workload_id,
         "steps": steps,
+    }
+
+
+def _executable_schema_digests(target: Mapping[str, Any]) -> dict[str, str]:
+    """Return schema digests consumed by a container step implementation.
+
+    A compiled target can include authoring or workflow configuration schemas.
+    Those remain part of the descriptor and revision identity, but are not
+    supplied to an image-local implementation during ``Execute``.
+    """
+
+    schema_digests = target["schemaDigests"]
+    assert isinstance(schema_digests, Mapping)
+    return {
+        name: digest
+        for name, digest in schema_digests.items()
+        if name in _EXECUTABLE_SCHEMA_NAMES and isinstance(digest, str)
     }
 
 
@@ -104,6 +127,9 @@ def validate_registration_manifest(
         expected = registration_manifest(descriptor, workload_id)
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError("invalid descriptor for registration manifest") from error
+    schema_errors = validate_document(bundle, "registration_manifest", manifest)
+    if schema_errors:
+        raise ValueError("; ".join(schema_errors))
     if manifest != expected:
         raise ValueError("registration manifest does not match the compiled descriptor")
 

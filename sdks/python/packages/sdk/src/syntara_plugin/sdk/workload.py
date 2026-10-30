@@ -58,14 +58,18 @@ def build_and_push_workload(request: WorkloadBuildRequest, *, verbose: bool = Fa
     build_id = uuid4().hex
     staging_reference = f"{request.repository}:syntara-stage-{build_id}"
     registered_reference = f"{request.repository}:syntara-registered-{build_id}"
-    _build_staging_image(request, staging_reference, verbose=verbose)
-    _build_registration_layer(
-        request, staging_reference, registered_reference, manifest_bytes, verbose=verbose
-    )
-    digest = _push_image(request, registered_reference, verbose=verbose)
-    if not _is_sha256_digest(digest):
-        raise WorkloadBuildError("Podman did not report a valid sha256 image digest")
-    return f"{request.repository}@{digest}"
+    try:
+        _build_staging_image(request, staging_reference, verbose=verbose)
+        _build_registration_layer(
+            request, staging_reference, registered_reference, manifest_bytes, verbose=verbose
+        )
+        digest = _push_image(request, registered_reference, verbose=verbose)
+        if not _is_sha256_digest(digest):
+            raise WorkloadBuildError("Podman did not report a valid sha256 image digest")
+        return f"{request.repository}@{digest}"
+    finally:
+        _remove_local_image(request.engine, registered_reference, verbose=verbose)
+        _remove_local_image(request.engine, staging_reference, verbose=verbose)
 
 
 def _validate_request(request: WorkloadBuildRequest) -> None:
@@ -170,6 +174,16 @@ def _push_image(
         raise WorkloadBuildError(f"could not read Podman image digest: {error}") from error
     finally:
         digest_path.unlink(missing_ok=True)
+
+
+def _remove_local_image(engine: str, reference: str, *, verbose: bool) -> None:
+    """Best-effort removal of one invocation's temporary Podman image tag."""
+
+    try:
+        _run([engine, "rmi", reference], verbose=verbose)
+    except (OSError, WorkloadBuildError):
+        # Cleanup must not hide the build or publication failure that triggered it.
+        pass
 
 
 def _run(command: list[str], *, verbose: bool) -> None:

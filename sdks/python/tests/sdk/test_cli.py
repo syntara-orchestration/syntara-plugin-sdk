@@ -497,7 +497,7 @@ def test_inspect_prints_the_canonical_descriptor_for_the_generated_workspace(
     assert main(["inspect", str(workspace / "plugin.yaml")]) == 0
     descriptor = json.loads(capsys.readouterr().out)
     assert descriptor["metadata"]["name"] == "status-tools"
-    assert descriptor["spec"]["targets"][0]["runtime"]["driver"] == "http.v1"
+    assert descriptor["spec"]["targets"][0]["runtime"]["implementation"] == "syntara.http.request@1.0.0"
 
 
 def test_inspect_reads_the_verified_metadata_from_a_built_archive(tmp_path: Path, capsys) -> None:
@@ -1127,7 +1127,9 @@ def test_build_with_workload_binds_the_pushed_digest_and_publishes_metadata(
     target = descriptor["spec"]["targets"][0]
     assert manifest["plugin_revision_id"] == descriptor["spec"]["plugin_revision_id"]
     assert manifest["steps"][target["step_revision_id"]] == {
+        "stepIdentity": target["identity"],
         "entryPoint": target["runtime"]["entryPoint"], "abi": target["runtime"]["abi"],
+        "schemaDigests": target["schemaDigests"],
     }
     assert descriptor["spec"]["workloads"]["custom-runner"]["image"] == (
         f"registry.example.test/acme/custom-runner@{_WORKLOAD_DIGEST}"

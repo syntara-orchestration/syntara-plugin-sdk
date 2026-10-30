@@ -283,7 +283,8 @@ obtain such a runtime:
    ```
 
    ```sh
-   SYNTARA_RUNTIME_CONFIG=runtime.json PYTHONPATH=. syntara-plugin-runtime-server
+   SYNTARA_RUNTIME_CONFIG=runtime.json SYNTARA_RESOLVED_EXECUTION=resolved.json \
+     PYTHONPATH=. syntara-plugin-runtime-server
    ```
 
    The factory returns `StepBindings` that install your steps through
@@ -291,10 +292,16 @@ obtain such a runtime:
    [runtime image integration test](../sdks/python/tests/integration/test_runtime_image.py)
    contains one complete, copy-pasteable factory, and
    [the runtime and OCI model](runtime-and-oci.md) describes the adapter
-   contract. This is also the image pattern the managed path expects:
+   contract and the format of the trusted resolved execution file. Its revision
+   and installed Step identity must match the local compiled target, and custom
+   runners must match the image's packaged registration manifest. This bootstrap
+   file identifies installed bindings only; the gRPC request supplies the
+   invocation/run IDs, input, timeout, credential file paths, and runtime
+   context. This is also the image pattern the managed path expects:
    install the `syntara-plugin-contracts` wheel on a Python base image, copy
    your plugin sources and runtime config, and set `SYNTARA_RUNTIME_CONFIG`
-   and `PYTHONPATH`.
+   and `PYTHONPATH`. Managed image mode supplies the selected local compiled
+   revision as read-only execution data when starting the container.
 
 2. **A Podman container with a published port and mutual TLS.** A non-loopback
    runtime listener requires mTLS by design. Publish

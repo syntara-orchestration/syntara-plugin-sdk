@@ -61,7 +61,6 @@ def validate_plugin_descriptor_semantics(
     _validate_target_identities(targets, errors)
     _validate_workloads(targets, workloads, errors, deferred_workload)
     _validate_schema_digests(targets, errors)
-    _validate_trigger_drivers(targets, errors)
     errors.extend(revision_errors(descriptor))
     return tuple(errors)
 
@@ -142,19 +141,3 @@ def _validate_schema_digests(targets: list[object], errors: list[str]) -> None:
                 errors.append(
                     f"target {identity!r} {field_name} schema digest does not match its schema"
                 )
-
-
-def _validate_trigger_drivers(targets: list[object], errors: list[str]) -> None:
-    """Require platform Trigger targets to use one consistent driver."""
-
-    for target in targets:
-        if not isinstance(target, Mapping) or target.get("kind") != "Trigger":
-            continue
-        runtime = target.get("runtime")
-        if not isinstance(runtime, Mapping) or runtime.get("kind") != "platform-runner":
-            continue
-        if target.get("driver") != runtime.get("driver"):
-            identity = target.get("identity", "<unknown>")
-            errors.append(
-                f"trigger target {identity!r} driver does not match its platform-runner runtime driver"
-            )

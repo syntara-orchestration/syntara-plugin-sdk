@@ -40,8 +40,9 @@ syntara-plugin build
 syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
 
-`init` generates a platform-runner action, which Syntara's managed runner
-executes; the `run` command executes custom-runner Steps locally. To try it,
+`init` generates a platform-runner action with an example implementation
+reference; replace it with a registered step available in your installation.
+The `run` command executes custom-runner Steps locally. To try it,
 run the custom-runner example from the repository root (see
 [Running locally](docs/running-locally.md)):
 

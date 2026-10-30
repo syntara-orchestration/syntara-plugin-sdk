@@ -149,7 +149,9 @@ class RunTarget:
     entry_point: str
     metadata_name: str
     input_schema: Mapping[str, Any]
+    schema_digests: Mapping[str, str]
     workload_image: str | None = None
+    step_revision_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -604,7 +606,9 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         entry_point=str(selected["runtime"]["entryPoint"]),
         metadata_name=str(selected["metadata"]["name"]),
         input_schema=selected["input"],
+        schema_digests=selected["schemaDigests"],
         workload_image=selected.get("runtime", {}).get("workload"),
+        step_revision_id=str(selected["step_revision_id"]),
     )
 
 
@@ -944,10 +948,11 @@ def _execute_over_channel(
 ) -> RunReport:
     client = ContainerClient(channel)
     advertised = _health(client, address, startup_seconds=startup_seconds, liveness=liveness)
-    if target.identity not in advertised:
+    dispatch_id = target.step_revision_id if mode == "image" else target.identity
+    if dispatch_id not in advertised:
         listed = ", ".join(sorted(advertised)) or "none"
         raise RunExecutionError(
-            f"the runtime at {address} does not advertise {target.identity!r}",
+            f"the runtime at {address} does not advertise {dispatch_id!r}",
             detail=(f"Advertised steps: {listed}",),
             next_steps=(
                 "check that the runtime was built from this workspace",
@@ -958,7 +963,7 @@ def _execute_over_channel(
     invocation = ContainerInvocation(
         invocation_id=invocation_id,
         workflow_run_id=workflow_run_id,
-        step_revision_id=target.identity,
+        step_revision_id=dispatch_id,
         inputs=inputs,
         credential_file_paths={},
         timeout_seconds=timeout_seconds,

@@ -10,7 +10,9 @@ hello**. Its manifest shows the smallest useful plugin shape:
   defines the action input.
 - [`syntara-plugin.yaml`](../syntara-plugin.yaml) supplies local build output.
 
-The `http.v1` path is intentionally relative. Syntara selects the endpoint,
+The implementation reference is an example placeholder: replace it with a
+registered HTTP implementation available in your installation. The path is
+intentionally relative. Syntara selects the endpoint,
 connection, authentication, and network policy at installation and execution
 time; this example does not call a real public service by itself.
 

@@ -185,6 +185,7 @@ def container_step_for_binding(
     binding: StepBinding,
     *,
     object_store: ResultObjectStore | None = None,
+    step_revision_id: str | None = None,
 ) -> ContainerStepHandler:
     """Wrap one typed step as a container handler.
 
@@ -205,7 +206,7 @@ def container_step_for_binding(
     output_schema_digest = _applied_output_schema_digest(binding)
 
     def handler(invocation: ContainerInvocation) -> ContainerResult:
-        if invocation.step_revision_id != binding.descriptor.step_identity:
+        if invocation.step_revision_id != (step_revision_id or binding.descriptor.step_identity):
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
                 "The requested plugin step is not available in this container image.",
@@ -249,9 +250,8 @@ def container_step_for_bindings(
 ) -> ContainerStepHandler:
     """Wrap typed step bindings as a handler resolving by step identity.
 
-    The invocation's ``step_revision_id`` is matched against the declared step
-    identity. The current container bootstrap requires the Execution Plane to
-    resolve an installed revision to that identity before sending the request.
+    This helper uses declared identities and is intended for local invocation.
+    Server startup uses resolved revisions with :func:`container_step_for_binding`.
     """
 
     def handler(invocation: ContainerInvocation) -> ContainerResult:
@@ -276,10 +276,8 @@ def step_registry_from_bindings(
 ) -> StepRegistry:
     """Build a container step registry with one handler per typed step.
 
-    Handlers are keyed by declared step identity and matched exactly against the
-    invocation's ``step_revision_id``. The current container bootstrap requires
-    the Execution Plane to resolve an installed revision to that identity
-    before sending the request.
+    This local helper uses declared identities. Server startup supplies exact
+    resolved revision IDs separately from their installed descriptors.
     """
 
     handlers = {

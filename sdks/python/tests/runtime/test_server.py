@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import socket
 import subprocess
 import threading
+from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import grpc
 import pytest
 from pydantic import BaseModel
+from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
     ActionStep,
     BaseStep,
     ContainerClient,
     ContainerInvocation,
+    ContainerInvocationError,
     ContainerRemoteError,
     ExecutionContext,
     FailureCode,
@@ -33,7 +39,10 @@ from syntara_plugin.runtime.server import (
     create_runtime_server,
     load_runtime_bindings,
     load_runtime_server_config,
+    resolved_step_registry,
 )
+
+REVISION = "sha256:" + "a" * 64
 
 
 class EchoInput(BaseModel):
@@ -47,6 +56,9 @@ class EchoOutput(BaseModel):
 class EchoStep(ActionStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
         return EchoOutput(message=inputs.message)
+
+
+EchoAlias = EchoStep
 
 
 class BarrierStep(ActionStep[EchoInput, EchoOutput]):
@@ -91,7 +103,10 @@ class FakeServicerContext:
 
 
 def installed_action_bindings(
-    step_identity: str, step: BaseStep[EchoInput, EchoOutput]
+    step_identity: str,
+    step: BaseStep[EchoInput, EchoOutput],
+    *,
+    input_schema: Mapping[str, Any] | None = None,
 ) -> StepBindings:
     step_class = type(step)
     installed_step = InstalledStepManifest.from_manifest(
@@ -109,7 +124,10 @@ def installed_action_bindings(
                     "kind": "custom-runner",
                     "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
                 },
-                "input": {"kind": "inline", "value": EchoInput.model_json_schema()},
+                "input": {
+                    "kind": "inline",
+                    "value": input_schema if input_schema is not None else EchoInput.model_json_schema(),
+                },
                 "output": {"kind": "inline", "value": EchoOutput.model_json_schema()},
             },
         },
@@ -142,6 +160,13 @@ def create_uncancellable_timeout_bindings() -> StepBindings:
     return installed_action_bindings("smoke.uncancellable-timeout.v1", UncancellableTimeoutStep())
 
 
+def _schema_digests(input_schema: Mapping[str, Any] | None = None) -> dict[str, str]:
+    return {
+        "input": canonical_json_digest(input_schema or EchoInput.model_json_schema()),
+        "output": canonical_json_digest(EchoOutput.model_json_schema()),
+    }
+
+
 def write_runtime_config(
     tmp_path: Path,
     *,
@@ -165,11 +190,29 @@ def empty_bindings() -> StepBindings:
     return StepBindings()
 
 
+def resolved_file(tmp_path: Path, step_class: type[BaseStep[EchoInput, EchoOutput]]) -> Path:
+    identities = {
+        EchoStep: "smoke.echo.v1",
+        BarrierStep: "smoke.barrier.v1",
+        CancellationStep: "smoke.cancellation.v1",
+    }
+    path = tmp_path / "resolved.json"
+    path.write_text(json.dumps({"bindings": [{
+        "stepRevisionId": REVISION,
+        "stepIdentity": identities[step_class],
+        "runtimeKind": "platform-runner",
+        "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
+        "abi": "syntara.container/v1alpha1",
+        "schemaDigests": _schema_digests(),
+    }]}), encoding="utf-8")
+    return path
+
+
 def _invocation() -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
         workflow_run_id="workflow-run-1",
-        step_revision_id="smoke.echo.v1",
+        step_revision_id=REVISION,
         inputs={"message": "hello"},
         credential_file_paths={},
         timeout_seconds=30,
@@ -181,7 +224,7 @@ def _barrier_invocation(invocation_id: str) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id=invocation_id,
         workflow_run_id="workflow-run-1",
-        step_revision_id="smoke.barrier.v1",
+        step_revision_id=REVISION,
         inputs={"message": invocation_id},
         credential_file_paths={},
         timeout_seconds=30,
@@ -193,7 +236,7 @@ def _cancellation_invocation() -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
         workflow_run_id="workflow-run-1",
-        step_revision_id="smoke.cancellation.v1",
+        step_revision_id=REVISION,
         inputs={"message": "cancelled"},
         credential_file_paths={},
         timeout_seconds=30,
@@ -310,17 +353,14 @@ def _generate_tls_material(
     )
 
 
-def test_runtime_server_serves_health_and_executes_a_bound_step() -> None:
+def test_runtime_server_serves_health_and_executes_a_bound_step(tmp_path: Path) -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
 
     async def scenario() -> None:
         server = create_runtime_server(
-            RuntimeServerConfig(
-                bindings_factory=f"{__name__}:create_bindings",
-                address=f"127.0.0.1:{port}",
-            )
+            replace(_resolved_config(tmp_path, [_resolved_record()]), address=f"127.0.0.1:{port}")
         )
         await server.start()
         channel = grpc.insecure_channel(f"127.0.0.1:{port}")
@@ -329,8 +369,14 @@ def test_runtime_server_serves_health_and_executes_a_bound_step() -> None:
             health = await asyncio.to_thread(client.health)
             result = await asyncio.to_thread(client.execute, _invocation())
 
-            assert health == ("smoke.echo.v1",)
+            assert health == (REVISION,)
             assert result.output == {"message": "hello"}
+            unknown_invocation = replace(
+                _invocation(), step_revision_id="sha256:" + "c" * 64
+            )
+            with pytest.raises(ContainerRemoteError) as raised:
+                await asyncio.to_thread(client.execute, unknown_invocation)
+            assert raised.value.code is FailureCode.NOT_FOUND
         finally:
             channel.close()
             await server.stop(grace=0)
@@ -338,7 +384,7 @@ def test_runtime_server_serves_health_and_executes_a_bound_step() -> None:
     asyncio.run(scenario())
 
 
-def test_runtime_server_executes_steps_concurrently() -> None:
+def test_runtime_server_executes_steps_concurrently(tmp_path: Path) -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -347,6 +393,7 @@ def test_runtime_server_executes_steps_concurrently() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_barrier_bindings",
+                resolved_execution_path=resolved_file(tmp_path, BarrierStep),
                 address=f"127.0.0.1:{port}",
             )
         )
@@ -370,7 +417,7 @@ def test_runtime_server_executes_steps_concurrently() -> None:
     asyncio.run(scenario())
 
 
-def test_runtime_server_cancels_an_active_step() -> None:
+def test_runtime_server_cancels_an_active_step(tmp_path: Path) -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -379,6 +426,7 @@ def test_runtime_server_cancels_an_active_step() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_cancellation_bindings",
+                resolved_execution_path=resolved_file(tmp_path, CancellationStep),
                 address=f"127.0.0.1:{port}",
             )
         )
@@ -403,7 +451,7 @@ def test_runtime_server_cancels_an_active_step() -> None:
     asyncio.run(scenario())
 
 
-def test_runtime_server_cancels_step_when_client_disconnects() -> None:
+def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -412,6 +460,7 @@ def test_runtime_server_cancels_step_when_client_disconnects() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_cancellation_bindings",
+                resolved_execution_path=resolved_file(tmp_path, CancellationStep),
                 address=f"127.0.0.1:{port}",
             )
         )
@@ -508,6 +557,7 @@ def test_runtime_server_serves_health_and_steps_over_mutual_tls(
         server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_bindings",
+                resolved_execution_path=resolved_file(tmp_path, EchoStep),
                 address=f"localhost:{port}",
                 tls_certificate=certificate,
                 tls_key=key,
@@ -526,7 +576,7 @@ def test_runtime_server_serves_health_and_steps_over_mutual_tls(
             health = await asyncio.to_thread(client.health, timeout_seconds=5)
             result = await asyncio.to_thread(client.execute, _invocation(), timeout_seconds=5)
 
-            assert health == ("smoke.echo.v1",)
+            assert health == (REVISION,)
             assert result.output == {"message": "hello"}
         finally:
             channel.close()
@@ -640,3 +690,228 @@ def test_runtime_bindings_factory_must_return_step_bindings() -> None:
 def test_runtime_bindings_factory_must_register_a_step() -> None:
     with pytest.raises(RuntimeServerError, match="at least one step"):
         load_runtime_bindings(f"{__name__}:empty_bindings")
+
+
+def _resolved_record(kind: str = "custom-runner") -> dict[str, object]:
+    return {
+        "stepRevisionId": REVISION,
+        "stepIdentity": "smoke.echo.v1",
+        "runtimeKind": kind,
+        "entryPoint": f"{__name__}:EchoStep",
+        "abi": "syntara.container/v1alpha1",
+        "schemaDigests": _schema_digests(),
+    }
+
+
+def _resolved_config(
+    tmp_path: Path, records: list[dict[str, object]], *, manifest: dict[str, object] | None = None
+) -> RuntimeServerConfig:
+    resolved = tmp_path / "resolved.json"
+    resolved.write_text(json.dumps({"bindings": records}), encoding="utf-8")
+    registration = tmp_path / "registration.json"
+    if manifest is None:
+        manifest = {
+            "apiVersion": "syntara.registration/v1alpha1",
+            "kind": "RegistrationManifest",
+            "plugin_revision_id": "sha256:" + "b" * 64,
+            "sdkVersion": "0.1.0",
+            "workload": "plugin-workload",
+            "steps": {REVISION: {
+                "stepIdentity": "smoke.echo.v1",
+                "entryPoint": f"{__name__}:EchoStep",
+                "abi": "syntara.container/v1alpha1",
+                "schemaDigests": _schema_digests(),
+            }},
+        }
+    registration.write_text(json.dumps(manifest), encoding="utf-8")
+    return RuntimeServerConfig(
+        bindings_factory=f"{__name__}:create_bindings",
+        resolved_execution_path=resolved,
+        registration_manifest_path=registration,
+    )
+
+
+def test_custom_resolved_revision_dispatches_with_installed_schema(tmp_path: Path) -> None:
+    config = _resolved_config(tmp_path, [_resolved_record()])
+    registry = resolved_step_registry(config, create_bindings())
+
+    assert registry.step_revision_ids == (REVISION,)
+    assert registry.resolve(REVISION)(_invocation()).output == {"message": "hello"}
+    invalid = replace(_invocation(), inputs={})
+    result = registry.resolve(REVISION)(invalid)
+    assert result.error_result is not None
+    assert result.error_result["code"] == "INVALID_INPUT"
+    with pytest.raises(ContainerInvocationError) as error:
+        registry.resolve("smoke.echo.v1")
+    assert error.value.code is FailureCode.NOT_FOUND
+
+
+def test_platform_resolved_revision_needs_no_registration_manifest(tmp_path: Path) -> None:
+    config = _resolved_config(tmp_path, [_resolved_record("platform-runner")])
+    config.registration_manifest_path.unlink()
+    registry = resolved_step_registry(config, create_bindings())
+    assert registry.step_revision_ids == (REVISION,)
+    assert registry.resolve(REVISION)(_invocation()).output == {"message": "hello"}
+
+
+def test_server_requires_resolved_execution_data() -> None:
+    config = RuntimeServerConfig(f"{__name__}:create_bindings")
+    bindings = create_bindings()
+    with pytest.raises(RuntimeServerError, match="RESOLVED_EXECUTION"):
+        resolved_step_registry(config, bindings)
+
+
+@pytest.mark.parametrize(
+        ("changes", "message"),
+    [
+        ({"stepRevisionId": "smoke.echo.v1"}, "contract"),
+        ({"runtimeKind": "other"}, "contract"),
+        ({"abi": "syntara.container/v0"}, "contract"),
+        ({"entryPoint": "bad-entry"}, "contract"),
+        ({"entryPoint": "missing.module:Step"}, "could not be loaded"),
+        ({"entryPoint": f"{__name__}:EchoInput"}, "typed Step"),
+        ({"entryPoint": f"{__name__}:BarrierStep"}, "does not match"),
+        ({"entryPoint": f"{__name__}:EchoAlias"}, "invalid installed binding"),
+        ({"extra": "field"}, "contract"),
+    ],
+)
+def test_invalid_resolved_bindings_fail_startup(
+    tmp_path: Path, changes: dict[str, object], message: str
+) -> None:
+    record = _resolved_record("platform-runner") | changes
+    config = _resolved_config(tmp_path, [record])
+    bindings = create_bindings()
+    with pytest.raises(RuntimeServerError, match=message):
+        resolved_step_registry(config, bindings)
+
+
+def test_duplicate_resolved_revision_fails_startup(tmp_path: Path) -> None:
+    record = _resolved_record("platform-runner")
+    config = _resolved_config(tmp_path, [record, record])
+    bindings = create_bindings()
+    with pytest.raises(RuntimeServerError, match="duplicate step revision"):
+        resolved_step_registry(config, bindings)
+
+
+def test_duplicate_json_keys_fail_startup(tmp_path: Path) -> None:
+    config = _resolved_config(tmp_path, [_resolved_record()])
+    assert config.resolved_execution_path is not None
+    config.resolved_execution_path.write_text('{"bindings": [], "bindings": []}', encoding="utf-8")
+    bindings = create_bindings()
+    with pytest.raises(RuntimeServerError, match="valid resolved execution"):
+        resolved_step_registry(config, bindings)
+
+
+def test_duplicate_registration_keys_fail_startup(tmp_path: Path) -> None:
+    config = _resolved_config(tmp_path, [_resolved_record()])
+    config.registration_manifest_path.write_text('{"steps": {}, "steps": {}}', encoding="utf-8")
+    bindings = create_bindings()
+    with pytest.raises(RuntimeServerError, match="valid registration manifest"):
+        resolved_step_registry(config, bindings)
+
+
+def test_entry_point_import_failure_is_reported_at_startup(tmp_path: Path, monkeypatch) -> None:
+    config = _resolved_config(tmp_path, [_resolved_record("platform-runner")])
+    bindings = create_bindings()
+    original_import = importlib.import_module
+
+    def fail_import(module: str) -> None:
+        if module == __name__:
+            raise RuntimeError("import failed")
+        return original_import(module)
+
+    monkeypatch.setattr("syntara_plugin.runtime.server.importlib.import_module", fail_import)
+    with pytest.raises(RuntimeServerError, match="could not be loaded"):
+        resolved_step_registry(config, bindings)
+
+
+@pytest.mark.parametrize("change", ["revision", "identity", "entry", "abi", "schemas", "malformed"])
+def test_custom_record_must_match_packaged_registration(tmp_path: Path, change: str) -> None:
+    config = _resolved_config(tmp_path, [_resolved_record()])
+    manifest = json.loads(config.registration_manifest_path.read_text(encoding="utf-8"))
+    if change == "revision":
+        manifest["steps"]["sha256:" + "c" * 64] = manifest["steps"].pop(REVISION)
+    elif change == "identity":
+        manifest["steps"][REVISION]["stepIdentity"] = "another.identity"
+    elif change == "entry":
+        manifest["steps"][REVISION]["entryPoint"] = f"{__name__}:BarrierStep"
+    elif change == "abi":
+        manifest["steps"][REVISION]["abi"] = "syntara.container/v0"
+    elif change == "schemas":
+        manifest["steps"][REVISION]["schemaDigests"]["input"] = "sha256:" + "c" * 64
+    else:
+        manifest["steps"][REVISION]["unexpected"] = True
+    config.registration_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    bindings = create_bindings()
+    with pytest.raises(RuntimeServerError, match="registration manifest"):
+        resolved_step_registry(config, bindings)
+
+
+def test_untrusted_binding_is_rejected(tmp_path: Path) -> None:
+    config = _resolved_config(tmp_path, [_resolved_record("platform-runner")])
+    step = EchoStep()
+    untrusted = StepBindings()
+    untrusted.bind(StepDescriptor.for_step("smoke.echo.v1", step), step)
+    with pytest.raises(RuntimeServerError, match="invalid installed binding"):
+        resolved_step_registry(config, untrusted)
+
+
+@pytest.mark.parametrize("kind", ["custom-runner", "platform-runner"])
+def test_resolved_identity_cannot_fall_back_to_same_class(tmp_path: Path, kind: str) -> None:
+    record = _resolved_record(kind) | {"stepIdentity": "another.identity"}
+    config = _resolved_config(tmp_path, [record])
+    if kind == "custom-runner":
+        manifest = json.loads(config.registration_manifest_path.read_text(encoding="utf-8"))
+        manifest["steps"][REVISION]["stepIdentity"] = "another.identity"
+        config.registration_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    bindings = create_bindings()
+    with pytest.raises(RuntimeServerError, match="no installed binding"):
+        resolved_step_registry(config, bindings)
+
+
+def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
+    other_revision = "sha256:" + "c" * 64
+    records = [
+        _resolved_record("platform-runner"),
+        _resolved_record("platform-runner") | {
+            "stepRevisionId": other_revision,
+            "stepIdentity": "another.identity",
+            "schemaDigests": _schema_digests(
+                {
+                    "type": "object",
+                    "properties": {"message": {"type": "string", "minLength": 6}},
+                    "required": ["message"],
+                }
+            ),
+        },
+    ]
+    bindings = create_bindings()
+    other = installed_action_bindings(
+        "another.identity",
+        EchoStep(),
+        input_schema={
+            "type": "object",
+            "properties": {"message": {"type": "string", "minLength": 6}},
+            "required": ["message"],
+        },
+    ).binding("another.identity")
+    bindings.bind(other.descriptor, other.step)
+    registry = resolved_step_registry(_resolved_config(tmp_path, records), bindings)
+
+    assert registry.resolve(REVISION)(_invocation()).output == {"message": "hello"}
+    result = registry.resolve(other_revision)(
+        replace(_invocation(), step_revision_id=other_revision)
+    )
+    assert result.error_result is not None
+    assert result.error_result["code"] == "INVALID_INPUT"
+
+
+def test_resolved_schema_digests_must_match_the_installed_binding(tmp_path: Path) -> None:
+    record = _resolved_record("platform-runner")
+    record["schemaDigests"] = {**_schema_digests(), "input": "sha256:" + "c" * 64}
+    config = _resolved_config(tmp_path, [record])
+    bindings = create_bindings()
+
+    with pytest.raises(RuntimeServerError, match="schema digests differ"):
+        resolved_step_registry(config, bindings)

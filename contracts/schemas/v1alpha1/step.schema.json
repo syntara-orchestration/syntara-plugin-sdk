@@ -19,6 +19,11 @@
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*\\.v[1-9][0-9]*$"
     },
+    "implementation": {
+      "type": "string",
+      "description": "A registered step reference with a SemVer 2.0.0 version, including optional prerelease and build metadata.",
+      "pattern": "^[a-z][a-z0-9-]{0,62}\\.[a-z][a-z0-9-]{0,62}\\.[a-z][a-z0-9-]{0,62}@(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$(?![\\s\\S])"
+    },
     "runner": {
       "type": "object",
       "additionalProperties": false,
@@ -26,16 +31,16 @@
       "properties": {
         "kind": {"enum": ["platform-runner", "custom-runner"]},
         "entryPoint": {"$ref": "#/$defs/entryPoint"},
-        "driver": {"$ref": "#/$defs/driver"}
+        "implementation": {"$ref": "#/$defs/implementation"}
       },
       "allOf": [
         {
           "if": {"properties": {"kind": {"const": "platform-runner"}}},
-          "then": {"required": ["driver"], "not": {"required": ["entryPoint"]}}
+          "then": {"required": ["implementation"], "not": {"required": ["entryPoint"]}}
         },
         {
           "if": {"properties": {"kind": {"const": "custom-runner"}}},
-          "then": {"required": ["entryPoint"], "not": {"required": ["driver"]}}
+          "then": {"required": ["entryPoint"], "not": {"required": ["implementation"]}}
         }
       ]
     },

@@ -103,9 +103,9 @@
     "managedRunner": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["driver", "kind"],
+      "required": ["implementation", "kind"],
       "properties": {
-        "driver": {"$ref": "step.schema.json#/$defs/driver"},
+        "implementation": {"$ref": "step.schema.json#/$defs/implementation"},
         "kind": {"const": "platform-runner"}
       }
     },
@@ -134,15 +134,17 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["driver", "kind"],
+          "required": ["implementation", "kind"],
           "properties": {
-            "driver": {"$ref": "step.schema.json#/$defs/driver"},
+            "implementation": {"$ref": "step.schema.json#/$defs/implementation"},
             "kind": {"const": "platform-runner"},
             "operation": {"$ref": "#/$defs/compiledHttpOperation"}
           },
           "allOf": [
-            {"if": {"properties": {"driver": {"const": "http.v1"}}}, "then": {"required": ["operation"]}},
-            {"if": {"required": ["operation"]}, "then": {"properties": {"driver": {"const": "http.v1"}}}}
+            {
+              "if": {"required": ["operation"]},
+              "then": {"properties": {"implementation": {"pattern": "^syntara\\.http\\.request@"}}}
+            }
           ]
         }
       ]

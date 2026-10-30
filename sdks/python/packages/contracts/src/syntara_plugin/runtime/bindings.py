@@ -541,6 +541,23 @@ class StepDescriptor:
             and _schema_matches_digest(self.error_schema, provenance.error_schema_digest)
         )
 
+    @property
+    def installed_entry_point(self) -> str | None:
+        """Return the entry point from the unchanged installed contract, if any."""
+
+        provenance = _installed_step_descriptor_provenance(self)
+        return provenance.entry_point if provenance is not None and self.is_installed_step else None
+
+    def schema_digest(self, name: Literal["input", "output", "error"]) -> str:
+        """Return the canonical digest of one installed contract schema."""
+
+        schema = {
+            "input": self.input_schema,
+            "output": self.output_schema,
+            "error": self.error_schema,
+        }[name]
+        return _schema_digest(schema)
+
     def require_executable_contract(self, step: BaseStep[Any, Any]) -> None:
         """Reject bindings that cannot establish their required input contract."""
 
@@ -672,10 +689,8 @@ class StepBindings:
 
     This is an SDK-local lookup table for direct execution and local
     container dispatch. It is deliberately not the Automation Orchestrator's
-    plugin or step registration database. The container bootstrap currently
-    requires callers to supply a ``step_revision_id`` equal to a declared
-    identity; mapping immutable installed revisions remains part of the separate
-    SDK registry-binding story.
+    plugin or step registration database. Container startup associates trusted
+    resolved revisions with these installed bindings separately.
     """
 
     def __init__(self) -> None:

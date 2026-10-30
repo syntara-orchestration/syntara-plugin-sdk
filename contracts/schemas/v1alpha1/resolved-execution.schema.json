@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.syntara.io/v1alpha1/resolved-execution.schema.json",
+  "title": "Syntara Resolved Execution Data",
+  "description": "Trusted, read-only platform bootstrap data that maps immutable Step revisions to image-local container implementations.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bindings"],
+  "properties": {
+    "bindings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stepRevisionId", "stepIdentity", "runtimeKind", "entryPoint", "abi", "schemaDigests"],
+        "properties": {
+          "stepRevisionId": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+          "stepIdentity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+          "runtimeKind": {"enum": ["custom-runner", "platform-runner"]},
+          "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
+          "abi": {"const": "syntara.container/v1alpha1"},
+          "schemaDigests": {"$ref": "common.schema.json#/$defs/stepSchemaDigests"}
+        }
+      }
+    }
+  }
+}

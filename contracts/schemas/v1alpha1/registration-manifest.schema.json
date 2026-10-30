@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.syntara.io/v1alpha1/registration-manifest.schema.json",
+  "title": "Syntara Custom Runner Registration Manifest",
+  "description": "The image-embedded mapping from immutable custom-runner Step revisions to their implementation entry points.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "plugin_revision_id", "sdkVersion", "workload", "steps"],
+  "properties": {
+    "apiVersion": {"const": "syntara.registration/v1alpha1"},
+    "kind": {"const": "RegistrationManifest"},
+    "plugin_revision_id": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+    "sdkVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "workload": {"$ref": "common.schema.json#/$defs/identifier"},
+    "steps": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stepIdentity", "entryPoint", "abi", "schemaDigests"],
+        "properties": {
+          "stepIdentity": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
+          "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
+          "abi": {"const": "syntara.container/v1alpha1"},
+          "schemaDigests": {"$ref": "common.schema.json#/$defs/stepSchemaDigests"}
+        }
+      }
+    }
+  }
+}

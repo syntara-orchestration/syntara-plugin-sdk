@@ -349,47 +349,31 @@ ContainerStepHandler = Callable[[ContainerInvocation], ContainerResult]
 
 
 class StepRegistry:
-    """Maps immutable step revisions to handlers, with an optional fallback.
-
-    Most publisher workload images register their exact supported revisions.
-    A Syntara-managed runner may instead supply ``fallback_step``: the
-    control plane has already selected the runner image and provides a
-    validated runtime context for the particular installed step.  Health
-    advertises :data:`ANY_STEP_REVISION` in that case so the Execution Plane
-    can distinguish a generic runner from an image that omitted a revision.
-    """
+    """Maps exact step revision IDs to handlers."""
 
     def __init__(
         self,
         steps: Mapping[str, ContainerStepHandler],
-        *,
-        fallback_step: ContainerStepHandler | None = None,
     ) -> None:
         self._steps = dict(steps)
-        self._fallback_step = fallback_step
-        if not self._steps and self._fallback_step is None:
-            raise ValueError("at least one step revision or a fallback step must be registered")
+        if not self._steps:
+            raise ValueError("at least one step revision must be registered")
         for step_revision_id, handler in self._steps.items():
             if not _IDENTITY.fullmatch(step_revision_id):
                 raise ValueError("step revision IDs must be Syntara identities")
             if not callable(handler):
                 raise TypeError("registered step handlers must be callable")
-        if self._fallback_step is not None and not callable(self._fallback_step):
-            raise TypeError("fallback step handler must be callable")
 
     @property
     def step_revision_ids(self) -> tuple[str, ...]:
-        """Stable exact identities plus generic-runner capability when present."""
+        """Stable exact registered identities."""
 
-        identities = tuple(sorted(self._steps))
-        return identities + ((ANY_STEP_REVISION,) if self._fallback_step is not None else ())
+        return tuple(sorted(self._steps))
 
     def resolve(self, step_revision_id: str) -> ContainerStepHandler:
         handler = self._steps.get(step_revision_id)
         if handler is not None:
             return handler
-        if self._fallback_step is not None:
-            return self._fallback_step
         raise ContainerInvocationError(
             FailureCode.NOT_FOUND,
             "The requested plugin step is not available in this container image.",
