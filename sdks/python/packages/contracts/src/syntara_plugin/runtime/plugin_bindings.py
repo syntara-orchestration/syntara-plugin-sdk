@@ -117,32 +117,10 @@ def _bind_declared_targets(
         document = _parse_document(
             _read_resource(root, target_path, "target manifest"), target_path
         )
-        kind = document.get("kind")
-        if kind not in _DECLARED_KINDS:
-            message = (
-                f"packaged target manifest {target_path!r} declares unsupported "
-                f"kind {kind!r}; expected one of {', '.join(sorted(_DECLARED_KINDS))}"
-            )
-            raise StepBindingError(message)
-        if kind not in _STEP_KINDS:
+        target = _custom_runner_target(document, target_path)
+        if target is None:
             continue
-        target_specification = document.get("spec")
-        runtime = (
-            target_specification.get("runtime")
-            if isinstance(target_specification, Mapping)
-            else None
-        )
-        if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
-            continue
-        target_metadata = document.get("metadata")
-        target_name = (
-            target_metadata.get("name") if isinstance(target_metadata, Mapping) else None
-        )
-        if not isinstance(target_name, str) or not target_name:
-            message = (
-                f"packaged target manifest {target_path!r} must declare metadata.name"
-            )
-            raise StepBindingError(message)
+        target_name, runtime = target
         identity = f"{namespace}.{plugin_name}.{target_name}"
         previous = declared.get(identity)
         if previous is not None:
@@ -153,15 +131,7 @@ def _bind_declared_targets(
             )
             raise StepBindingError(message)
         declared[identity] = target_path
-        assets = _declared_assets(root, target_path, document)
-        try:
-            installed = InstalledStepManifest.from_manifest(identity, document, assets)
-            step = _declared_step(runtime.get("entryPoint"), target_path)
-            descriptor = StepDescriptor.for_installed_step(step, installed)
-        except StepBindingError as error:
-            message = f"packaged target manifest {target_path!r}: {error}"
-            raise StepBindingError(message) from error
-        bindings.bind(descriptor, step)
+        _bind_custom_runner_target(root, target_path, document, identity, runtime, bindings)
     if not bindings.step_identities:
         message = (
             f"the packaged plugin {namespace}.{plugin_name} declares no "
@@ -169,6 +139,62 @@ def _bind_declared_targets(
         )
         raise StepBindingError(message)
     return bindings
+
+
+def _custom_runner_target(
+    document: Mapping[str, Any], target_path: str
+) -> tuple[str, Mapping[str, Any]] | None:
+    """Return the metadata name and runtime of one custom-runner Step target.
+
+    Returns ``None`` for targets the wrapper skips: ``IntegrationType`` and
+    ``CredentialRecipe`` targets, and Step targets whose runtime is not
+    ``custom-runner``. Unknown kinds are rejected.
+    """
+
+    kind = document.get("kind")
+    if kind not in _DECLARED_KINDS:
+        message = (
+            f"packaged target manifest {target_path!r} declares unsupported "
+            f"kind {kind!r}; expected one of {', '.join(sorted(_DECLARED_KINDS))}"
+        )
+        raise StepBindingError(message)
+    if kind not in _STEP_KINDS:
+        return None
+    specification = document.get("spec")
+    runtime = (
+        specification.get("runtime") if isinstance(specification, Mapping) else None
+    )
+    if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
+        return None
+    target_metadata = document.get("metadata")
+    target_name = (
+        target_metadata.get("name") if isinstance(target_metadata, Mapping) else None
+    )
+    if not isinstance(target_name, str) or not target_name:
+        message = f"packaged target manifest {target_path!r} must declare metadata.name"
+        raise StepBindingError(message)
+    return target_name, runtime
+
+
+def _bind_custom_runner_target(
+    root: Traversable,
+    target_path: str,
+    document: Mapping[str, Any],
+    identity: str,
+    runtime: Mapping[str, Any],
+    bindings: StepBindings,
+) -> None:
+    """Run the wrapped binding sequence for one custom-runner Step target."""
+
+    assets = _declared_assets(root, target_path, document)
+    try:
+        installed = InstalledStepManifest.from_manifest(identity, document, assets)
+        step = _declared_step(runtime.get("entryPoint"), target_path)
+        descriptor = StepDescriptor.for_installed_step(step, installed)
+    except StepBindingError as error:
+        message = f"packaged target manifest {target_path!r}: {error}"
+        raise StepBindingError(message) from error
+    bindings.bind(descriptor, step)
 
 
 def _declared_assets(
@@ -309,32 +335,35 @@ def _enforce_json_values(value: object, label: str) -> None:
 
     pending: list[object] = [value]
     while pending:
-        item = pending.pop()
-        if item is None or isinstance(item, (str, bool, int)):
-            continue
-        if isinstance(item, float):
-            if not math.isfinite(item):
-                message = f"packaged manifest {label!r} contains a non-finite number"
-                raise StepBindingError(message)
-            continue
-        if isinstance(item, Mapping):
-            if any(not isinstance(key, str) for key in item):
-                message = (
-                    f"packaged manifest {label!r} contains a non-string mapping key; "
-                    "quote keys that YAML would read as numbers or booleans"
-                )
-                raise StepBindingError(message)
-            pending.extend(item.values())
-            continue
-        if isinstance(item, (list, tuple)):
-            pending.extend(item)
-            continue
-        message = (
-            f"packaged manifest {label!r} contains a {type(item).__name__} value; "
-            "quote scalars that YAML would read as dates, timestamps, or other "
-            "non-JSON types"
-        )
-        raise StepBindingError(message)
+        pending.extend(_json_children(pending.pop(), label))
+
+
+def _json_children(item: object, label: str) -> list[object]:
+    """Validate one parsed value and return its children for traversal."""
+
+    if item is None or isinstance(item, (str, bool, int)):
+        return []
+    if isinstance(item, float):
+        if not math.isfinite(item):
+            message = f"packaged manifest {label!r} contains a non-finite number"
+            raise StepBindingError(message)
+        return []
+    if isinstance(item, Mapping):
+        if any(not isinstance(key, str) for key in item):
+            message = (
+                f"packaged manifest {label!r} contains a non-string mapping key; "
+                "quote keys that YAML would read as numbers or booleans"
+            )
+            raise StepBindingError(message)
+        return list(item.values())
+    if isinstance(item, (list, tuple)):
+        return list(item)
+    message = (
+        f"packaged manifest {label!r} contains a {type(item).__name__} value; "
+        "quote scalars that YAML would read as dates, timestamps, or other "
+        "non-JSON types"
+    )
+    raise StepBindingError(message)
 
 
 def _contained_relative_path(raw: object, label: str) -> str:

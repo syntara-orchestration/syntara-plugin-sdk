@@ -142,7 +142,7 @@ _TRIGGER_OUTPUT_SCHEMA = {
 }
 
 
-@pytest.fixture()
+@pytest.fixture
 def plugin_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Path]:
