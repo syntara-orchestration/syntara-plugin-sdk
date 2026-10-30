@@ -19,12 +19,12 @@ dispatch:
 ```yaml
 runtime:
   kind: platform-runner
-  driver: workflow.v1
+  implementation: syntara.workflow.invoke@1.0.0
 ```
 
 That shape is pinned in
 [`contracts/fixtures/subworkflow-call.valid.json`](../../contracts/fixtures/subworkflow-call.valid.json)
-and validated by the contract tests. The platform owns `workflow.v1`, so it
+and validated by the contract tests. The platform owns that runner, so it
 cannot run locally: only custom-runner targets execute locally, by design.
 
 This workspace therefore declares the parent as a `custom-runner` Control with

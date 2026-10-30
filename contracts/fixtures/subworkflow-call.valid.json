@@ -13,7 +13,7 @@
     },
     "runtime": {
       "kind": "platform-runner",
-      "driver": "workflow.v1"
+      "implementation": "syntara.workflow.invoke@1.0.0"
     },
     "input": {
       "kind": "inline",
@@ -31,7 +31,10 @@
             "description": "Release channel to publish into."
           }
         },
-        "required": ["artifact", "channel"]
+        "required": [
+          "artifact",
+          "channel"
+        ]
       }
     },
     "output": {
@@ -50,7 +53,10 @@
             "description": "RFC 3339 timestamp of the publication."
           }
         },
-        "required": ["releaseId", "publishedAt"]
+        "required": [
+          "releaseId",
+          "publishedAt"
+        ]
       }
     },
     "error": {

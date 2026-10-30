@@ -610,8 +610,9 @@ def test_subworkflow_composition_maps_onto_existing_control_and_trigger_contract
     child = _subworkflow_fixture("subworkflow-trigger.valid.json")
 
     # Parent-side subworkflow_call is a Control that invokes a named workflow
-    # through the workflow.v1 platform runner. Child-side subworkflow_trigger
-    # is a Trigger. Neither needs a new Step category or schema.
+    # through the syntara.workflow.invoke platform runner. Child-side
+    # subworkflow_trigger is a Trigger. Neither needs a new Step category or
+    # schema.
     assert validate_document(bundle, "control", parent) == []
     assert validate_document(bundle, "step", parent) == []
     assert validate_document(bundle, "trigger", child) == []
@@ -632,7 +633,10 @@ def test_subworkflow_composition_maps_onto_existing_control_and_trigger_contract
         "kind": "workflow-invocation",
         "workflow": "acme.release.publish-artifact",
     }
-    assert parent_spec["runtime"] == {"kind": "platform-runner", "driver": "workflow.v1"}
+    assert parent_spec["runtime"] == {
+        "kind": "platform-runner",
+        "implementation": "syntara.workflow.invoke@1.0.0",
+    }
 
 
 def test_subworkflow_composition_gaps_are_rejected_by_current_contracts() -> None:

@@ -13,7 +13,7 @@
     },
     "runtime": {
       "kind": "platform-runner",
-      "driver": "workflow.v1"
+      "implementation": "syntara.workflow.invoke@1.0.0"
     },
     "input": {
       "kind": "inline",
@@ -21,10 +21,17 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "artifact": {"type": "string"},
-          "channel": {"type": "string"}
+          "artifact": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          }
         },
-        "required": ["artifact", "channel"]
+        "required": [
+          "artifact",
+          "channel"
+        ]
       }
     },
     "output": {
@@ -33,10 +40,17 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "releaseId": {"type": "string"},
-          "publishedAt": {"type": "string"}
+          "releaseId": {
+            "type": "string"
+          },
+          "publishedAt": {
+            "type": "string"
+          }
         },
-        "required": ["releaseId", "publishedAt"]
+        "required": [
+          "releaseId",
+          "publishedAt"
+        ]
       }
     }
   }

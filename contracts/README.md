@@ -51,7 +51,8 @@ other languages consume the same files from the released contract bundle.
 
 The `subworkflow-*` fixtures cover synchronous subworkflow composition. A
 parent-side call is a `Control` whose `spec.invocation.kind` is
-`workflow-invocation` and whose runtime is the `workflow.v1` platform runner;
+`workflow-invocation` and whose runtime is the `syntara.workflow.invoke@1.0.0`
+platform-runner implementation;
 a child-side entry point is a `Trigger` on the `subworkflow.v1` driver. Both
 valid fixtures use existing contracts unchanged. The three invalid fixtures
 pin known gaps rather than authoring mistakes: `spec.invocation.workflow` is a

@@ -117,10 +117,10 @@ failure metadata is separate from both schemas.
 ### Subworkflow composition
 
 A synchronous subworkflow call needs no new Step category. The parent side is
-a Control with `spec.invocation.kind: workflow-invocation` and the `workflow.v1`
-platform runner; the child side is a Trigger on the `subworkflow.v1` driver,
-which declares its platform driver in `spec.driver` and its executor separately
-in `spec.runtime`.
+a Control with `spec.invocation.kind: workflow-invocation` and the
+`syntara.workflow.invoke@1.0.0` platform-runner implementation; the child side
+is a Trigger on the `subworkflow.v1` driver, which declares its platform driver
+in `spec.driver` and its executor separately in `spec.runtime`.
 
 `spec.invocation.workflow` is a qualified identifier with no version segment,
 so a parent names a child workflow but cannot pin a published version of it;

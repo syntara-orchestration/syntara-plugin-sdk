@@ -1,7 +1,7 @@
 """The parent-side subworkflow call.
 
 The contract-true parent declares ``runtime.kind: platform-runner`` with
-``driver: workflow.v1``; see
+``implementation: syntara.workflow.invoke@1.0.0``; see
 ``contracts/fixtures/subworkflow-call.valid.json``. The platform owns that
 runner, so it cannot execute locally. This custom-runner Control stands in for
 it: it declares the same input and output contracts and surfaces the child
@@ -42,7 +42,7 @@ class CallPublishArtifactStep(
     The stand-in runs the child's trigger and terminal step in process. It
     deliberately does not resolve a published workflow version, evaluate a
     Used-By dependency guard, or start a durable child run: those belong to
-    the control plane and are what the ``workflow.v1`` driver would provide.
+    the control plane and are what the platform runner would provide.
     """
 
     def run(
