@@ -66,6 +66,7 @@ from .outcome import (
     error_result_base_schema,
     error_result_schema,
 )
+from .plugin_bindings import load_plugin_bindings
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 from .validation import StepInputValidationError
 
@@ -195,6 +196,7 @@ __all__ = [
     "container_step_for_binding",
     "container_step_for_bindings",
     "load_http_runner_context",
+    "load_plugin_bindings",
     "map_http_response",
     "invoke",
     "step_registry_from_bindings",

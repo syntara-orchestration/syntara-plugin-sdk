@@ -1,8 +1,13 @@
 # Existing Step
 
 This plugin is the checked-in end-to-end prototype. It contains one Python
-implementation each for Action, Control, and Trigger, and uses the manifest
-entry point as the single source of truth for loading each implementation.
+implementation each for Action, Control, and Trigger. The plugin workspace
+(`plugin.yaml`, `steps/`, and this document) is packaged inside the Python
+package under `src/existing_step/manifests/`, so the wheel and the source
+tree expose the same layout. `create_bindings` delegates to the SDK's
+`load_plugin_bindings` wrapper, which derives each identity from the
+packaged manifests and uses the manifest entry point as the single source
+of truth for loading each implementation.
 
 The SDK's end-to-end suite executes every step directly and through the
 in-process container adapter. The repository's opt-in Podman integration test

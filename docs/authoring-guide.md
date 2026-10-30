@@ -1056,8 +1056,10 @@ build-generated revision IDs. For more information, see
 The `entryPoint` value names your implementation inside the workload image.
 The build binds the plugin's logical image ID to an immutable
 `repository@sha256:<digest>` reference, never a mutable tag. Inside the
-image, a bindings factory registers each Step through its installed manifest,
-so that the manifest schema stays the execution contract. The SDK publishes
+image, a bindings factory delegates to `load_plugin_bindings`, which reads
+the packaged `plugin.yaml` and registers each custom-runner Step through its
+installed manifest, so that the manifest schema stays the execution contract.
+The SDK publishes
 no universal base image; each language adapter provides its own image recipe
 on top of the shared container ABI. The Python adapter is
 `syntara_plugin.runtime` in the `syntara-plugin-contracts` distribution. For

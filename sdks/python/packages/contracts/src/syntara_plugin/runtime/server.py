@@ -217,7 +217,7 @@ def load_runtime_bindings(specification: str) -> StepBindings:
         factory = getattr(module, attribute_name)
         bindings = factory()
     except Exception as error:
-        message = "the configured runtime bindings factory could not be loaded"
+        message = f"the configured runtime bindings factory could not be loaded: {error}"
         raise RuntimeServerError(message) from error
     if not isinstance(bindings, StepBindings):
         message = "the runtime bindings factory must return StepBindings"
