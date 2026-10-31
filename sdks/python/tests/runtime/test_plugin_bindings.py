@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import sys
 import uuid
 from collections.abc import Callable, Iterator, Mapping
@@ -683,6 +684,42 @@ def test_credential_recipe_targets_are_skipped(plugin_root: Path) -> None:
     assert bindings.step_identities == ("sample.demo.create-ticket",)
 
 
+def test_integration_type_with_custom_runner_runtime_is_skipped(plugin_root: Path) -> None:
+    def manifests(package_name: str) -> dict[str, Any]:
+        return {
+            "docs/README.md": "# Demo plugin\n",
+            "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "steps/tracker.yaml": {
+                "apiVersion": "syntara.io/v1alpha1",
+                "kind": "IntegrationType",
+                "metadata": {
+                    "name": "tracker",
+                    "displayName": "Tracker",
+                    "description": "One external issue tracker.",
+                },
+                "spec": {
+                    "runtime": {
+                        "kind": "custom-runner",
+                        "entryPoint": f"{package_name}.steps:SampleActionStep",
+                    },
+                },
+            },
+            "steps/create-ticket.yaml": _action_document(
+                f"{package_name}.steps:SampleActionStep"
+            ),
+        }
+
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/tracker.yaml", "steps/create-ticket.yaml"]),
+        manifests=manifests,
+    )
+
+    bindings = load_plugin_bindings(package)
+
+    assert bindings.step_identities == ("sample.demo.create-ticket",)
+
+
 def test_manifests_root_override(plugin_root: Path) -> None:
     package = _write_plugin(
         plugin_root,
@@ -755,6 +792,44 @@ def test_deeply_nested_document_is_rejected(plugin_root: Path) -> None:
         load_plugin_bindings(package)
 
 
+def test_document_depth_limit_is_enforced(plugin_root: Path) -> None:
+    deep = "\n".join(f"{'  ' * level}key{level}:" for level in range(150))
+    package = _write_plugin(
+        plugin_root,
+        plugin=deep + "\n",
+        manifests={"docs/README.md": "# Demo plugin\n"},
+    )
+
+    # Parses without hitting yaml's own recursion limit; only the wrapper's
+    # depth bound rejects it.
+    with pytest.raises(StepBindingError, match="exceeds 100 nesting levels"):
+        load_plugin_bindings(package)
+
+
+def test_document_node_limit_is_enforced(plugin_root: Path) -> None:
+    wide = "\n".join(f"key{index}: {index}" for index in range(10_001))
+    package = _write_plugin(
+        plugin_root,
+        plugin=wide + "\n",
+        manifests={"docs/README.md": "# Demo plugin\n"},
+    )
+
+    with pytest.raises(StepBindingError, match="exceeds 10000 nodes"):
+        load_plugin_bindings(package)
+
+
+def test_document_size_limit_is_enforced(plugin_root: Path) -> None:
+    oversized = "value: " + "x" * (1024 * 1024 + 64)
+    package = _write_plugin(
+        plugin_root,
+        plugin=oversized,
+        manifests={"docs/README.md": "# Demo plugin\n"},
+    )
+
+    with pytest.raises(StepBindingError, match="is larger than"):
+        load_plugin_bindings(package)
+
+
 def test_unknown_target_kind_is_rejected(plugin_root: Path) -> None:
     package = _write_plugin(
         plugin_root,
@@ -775,10 +850,17 @@ def test_unknown_target_kind_is_rejected(plugin_root: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "asset_path",
-    ["../outside.json", "/etc/passwd", ".hidden.json", "schemas/../outside.json"],
+    ("asset_path", "message"),
+    [
+        ("../outside.json", "must not contain empty, '.', or '..' segments"),
+        ("/etc/passwd", "must be a relative POSIX path"),
+        (".hidden.json", "must not contain hidden segments"),
+        ("schemas/../outside.json", "must not contain empty, '.', or '..' segments"),
+    ],
 )
-def test_unsafe_asset_paths_are_rejected(plugin_root: Path, asset_path: str) -> None:
+def test_unsafe_asset_paths_are_rejected_at_the_containment_layer(
+    plugin_root: Path, asset_path: str, message: str
+) -> None:
     package = _write_plugin(
         plugin_root,
         plugin=_plugin_document(["steps/create-ticket.yaml"]),
@@ -791,5 +873,8 @@ def test_unsafe_asset_paths_are_rejected(plugin_root: Path, asset_path: str) -> 
         },
     )
 
-    with pytest.raises(StepBindingError):
+    # Pin the containment layer's own messages: without them, a traversal
+    # path is only rejected later by the contract layer, after the wrapper
+    # has already read the file outside the manifests root.
+    with pytest.raises(StepBindingError, match=re.escape(message)):
         load_plugin_bindings(package)

@@ -190,6 +190,10 @@ def empty_bindings() -> StepBindings:
     return StepBindings()
 
 
+def failing_bindings() -> StepBindings:
+    raise RuntimeError("factory exploded")
+
+
 def resolved_file(tmp_path: Path, step_class: type[BaseStep[EchoInput, EchoOutput]]) -> Path:
     identities = {
         EchoStep: "smoke.echo.v1",
@@ -690,6 +694,11 @@ def test_runtime_bindings_factory_must_return_step_bindings() -> None:
 def test_runtime_bindings_factory_must_register_a_step() -> None:
     with pytest.raises(RuntimeServerError, match="at least one step"):
         load_runtime_bindings(f"{__name__}:empty_bindings")
+
+
+def test_runtime_bindings_factory_failure_names_the_cause() -> None:
+    with pytest.raises(RuntimeServerError, match="could not be loaded: factory exploded"):
+        load_runtime_bindings(f"{__name__}:failing_bindings")
 
 
 def _resolved_record(kind: str = "custom-runner") -> dict[str, object]:
