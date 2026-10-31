@@ -42,7 +42,9 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
     _build_example_wheel(wheels)
     shutil.copyfile(_EXAMPLE / "runtime.json", context / "runtime.json")
     shutil.copyfile(_EXAMPLE / "Containerfile", context / "Containerfile")
-    revisions, resolved = _write_registration(context, _EXAMPLE, "existing-step-workload")
+    revisions, resolved = _write_registration(
+        context, _EXAMPLE / "src" / "existing_step" / "manifests", "existing-step-workload"
+    )
     with (context / "Containerfile").open("a", encoding="utf-8") as stream:
         stream.write("\nUSER 0\nCOPY registration.json /opt/syntara/registration-manifest.json\nUSER 1001\n")
 

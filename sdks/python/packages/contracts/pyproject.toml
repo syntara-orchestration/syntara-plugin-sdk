@@ -10,6 +10,7 @@ dependencies = [
   "jsonschema>=4.23",
   "protobuf>=6.31.1",
   "pydantic>=2.0",
+  "PyYAML>=6.0",
   "referencing>=0.37",
 ]
 classifiers = [
