@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from .bindings_factory import StepBindingsFactory
 from .chaining import ChainOutcome, chain_steps, check_seam_compatible, identity_seam
+from .check_schema import SchemaAgreementError, assert_schemas_agree, schema_agreement_issues
 from .conformance import (
     ConformanceFailure,
     ConformanceReport,
@@ -81,6 +82,9 @@ __all__ = [
     "VALID_INPUT_CASES",
     "assert_no_secrets",
     "assert_outcomes_equivalent",
+    "assert_schemas_agree",
+    "SchemaAgreementError",
+    "schema_agreement_issues",
     "build_execution_context",
     "chain_steps",
     "check_invalid_blocks_hook",

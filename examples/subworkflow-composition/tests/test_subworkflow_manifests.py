@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from syntara_plugin.testing import schema_without_descriptions
+from syntara_plugin.testing import assert_schemas_agree, schema_agreement_issues
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 
@@ -56,8 +56,11 @@ def test_parent_input_and_child_trigger_input_declare_the_same_parameters() -> N
 
     parent = _load("steps/call-publish-artifact/manifest.yaml")
     child = _load("steps/publish-artifact-requested/manifest.yaml")
-    assert schema_without_descriptions(parent["spec"]["input"]["value"]) == (
-        schema_without_descriptions(child["spec"]["input"]["value"])
+    assert_schemas_agree(
+        parent["spec"]["input"]["value"],
+        child["spec"]["input"]["value"],
+        source_label="the parent's spec.input",
+        target_label="the child trigger's spec.input",
     )
 
 
@@ -71,8 +74,11 @@ def test_child_trigger_input_passes_the_workflow_parameters_through() -> None:
     """
 
     child = _load("steps/publish-artifact-requested/manifest.yaml")
-    assert schema_without_descriptions(child["spec"]["configuration"]["value"]) == (
-        schema_without_descriptions(child["spec"]["input"]["value"])
+    assert_schemas_agree(
+        child["spec"]["configuration"]["value"],
+        child["spec"]["input"]["value"],
+        source_label="the child trigger's spec.configuration",
+        target_label="the child trigger's spec.input",
     )
 
 
@@ -81,11 +87,11 @@ def test_parent_output_and_child_result_declare_the_same_result() -> None:
 
     parent = _load("steps/call-publish-artifact/manifest.yaml")
     terminal = _load("steps/publish-artifact/manifest.yaml")
-    parent_output = parent["spec"]["output"]["value"]
-    terminal_output = terminal["spec"]["output"]["value"]
-    # Descriptions differ by perspective; the result contract must not.
-    assert schema_without_descriptions(parent_output) == schema_without_descriptions(
-        terminal_output
+    assert_schemas_agree(
+        parent["spec"]["output"]["value"],
+        terminal["spec"]["output"]["value"],
+        source_label="the parent's spec.output",
+        target_label="the terminal step's spec.output",
     )
 
 
@@ -111,15 +117,16 @@ def test_parent_output_and_child_result_declare_the_same_result() -> None:
     ],
 )
 def test_result_comparison_detects_schema_drift(mutate) -> None:
-    """The deep comparison must fail when a field type or constraint diverges.
+    """The agreement check must fail when a field type or constraint diverges.
 
-    Guards the guard: if the equality check above ever degrades back to
-    comparing property names only, these mutations would slip through.
+    Guards the guard: if the comparison ever degrades back to comparing
+    property names only, these mutations would slip through.
     """
 
     parent = _load("steps/call-publish-artifact/manifest.yaml")
     drifted = _load("steps/publish-artifact/manifest.yaml")
     mutate(drifted["spec"]["output"]["value"])
-    assert schema_without_descriptions(parent["spec"]["output"]["value"]) != (
-        schema_without_descriptions(drifted["spec"]["output"]["value"])
+    issues = schema_agreement_issues(
+        parent["spec"]["output"]["value"], drifted["spec"]["output"]["value"]
     )
+    assert issues, "the drifted schema must produce at least one issue"

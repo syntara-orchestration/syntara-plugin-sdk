@@ -1013,6 +1013,13 @@ outcome = chain_steps(
 assert outcome.ok
 ```
 
+For composition seams the contracts do not enforce — a parent Control's
+declared input against a child Trigger's event payload, or a child workflow's
+terminal result against the parent's declared output — `assert_schemas_agree`
+compares the two declared schemas field by field and names every diverging
+field on failure. The subworkflow-composition example uses it for exactly
+those obligations.
+
 The `chain_steps` helper is not a workflow engine: it has no branching,
 parallelism, retries, or persistence. When you need control flow, implement
 it in a `ControlStep.run()` method and test that Step. For more information,

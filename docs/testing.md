@@ -161,6 +161,15 @@ can be compared for their full shape (types, formats, nested schemas,
 defaults, enums, `required`) rather than just property names. Descriptions
 differ by perspective, so they are the one part excluded.
 
+`assert_schemas_agree(source, target, source_label=..., target_label=...)`
+turns that comparison into an opt-in authoring check: it raises
+`SchemaAgreementError` naming every diverging field — location plus both
+values — instead of a bare inequality. Use it for the composition seams the
+contracts do not enforce, such as a parent Control's declared input against a
+child Trigger's event payload, or a child workflow's terminal result against
+the parent's declared output. `schema_agreement_issues(source, target)`
+returns the same diagnostics as a tuple when a test needs to assert on them.
+
 ## Generated tests
 
 `syntara-plugin test-init` scaffolds a test module per custom-runner Action
