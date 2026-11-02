@@ -109,6 +109,10 @@ _INSTANCE_EMBEDDING_VALIDATORS = frozenset(
 # The container ABI's approved secret mount: the only directory a deployed
 # workload ever reads a credential from, and the path image mode mounts into.
 CREDENTIAL_MOUNT_DIRECTORY = "/var/run/syntara/secrets"
+# The file names the ABI's secret mount allows (runtime/container.py); a name
+# outside it can never be delivered as a mounted credential file, so it is
+# refused at parse time instead of failing mid-run on a malformed mount.
+_CREDENTIAL_FILE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 _CREDENTIAL_SOURCE_STEPS = (
     "--credential NAME=- to read one value from standard input",
     "--credential NAME=file:PATH to read a file outside the workspace",
@@ -853,6 +857,15 @@ def parse_credential_options(raw: Sequence[str] | None) -> tuple[CredentialSpec,
 def _credential_spec(name: str, source: str) -> CredentialSpec:
     """Classify one credential source, refusing an inline value."""
 
+    if not _CREDENTIAL_FILE_NAME.fullmatch(name):
+        raise RunUsageError(
+            f"--credential {name} cannot be delivered as a credential file",
+            detail=(
+                "A credential name may contain only letters, digits, '.', '_', and '-':",
+                "the ABI's secret mount has no path for anything else.",
+            ),
+            next_steps=("rename the CredentialRecipe, or supply a mount-safe name",),
+        )
     if source == "-":
         return CredentialSpec(name, "stdin", "")
     for prefix, kind in (("file:", "file"), ("env:", "env")):
@@ -937,7 +950,7 @@ def load_credentials(
             LoadedCredential(
                 name=spec.name,
                 document=document,
-                secret_values=_credential_secret_values(recipe, document, raw),
+                secret_values=_credential_secret_values(document, raw),
             )
         )
     return tuple(loaded), tuple(warnings)
@@ -1101,23 +1114,19 @@ def _credential_validation_lines(
     return _capped_validation_lines(lines)
 
 
-def _credential_secret_values(
-    recipe: CredentialRecipe, document: Mapping[str, Any], raw: str
-) -> tuple[str, ...]:
+def _credential_secret_values(document: Mapping[str, Any], raw: str) -> tuple[str, ...]:
     """Collect everything about one credential that must never be displayed.
 
-    The supplied text, the delivered document, and the values of the recipe's
-    declared ``secretFields`` all join the run's scrub set, so a step that
-    interpolates any of them into output, an error, or a traceback has it
-    masked before anything is printed.
+    The supplied text and every value in the delivered document join the run's
+    scrub set, so a step that interpolates any of them into output, an error,
+    or a traceback has it masked before anything is printed. Every field is
+    collected, not just the recipe's declared ``secretFields``: a declaration
+    that is missing or partial must not decide what leaks.
     """
 
     candidates: list[tuple[str, int]] = [(raw, _MIN_DECLARED_SECRET_LENGTH)]
-    for field_name in recipe.secret_fields:
-        if field_name in document:
-            _collect_nested_strings(
-                document[field_name], candidates, _MIN_DECLARED_SECRET_LENGTH
-            )
+    for value in document.values():
+        _collect_nested_strings(value, candidates, _MIN_DECLARED_SECRET_LENGTH)
     picked: list[str] = []
     for value, min_length in candidates:
         if len(value) >= min_length and value not in picked:
@@ -1216,10 +1225,14 @@ def run_source(
     and attached to the report as its error detail.
 
     Credentials are delivered as read-only files in a second private directory
-    and reach the Step as ABI paths, as they will in production. Nothing here
-    can write under the approved secret mount, so this one loopback transport
-    (client and runtime are the same process) is told to accept that directory
-    as well; every other client and runtime keeps the production rule.
+    and reach the Step through ``invocation.credential_file_paths``. Those are
+    temporary host paths, not the production mount: this process cannot create
+    ``/var/run/syntara/secrets`` without privileges, so Step code that
+    hardcodes the mount path instead of reading the invocation finds no
+    credential here. Nothing here can write under the approved secret mount,
+    so this one loopback transport (client and runtime are the same process)
+    is told to accept that directory as well; every other client and runtime
+    keeps the production rule.
     """
 
     _make_importable(manifest.parent)

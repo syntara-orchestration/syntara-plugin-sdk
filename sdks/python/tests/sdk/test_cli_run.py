@@ -3173,6 +3173,79 @@ def test_a_credential_name_outside_the_integration_type_is_refused(
     assert f"Reachable through {_INTEGRATION}: {_RECIPE}" in captured.err
 
 
+def test_a_credential_name_the_secret_mount_cannot_hold_is_refused(
+    tmp_path: Path, capsys
+) -> None:
+    """A name outside the ABI mount charset fails as usage, not mid-run."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, "run.tracker:api-token=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "cannot be delivered as a credential file" in captured.err
+    assert "letters, digits, '.', '_', and '-'" in captured.err
+
+
+def test_fields_the_recipe_does_not_declare_secret_are_still_scrubbed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A partial secretFields declaration must not decide what leaks."""
+
+    from types import SimpleNamespace
+
+    from syntara_plugin.sdk.runner import (
+        CredentialRecipe,
+        CredentialSpec,
+        credential_secret_values,
+        load_credentials,
+    )
+
+    monkeypatch.setenv(
+        "TRACKER_CREDENTIAL", '{"username": "user-one", "token": "tok-abcdef123456"}'
+    )
+    recipe = CredentialRecipe(
+        name=_RECIPE,
+        schema={
+            "type": "object",
+            "properties": {
+                "username": {"type": "string"},
+                "token": {"type": "string", "minLength": 8},
+            },
+            "required": ["username", "token"],
+        },
+        secret_fields=("token",),
+    )
+    spec = CredentialSpec(_RECIPE, "env", "TRACKER_CREDENTIAL")
+    target = SimpleNamespace(identity="run.cred-fixture.echo", integration_type=_INTEGRATION)
+
+    loaded, _warnings = load_credentials(
+        (spec,), {_RECIPE: recipe}, target, workspace=tmp_path
+    )
+
+    scrubbed = credential_secret_values(loaded)
+    assert "tok-abcdef123456" in scrubbed
+    assert "user-one" in scrubbed  # not declared in secretFields, still scrubbed
+
+
+def test_source_mode_warns_the_credential_path_is_not_the_production_mount(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Source mode cannot create /var/run/syntara/secrets, so the author hears it."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "delivers credential files at a temporary path" in captured.err
+    assert "/var/run/syntara/secrets" in captured.err
+    assert "invocation.credential_file_paths" in captured.err
+
+
 def test_a_target_without_an_integration_type_reaches_no_credential(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:

@@ -181,7 +181,7 @@ the summary, and their values are redacted everywhere they could surface:
   enum value of a sensitive field.
 
 A credential supplied with `--credential` is scrubbed the same way: the value
-you gave, and the values of the recipe's declared `secretFields`, are added
+you gave and every value in the delivered credential document are added
 to the same set. See [Supplying credentials](#supplying-credentials).
 
 Scrubbing matches the value case-insensitively. Redaction is driven by the
@@ -219,7 +219,9 @@ printf '%s' "$TOKEN" | syntara-plugin run --manifest plugin.yaml create-issue \
 ```
 
 Everything is checked before anything executes: `NAME` must resolve to a
-reachable recipe, and the value must satisfy that recipe's
+reachable recipe, must contain only the characters the secret mount allows
+(letters, digits, `.`, `_`, `-` — anything else could never be delivered as a
+mounted file), and the value must satisfy that recipe's
 `credentialSchema`. A value that parses as a JSON object is taken as the
 complete credential document; any other text is a raw value, wrapped into the
 single field the recipe declares. A recipe with several fields has no
@@ -245,9 +247,12 @@ the wire, so Step code behaves the same locally and in production.
   ABI's approved secret mount. Nothing is copied into the image.
 - **source mode** runs the Step in this process, which cannot write under
   `/var/run` without privilege, so the file stays in that private directory
-  and its real path crosses the loopback ABI. This one in-process transport
-  is told to accept that directory; every other client and runtime keeps the
-  production rule. See the
+  and its real path crosses the loopback ABI. Step code must read the path it
+  is given (`invocation.credential_file_paths`), not the production mount
+  path: code that hard-codes `/var/run/syntara/secrets/...` finds no
+  credential here, and the run prints a warning saying so. This one
+  in-process transport is told to accept that directory; every other client
+  and runtime keeps the production rule. See the
   [local credential delivery ADR](../.sdlc/adrs/0009-local-credential-delivery.md).
 
 The directory is created readable only by you and removed when the invocation
@@ -264,10 +269,11 @@ Input:          {"title": "Broken build"}
 Credentials:    example.tracker.api-token
 ```
 
-The supplied value, and the values of the recipe's declared `secretFields`,
-join the set the run masks, so they are scrubbed from the report, `--json`,
-errors, hints, progress, step output, and tracebacks exactly as a sensitive
-input is.
+The supplied value and every value in the delivered document join the set the
+run masks — not only the recipe's declared `secretFields`, so a missing or
+partial declaration cannot decide what leaks — so they are scrubbed from the
+report, `--json`, errors, hints, progress, step output, and tracebacks
+exactly as a sensitive input is.
 
 Two limits are worth knowing. `--credential` cannot be combined with
 `--address` or the `--tls-*` options: that runtime is yours, and the command

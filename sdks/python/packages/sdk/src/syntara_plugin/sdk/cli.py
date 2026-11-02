@@ -1168,6 +1168,16 @@ def _run_command(arguments: argparse.Namespace) -> int:
             specs, reachable_credential_recipes(compiled, target), target,
             workspace=manifest.parent,
         )
+        if credentials and arguments.mode == "source":
+            # Source mode cannot create the production mount without
+            # privileges, so a Step hardcoding it would silently miss the
+            # credential; the author should hear that before the run.
+            warnings = (
+                *warnings,
+                "warning: source mode delivers credential files at a temporary path, "
+                "not /var/run/syntara/secrets as in production; a Step must read "
+                "invocation.credential_file_paths rather than the mount path",
+            )
         _print_run_warnings(warnings)
         progress = _progress_printer(arguments)
         if arguments.mode == "source":
