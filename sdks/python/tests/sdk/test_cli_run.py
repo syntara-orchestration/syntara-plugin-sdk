@@ -3459,7 +3459,9 @@ def test_the_credential_directory_is_removed_after_the_run(
     status = main(_credential_run(workspace, f"{_RECIPE}=-"))
 
     assert status == 0
-    assert created and not any(directory.exists() for directory in created)
+    assert created
+    for directory in created:
+        assert not directory.exists()
 
 
 def test_a_run_without_credentials_creates_no_secret_directory(

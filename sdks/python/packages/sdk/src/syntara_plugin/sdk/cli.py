@@ -1264,20 +1264,22 @@ def _run_image_mode(
         )
     if arguments.verbose and not arguments.json:
         print(f"==> starting workload container {target.workload_image}", file=sys.stderr)
-    with credential_files(credentials, container_readable=True) as (_, host_paths):
-        with managed_runtime(target.workload_image, target, host_paths) as runtime:
-            return run_image(
-                runtime.address,
-                target,
-                inputs,
-                input_source,
-                tls=runtime.tls,
-                on_progress=progress,
-                image=runtime.image,
-                startup_seconds=30.0,
-                liveness=runtime.liveness,
-                credentials=credentials,
-            )
+    with (
+        credential_files(credentials, container_readable=True) as (_, host_paths),
+        managed_runtime(target.workload_image, target, host_paths) as runtime,
+    ):
+        return run_image(
+            runtime.address,
+            target,
+            inputs,
+            input_source,
+            tls=runtime.tls,
+            on_progress=progress,
+            image=runtime.image,
+            startup_seconds=30.0,
+            liveness=runtime.liveness,
+            credentials=credentials,
+        )
 
 
 def _localized_error(

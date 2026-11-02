@@ -1250,18 +1250,20 @@ def run_source(
             # report (or the --json document).
             with contextlib.redirect_stdout(scrubbing_stderr):
                 return _execute_over_channel(
-                    channel,
-                    target,
-                    inputs,
-                    input_source,
-                    mode="source",
-                    address=f"unix:{socket_path}",
-                    timeout_seconds=timeout_seconds,
-                    on_progress=on_progress,
-                    captured_detail=captured,
-                    credentials=credentials,
-                    credential_file_paths=paths,
-                    local_credential_directory=secrets_directory,
+                    _ChannelExecution(
+                        channel=channel,
+                        target=target,
+                        inputs=inputs,
+                        input_source=input_source,
+                        mode="source",
+                        address=f"unix:{socket_path}",
+                        timeout_seconds=timeout_seconds,
+                        on_progress=on_progress,
+                        captured_detail=captured,
+                        credentials=credentials,
+                        credential_file_paths=paths,
+                        local_credential_directory=secrets_directory,
+                    )
                 )
         finally:
             channel.close()
@@ -1334,49 +1336,67 @@ def run_image(
     channel = _channel(address, tls)
     try:
         return _execute_over_channel(
-            channel,
-            target,
-            inputs,
-            input_source,
-            mode="image",
-            address=address,
-            timeout_seconds=timeout_seconds,
-            on_progress=on_progress,
-            image=image,
-            startup_seconds=startup_seconds,
-            liveness=liveness,
-            credentials=credentials,
-            credential_file_paths=mounted_credential_paths(credentials),
+            _ChannelExecution(
+                channel=channel,
+                target=target,
+                inputs=inputs,
+                input_source=input_source,
+                mode="image",
+                address=address,
+                timeout_seconds=timeout_seconds,
+                on_progress=on_progress,
+                image=image,
+                startup_seconds=startup_seconds,
+                liveness=liveness,
+                credentials=credentials,
+                credential_file_paths=mounted_credential_paths(credentials),
+            )
         )
     finally:
         channel.close()
 
 
-def _execute_over_channel(
-    channel: grpc.Channel,
-    target: RunTarget,
-    inputs: Mapping[str, Any],
-    input_source: str,
-    *,
-    mode: str,
-    address: str,
-    timeout_seconds: int,
-    on_progress: ProgressCallback | None,
-    captured_detail: list[str] | None = None,
-    image: str | None = None,
-    startup_seconds: float = 10.0,
-    liveness: Callable[[], None] | None = None,
-    credentials: Sequence[LoadedCredential] = (),
-    credential_file_paths: Mapping[str, str] | None = None,
-    local_credential_directory: Path | None = None,
-) -> RunReport:
-    client = ContainerClient(channel, local_credential_directory)
-    advertised = _health(client, address, startup_seconds=startup_seconds, liveness=liveness)
-    dispatch_id = target.step_revision_id if mode == "image" else target.identity
+@dataclass(frozen=True)
+class _ChannelExecution:
+    """One target invocation against an already-open runtime channel.
+
+    Source and image mode share this path. The fields that only one mode
+    fills keep defaults so each caller passes the transport and report
+    details it actually has.
+    """
+
+    channel: grpc.Channel
+    target: RunTarget
+    inputs: Mapping[str, Any]
+    input_source: str
+    mode: str
+    address: str
+    timeout_seconds: int
+    on_progress: ProgressCallback | None
+    captured_detail: list[str] | None = None
+    image: str | None = None
+    startup_seconds: float = 10.0
+    liveness: Callable[[], None] | None = None
+    credentials: Sequence[LoadedCredential] = ()
+    credential_file_paths: Mapping[str, str] | None = None
+    local_credential_directory: Path | None = None
+
+
+def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
+    client = ContainerClient(execution.channel, execution.local_credential_directory)
+    advertised = _health(
+        client,
+        execution.address,
+        startup_seconds=execution.startup_seconds,
+        liveness=execution.liveness,
+    )
+    target = execution.target
+    inputs = execution.inputs
+    dispatch_id = target.step_revision_id if execution.mode == "image" else target.identity
     if dispatch_id not in advertised:
         listed = ", ".join(sorted(advertised)) or "none"
         raise RunExecutionError(
-            f"the runtime at {address} does not advertise {dispatch_id!r}",
+            f"the runtime at {execution.address} does not advertise {dispatch_id!r}",
             detail=(f"Advertised steps: {listed}",),
             next_steps=(
                 "check that the runtime was built from this workspace",
@@ -1389,26 +1409,28 @@ def _execute_over_channel(
         workflow_run_id=workflow_run_id,
         step_revision_id=dispatch_id,
         inputs=inputs,
-        credential_file_paths=credential_file_paths or {},
-        timeout_seconds=timeout_seconds,
+        credential_file_paths=execution.credential_file_paths or {},
+        timeout_seconds=execution.timeout_seconds,
         runtime_context={},
     )
-    secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(credentials)
-    credential_names = tuple(credential.name for credential in credentials)
+    secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(
+        execution.credentials
+    )
+    credential_names = tuple(credential.name for credential in execution.credentials)
     redacted_inputs = _scrub_structure(redact_inputs(target.input_schema, inputs), secrets)
-    terminal = _consume(client, invocation, _scrubbing_progress(on_progress, secrets))
+    terminal = _consume(client, invocation, _scrubbing_progress(execution.on_progress, secrets))
     detail = (
-        _scrub_text("\n\n".join(captured_detail).rstrip(), secrets)
-        if captured_detail
+        _scrub_text("\n\n".join(execution.captured_detail).rstrip(), secrets)
+        if execution.captured_detail
         else None
     )
     if detail is not None and len(detail) > _MAX_ERROR_DETAIL_LENGTH:
         detail = detail[:_MAX_ERROR_DETAIL_LENGTH].rstrip() + "\n... (truncated)"
     if isinstance(terminal, _WorkloadFailure):
         return RunReport(
-            mode=mode,
+            mode=execution.mode,
             target=target.identity,
-            input_source=input_source,
+            input_source=execution.input_source,
             input_values=redacted_inputs,
             ok=False,
             invocation_id=invocation_id,
@@ -1425,7 +1447,7 @@ def _execute_over_channel(
             ),
             outcome=terminal.outcome,
             error_detail=detail,
-            image=image,
+            image=execution.image,
             credentials=credential_names,
         )
     result = terminal
@@ -1438,9 +1460,9 @@ def _execute_over_channel(
             retryable=bool(error_result["retryable"]),
         )
     return RunReport(
-        mode=mode,
+        mode=execution.mode,
         target=target.identity,
-        input_source=input_source,
+        input_source=execution.input_source,
         input_values=redacted_inputs,
         ok=result.status_code == 0 and error is None,
         invocation_id=invocation_id,
@@ -1457,7 +1479,7 @@ def _execute_over_channel(
         error=error,
         outcome=None,
         error_detail=detail,
-        image=image,
+        image=execution.image,
         credentials=credential_names,
     )
 
