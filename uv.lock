@@ -1112,7 +1112,7 @@ wheels = [
 
 [[package]]
 name = "syntara-plugin-contracts"
-version = "0.1.0a1"
+version = "0.1.0a2"
 source = { editable = "sdks/python/packages/contracts" }
 dependencies = [
     { name = "grpcio" },
@@ -1133,7 +1133,7 @@ requires-dist = [
 
 [[package]]
 name = "syntara-plugin-sdk"
-version = "0.1.0a1"
+version = "0.1.0a2"
 source = { editable = "sdks/python/packages/sdk" }
 dependencies = [
     { name = "pyyaml" },
@@ -1155,7 +1155,7 @@ provides-extras = ["testing"]
 
 [[package]]
 name = "syntara-plugin-sdk-workspace"
-version = "0.1.0a1"
+version = "0.1.0a2"
 source = { virtual = "." }
 dependencies = [
     { name = "syntara-plugin-sdk", extra = ["testing"] },
