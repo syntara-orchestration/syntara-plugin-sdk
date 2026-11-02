@@ -20,7 +20,7 @@ syntara-plugin inspect ./dist/my-plugin.oci.tar
 
 `run` is separate from that loop for one reason: it executes custom-runner
 Steps, and a workspace created by `init` declares a platform-runner action,
-which Syntara's managed runner executes instead. To run a Step locally you
+which Syntara's managed runner executes instead. To run a step type locally you
 need a workspace that declares a custom-runner target and an input file; the
 complete, copy-pasteable workflow using the
 [python-steps example](../examples/python-steps) from a repository checkout:

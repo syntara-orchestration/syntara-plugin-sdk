@@ -98,7 +98,7 @@ def _validate_resource_references(
 
 
 class StepCategory(StrEnum):
-    """The executable plugin Step categories."""
+    """The executable step type categories."""
 
     ACTION = "action"
     CONTROL = "control"
@@ -106,7 +106,7 @@ class StepCategory(StrEnum):
 
 
 class StepKind(StrEnum):
-    """The concrete public Step types, distinct from their broad category."""
+    """The concrete public step types, distinct from their broad category."""
 
     ACTION = "Action"
     CONTROL = "Control"
@@ -196,8 +196,8 @@ def _require_installed_step_entry_point(
     if loaded is type(step):
         return
     message = (
-        f"installed Step entry point {entry_point!r} does not match "
-        f"the supplied step class {actual!r}"
+        f"installed step type entry point {entry_point!r} does not match "
+        f"the supplied step type class {actual!r}"
     )
     raise StepBindingError(message)
 
@@ -277,7 +277,7 @@ _CATEGORY_BY_KIND: Mapping[StepKind, StepCategory] = {
 
 
 def _category_for_kind(kind: StepKind) -> StepCategory:
-    """Return the canonical category for a concrete Step kind."""
+    """Return the canonical category for a concrete step type kind."""
 
     return _CATEGORY_BY_KIND[kind]
 
@@ -285,12 +285,12 @@ def _category_for_kind(kind: StepKind) -> StepCategory:
 def _step_kind_and_category(
     cls: type[BaseStep[Any, Any]],
 ) -> tuple[StepKind, StepCategory]:
-    """Return the concrete Step kind and category for a ``BaseStep`` subclass."""
+    """Return the concrete step type kind and category for a ``BaseStep`` subclass."""
 
     for step_class, kind, category in _STEP_CLASSES:
         if issubclass(cls, step_class):
             return kind, category
-    message = f"{cls.__qualname__} does not belong to a step category class"
+    message = f"{cls.__qualname__} does not belong to a step type category class"
     raise StepBindingError(message)
 
 
@@ -356,7 +356,7 @@ def _resolve_document_source(
 
     source = specification.get(field_name)
     if not isinstance(source, Mapping):
-        message = f"Step manifest must contain a {field_name} document source"
+        message = f"Step type manifest must contain a {field_name} document source"
         raise StepBindingError(message)
     source_kind = source.get("kind")
     if source_kind == "inline":
@@ -364,28 +364,28 @@ def _resolve_document_source(
     elif source_kind == "asset":
         path = source.get("path")
         if not isinstance(path, str) or path not in assets:
-            message = f"Step {field_name} asset must be supplied by the installed binding"
+            message = f"Step type {field_name} asset must be supplied by the installed binding"
             raise StepBindingError(message)
         schema = assets[path]
     else:
-        message = f"Step {field_name} must use an inline or asset document source"
+        message = f"Step type {field_name} must use an inline or asset document source"
         raise StepBindingError(message)
     if not isinstance(schema, Mapping):
-        message = f"resolved Step {field_name} schema must be a JSON object"
+        message = f"resolved step type {field_name} schema must be a JSON object"
         raise StepBindingError(message)
     return schema
 
 
 @dataclass(frozen=True)
 class InstalledStepManifest:
-    """An installed custom-runner Step manifest and its resolved schemas.
+    """An installed custom-runner step type manifest and its resolved schemas.
 
     ``from_manifest`` is the SDK's installation/bootstrap boundary. Its caller
     is responsible for obtaining an authorized installed document; the SDK
     cannot independently establish remote or cryptographic provenance. The
     factory retains opaque provenance for the exact returned object so
     equivalent caller-created objects cannot be substituted into an executable
-    Step binding.
+    step type binding.
     """
 
     step_identity: str = field(init=False)
@@ -411,7 +411,7 @@ class InstalledStepManifest:
             message = "manifest must be a JSON object"
             raise StepBindingError(message)
         if manifest.get("apiVersion") != "syntara.io/v1alpha1":
-            message = "manifest must be a syntara.io/v1alpha1 Step document"
+            message = "manifest must be a syntara.io/v1alpha1 step type document"
             raise StepBindingError(message)
         try:
             kind = StepKind(manifest.get("kind"))
@@ -420,24 +420,24 @@ class InstalledStepManifest:
             raise StepBindingError(message) from None
         specification = manifest.get("spec")
         if not isinstance(specification, Mapping):
-            message = "Step manifest must contain a spec object"
+            message = "Step type manifest must contain a spec object"
             raise StepBindingError(message)
         contract_kind = cast(
             Literal["action", "control", "trigger"], kind.value.lower()
         )
         contract_errors = validate_document(load_bundle(), contract_kind, manifest)
         if contract_errors:
-            message = "installed Step manifest violates its contract: " + "; ".join(
+            message = "installed step type manifest violates its contract: " + "; ".join(
                 contract_errors
             )
             raise StepBindingError(message)
         runtime = specification.get("runtime")
         if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
-            message = "installed Step bindings require a custom-runner implementation"
+            message = "installed step type bindings require a custom-runner implementation"
             raise StepBindingError(message)
         entry_point = runtime.get("entryPoint")
         if not isinstance(entry_point, str) or _ENTRY_POINT.fullmatch(entry_point) is None:
-            message = "installed Step bindings require a valid runtime entryPoint"
+            message = "installed step type bindings require a valid runtime entryPoint"
             raise StepBindingError(message)
         input_schema = _resolve_document_source(specification, "input", assets)
         output_schema = _resolve_document_source(specification, "output", assets)
@@ -475,7 +475,7 @@ class StepDescriptor:
 
     The input and output schemas describe the typed Python contract of one
     implementation. They are implementation-derived for authoring descriptors.
-    Installed custom-runner Steps are the executable exception: the trusted
+    Installed custom-runner step types are the executable exception: the trusted
     factory binds their canonical schemas from the installed descriptor.
     """
 
@@ -493,7 +493,7 @@ class StepDescriptor:
             try:
                 object.__setattr__(self, "kind", StepKind(self.kind))
             except (TypeError, ValueError):
-                message = "kind must be a valid concrete Step kind"
+                message = "kind must be a valid concrete step type kind"
                 raise StepBindingError(message) from None
 
         if not _IDENTITY.fullmatch(self.step_identity):

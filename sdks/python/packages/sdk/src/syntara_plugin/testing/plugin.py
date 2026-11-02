@@ -47,7 +47,7 @@ def step_bindings() -> StepBindingsFactory:
 
     Use ``step_bindings.bind(step)`` for any step (a locally installed
     manifest) and ``step_bindings.bind_step(entry_point, workspace=...)``
-    for custom-runner Step types compiled from a real workspace.
+    for custom-runner step types compiled from a real workspace.
     """
 
     return StepBindingsFactory()

@@ -38,7 +38,7 @@
       "kind": "inline",
       "value": {
         "type": "object",
-        "description": "The child workflow's parameters, passed through unchanged from the invoking parent. Defined per workflow by spec.configuration, not fixed per Step type.",
+        "description": "The child workflow's parameters, passed through unchanged from the invoking parent. Defined per workflow by spec.configuration, not fixed per step type.",
         "additionalProperties": false,
         "properties": {
           "artifact": {

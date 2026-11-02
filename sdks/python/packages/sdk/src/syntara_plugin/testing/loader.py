@@ -1,4 +1,4 @@
-"""Entry-point loading for locally executable plugin steps."""
+"""Entry-point loading for locally executable steps."""
 
 from __future__ import annotations
 

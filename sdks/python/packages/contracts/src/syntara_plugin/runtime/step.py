@@ -1,4 +1,4 @@
-"""Typed Python execution API for Syntara plugin steps."""
+"""Typed Python execution API for Syntara steps."""
 
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def _resolve_models(cls: type[BaseStep[Any, Any]]) -> tuple[type[BaseModel], typ
 
 
 class BaseStep[TInput: BaseModel, TOutput: BaseModel](ABC):
-    """Abstract typed base class shared by every executable plugin step.
+    """Abstract typed base class shared by every executable step.
 
     ``execute()`` is the stable author-facing entrypoint. It accepts an
     already-constructed ``TInput`` and returns the step's ``TOutput`` directly.
@@ -145,16 +145,16 @@ class BaseStep[TInput: BaseModel, TOutput: BaseModel](ABC):
 class ActionStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
     """Executable base for Action steps (domain and external integrations).
 
-    Actions are Step types that integrate with external systems or
+    Actions are step types that integrate with external systems or
     perform domain operations. They remain directly callable from Python and do
     not require a container invocation.
     """
 
 
 class ControlStep[TInput: BaseModel, TOutput: BaseModel](BaseStep[TInput, TOutput]):
-    """Executable base for control Step types (control-flow logic).
+    """Executable base for control step types (control-flow logic).
 
-    Control Step types implement control flow or composition. They share the
+    Control step types implement control flow or composition. They share the
     same typed lifecycle as the other Step classes and remain callable without
     transport types.
     """

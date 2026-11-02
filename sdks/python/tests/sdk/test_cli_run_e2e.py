@@ -273,7 +273,7 @@ def test_image_mode_reports_an_unexpected_exception_safely(capsys) -> None:
     assert status == 1
     captured = capsys.readouterr()
     assert _report_field(captured.out, "Error") == "OUTCOME_UNKNOWN (retryable: false)"
-    assert _report_field(captured.out, "Message") == "The plugin step did not complete."
+    assert _report_field(captured.out, "Message") == "The step did not complete."
     assert _report_field(captured.out, "Outcome") == "unknown"
     assert "Error detail:" in captured.out
     assert "not captured" in captured.out
@@ -606,7 +606,7 @@ def test_image_mode_reports_a_real_steps_unexpected_exception(
 
     assert status == 1
     assert _report_field(captured.out, "Error") == "OUTCOME_UNKNOWN (retryable: false)"
-    assert _report_field(captured.out, "Message") == "The plugin step did not complete."
+    assert _report_field(captured.out, "Message") == "The step did not complete."
     assert "Error detail:" in captured.out
     assert "not captured" in captured.out
     assert "unexpected crash" not in captured.out

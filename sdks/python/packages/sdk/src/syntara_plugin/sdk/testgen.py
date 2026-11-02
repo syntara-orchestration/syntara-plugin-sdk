@@ -1,4 +1,4 @@
-"""Deterministic pytest scaffolding for custom-runner Step types.
+"""Deterministic pytest scaffolding for custom-runner step types.
 
 The generator compiles the workspace through the same canonical compiler the
 ``validate`` command uses, then emits one test module per custom-runner target.
@@ -31,7 +31,7 @@ from .authoring import BuildRequest, compile_workspace
 _MAX_INVALID_CASES = 8
 _IDENTIFIER_SAFE = re.compile(r"[^a-z0-9]")
 
-_TEMPLATE = '''"""Generated local tests for the {identity} {kind} Step type.
+_TEMPLATE = '''"""Generated local tests for the {identity} {kind} step type.
 
 Regenerate with: syntara-plugin test-init {manifest} --force
 Review the TODO markers and extend the cases with business-specific payloads.
@@ -124,7 +124,7 @@ def generate_step_tests(
     tests_dir: Path | None = None,
     force: bool = False,
 ) -> list[Path]:
-    """Generate pytest modules for every custom-runner Step target.
+    """Generate pytest modules for every custom-runner step type target.
 
     Returns the written paths. Existing files are only replaced when ``force``
     is true; the ``tests/conftest.py`` import shim is written only when absent
@@ -140,7 +140,7 @@ def generate_step_tests(
     workspace_relative = os.path.relpath(workspace, tests)
     planned = _plan_test_modules(result, tests, manifest.name, workspace_relative)
     if not planned:
-        message = "the workspace declares no custom-runner Step targets"
+        message = "the workspace declares no custom-runner step type targets"
         raise ScaffoldError(message)
     _refuse_existing(planned, force)
     written = _write_planned_modules(planned)

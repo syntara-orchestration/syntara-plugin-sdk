@@ -58,7 +58,7 @@ class InvocationOutput(BaseModel):
 
 
 class _EchoStep:
-    """Shared typed implementation for the three public Step categories."""
+    """Shared typed implementation for the three public step type categories."""
 
     def __init__(self) -> None:
         self.run_calls = 0

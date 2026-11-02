@@ -5,7 +5,7 @@ metadata:
   name: subworkflow-composition
   version: 0.1.0
   displayName: Subworkflow composition
-  description: Parent-side and child-side Step types for synchronous subworkflow composition.
+  description: Parent-side and child-side step types for synchronous subworkflow composition.
 spec:
   documentation:
     path: docs/README.md

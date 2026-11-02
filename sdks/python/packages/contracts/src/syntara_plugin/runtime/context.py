@@ -1,4 +1,4 @@
-"""Transport-independent execution context for typed plugin steps."""
+"""Transport-independent execution context for typed steps."""
 
 from __future__ import annotations
 

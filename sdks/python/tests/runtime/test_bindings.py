@@ -98,7 +98,7 @@ def _manifest(
         "metadata": {
             "name": "echo",
             "displayName": "Echo",
-            "description": "An echo Step type.",
+            "description": "An echo step type.",
         },
         "spec": specification,
     }
@@ -807,7 +807,7 @@ def test_invalid_kind_is_rejected() -> None:
     input_schema = EchoInput.model_json_schema()
     output_schema = EchoOutput.model_json_schema()
 
-    with pytest.raises(StepBindingError, match="valid concrete Step kind"):
+    with pytest.raises(StepBindingError, match="valid concrete step type kind"):
         StepDescriptor(
             step_identity="acme.plugin.echo",
             kind="not-a-kind",

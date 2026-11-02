@@ -155,7 +155,7 @@ def _parser() -> argparse.ArgumentParser:
 
     test_init = commands.add_parser(
         "test-init",
-        help="Generate local pytest tests for custom-runner Step types.",
+        help="Generate local pytest tests for custom-runner step types.",
     )
     test_init.add_argument(
         "manifest",
@@ -179,10 +179,10 @@ def _parser() -> argparse.ArgumentParser:
     run = commands.add_parser(
         "run",
         help="Validate inputs and run one custom-runner Step locally.",
-        description="Validate invocation inputs and run one custom-runner Step locally.",
+        description="Validate invocation inputs and run one custom-runner step type locally.",
         epilog=textwrap.dedent(
             """\
-            The target is the full Step identity, the module:Class entry point,
+            The target is the full step type identity, the module:Class entry point,
             or a unique short name; it is inferred when the workspace declares
             exactly one runnable target. Inputs come from --input (inline JSON)
             or --input-file (a JSON file, - reads stdin). Without inputs the
@@ -190,7 +190,7 @@ def _parser() -> argparse.ArgumentParser:
             exits 2: the template is schema-shaped, not business-valid.
 
             source mode (the default) compiles the workspace and executes the
-            Step through an in-process runtime. image mode runs the
+            step type through an in-process runtime. image mode runs the
             workspace's declared workload image through Podman or Docker and
             removes it afterwards; pass --address (and --tls-* for mutual
             TLS) to use a runtime you started yourself instead.
@@ -206,7 +206,7 @@ def _parser() -> argparse.ArgumentParser:
         "target",
         nargs="?",
         default=None,
-        help="Step identity, module:Class entry point, or unique short name.",
+        help="Step type identity, module:Class entry point, or unique short name.",
     )
     run.add_argument(
         "--manifest",
@@ -259,7 +259,7 @@ def _parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         default=None,
-        help="Show execution phases and step progress on stderr.",
+        help="Show execution phases and step type progress on stderr.",
     )
 
     for command, help_text in (
@@ -769,7 +769,7 @@ def _boolean_option(command_line: bool | None, settings: bool | None, *, default
 
 
 def _init_tests(arguments: argparse.Namespace) -> int:
-    """Generate local pytest tests for custom-runner Step targets."""
+    """Generate local pytest tests for custom-runner step type targets."""
     try:
         written = generate_step_tests(
             arguments.manifest,
@@ -1091,9 +1091,9 @@ def _print_compilation_failure(
 
 
 def _run_command(arguments: argparse.Namespace) -> int:
-    """Validate inputs and run one custom-runner Step locally."""
+    """Validate inputs and run one custom-runner step type locally."""
     # The execution engine pulls gRPC; importing it here keeps every command
-    # that never executes a Step free of that import cost. The template
+    # that never executes a step type free of that import cost. The template
     # helpers are grpc-free and stay at module scope.
     from .runner import (
         RunExecutionError,

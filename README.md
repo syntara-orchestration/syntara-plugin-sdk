@@ -1,7 +1,7 @@
 # Syntara Plugin SDK
 
 Build, validate, package, and publish Syntara plugins. A plugin is a
-versioned declaration of Step types in the action, control, and trigger categories,
+versioned declaration of step types in the action, control, and trigger categories,
 integration types,
 credential recipes, documentation, and—when needed—one custom runner image.
 
@@ -41,8 +41,8 @@ syntara-plugin inspect ./dist/my-plugin.oci.tar
 ```
 
 `init` generates a platform-runner action with an example implementation
-reference; replace it with a registered step available in your installation.
-The `run` command executes custom-runner Steps locally. To try it,
+reference; replace it with a registered step type available in your installation.
+The `run` command executes one custom-runner step type locally. To try it,
 run the custom-runner example from the repository root (see
 [Running locally](docs/running-locally.md)):
 
@@ -80,7 +80,7 @@ be advertised. `catalog update` remains available for release administration
 and `catalog recover --previous-index-digest ...` repairs a deleted or replaced
 mutable catalog tag from the exact digest Syntara last accepted. This preserves
 rollback protection rather than restarting at generation one.
-For an Action Step type using an author-owned container, use
+For an Action step type using an author-owned container, use
 `syntara-plugin build --with-workload --publish` after configuring the
 `build.workload` settings; see the [user guide](docs/user-guide.md).
 
@@ -101,12 +101,12 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
 
 - [Installation](docs/installation.md) — install a released SDK or prepare a source checkout.
 - [Getting started](docs/getting-started.md) — first plugin and the four core commands.
-- [Step authoring and composition guide](docs/authoring-guide.md): the end-to-end authoring workflow for Action, Control, and Trigger Steps, and composition best practices.
+- [Step type authoring and composition guide](docs/authoring-guide.md): the end-to-end authoring workflow for Action, Control, and Trigger steps, and composition best practices.
 - [User guide](docs/user-guide.md) — settings, custom runners, artifact publication, and catalog release.
 - [Plugin language reference](docs/plugin-language.md) — each manifest kind and field, with links to its normative schema.
 - [Build settings reference](docs/build-settings.md) — every `syntara-plugin.yaml` key and its behavior.
 - [Testing reference](docs/testing.md) — local pytest harness, fixtures, invocation helpers, and generated tests.
-- [Running locally](docs/running-locally.md) — validate inputs and run one Step from source or a running image.
+- [Running locally](docs/running-locally.md) — validate inputs and run one Step type from source or a running image.
 - [Developer guide](docs/developer-guide.md) — local setup, tests, contract changes, and contribution expectations.
 - [Runtime and OCI model](docs/runtime-and-oci.md) — container ABI, artifact boundaries, and ownership.
 - [Documentation index](docs/README.md) — the complete map, including design records and language-specific notes.

@@ -34,7 +34,7 @@ from .outcome import StandardOutputWrapper, thaw_json
 from .step import BaseStep
 
 _REFERENCE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
-_INVALID_STEP_RESPONSE = "The plugin step returned an invalid response."
+_INVALID_STEP_RESPONSE = "The step returned an invalid response."
 # Business results above this canonical-JSON size cannot travel inline over the
 # container ABI and are externalized to an object-store reference instead.
 _MAX_INLINE_RESULT_BYTES = 1_048_576
@@ -209,7 +209,7 @@ def container_step_for_binding(
         if invocation.step_revision_id != (step_revision_id or binding.descriptor.step_identity):
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
-                "The requested plugin step is not available in this container image.",
+                "The requested step is not available in this container image.",
                 outcome="not_started",
             )
         context = _execution_context(invocation)
@@ -237,7 +237,7 @@ def container_step_for_installed_manifest(
     installed_step: InstalledStepManifest,
     object_store: ResultObjectStore | None = None,
 ) -> ContainerStepHandler:
-    """Wrap one custom-runner Step with its trusted installed identity and schema."""
+    """Wrap one custom-runner step type with its trusted installed identity and schema."""
 
     descriptor = StepDescriptor.for_installed_step(step, installed_step)
     return container_step_for_binding(StepBinding(descriptor, step), object_store=object_store)
@@ -259,7 +259,7 @@ def container_step_for_bindings(
             binding = bindings.binding(invocation.step_revision_id)
             return container_step_for_binding(binding, object_store=object_store)(invocation)
         except StepBindingError:
-            message = "The requested plugin step is not available in this container image."
+            message = "The requested step is not available in this container image."
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
                 message,

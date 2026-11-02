@@ -66,7 +66,7 @@ def test_child_trigger_input_passes_the_workflow_parameters_through() -> None:
 
     AO's subworkflow_trigger carries the child contract as the per-workflow
     parameter schema (``parameters.input_schema``) and does not fix input per
-    Step type: ``spec.configuration`` defines the parameters and ``spec.input``
+    step type: ``spec.configuration`` defines the parameters and ``spec.input``
     mirrors them unchanged.
     """
 

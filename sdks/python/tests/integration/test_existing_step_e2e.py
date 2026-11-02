@@ -1,6 +1,6 @@
-"""End-to-end contract tests for the checked-in Existing Step example.
+"""End-to-end contract tests for the checked-in Existing step type example.
 
-Executes the example's steps directly and through the in-process container
+Executes the example's step types directly and through the in-process container
 adapter, and verifies reproducible artifact and catalog compilation. The
 example workspace is fixture data here, mirroring the Podman integration
 test in ``test_runtime_image.py``; the example itself stays copyable without

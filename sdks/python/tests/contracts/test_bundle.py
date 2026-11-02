@@ -429,7 +429,7 @@ def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantic
     metadata = {
         "name": "example",
         "displayName": "Example",
-        "description": "One category-specific Step type.",
+        "description": "One category-specific step type.",
     }
     control = step_document(
         "Control",
@@ -612,7 +612,7 @@ def test_subworkflow_composition_maps_onto_existing_control_and_trigger_contract
 
     # Parent-side subworkflow_call is a Control that invokes a named workflow
     # through the syntara.workflow.invoke platform runner. Child-side
-    # subworkflow_trigger is a Trigger. Neither needs a new Step category or
+    # subworkflow_trigger is a Trigger. Neither needs a new step type category or
     # schema.
     assert validate_document(bundle, "control", parent) == []
     assert validate_document(bundle, "step", parent) == []

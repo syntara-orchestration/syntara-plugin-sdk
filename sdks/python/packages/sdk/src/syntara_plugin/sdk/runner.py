@@ -2,7 +2,7 @@
 
 The runner resolves one custom-runner target from a compiled workspace,
 validates supplied input against the compiled manifest schema, and executes
-the Step through ``ContainerClient`` over real gRPC: source mode binds the
+the step type through ``ContainerClient`` over real gRPC: source mode binds the
 implementation and serves an in-process runtime; image mode connects to an
 already-running workload runtime. The module returns data and raises errors
 with author-facing guidance; the CLI renders both.
@@ -587,7 +587,7 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
     if requested is None:
         if not runnable:
             raise RunUsageError(
-                "this workspace declares no custom-runner Step target that can run locally",
+                "this workspace declares no custom-runner step type target that can run locally",
                 detail=_target_lines(result.descriptor["spec"]["targets"]),
                 next_steps=("run syntara-plugin inspect to review the declared targets",),
             )
@@ -776,7 +776,7 @@ def _capped_validation_lines(lines: list[str]) -> list[str]:
 
 
 class _ScrubbingWriter:
-    """A stdout stand-in that scrubs supplied secrets from everything a Step prints."""
+    """A stdout stand-in that scrubs supplied secrets from everything a step type prints."""
 
     def __init__(self, stream: Any, secrets: tuple[str, ...]) -> None:
         self._stream = stream
@@ -805,7 +805,7 @@ def run_source(
     """Execute one target from source through an in-process gRPC runtime.
 
     The workspace root becomes importable, the implementation is bound through
-    the harness's compile-install-drift path, and the Step executes through
+    the harness's compile-install-drift path, and the step type executes through
     ``ContainerClient`` against a runtime owned by this process. The runtime
     listens on a unix domain socket inside a private temporary directory, so
     only this user's processes can reach it while it runs. Unexpected
@@ -834,7 +834,7 @@ def run_source(
         sys.stderr, _secret_values(target.input_schema, inputs)
     )
     try:
-        # The Step runs in this process; anything it prints belongs on stderr,
+        # The step type runs in this process; anything it prints belongs on stderr,
         # scrubbed of supplied secrets, so stdout keeps carrying only the
         # report (or the --json document).
         with contextlib.redirect_stdout(scrubbing_stderr):
@@ -1081,7 +1081,7 @@ def _health(
             failure_code=last_remote_error.code,
             next_steps=(
                 "check the container log for the startup failure",
-                "or rerun with --mode source to execute the Step from the workspace",
+                "or rerun with --mode source to execute the step type from the workspace",
             ),
         ) from last_remote_error
     raise RunExecutionError(
@@ -1149,7 +1149,7 @@ def _consume(
                 failure_code=error.code,
                 detail=(f"outcome: {error.outcome}",),
                 next_steps=(
-                    "make the Step finish within the timeout",
+                    "make the step type finish within the timeout",
                     "or split the work into smaller invocations",
                 ),
             ) from error
@@ -1176,7 +1176,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
         return factory.bind_step(target.entry_point, workspace=manifest, identity=target.identity)
     except SchemaDriftError as error:
         raise RunExecutionError(
-            "the Step implementation drifted from the compiled manifest",
+            "the step type implementation drifted from the compiled manifest",
             detail=(str(error),),
             next_steps=(
                 "fix the implementation or the manifest, then rerun",
@@ -1185,7 +1185,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
         ) from error
     except HarnessUsageError as error:
         raise RunExecutionError(
-            f"the Step implementation could not be bound: {error}",
+            f"the step type implementation could not be bound: {error}",
             next_steps=(
                 "check that the entry point module imports and its dependencies are installed",
                 _VALIDATE_NEXT_STEP,
@@ -1195,7 +1195,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
         # import-time failure of any shape must become guidance, not a traceback
         location = _raise_location(error)
         raise RunExecutionError(
-            f"the Step implementation could not be loaded: {type(error).__name__}: {error}",
+            f"the step type implementation could not be loaded: {type(error).__name__}: {error}",
             detail=(location,) if location is not None else (),
             next_steps=(
                 "fix the error above; the entry point module must import cleanly",
@@ -1229,7 +1229,7 @@ def _select_requested(
             raise RunUsageError(
                 f"target {requested!r} matches more than one runnable target",
                 detail=_target_lines(matches),
-                next_steps=("use the full Step identity to select one",),
+                next_steps=("use the full step type identity to select one",),
             )
     declarative = [
         target
@@ -1250,7 +1250,7 @@ def _select_requested(
             detail=("only custom-runner targets can be executed by this command",),
             next_steps=("run syntara-plugin inspect to review the target",),
         )
-    detail = _target_lines(runnable) or ("the workspace declares no custom-runner Step targets",)
+    detail = _target_lines(runnable) or ("the workspace declares no custom-runner step type targets",)
     raise RunUsageError(
         f"no runnable target matches {requested!r} in the compiled workspace",
         detail=detail,

@@ -42,7 +42,7 @@ _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
 _MAX_STATUS_CODE = 4_294_967_295
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
-INCOMPLETE_STEP_MESSAGE = "The plugin step did not complete."
+INCOMPLETE_STEP_MESSAGE = "The step did not complete."
 
 # A platform-owned runner can handle any installed step that the control
 # plane has already resolved to that runner. It is a health-advertisement
@@ -62,7 +62,7 @@ def _thaw_json_document(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class ContainerInvocation:
-    """The selected plugin step and the safe data supplied to it."""
+    """The selected step and the safe data supplied to it."""
 
     invocation_id: str
     workflow_run_id: str
@@ -82,7 +82,7 @@ class ContainerInvocation:
 
 @dataclass(frozen=True)
 class ContainerProgress:
-    """A non-terminal, user-safe update emitted by a plugin step."""
+    """A non-terminal, user-safe update emitted by a step."""
 
     invocation_id: str
     sequence: int
@@ -93,7 +93,7 @@ class ContainerProgress:
 
 @dataclass(frozen=True)
 class ContainerResult:
-    """The terminal SDK output envelope of one plugin step invocation.
+    """The terminal SDK output envelope of one step invocation.
 
     This is the transport mapping for a valid ``StandardOutputWrapper``:
     status, status message, optional business output, and optional error
@@ -376,7 +376,7 @@ class StepRegistry:
             return handler
         raise ContainerInvocationError(
             FailureCode.NOT_FOUND,
-            "The requested plugin step is not available in this container image.",
+            "The requested step is not available in this container image.",
             outcome="not_started",
         )
 
@@ -452,7 +452,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             if invocation_id in self._active:
                 raise ContainerInvocationError(
                     FailureCode.CONFLICT,
-                    "The plugin step is already running.",
+                    "The step is already running.",
                     outcome="not_started",
                 )
             self._active[invocation_id] = cancellation
@@ -471,13 +471,13 @@ def terminal_execution_event(
         if invocation.cancelled:
             raise ContainerInvocationError(
                 FailureCode.CANCELLED,
-                "The plugin step was cancelled.",
+                    "The step was cancelled.",
                 outcome="not_completed",
             )
         if not isinstance(result, ContainerResult):
             raise ContainerInvocationError(
                 FailureCode.ABI_VIOLATION,
-                "The plugin step returned an invalid response.",
+                    "The step returned an invalid response.",
                 outcome="unknown",
             )
         return _result_event(invocation.invocation_id, result)
@@ -638,7 +638,7 @@ def invocation_from_request(
     except ValueError as error:
         raise ContainerInvocationError(
             FailureCode.INVALID_INPUT,
-            "The plugin step identity is invalid.",
+            "The step identity is invalid.",
             outcome="not_started",
         ) from error
     if request.runtime_abi != CONTAINER_ABI:
@@ -650,7 +650,7 @@ def invocation_from_request(
     if not 1 <= request.timeout_seconds <= _MAX_TIMEOUT_SECONDS:
         raise ContainerInvocationError(
             FailureCode.INVALID_INPUT,
-            "The plugin step timeout is outside the supported range.",
+            "The step timeout is outside the supported range.",
             outcome="not_started",
         )
     inputs = _decode_json_object(request.inputs_json, "inputs")
@@ -813,7 +813,7 @@ def _result_event(invocation_id: str, result: ContainerResult) -> container_pb2.
     if invalid_output:
         raise ContainerInvocationError(
             FailureCode.ABI_VIOLATION,
-            "The plugin step returned an invalid response.",
+            "The step returned an invalid response.",
             outcome="unknown",
         )
     return container_pb2.ExecutionEvent(

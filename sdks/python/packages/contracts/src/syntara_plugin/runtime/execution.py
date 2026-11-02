@@ -1,4 +1,4 @@
-"""Transport-independent execution for trusted typed plugin steps."""
+"""Transport-independent execution for trusted typed steps."""
 
 from __future__ import annotations
 
@@ -29,9 +29,9 @@ from .outcome import (
 )
 from .validation import StepInputValidationError, validate_step_inputs
 
-_INVALID_STEP_RESPONSE = "The plugin step returned an invalid response."
-_UNEXPECTED_STEP_FAILURE = "The plugin step did not complete."
-_UNTRUSTED_BINDING = "The plugin step is not bound to a trusted installed descriptor."
+_INVALID_STEP_RESPONSE = "The step returned an invalid response."
+_UNEXPECTED_STEP_FAILURE = "The step did not complete."
+_UNTRUSTED_BINDING = "The step is not bound to a trusted installed descriptor."
 _SCHEMA_DIGEST_MISMATCH = (
     "The runtime context output schema digest does not match the declared schema."
 )
@@ -149,8 +149,8 @@ class StepFailure(Exception):
 class StepExecutor:
     """Execute a trusted typed step from raw JSON input.
 
-    Input validation is selected by the binding's concrete Step kind before the
-    typed hook runs. The executor itself does not own Step-type-specific contracts.
+    Input validation is selected by the binding's concrete step type kind before the
+    typed hook runs. The executor itself does not own step-type-specific contracts.
     """
 
     def __init__(self, binding: StepBinding) -> None:

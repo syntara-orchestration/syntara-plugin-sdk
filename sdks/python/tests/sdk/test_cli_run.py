@@ -618,7 +618,7 @@ def test_sensitive_array_items_are_masked_and_scrubbed(tmp_path: Path, capsys) -
 def test_prefix_items_secret_masks_the_echo_without_corrupting_the_invocation(
     tmp_path: Path, capsys
 ) -> None:
-    """A prefixItems-declared secret masks the echo; the Step gets the real value."""
+    """A prefixItems-declared secret masks the echo; the step type gets the real value."""
 
     workspace = _write_custom_workspace(
         tmp_path / "ws",
@@ -867,7 +867,7 @@ def test_output_mapping_keys_are_scrubbed(tmp_path: Path, capsys) -> None:
 
 
 def test_valid_input_executes_and_reports_the_result(tmp_path: Path, capsys) -> None:
-    """Valid input reaches the Step over gRPC and prints the output."""
+    """Valid input reaches the step type over gRPC and prints the output."""
 
     workspace = _write_echo_workspace(tmp_path / "ws")
 
@@ -990,7 +990,7 @@ def test_workspace_without_runnable_targets_is_rejected(tmp_path: Path, capsys) 
     status = main(["run", "--manifest", str(workspace / "plugin.yaml")])
 
     assert status == 2
-    assert "no custom-runner Step target" in capsys.readouterr().err
+    assert "no custom-runner step type target" in capsys.readouterr().err
 
 
 def test_missing_manifest_guidance(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -1438,7 +1438,7 @@ def test_unexpected_exception_attaches_the_local_traceback(
     assert status == 1
     captured = capsys.readouterr()
     assert _report_field(captured.out, "Error") == "OUTCOME_UNKNOWN (retryable: false)"
-    assert _report_field(captured.out, "Message") == "The plugin step did not complete."
+    assert _report_field(captured.out, "Message") == "The step did not complete."
     detail = captured.out.split("Error detail:\n", 1)[1]
     assert "Traceback (most recent call last):" in detail
     assert "RuntimeError: unexpected kaboom with" in detail
@@ -2159,7 +2159,7 @@ def test_root_level_declared_secret_masks_the_whole_input(
 
     The natural way to declare the whole input secret must not crash the run
     (an earlier marker-path bug raised IndexError on the empty path) and must
-    mask every top-level value in the echo while the Step still receives the
+    mask every top-level value in the echo while the step type still receives the
     real values.
     """
 
@@ -2187,7 +2187,7 @@ def test_root_level_declared_secret_masks_the_whole_input(
     assert status == 0
     captured = capsys.readouterr()
     assert _report_field(captured.out, "Input") == '{"title": "***"}'
-    # The Step received the real value (the slug is derived from it); only the
+    # The step type received the real value (the slug is derived from it); only the
     # exact secret value itself would be scrubbed from the output.
     assert json.loads(captured.out.split("Output:\n", 1)[1]) == {"slug": "secret-ish"}
 
@@ -2629,7 +2629,7 @@ def test_lone_surrogate_input_is_rejected(tmp_path: Path, capsys) -> None:
 def test_step_stdout_does_not_pollute_the_json_contract(
     tmp_path: Path, capsys
 ) -> None:
-    """A Step calling print() keeps stdout parseable under --json."""
+    """A step type calling print() keeps stdout parseable under --json."""
 
     printing_source = _STEP_SOURCE.replace(
         "        return EchoOutput(slug=inputs.title.lower().replace(\" \", \"-\"))",
@@ -2847,7 +2847,7 @@ def test_short_declared_secrets_scrub_case_insensitively(tmp_path: Path, capsys)
 
 
 def test_step_stdout_is_scrubbed_of_supplied_secrets(tmp_path: Path, capsys) -> None:
-    """A Step printing its own secret to stdout cannot leak it to the terminal."""
+    """A step type printing its own secret to stdout cannot leak it to the terminal."""
 
     printing_source = _SHORT_SECRET_SOURCE.replace(
         'return KeyOutput(echo=f"processed key {inputs.api_key}")',

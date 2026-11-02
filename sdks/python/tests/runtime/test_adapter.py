@@ -197,7 +197,7 @@ def _installed_step(
             "metadata": {
                 "name": "echo",
                 "displayName": "Echo",
-                "description": "An echo Step type.",
+                "description": "An echo step type.",
             },
             "spec": specification,
         },

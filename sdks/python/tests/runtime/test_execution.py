@@ -913,7 +913,7 @@ def test_control_and_trigger_output_validation_is_shared_by_direct_and_container
     direct_bindings = StepBindings()
     _bind_installed(direct_bindings, identity, direct_step)
 
-    with pytest.raises(StepExecutionError, match="plugin step") as direct_error:
+    with pytest.raises(StepExecutionError, match="step") as direct_error:
         StepExecutor(direct_bindings.binding(identity)).execute({"message": "hello"}, _context())
 
     container_step = step_factory()

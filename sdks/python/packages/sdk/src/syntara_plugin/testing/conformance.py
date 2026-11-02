@@ -1,4 +1,4 @@
-"""Composable conformance checks for bound plugin steps."""
+"""Composable conformance checks for bound steps."""
 
 from __future__ import annotations
 

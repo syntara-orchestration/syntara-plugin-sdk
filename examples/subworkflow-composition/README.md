@@ -3,7 +3,7 @@
 This workspace is the local confirmation evidence for subworkflow composition
 step types (AAP-95476 / ANSTRAT-2347). It shows that both sides of a
 parent-child workflow call are expressible with the existing `v1alpha1`
-contracts, with no new Step category and no schema change.
+contracts, with no new step type category and no schema change.
 
 | Target | Kind | Role |
 | --- | --- | --- |

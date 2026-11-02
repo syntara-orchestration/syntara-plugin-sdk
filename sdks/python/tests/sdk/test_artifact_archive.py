@@ -167,7 +167,7 @@ def test_archive_reader_rejects_a_descriptor_schema_digest_that_does_not_bind_it
 
 
 def test_archive_reader_rejects_duplicate_compiled_target_identities(tmp_path: Path) -> None:
-    """An OCI-consistent descriptor cannot reuse an identity across Step types."""
+    """An OCI-consistent descriptor cannot reuse an identity across step types."""
 
     artifact = _artifact(tmp_path)
     def duplicate_target(document: dict[str, Any]) -> None:

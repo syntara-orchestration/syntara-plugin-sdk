@@ -129,7 +129,7 @@ def installed_binding(
 
 
 def _installable_manifest(target: Mapping[str, Any]) -> dict[str, Any]:
-    """Rebuild the raw Step manifest shape from one compiled target.
+    """Rebuild the raw step type manifest shape from one compiled target.
 
     The compiler normalizes targets into a canonical form (top-level identity
     and resolved schemas); ``InstalledStepManifest.from_manifest`` consumes
@@ -170,7 +170,7 @@ class StepBindingsFactory:
     schemas (or explicitly supplied ones) and verifies it with
     ``check_step_contract``; every bound step is executable through
     :func:`~syntara_plugin.testing.invoke_step`. ``bind_step`` compiles a
-    plugin workspace, installs the compiled Step manifest through the same
+    plugin workspace, installs the compiled step type manifest through the same
     trusted factory, and verifies the target with ``check_target_binding``.
     """
 
@@ -221,7 +221,7 @@ class StepBindingsFactory:
 
         Args:
             step: A step class or instance, or a ``module:Class`` entry point.
-            identity: Step identity; derived from the class when omitted.
+            identity: step type identity; derived from the class when omitted.
             input_schema: Optional declared input schema to install and verify
                 against (defaults to the implementation's own model schema).
             output_schema: Optional declared output schema to install and
@@ -252,11 +252,11 @@ class StepBindingsFactory:
         workspace: Path | str,
         identity: str | None = None,
     ) -> StepBinding:
-        """Compile a workspace, install its Step manifest, and bind the implementation.
+        """Compile a workspace, install its step type manifest, and bind the implementation.
 
         The workspace is compiled through the same canonical compiler the CLI
         ``validate`` command uses (with ``require_image_bindings=False`` since
-        local tests build no images). The matching custom-runner Step
+        local tests build no images). The matching custom-runner step type
         target is located by entry point (or explicitly by ``identity``), its
         compiled manifest is installed through
         ``InstalledStepManifest.from_manifest``, and only that target is
@@ -359,7 +359,7 @@ class StepBindingsFactory:
         if runtime_kind != "custom-runner":
             message = (
                 f"target {target.get('identity')!r} uses the {runtime_kind!r} runtime; "
-                "only custom-runner Step targets bind Python implementations "
+                "only custom-runner step type targets bind Python implementations "
                 "(platform-runner targets are declarative manifests)"
             )
             raise HarnessUsageError(message)
@@ -374,7 +374,7 @@ def _step_kind(step_class: type[BaseStep[Any, Any]]) -> StepKind:
         return StepKind.CONTROL
     if issubclass(step_class, TriggerStep):
         return StepKind.TRIGGER
-    message = f"{step_class.__qualname__} does not belong to a supported Step kind"
+    message = f"{step_class.__qualname__} does not belong to a supported step type kind"
     raise HarnessUsageError(message)
 
 

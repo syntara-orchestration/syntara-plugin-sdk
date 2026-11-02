@@ -1778,8 +1778,8 @@ def _target_kind_issues(
                 "binding",
                 "",
                 f"target kind {target_kind} does not match the bound"
-                f" {binding.descriptor.kind.value} Step type",
-                "bind an implementation of the concrete Step type the target declares.",
+                f" {binding.descriptor.kind.value} step type",
+                "bind an implementation of the concrete step type the target declares.",
             )
         )
     return issues

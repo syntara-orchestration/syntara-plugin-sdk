@@ -1,4 +1,4 @@
-"""Local pytest harness and fixtures for Syntara plugin step authors.
+"""Local pytest harness and fixtures for Syntara step authors.
 
 The function core is importable without pytest; the ``pytest11`` entry point
 additionally distributes four fixtures (``manifest_validator``,

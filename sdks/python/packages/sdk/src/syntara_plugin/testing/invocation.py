@@ -241,12 +241,12 @@ class BoundedStepHandler:
             # failure event is sent promptly.
             raise ContainerInvocationError(
                 FailureCode.OUTCOME_UNKNOWN,
-                "The plugin step did not complete.",
+                "The step did not complete.",
                 outcome="unknown",
             ) from error
         raise ContainerInvocationError(
             FailureCode.TIMEOUT,
-            "The plugin step did not complete within the invocation timeout.",
+                "The step did not complete within the invocation timeout.",
             outcome="unknown",
         )
 
@@ -268,7 +268,7 @@ def invoke_step(
 
     Args:
         target: A ``StepBinding``, a step class or instance, or a ``module:Class``
-            entry point. Custom-runner Step types must arrive as bindings
+            entry point. Custom-runner step types must arrive as bindings
             produced by ``StepBindingsFactory.bind_step``.
         inputs: Raw input mapping; must be a JSON object encodable within the
             container ABI's 1 MiB limit. Both paths deliver the JSON-normalized

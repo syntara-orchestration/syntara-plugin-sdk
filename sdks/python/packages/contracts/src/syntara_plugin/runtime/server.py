@@ -122,7 +122,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         if invocation_id in self._active:
             raise ContainerInvocationError(
                 FailureCode.CONFLICT,
-                "The plugin step is already running.",
+                "The step is already running.",
                 outcome="not_started",
             )
         self._active[invocation_id] = cancellation
@@ -146,7 +146,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             invocation.cancellation.set()
             raise ContainerInvocationError(
                 FailureCode.TIMEOUT,
-                "The plugin step exceeded its execution timeout.",
+                "The step exceeded its execution timeout.",
                 retryable=True,
                 outcome="not_completed",
             ) from None

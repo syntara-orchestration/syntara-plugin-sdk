@@ -97,8 +97,8 @@ adapters use the same envelope and put their own bootstrap fields under
 of the language-neutral runtime config envelope. The adapter imports
 `acme_plugin.runtime` and calls its `create_bindings` function. That function
 takes no arguments and returns a non-empty `StepBindings` object. Every bound
-Step must use a descriptor created from its installed custom-runner manifest
-(see [Typed Python steps](#typed-python-steps)); the server rejects
+step type must use a descriptor created from its installed custom-runner manifest
+(see [Typed Python step types](#typed-python-steps)); the server rejects
 implementation-derived descriptors when it starts:
 
 ```python
@@ -148,7 +148,7 @@ not occur in the image manifest. The compiled descriptor retains the authored
 implementation reference; the AO Plugin Registry resolves it, and this startup
 path consumes the supplied installed-binding identity, entry point, ABI, and
 schema digests. The SDK rejects startup when those digests differ from the
-selected installed binding, preventing a referencing Step from validating
+selected installed binding, preventing a referencing step type from validating
 against a different contract than its implementation.
 Each entry point must import a typed `BaseStep` class matching that exact
 executable installed binding from the factory. Missing, malformed, duplicate, or
@@ -209,9 +209,9 @@ artifacts published for deployment. They must record their immutable
 Konflux ownership and signing apply to those final images; the SDK repository
 does not create a long-lived shared runtime image.
 
-## Typed Python steps
+## Typed Python step types
 
-Custom-runner authors implement steps with the typed Python API in
+Custom-runner authors implement step types with the typed Python API in
 [`syntara_plugin.runtime`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/).
 `BaseStep[TInput, TOutput]` is bound to Pydantic v2 models. Its typed
 implementation operation is `execute(inputs, context) -> TOutput`: it receives
@@ -232,8 +232,8 @@ reports `ContainerFailure` for errors that leave no valid wrapper. In the
 current class implementation, `BaseStep.execute()` delegates to the
 author-defined `run()` hook, so examples below implement `run()`.
 
-The three executable Step classes share the same lifecycle. A catalog
-**Step type** (for example, Create GitHub Issue) belongs to one **Category**;
+The three executable step type classes share the same lifecycle. A catalog
+**step type** (for example, Create GitHub Issue) belongs to one **Category**;
 runner ownership is selected independently, and execution consumes the final
 contract: **Step type -> Category -> Runner -> Execution**.
 
@@ -397,7 +397,7 @@ cryptographic provenance, but it records opaque provenance for the exact
 factory-created manifest and descriptor objects. `StepBindings` accepts
 implementation-derived descriptors for authoring validation, while
 `runtime.invoke` and container dispatch reject them for execution. All three
-supported custom-runner Step kinds execute only through the factory-created
+supported custom-runner step type kinds execute only through the factory-created
 identity and canonical installed-schema binding.
 
 The runtime owns the `StandardOutputWrapper` and `ErrorResult` result types.
@@ -413,7 +413,7 @@ Control and Trigger execution uses the installed `spec.input` contract. The
 registered Pydantic model still supplies the typed object, defaults, and model
 configuration; in particular, a Trigger's executor input is its registered
 input contract rather than driver configuration. Every supported custom-runner
-Step type passes through the same invocation boundary, which validates against
+step type passes through the same invocation boundary, which validates against
 the installed schema, constructs the registered Pydantic model, and invokes
 the typed implementation only after validation completes successfully.
 
@@ -516,7 +516,7 @@ implementation:
 The registration manifest is canonical JSON with
 `apiVersion: syntara.registration/v1alpha1`, `kind: RegistrationManifest`,
 the plugin revision ID, SDK version, workload ID, and a `steps` object keyed by
-step revision ID. Each entry records its installed Step identity, `entryPoint`,
+step type revision ID. Each entry records its installed step type identity, `entryPoint`,
 ABI, and declared schema digests. The SDK validates this mapping against the
 `registration-manifest` contract and the compiled descriptor before adding the
 image layer.
