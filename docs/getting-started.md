@@ -76,10 +76,9 @@ using them. The manifest remains the authoritative input validator.
 
 Before building an image, prepare `wheels/` with the plugin and its runtime
 dependencies, for example with `python -m pip wheel --wheel-dir wheels .`, and
-configure a workload registry. The generated `runtime.py` binds the one Action
-from packaged JSON-formatted YAML manifests as a temporary compatibility adapter.
-A public packaged-manifest binding helper is pending; update the adapter if
-you add targets or change manifest paths.
+configure a workload registry. The generated `runtime.py` loads custom-runner
+bindings through the packaged-manifest binding helper. Update the generated
+manifests and schemas together when adding targets or changing their paths.
 
 ## Validate, inspect, and build
 
