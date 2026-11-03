@@ -30,8 +30,41 @@ def _format_value(value: Any) -> str:
     if isinstance(value, str):
         return f"'{value}'"
     if isinstance(value, Mapping):
-        return f"{{{', '.join(sorted(value, key=repr))}}}" if value else "{}"
+        return _canonical(value)
     return str(value)
+
+
+def _canonical(value: Any) -> str:
+    """Render a value so equal JSON content renders identically.
+
+    Mapping keys are sorted by ``repr`` (PyYAML may produce non-string
+    keys), list order is preserved (it is meaningful inside members of
+    set-valued keywords), and booleans render distinctly from numbers.
+    """
+
+    if isinstance(value, Mapping):
+        items = sorted(value.items(), key=lambda item: repr(item[0]))
+        return (
+            "{"
+            + ", ".join(f"{_canonical(key)}: {_canonical(item)}" for key, item in items)
+            + "}"
+        )
+    if isinstance(value, list):
+        return "[" + ", ".join(_canonical(item) for item in value) + "]"
+    return _format_value(value)
+
+
+def _values_differ(source: Any, target: Any) -> bool:
+    """Compare two scalar values so booleans never equal numbers.
+
+    ``True == 1`` in Python, yet ``const: true`` and ``const: 1`` accept
+    different values, so a bool/non-bool mismatch counts as divergence
+    even when ``==`` says otherwise.
+    """
+
+    if isinstance(source, bool) != isinstance(target, bool):
+        return True
+    return source != target
 
 
 _SET_VALUED_KEYWORDS = frozenset({"required", "enum", "type"})
@@ -44,8 +77,8 @@ def _multiset_issues(
 
     issues: list[str] = []
     location = _format_location(path)
-    source_counts = Counter(_format_value(item) for item in source)
-    target_counts = Counter(_format_value(item) for item in target)
+    source_counts = Counter(_canonical(item) for item in source)
+    target_counts = Counter(_canonical(item) for item in target)
     for member in sorted(source_counts - target_counts):
         issues.append(
             f"{location}: {member} in the source schema "
@@ -65,8 +98,6 @@ def _agreement_issues(
     if isinstance(source, Mapping) and isinstance(target, Mapping):
         issues: list[str] = []
         for key in sorted(set(source) | set(target), key=repr):
-            if key == "description":
-                continue
             location = _format_location((*path, key))
             if key not in source:
                 issues.append(f"{location}: missing from the source schema")
@@ -78,9 +109,7 @@ def _agreement_issues(
                 )
         return tuple(issues)
     if isinstance(source, list) and isinstance(target, list):
-        if path and path[-1] in _SET_VALUED_KEYWORDS and all(
-            not isinstance(item, (Mapping, list)) for item in (*source, *target)
-        ):
+        if path and path[-1] in _SET_VALUED_KEYWORDS:
             return _multiset_issues(source, target, path)
         if len(source) != len(target):
             return (
@@ -95,7 +124,7 @@ def _agreement_issues(
                 _agreement_issues(source_item, target_item, (*path, f"[{index}]"))
             )
         return tuple(issues)
-    if source != target:
+    if _values_differ(source, target):
         return (
             f"{_format_location(path)}: {_format_value(source)} in the source "
             f"schema vs {_format_value(target)} in the target schema",
@@ -106,12 +135,14 @@ def _agreement_issues(
 def schema_agreement_issues(source: Any, target: Any) -> tuple[str, ...]:
     """Report every field-level divergence between two schemas that must agree.
 
-    ``description`` keys are ignored (they differ by perspective); everything
+    ``description`` annotations are ignored (they differ by perspective); a
+    property *named* ``description`` is compared like any other. Everything
     else — types, formats, nested schemas, defaults, enums, ``required`` —
-    must match. Set-valued keywords (``required``, ``enum``, list-form
-    ``type``) compare members without regard to order. Each issue names the
-    location and the diverging values, so a failure reads as a repair list
-    rather than a bare inequality.
+    must match, with booleans distinguished from numbers. Set-valued
+    keywords (``required``, ``enum``, list-form ``type``) compare members
+    without regard to order. Each issue names the location and the diverging
+    values, so a failure reads as a repair list rather than a bare
+    inequality.
     """
 
     return _agreement_issues(

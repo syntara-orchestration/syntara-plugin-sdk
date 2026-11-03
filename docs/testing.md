@@ -155,16 +155,21 @@ chain needs control flow, implement it as a `ControlStep.run()` and test the
 step.
 
 `schema_without_descriptions(schema)` returns a copy of a JSON Schema with
-every `description` key dropped, so two schemas that must agree — a parent
-Control's declared input and a child Trigger's event payload, for example —
-can be compared for their full shape (types, formats, nested schemas,
-defaults, enums, `required`) rather than just property names. Descriptions
-differ by perspective, so they are the one part excluded.
+every `description` *annotation* dropped, so two schemas that must agree — a
+parent Control's declared input and a child Trigger's event payload, for
+example — can be compared for their full shape (types, formats, nested
+schemas, defaults, enums, `required`) rather than just property names.
+Descriptions differ by perspective, so the annotation is the one part
+excluded; a property *named* `description` is kept and compared like any
+other.
 
 `assert_schemas_agree(source, target, source_label=..., target_label=...)`
 turns that comparison into an opt-in authoring check: it raises
 `SchemaAgreementError` naming every diverging field — location plus both
-values — instead of a bare inequality. Use it for the composition seams the
+values — instead of a bare inequality. Booleans are distinguished from
+numbers (`const: true` and `const: 1` disagree), and the unordered keywords
+`required`, `enum`, and list-form `type` compare members without regard to
+order, including object and array members of `enum`. Use it for the composition seams the
 contracts do not enforce, such as a parent Control's declared input against a
 child Trigger's event payload, or a child workflow's terminal result against
 the parent's declared output. `schema_agreement_issues(source, target)`

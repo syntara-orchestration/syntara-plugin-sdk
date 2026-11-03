@@ -149,6 +149,124 @@ def test_assert_raises_with_labels_and_every_issue() -> None:
     )
 
 
+def test_property_named_description_is_compared() -> None:
+    """Only the annotation is dropped, not a property with that name."""
+
+    source = {
+        "type": "object",
+        "properties": {"description": {"type": "string"}},
+    }
+    target = {
+        "type": "object",
+        "properties": {"description": {"type": "integer"}},
+    }
+    issues = schema_agreement_issues(source, target)
+    assert issues == (
+        ".properties.description.type: 'string' in the source schema "
+        "vs 'integer' in the target schema",
+    )
+
+
+def test_description_annotation_under_a_property_named_description_is_ignored() -> None:
+    source = {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "caller perspective"},
+        },
+    }
+    target = {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "callee perspective"},
+        },
+    }
+    assert_schemas_agree(source, target)
+
+
+def test_boolean_and_numeric_values_do_not_compare_equal() -> None:
+    """``True == 1`` in Python, but ``const: true`` and ``const: 1`` differ."""
+
+    source = {"properties": {"flag": {"const": True}}}
+    target = {"properties": {"flag": {"const": 1}}}
+    issues = schema_agreement_issues(source, target)
+    assert issues == (
+        ".properties.flag.const: True in the source schema "
+        "vs 1 in the target schema",
+    )
+
+
+def test_boolean_enum_members_do_not_match_numeric_members() -> None:
+    source = {"properties": {"flag": {"enum": [True]}}}
+    target = {"properties": {"flag": {"enum": [1]}}}
+    issues = schema_agreement_issues(source, target)
+    assert issues == (
+        ".properties.flag.enum: True in the source schema "
+        "but not the target schema",
+        ".properties.flag.enum: 1 in the target schema "
+        "but not the source schema",
+    )
+
+
+def test_reordered_object_enum_members_agree() -> None:
+    """``enum`` is unordered in Draft 2020-12, even for object members."""
+
+    source = {
+        "properties": {
+            "state": {
+                "enum": [
+                    {"releaseId": "r-1", "status": "draft"},
+                    {"releaseId": "r-2", "status": "published"},
+                ]
+            }
+        }
+    }
+    target = {
+        "properties": {
+            "state": {
+                "enum": [
+                    {"status": "published", "releaseId": "r-2"},
+                    {"status": "draft", "releaseId": "r-1"},
+                ]
+            }
+        }
+    }
+    assert schema_agreement_issues(source, target) == ()
+
+
+def test_object_enum_drift_reports_the_diverging_member() -> None:
+    source = {
+        "properties": {
+            "state": {"enum": [{"releaseId": "r-1", "status": "draft"}]}
+        }
+    }
+    target = {
+        "properties": {
+            "state": {"enum": [{"releaseId": "r-1", "status": "archived"}]}
+        }
+    }
+    issues = schema_agreement_issues(source, target)
+    assert issues == (
+        ".properties.state.enum: {'releaseId': 'r-1', 'status': 'draft'} "
+        "in the source schema but not the target schema",
+        ".properties.state.enum: {'releaseId': 'r-1', 'status': 'archived'} "
+        "in the target schema but not the source schema",
+    )
+
+
+def test_array_enum_member_order_is_meaningful_inside_the_member() -> None:
+    """Member order is ignored, but array order inside a member is not."""
+
+    source = {"properties": {"tags": {"enum": [["a", "b"]]}}}
+    target = {"properties": {"tags": {"enum": [["b", "a"]]}}}
+    issues = schema_agreement_issues(source, target)
+    assert issues == (
+        ".properties.tags.enum: ['a', 'b'] in the source schema "
+        "but not the target schema",
+        ".properties.tags.enum: ['b', 'a'] in the target schema "
+        "but not the source schema",
+    )
+
+
 def test_mismatched_shapes_report_the_location() -> None:
     issues = schema_agreement_issues(
         {"type": "object"}, {"type": "array", "items": {"type": "string"}}
