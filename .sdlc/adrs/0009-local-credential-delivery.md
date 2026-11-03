@@ -20,10 +20,9 @@ path the same way:
 - source mode serves an in-process gRPC runtime over a unix socket, and the
   "container" is this process, whose filesystem is the host's.
 
-A second constraint is sequencing. The step-side credential accessor
-(AAP-95450) is not implemented: `ExecutionContext` has no credential field
-and the adapter drops `credential_file_paths`. This story therefore delivers
-the credential without anything in the SDK reading it back.
+A second constraint is the separation between the ABI path and the step-side
+accessor: the adapter uses an approved provider and the installed Action graph
+to grant an invocation-scoped credential handle.
 
 ## Decision
 
@@ -81,8 +80,7 @@ the credential without anything in the SDK reading it back.
   Step code that hard-codes `/var/run/syntara/secrets/...` instead of using
   the path it is given will behave differently in the two modes; the typed
   accessor in AAP-95450 is what removes that sharp edge.
-- Until that accessor lands, the file arrives but nothing in the SDK hands
-  its path to step code, so the local credential path is verifiable but not
-  yet usable from a Step.
+- Steps read the credential through the invocation-scoped accessor without
+  depending on the host path used by either mode.
 - Credentials are delivered only for a container this command starts, so
   `--address` users keep supplying their runtime's credentials themselves.

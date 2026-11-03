@@ -11,7 +11,6 @@ environment-derived credentials, or plaintext secret material.
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -24,6 +23,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
 from .abi import CONTAINER_ABI, FailureCode
+from .credentials import approved_credential_path
 from .execution import StepExecutionError
 from .outcome import (
     MAX_MESSAGE_LENGTH,
@@ -38,8 +38,6 @@ from .protocol import container_pb2, container_pb2_grpc
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
-_CREDENTIAL_PATH = re.compile(r"^/var/run/syntara/secrets/[A-Za-z0-9._-]+$")
-_CREDENTIAL_FILE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 _PROVIDER_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
@@ -75,6 +73,7 @@ class ContainerInvocation:
     timeout_seconds: int
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
+    _credential_directory: Path | None = field(default=None, init=False, compare=False, repr=False)
 
     @property
     def cancelled(self) -> bool:
@@ -686,19 +685,18 @@ def invocation_from_request(
         request.credential_file_paths_json, local_credential_directory
     )
     cancellation = Event()
-    return (
-        ContainerInvocation(
-            invocation_id=request.invocation_id,
-            workflow_run_id=request.workflow_run_id,
-            step_revision_id=request.step_revision_id,
-            inputs=inputs,
-            credential_file_paths=credential_file_paths,
-            timeout_seconds=request.timeout_seconds,
-            runtime_context=runtime_context,
-            cancellation=cancellation,
-        ),
-        cancellation,
+    invocation = ContainerInvocation(
+        invocation_id=request.invocation_id,
+        workflow_run_id=request.workflow_run_id,
+        step_revision_id=request.step_revision_id,
+        inputs=inputs,
+        credential_file_paths=credential_file_paths,
+        timeout_seconds=request.timeout_seconds,
+        runtime_context=runtime_context,
+        cancellation=cancellation,
     )
+    object.__setattr__(invocation, "_credential_directory", local_credential_directory)
+    return invocation, cancellation
 
 
 def _request_from_invocation(
@@ -796,16 +794,7 @@ def _is_approved_credential_path(path: Any, local_directory: Path | None) -> boo
     ``..`` segment nor a symlink can name a file outside it.
     """
 
-    if not isinstance(path, str):
-        return False
-    if _CREDENTIAL_PATH.fullmatch(path):
-        return True
-    if local_directory is None:
-        return False
-    candidate = Path(os.path.realpath(path))
-    if not _CREDENTIAL_FILE_NAME.fullmatch(candidate.name):
-        return False
-    return candidate.parent == Path(os.path.realpath(local_directory))
+    return approved_credential_path(path, local_directory)
 
 
 def _decode_credential_file_paths(

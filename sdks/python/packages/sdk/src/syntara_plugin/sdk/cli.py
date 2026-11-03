@@ -1175,8 +1175,8 @@ def _run_command(arguments: argparse.Namespace) -> int:
             warnings = (
                 *warnings,
                 "warning: source mode delivers credential files at a temporary path, "
-                "not /var/run/syntara/secrets as in production; a Step must read "
-                "invocation.credential_file_paths rather than the mount path",
+                "not /var/run/syntara/secrets as in production; a Step must use "
+                "context.credential(name).read() rather than a mount path",
             )
         _print_run_warnings(warnings)
         progress = _progress_printer(arguments)

@@ -521,3 +521,30 @@ def test_declared_view_excludes_bindings_from_other_workspaces(tmp_path: Path) -
     factory.bind_step(GreetActionStep, workspace=_matching_workspace(tmp_path))
     task_identity = f"{__name__}.{NormalizeStep.__qualname__}"
     assert set(factory.step_identities) == {task_identity, IDENTITY}
+
+
+def test_compiled_workspace_retains_credential_declarations(tmp_path: Path) -> None:
+    manifest = _action_manifest(GreetInput.model_json_schema(), GreetOutput.model_json_schema())
+    manifest["spec"]["integrationType"] = "testing.demo.connection"
+    workspace = _workspace(tmp_path, manifest)
+    metadata = {"name": "connection", "displayName": "Connection", "description": "Example."}
+    integration = {
+        "apiVersion": "syntara.io/v1alpha1", "kind": "IntegrationType", "metadata": metadata,
+        "spec": {"id": "testing.demo.connection", "endpointKinds": ["https"],
+                 "credentialTypes": ["testing.demo.token"],
+                 "configuration": {"kind": "inline", "value": {"type": "object"}}},
+    }
+    recipe = {
+        "apiVersion": "syntara.io/v1alpha1", "kind": "CredentialRecipe", "metadata": {**metadata, "name": "token"},
+        "spec": {"id": "testing.demo.token", "integrationType": "testing.demo.connection",
+                 "credentialSchema": {"kind": "inline", "value": {"type": "object"}},
+                 "secretFields": ["token"], "issuance": {"kind": "static-bearer.v1"}},
+    }
+    (workspace / "integration.yaml").write_text(yaml.safe_dump(integration), encoding="utf-8")
+    (workspace / "credential.yaml").write_text(yaml.safe_dump(recipe), encoding="utf-8")
+    plugin_path = workspace / "plugin.yaml"
+    plugin = yaml.safe_load(plugin_path.read_text(encoding="utf-8"))
+    plugin["spec"]["targets"].extend(["integration.yaml", "credential.yaml"])
+    plugin_path.write_text(yaml.safe_dump(plugin), encoding="utf-8")
+    binding = StepBindingsFactory().bind_step(GreetActionStep, workspace=workspace)
+    assert binding.descriptor.credential_names == ("testing.demo.token",)

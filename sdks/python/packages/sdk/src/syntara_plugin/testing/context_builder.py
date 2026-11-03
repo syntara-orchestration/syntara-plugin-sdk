@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from syntara_plugin.runtime import ExecutionContext
+from syntara_plugin.runtime import ExecutionContext, FileCredentialProvider
 
 from .errors import HarnessUsageError
 
@@ -43,6 +44,8 @@ def build_execution_context(
     workflow_run_id: str | None = None,
     runtime_context: Mapping[str, Any] | None = None,
     cancelled: bool = False,
+    credential_file_paths: Mapping[str, str] | None = None,
+    credential_directory: Path | None = None,
 ) -> ExecutionContext:
     """Build one valid, locally approved ``ExecutionContext`` for test execution.
 
@@ -79,6 +82,10 @@ def build_execution_context(
         ),
         workflow_run_id=workflow_run_id,
         runtime_context=dict(runtime_context or {}),
+        credential_provider=(
+            FileCredentialProvider(credential_file_paths, local_directory=credential_directory)
+            if credential_file_paths is not None else None
+        ),
     )
     if cancelled:
         context.cancellation.set()
@@ -116,4 +123,5 @@ def normalize_run_id(context: ExecutionContext) -> ExecutionContext:
         workflow_run_id=f"{context.invocation_id}{_DERIVED_SUFFIX}",
         runtime_context=context.runtime_context,
         cancellation=context.cancellation,
+        credential_provider=context._provider,
     )

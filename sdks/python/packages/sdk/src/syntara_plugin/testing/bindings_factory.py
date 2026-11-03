@@ -145,7 +145,7 @@ def _installable_manifest(target: Mapping[str, Any]) -> dict[str, Any]:
         "output": {"kind": "inline", "value": _plain(target["output"])},
     }
     kind = str(target["kind"])
-    for field_name in ("invocation", "driver"):
+    for field_name in ("invocation", "driver", "integrationType"):
         if field_name in target:
             specification[field_name] = _plain(target[field_name])
     if "configuration" in target:
@@ -292,8 +292,26 @@ class StepBindingsFactory:
             expected_kind=expected_kind,
         )
         resolved_identity = identity or str(target["identity"])
+        connection_targets = []
+        for connection in result.descriptor["spec"]["targets"]:
+            kind = connection.get("kind")
+            if kind not in {"IntegrationType", "CredentialRecipe"}:
+                continue
+            fields = (
+                ("id", "endpointKinds", "credentialTypes", "configuration")
+                if kind == "IntegrationType" else
+                ("id", "integrationType", "credentialSchema", "secretFields", "issuance")
+            )
+            spec = {name: _plain(connection[name]) for name in fields}
+            for name in ("configuration", "credentialSchema"):
+                if name in spec:
+                    spec[name] = {"kind": "inline", "value": spec[name]}
+            connection_targets.append({
+                "apiVersion": "syntara.io/v1alpha1", "kind": kind,
+                "metadata": _plain(connection["metadata"]), "spec": spec,
+            })
         installed = InstalledStepManifest.from_manifest(
-            resolved_identity, _installable_manifest(target), {}
+            resolved_identity, _installable_manifest(target), {}, credential_targets=connection_targets
         )
         descriptor = StepDescriptor.for_installed_step(step_instance, installed)
         candidate = StepBinding(descriptor, step_instance)

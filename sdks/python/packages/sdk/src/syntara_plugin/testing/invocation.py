@@ -17,6 +17,7 @@ from syntara_plugin.runtime import (
     ErrorResult,
     ExecutionContext,
     FailureCode,
+    FileCredentialProvider,
     StandardOutputWrapper,
     StepBinding,
     StepBindingError,
@@ -104,6 +105,7 @@ def _prepare_invocation(
         workflow_run_id=context.workflow_run_id,
         runtime_context=normalized_runtime,
         cancellation=context.cancellation,
+        credential_provider=context._provider,
     )
     return normalized_inputs, prepared
 
@@ -353,17 +355,23 @@ def invoke_step_in_container(
         context = build_execution_context()
     context = normalize_run_id(context)
     inputs, context = _prepare_invocation(inputs, context)
+    paths: dict[str, str] = {}
+    local_directory = None
+    if context._provider is not None:
+        if not isinstance(context._provider, FileCredentialProvider):
+            raise HarnessUsageError("container tests require an approved file credential provider")
+        paths, local_directory = context._provider._container_arguments()
     bounded_handler = BoundedStepHandler(
         container_step_for_binding(binding), timeout_seconds
     )
     registry = StepRegistry({binding.descriptor.step_identity: bounded_handler})
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, registry)
+    add_container_runtime_service(server, registry, local_directory)
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     try:
-        client = ContainerClient(channel)
+        client = ContainerClient(channel, local_directory)
         # normalize_run_id guarantees a run id; narrow the optional type for
         # the container request, which requires a str.
         workflow_run_id = context.workflow_run_id
@@ -373,7 +381,7 @@ def invoke_step_in_container(
             workflow_run_id=workflow_run_id,
             step_revision_id=binding.descriptor.step_identity,
             inputs=inputs,
-            credential_file_paths={},
+            credential_file_paths=paths,
             timeout_seconds=timeout_seconds,
             runtime_context=context.runtime_context,
         )

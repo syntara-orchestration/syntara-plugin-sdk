@@ -120,12 +120,16 @@ def _bind_declared_targets(
     plugin_name = metadata["name"]
     bindings = StepBindings()
     declared: dict[str, str] = {}
+    documents: list[tuple[str, Mapping[str, Any], tuple[str, Mapping[str, Any]] | None]] = []
     for raw_path in specification["targets"]:
         target_path = _contained_relative_path(raw_path, "plugin.spec.targets entry")
         document = _parse_document(
             _read_resource(root, target_path, "target manifest"), target_path
         )
         target = _custom_runner_target(document, target_path)
+        documents.append((target_path, document, target))
+    credential_targets = [document for _, document, _ in documents if document.get("kind") in {"IntegrationType", "CredentialRecipe"}]
+    for target_path, document, target in documents:
         if target is None:
             continue
         target_name, runtime = target
@@ -139,7 +143,7 @@ def _bind_declared_targets(
             )
             raise StepBindingError(message)
         declared[identity] = target_path
-        _bind_custom_runner_target(root, target_path, document, identity, runtime, bindings)
+        _bind_custom_runner_target(root, target_path, document, identity, runtime, bindings, credential_targets)
     if not bindings.step_identities:
         message = (
             f"the packaged plugin {namespace}.{plugin_name} declares no "
@@ -201,12 +205,15 @@ def _bind_custom_runner_target(
     identity: str,
     runtime: Mapping[str, Any],
     bindings: StepBindings,
+    credential_targets: list[Mapping[str, Any]],
 ) -> None:
     """Run the wrapped binding sequence for one custom-runner Step target."""
 
     assets = _declared_assets(root, target_path, document)
     try:
-        installed = InstalledStepManifest.from_manifest(identity, document, assets)
+        installed = InstalledStepManifest.from_manifest(
+            identity, document, assets, credential_targets=credential_targets
+        )
         step = _declared_step(runtime.get("entryPoint"), target_path)
         descriptor = StepDescriptor.for_installed_step(step, installed)
     except StepBindingError as error:

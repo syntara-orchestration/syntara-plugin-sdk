@@ -1,0 +1,405 @@
+"""Credential metadata and invocation-scoped capability contracts."""
+
+from __future__ import annotations
+
+import json
+import logging
+import pickle
+from collections.abc import Callable, Mapping
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, ClassVar
+
+import pytest
+import syntara_plugin.runtime.credentials as credentials_module
+from pydantic import BaseModel, ValidationError
+from syntara_plugin.runtime import (
+    ActionStep,
+    CredentialAccessError,
+    CredentialBinding,
+    CredentialRecipe,
+    ExecutionContext,
+    FileCredentialProvider,
+    InstalledStepManifest,
+    IntegrationType,
+    StepBinding,
+    StepBindingError,
+    StepDescriptor,
+    StepFailure,
+    invoke,
+)
+from syntara_plugin.testing import build_execution_context, invoke_step, invoke_step_in_container
+
+_SECRET = "sample-credential-value-keep-private"
+_NAME = "acme.demo.token"
+_OTHER = "acme.demo.other"
+_KEY_SECRET = "private-mapping-key-sentinel"
+
+
+class CredentialInput(BaseModel):
+    mode: str
+
+
+class CredentialOutput(BaseModel):
+    result: str
+
+
+class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
+    saved: ClassVar[CredentialBinding | None] = None
+    saved_provider: ClassVar[Any] = None
+
+    def run(self, inputs: CredentialInput, context: ExecutionContext) -> CredentialOutput:
+        try:
+            scope = context._credential_scope
+            assert scope is not None
+            if inputs.mode == "scope_read":
+                scope.read(_OTHER)
+            elif inputs.mode == "provider_read":
+                assert scope._provider is not None
+                scope._provider.read(_OTHER)
+            elif inputs.mode == "inner_provider_read":
+                assert scope._provider is not None
+                inner = getattr(scope._provider, "_ScopedCredentialProvider__provider")  # noqa: B009
+                inner.read(_OTHER)
+            elif inputs.mode == "rescope":
+                context._with_credentials((_OTHER,)).credential(_OTHER).read()
+            if inputs.mode in {"provider_allowed_leak", "inner_allowed_leak"}:
+                assert scope._provider is not None
+                provider = (
+                    getattr(scope._provider, "_ScopedCredentialProvider__provider")  # noqa: B009
+                    if inputs.mode == "inner_allowed_leak" else scope._provider
+                )
+                type(self).saved_provider = provider
+                credential = provider.read(_NAME)
+            else:
+                handle = context.credential(_OTHER if inputs.mode == "undeclared" else _NAME)
+                type(self).saved = handle
+                credential = handle.read()
+            if inputs.mode == "exception":
+                raise ValueError(str(credential["token"]))
+            if inputs.mode in {"leak", "provider_allowed_leak", "inner_allowed_leak"}:
+                return CredentialOutput(result=f"token={credential['token']}")
+            if inputs.mode in {"number_leak", "boolean_leak", "key_leak"}:
+                value = {
+                    "number_leak": lambda: str(credential["pin"]),
+                    "boolean_leak": lambda: str(credential["flag"]),
+                    "key_leak": lambda: next(iter(credential["nested"])),
+                }[inputs.mode]()
+                return CredentialOutput(result=value)
+            if inputs.mode in {"number_failure", "boolean_failure"}:
+                value = credential["pin"] if inputs.mode == "number_failure" else credential["flag"]
+                raise StepFailure(1, "Failed", f"credential: {value}")
+            return CredentialOutput(result="accepted")
+        except CredentialAccessError as error:
+            return CredentialOutput(result=error.reason)
+
+
+def _connection_targets() -> list[dict[str, Any]]:
+    metadata = {"name": "tracker", "displayName": "Tracker", "description": "Tracker."}
+    return [
+        {"apiVersion": "syntara.io/v1alpha1", "kind": "IntegrationType", "metadata": metadata,
+         "spec": {"id": "acme.demo.integration", "endpointKinds": ["https"],
+                  "credentialTypes": [_NAME], "configuration": {"kind": "inline", "value": {}}}},
+        {"apiVersion": "syntara.io/v1alpha1", "kind": "CredentialRecipe", "metadata": metadata,
+         "spec": {"id": _NAME, "integrationType": "acme.demo.integration",
+                  "credentialSchema": {"kind": "inline", "value": {"type": "object"}},
+                  "secretFields": ["token"], "issuance": {"kind": "static-bearer.v1"}}},
+    ]
+
+
+def _binding(targets: list[dict[str, Any]] | None = None) -> StepBinding:
+    step = CredentialStep()
+    manifest = {
+        "apiVersion": "syntara.io/v1alpha1", "kind": "Action",
+        "metadata": {"name": "use", "displayName": "Use", "description": "Use a credential."},
+        "spec": {
+            "runtime": {"kind": "custom-runner", "entryPoint": f"{__name__}:CredentialStep"},
+            "integrationType": "acme.demo.integration",
+            "input": {"kind": "inline", "value": CredentialInput.model_json_schema()},
+            "output": {"kind": "inline", "value": CredentialOutput.model_json_schema()},
+        },
+    }
+    installed = InstalledStepManifest.from_manifest(
+        "acme.demo.use", manifest, {}, credential_targets=targets if targets is not None else _connection_targets()
+    )
+    return StepBinding(StepDescriptor.for_installed_step(step, installed), step)
+
+
+def test_canonical_models_round_trip_and_reject_unversioned_extensions() -> None:
+    targets = _connection_targets()
+    assert IntegrationType.model_validate(targets[0]).model_dump(mode="json") == targets[0]
+    for issuance in (
+        {"kind": "static-bearer.v1"},
+        {"kind": "oauth2-authorization-code.v1", "scopes": ["read"], "pkce": True},
+        {"kind": "jwt-token-exchange.v1", "audience": "service"},
+    ):
+        targets[1]["spec"]["issuance"] = issuance
+        assert CredentialRecipe.model_validate(targets[1]).model_dump(mode="json") == targets[1]
+    targets[1]["spec"]["authenticate"] = {"kind": "custom"}
+    with pytest.raises(ValidationError):
+        CredentialRecipe.model_validate(targets[1])
+
+
+def test_trusted_graph_rejects_missing_and_mismatched_credentials() -> None:
+    targets = _connection_targets()
+    with pytest.raises(StepBindingError):
+        _binding(targets[:1])
+    targets[1]["spec"]["integrationType"] = "acme.other.integration"
+    with pytest.raises(StepBindingError):
+        _binding(targets)
+    binding = _binding()
+    object.__setattr__(binding.descriptor, "credential_names", ("acme.demo.other",))
+    with pytest.raises(StepBindingError):
+        binding.descriptor.require_executable_contract(binding.step)
+
+
+def test_approved_file_capability_has_direct_and_container_parity(tmp_path: Path, caplog: Any) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        invocation_id="credential-test", credential_file_paths={_NAME: str(path)},
+        credential_directory=tmp_path,
+    )
+    binding = _binding()
+    for call in (invoke_step, invoke_step_in_container):
+        outcome = call(binding, {"mode": "use"}, context=context)
+        assert outcome.ok and outcome.output == {"result": "accepted"}
+        assert _SECRET not in repr(outcome)
+        assert _SECRET not in repr(context)
+        with pytest.raises(TypeError) as serialization_error:
+            asdict(context)
+        assert _SECRET not in str(serialization_error.value)
+        handle = CredentialStep.saved
+        assert handle is not None and _SECRET not in repr(handle)
+        with pytest.raises(TypeError):
+            pickle.dumps(handle)
+        with pytest.raises(CredentialAccessError, match="expired"):
+            handle.read()
+    assert _SECRET not in caplog.text
+
+
+@pytest.mark.parametrize("mode,expected", [("undeclared", "undeclared"), ("use", "missing")])
+def test_undeclared_and_missing_fail_safely(mode: str, expected: str) -> None:
+    outcome = invoke_step(_binding(), {"mode": mode})
+    assert outcome.output == {"result": expected}
+
+
+def test_denied_missing_file_and_secret_leaks_are_safe(tmp_path: Path) -> None:
+    class DeniedView:
+        def read(self, name: str) -> dict[str, Any]:
+            raise CredentialAccessError("unauthorized")
+
+        def close(self) -> None:
+            pass
+
+    class DeniedProvider:
+        def restrict(
+            self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
+        ) -> DeniedView:
+            return DeniedView()
+
+    denied = ExecutionContext(invocation_id="denied", credential_provider=DeniedProvider())
+    assert invoke_step(_binding(), {"mode": "use"}, context=denied).output == {
+        "result": "unauthorized"
+    }
+    path = tmp_path / "credential"
+    provider = FileCredentialProvider({_NAME: str(path)}, local_directory=tmp_path)
+    context = ExecutionContext(invocation_id="use", credential_provider=provider)
+    assert invoke_step(_binding(), {"mode": "use"}, context=context).output == {
+        "result": "unavailable"
+    }
+    path.write_text(json.dumps({"token": _SECRET}))
+    for mode in ("exception", "leak"):
+        outcome = invoke_step(_binding(), {"mode": mode}, context=context)
+        assert not outcome.ok and outcome.raw is None
+        assert _SECRET not in repr(outcome.raised)
+        assert _SECRET not in str(getattr(outcome.raised, "detail", ""))
+        with pytest.raises(Exception) as error:
+            invoke(_binding(), {"mode": mode}, context)
+        assert _SECRET not in str(error.value)
+
+
+def test_file_provider_refuses_unapproved_and_symlink_paths(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.write_text(json.dumps({"token": _SECRET}))
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    link = approved / "link"
+    link.symlink_to(outside)
+    with pytest.raises(ValueError):
+        FileCredentialProvider({_NAME: str(link)}, local_directory=approved)
+    with pytest.raises(ValueError):
+        FileCredentialProvider({_NAME: str(outside)})
+
+
+@pytest.mark.parametrize(
+    "mode,expected", [("scope_read", "undeclared"), ("provider_read", "undeclared"),
+                      ("inner_provider_read", "missing"), ("rescope", "unauthorized")]
+)
+def test_undeclared_present_provider_entry_cannot_bypass_scope(
+    tmp_path: Path, mode: str, expected: str
+) -> None:
+    allowed = tmp_path / "allowed"
+    other = tmp_path / "other"
+    allowed.write_text(json.dumps({"token": _SECRET}))
+    other.write_text(json.dumps({"token": "undeclared-secret"}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(allowed), _OTHER: str(other)},
+        credential_directory=tmp_path,
+    )
+    for call in (invoke_step, invoke_step_in_container):
+        outcome = call(_binding(), {"mode": mode}, context=context)
+        assert outcome.ok and outcome.output == {"result": expected}
+        assert "undeclared-secret" not in repr(outcome)
+
+
+def test_direct_scoped_provider_reads_are_tracked_and_revoked(tmp_path: Path) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    for call in (invoke_step, invoke_step_in_container):
+        for mode in ("provider_allowed_leak", "inner_allowed_leak"):
+            outcome = call(_binding(), {"mode": mode}, context=context)
+            assert not outcome.ok and outcome.raw is None
+            assert _SECRET not in repr(outcome)
+            with pytest.raises(CredentialAccessError, match="expired"):
+                CredentialStep.saved_provider.read(_NAME)
+
+
+@pytest.mark.parametrize("mode", ["number_leak", "boolean_leak", "key_leak", "number_failure", "boolean_failure"])
+def test_stringified_scalar_and_mapping_key_secrets_do_not_reach_wrapper(
+    tmp_path: Path, mode: str
+) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"pin": 739251, "flag": True, "nested": {_KEY_SECRET: "value"}}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    for call in (invoke_step, invoke_step_in_container):
+        outcome = call(_binding(), {"mode": mode}, context=context)
+        assert not outcome.ok and outcome.raw is None
+        assert "739251" not in repr(outcome)
+        assert _KEY_SECRET not in repr(outcome)
+
+
+def test_sdk_diagnostics_do_not_log_read_credentials(tmp_path: Path, caplog: Any) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    with caplog.at_level(logging.DEBUG):
+        for call in (invoke_step, invoke_step_in_container):
+            outcome = call(_binding(), {"mode": "exception"}, context=context)
+            assert not outcome.ok and outcome.raw is None
+            assert _SECRET not in repr(outcome.raised)
+            assert _SECRET not in str(getattr(outcome.raised, "detail", ""))
+    assert _SECRET not in caplog.text
+
+
+def test_fingerprint_scan_handles_long_values_and_fails_closed_on_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "s" * 20_000 + "private"
+
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider({"password": secret}))
+    scope.read(_NAME)
+    assert not scope.contains_secret({"result": "x" * 200_000})
+    assert scope.contains_secret({"result": "prefix" + secret + "suffix"})
+    monkeypatch.setattr(credentials_module, "_MAX_SCAN_WORK", 100)
+    assert scope.contains_secret({"result": "x" * 200})
+    monkeypatch.setattr(credentials_module, "_MAX_OUTPUT_NODES", 5)
+    assert scope.contains_secret({"result": [None] * 6})
+    scope.close()
+
+
+def test_fingerprint_count_limit_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(credentials_module, "_MAX_FINGERPRINTS", 2)
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"alpha": "first", "beta": "second"})
+    )
+    scope.read(_NAME)
+    assert scope.contains_secret({"result": "safe"})
+    scope.close()
+
+
+def test_credential_free_invocations_do_not_apply_scan_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(credentials_module, "_MAX_OUTPUT_NODES", 2)
+    scope = credentials_module._CredentialScope((), None)
+    assert not scope.contains_secret({"result": [None] * 10})
+    scope.close()
+
+
+class _FakeView:
+    def __init__(
+        self, names: frozenset[str], document: dict[str, Any],
+        on_read: Callable[[Mapping[str, Any]], None],
+    ) -> None:
+        self._names = names
+        self._document = document
+        self._on_read = on_read
+        self._active = True
+
+    def read(self, name: str) -> Mapping[str, Any]:
+        if not self._active:
+            raise CredentialAccessError("expired")
+        if name not in self._names:
+            raise CredentialAccessError("missing")
+        self._on_read(self._document)
+        return self._document
+
+    def close(self) -> None:
+        self._active = False
+
+
+class _FakeProvider:
+    def __init__(self, document: dict[str, Any]) -> None:
+        self._document = document
+
+    def restrict(
+        self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
+    ) -> _FakeView:
+        return _FakeView(names, self._document, on_read)
+
+
+def test_scope_tracks_each_provider_read_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    original = credentials_module._CredentialScope._record
+
+    def count_record(
+        scope: credentials_module._CredentialScope, document: Mapping[str, Any]
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        original(scope, document)
+
+    monkeypatch.setattr(credentials_module._CredentialScope, "_record", count_record)
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider({"token": _SECRET}))
+    scope.read(_NAME)
+    assert calls == 1
+    scope.close()
+
+
+@pytest.mark.parametrize("mode", ["missing", "raises", "same"])
+def test_unscopable_host_provider_is_denied_safely(mode: str) -> None:
+    class MissingRestriction:
+        def read(self, name: str) -> Mapping[str, Any]:
+            raise AssertionError("unrestricted read must not run")
+
+    class BrokenRestriction(MissingRestriction):
+        def restrict(
+            self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
+        ) -> Any:
+            if mode == "raises":
+                raise ValueError(_SECRET)
+            return self
+
+    provider: Any = MissingRestriction() if mode == "missing" else BrokenRestriction()
+    context = ExecutionContext(invocation_id="denied", credential_provider=provider)
+    outcome = invoke_step(_binding(), {"mode": "use"}, context=context)
+    assert outcome.ok and outcome.output == {"result": "unauthorized"}
+    assert _SECRET not in repr(outcome)

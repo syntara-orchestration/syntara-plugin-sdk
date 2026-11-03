@@ -1026,3 +1026,40 @@ def test_traversal_asset_paths_are_rejected_by_the_target_contract(
     # paths are rejected by the contract pattern itself.
     with pytest.raises(StepBindingError, match="violates its contract"):
         load_plugin_bindings(package)
+
+
+def test_packaged_action_retains_only_declared_credentials(plugin_root: Path) -> None:
+    def manifests(package: str) -> dict[str, Any]:
+        action = _action_document(f"{package}.steps:SampleActionStep")
+        action["spec"]["integrationType"] = "sample.demo.tracker"
+        return {
+            "docs/README.md": "# Demo\n", "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "steps/action.yaml": action, "steps/integration.yaml": _integration_document(),
+            "steps/recipe.yaml": _credential_recipe_document(),
+        }
+
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/action.yaml", "steps/recipe.yaml", "steps/integration.yaml"]),
+        manifests=manifests,
+    )
+    descriptor = load_plugin_bindings(package).binding("sample.demo.create-ticket").descriptor
+    assert descriptor.credential_names == ("sample.demo.token",)
+
+
+def test_packaged_action_rejects_missing_credential_recipe(plugin_root: Path) -> None:
+    def manifests(package: str) -> dict[str, Any]:
+        action = _action_document(f"{package}.steps:SampleActionStep")
+        action["spec"]["integrationType"] = "sample.demo.tracker"
+        return {
+            "docs/README.md": "# Demo\n", "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "steps/action.yaml": action, "steps/integration.yaml": _integration_document(),
+        }
+
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/action.yaml", "steps/integration.yaml"]),
+        manifests=manifests,
+    )
+    with pytest.raises(StepBindingError, match="credential graph"):
+        load_plugin_bindings(package)

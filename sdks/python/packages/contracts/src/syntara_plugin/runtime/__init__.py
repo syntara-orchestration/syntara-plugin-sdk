@@ -46,6 +46,25 @@ from .contract_validation import (
     compare_model_to_schema,
     validate_plugin_bindings,
 )
+from .credential_models import (
+    AssetDocument,
+    CredentialRecipe,
+    CredentialRecipeSpec,
+    InlineDocument,
+    IntegrationType,
+    IntegrationTypeSpec,
+    JwtTokenExchangeIssuance,
+    OAuthAuthorizationCodeIssuance,
+    StaticBearerIssuance,
+    TargetMetadata,
+)
+from .credentials import (
+    CredentialAccessError,
+    CredentialBinding,
+    CredentialProvider,
+    FileCredentialProvider,
+    ScopedCredentialProvider,
+)
 from .execution import StepExecutionError, StepExecutor, StepFailure, invoke
 from .http import (
     HttpOperationError,
@@ -159,6 +178,21 @@ __all__ = [
     "error_result_base_schema",
     "error_result_schema",
     "ExecutionContext",
+    "AssetDocument",
+    "CredentialAccessError",
+    "CredentialBinding",
+    "CredentialProvider",
+    "CredentialRecipe",
+    "CredentialRecipeSpec",
+    "FileCredentialProvider",
+    "ScopedCredentialProvider",
+    "InlineDocument",
+    "IntegrationType",
+    "IntegrationTypeSpec",
+    "JwtTokenExchangeIssuance",
+    "OAuthAuthorizationCodeIssuance",
+    "StaticBearerIssuance",
+    "TargetMetadata",
     "FailureCode",
     "HttpOperationError",
     "HttpOperationMapper",

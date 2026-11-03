@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
@@ -131,6 +131,7 @@ class _InstalledStepProvenance:
     output_schema_digest: str
     error_schema: Mapping[str, Any]
     error_schema_digest: str
+    credential_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ class _InstalledStepDescriptorProvenance:
     output_schema_digest: str
     error_schema: Mapping[str, Any]
     error_schema_digest: str
+    credential_names: tuple[str, ...]
 
 
 def _schema_digest(schema: Mapping[str, Any]) -> str:
@@ -376,6 +378,39 @@ def _resolve_document_source(
     return schema
 
 
+def _credential_names(
+    specification: Mapping[str, Any], targets: Sequence[Mapping[str, Any]]
+) -> tuple[str, ...]:
+    """Resolve credential declarations from the trusted installed target graph."""
+    integration_id = specification.get("integrationType")
+    if integration_id is None:
+        return ()
+    integrations: dict[str, Mapping[str, Any]] = {}
+    recipes: dict[str, Mapping[str, Any]] = {}
+    for target in targets:
+        kind = target.get("kind")
+        contract = {"IntegrationType": "integration", "CredentialRecipe": "credential_recipe"}.get(kind)
+        if contract is None:
+            continue
+        if validate_document(load_bundle(), contract, target):  # type: ignore[arg-type]
+            raise StepBindingError("credential target violates its canonical contract")
+        spec = target["spec"]
+        collection = integrations if kind == "IntegrationType" else recipes
+        identifier = spec["id"]
+        if identifier in collection:
+            raise StepBindingError("duplicate installed credential target")
+        collection[identifier] = spec
+    integration = integrations.get(integration_id)
+    if integration is None:
+        raise StepBindingError("the declared integration is not installed")
+    names = integration["credentialTypes"]
+    for name in names:
+        recipe = recipes.get(name)
+        if recipe is None or recipe.get("integrationType") != integration_id:
+            raise StepBindingError("the declared credential graph is incomplete or inconsistent")
+    return tuple(sorted(names))
+
+
 @dataclass(frozen=True)
 class InstalledStepManifest:
     """An installed custom-runner Step manifest and its resolved schemas.
@@ -394,6 +429,7 @@ class InstalledStepManifest:
     input_schema: Mapping[str, Any] = field(init=False)
     output_schema: Mapping[str, Any] = field(init=False)
     error_schema: Mapping[str, Any] = field(init=False)
+    credential_names: tuple[str, ...] = field(init=False)
 
     @classmethod
     def from_manifest(
@@ -401,6 +437,8 @@ class InstalledStepManifest:
         step_identity: str,
         manifest: Mapping[str, Any],
         assets: Mapping[str, Mapping[str, Any]],
+        *,
+        credential_targets: Sequence[Mapping[str, Any]] = (),
     ) -> InstalledStepManifest:
         """Resolve the input, output, and effective optional error schemas."""
 
@@ -445,6 +483,7 @@ class InstalledStepManifest:
             _resolve_document_source(specification, "error", assets)
             if "error" in specification else error_result_schema()
         )
+        credential_names = _credential_names(specification, credential_targets)
         installed_step = InstalledStepManifest()
         object.__setattr__(installed_step, "step_identity", step_identity)
         object.__setattr__(installed_step, "kind", kind)
@@ -452,6 +491,7 @@ class InstalledStepManifest:
         object.__setattr__(installed_step, "input_schema", _freeze_json_document(input_schema))
         object.__setattr__(installed_step, "output_schema", _freeze_json_document(output_schema))
         object.__setattr__(installed_step, "error_schema", _freeze_json_document(error_schema))
+        object.__setattr__(installed_step, "credential_names", credential_names)
         _INSTALLED_STEP_PROVENANCE.append(
             _InstalledStepProvenance(
                 manifest_ref=ref(installed_step),
@@ -464,6 +504,7 @@ class InstalledStepManifest:
                 output_schema_digest=_schema_digest(output_schema),
                 error_schema=installed_step.error_schema,
                 error_schema_digest=_schema_digest(error_schema),
+                credential_names=credential_names,
             )
         )
         return installed_step
@@ -485,6 +526,7 @@ class StepDescriptor:
     output_schema: Mapping[str, Any]
     input_schema_source: Literal["implementation", "manifest"] = "implementation"
     error_schema: Mapping[str, Any] = field(default_factory=error_result_schema)
+    credential_names: tuple[str, ...] = field(default=(), init=False)
 
     def __post_init__(self) -> None:
         """Validate and normalize the descriptor's identity, kind, and schemas."""
@@ -539,6 +581,7 @@ class StepDescriptor:
             and _schema_matches_digest(self.output_schema, provenance.output_schema_digest)
             and self.error_schema is provenance.error_schema
             and _schema_matches_digest(self.error_schema, provenance.error_schema_digest)
+            and self.credential_names == provenance.credential_names
         )
 
     @property
@@ -573,6 +616,7 @@ class StepDescriptor:
             or not _schema_matches_digest(self.output_schema, provenance.output_schema_digest)
             or self.error_schema is not provenance.error_schema
             or not _schema_matches_digest(self.error_schema, provenance.error_schema_digest)
+            or self.credential_names != provenance.credential_names
         ):
             message = "the descriptor was not created from an unchanged installed contract"
             raise StepBindingError(message)
@@ -618,6 +662,8 @@ class StepDescriptor:
         if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
             message = "installed Step bindings require a custom-runner runtime"
             raise StepBindingError(message)
+        if installed_step.credential_names != provenance.credential_names:
+            raise StepBindingError("the installed credential declarations were changed")
         if runtime.get("entryPoint") != provenance.entry_point:
             message = "the installed Step entry point was changed after installation"
             raise StepBindingError(message)
@@ -658,6 +704,7 @@ class StepDescriptor:
                 raise StepBindingError(message) from error
             _validate_schema_references(schema, schema_name)
         object.__setattr__(descriptor, "input_schema_source", "manifest")
+        object.__setattr__(descriptor, "credential_names", provenance.credential_names)
         _INSTALLED_STEP_DESCRIPTOR_PROVENANCE.append(
             _InstalledStepDescriptorProvenance(
                 descriptor_ref=ref(descriptor),
@@ -671,6 +718,7 @@ class StepDescriptor:
                 output_schema_digest=provenance.output_schema_digest,
                 error_schema=descriptor.error_schema,
                 error_schema_digest=provenance.error_schema_digest,
+                credential_names=provenance.credential_names,
             )
         )
         return descriptor

@@ -42,6 +42,19 @@ Action steps execute only through an installed manifest: the SDK's
 so `bind_step` is the only path to an executable custom-runner Step binding. Binding an
 Action with `bind` is allowed for drift checks but is not executable.
 
+## Testing credentials
+
+`build_execution_context` and `mock_execution_context` accept
+`credential_file_paths={recipe_id: str(path)}` and `credential_directory=path`.
+Use a private temporary directory and fake JSON credential documents. The path
+must be directly inside that directory. Bind the Action with `bind_step` so its
+compiled integration and recipe declarations authorize the identifier. The
+same context works with `invoke_step` and `invoke_step_in_container`; the latter
+passes only paths over its loopback ABI. Custom in-process providers are accepted
+by the direct path when they implement the restricted provider contract described
+in [credential access](runtime-and-oci.md#credential-access); the container helper
+requires `FileCredentialProvider`.
+
 ## Invocation helpers
 
 ```python
@@ -123,8 +136,9 @@ credentials.
 
 Credential values must not appear in outputs, wrapper fields, raised errors,
 or logs. `assert_no_secrets` detects leaks in both outcomes and captured logs;
-it does not sanitize them. Keep secrets out of exception text and log messages
-on both invocation paths.
+it does not sanitize them. SDK-generated diagnostics avoid credential values, but
+the SDK does not redact records emitted by step code. Authors must keep returned
+credentials out of their exception text and log messages on both invocation paths.
 
 ## Conformance in one call
 

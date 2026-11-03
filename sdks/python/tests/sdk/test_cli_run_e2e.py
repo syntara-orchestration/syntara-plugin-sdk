@@ -972,8 +972,7 @@ spec:
 def _recording_handler(seen: dict[str, Any]) -> Any:
     """Wrap the real step handler, inspecting the delivery as the Step would.
 
-    The step-side credential accessor is a later story, so this reads the
-    delivered file directly: it proves the path on the ABI names a real,
+    This reads the delivered file directly to prove that the ABI path names a real,
     readable file holding the supplied value for exactly the invocation's
     lifetime.
     """

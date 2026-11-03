@@ -3353,7 +3353,7 @@ def test_source_mode_warns_the_credential_path_is_not_the_production_mount(
     captured = capsys.readouterr()
     assert "delivers credential files at a temporary path" in captured.err
     assert "/var/run/syntara/secrets" in captured.err
-    assert "invocation.credential_file_paths" in captured.err
+    assert "context.credential(name).read()" in captured.err
 
 
 def test_a_target_without_an_integration_type_reaches_no_credential(
@@ -3567,9 +3567,8 @@ def test_delivered_credential_values_read_back_as_output_are_scrubbed(
 ) -> None:
     """A Step that reads the delivered file and returns it cannot leak it.
 
-    The step-side accessor is a later story, so the handler wrapper stands in
-    for it: it reads the delivered file exactly as the Step eventually will
-    and returns the document — a string and a non-string field alike — as
+    The handler wrapper reads the delivered document and returns its fields —
+    a string and a non-string field alike — as
     the Step's output. The delivered values themselves, not look-alike
     constants, are what the scrub machinery must catch.
     """

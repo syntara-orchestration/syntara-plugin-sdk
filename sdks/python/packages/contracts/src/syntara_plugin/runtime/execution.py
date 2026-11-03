@@ -316,24 +316,31 @@ def _invoke_with_error_schema(
     if untrusted_binding or executor is None:
         raise StepExecutionError(_UNTRUSTED_BINDING, outcome="not_started")
 
-    execution_error: StepExecutionError | None = None
-    wrapper: StandardOutputWrapper[Mapping[str, Any]] | None = None
+    scoped_context = context._with_credentials(step.descriptor.credential_names)
+    scope = scoped_context._credential_scope
+    assert scope is not None
     try:
-        _validate_context_output_digest(step, context)
-        wrapper = executor.execute(input, context)
-    except StepExecutionError as error:
-        execution_error = error
-    except Exception as error:
-        raise StepExecutionError(
-            _UNEXPECTED_STEP_FAILURE,
-            detail="".join(traceback.format_exception(error)).rstrip(),
-        ) from error
-    if execution_error is not None:
-        raise execution_error
-    if wrapper is None:
-        raise StepExecutionError(_UNEXPECTED_STEP_FAILURE)
-    object.__setattr__(wrapper, "error_schema_digest", executor.last_error_schema_digest)
-    return wrapper, executor.last_error_schema_digest
+        execution_error: StepExecutionError | None = None
+        wrapper: StandardOutputWrapper[Mapping[str, Any]] | None = None
+        try:
+            _validate_context_output_digest(step, scoped_context)
+            wrapper = executor.execute(input, scoped_context)
+        except StepExecutionError as error:
+            execution_error = error
+        except Exception:
+            raise StepExecutionError(_UNEXPECTED_STEP_FAILURE) from None
+        if execution_error is not None:
+            if scope.has_read:
+                execution_error.detail = None
+            raise execution_error
+        if wrapper is None:
+            raise StepExecutionError(_UNEXPECTED_STEP_FAILURE)
+        if scope.contains_secret(wrapper.model_dump()):
+            raise StepExecutionError(_INVALID_STEP_RESPONSE)
+        object.__setattr__(wrapper, "error_schema_digest", executor.last_error_schema_digest)
+        return wrapper, executor.last_error_schema_digest
+    finally:
+        scope.close()
 
 
 def invoke(

@@ -38,3 +38,5 @@ The accepted design decisions live in [`../.sdlc/adrs`](../.sdlc/adrs):
 - [SDK local test harness](../.sdlc/adrs/0007-sdk-testing-harness.md)
 - [Testing harness inside the SDK distribution](../.sdlc/adrs/0008-testing-harness-inside-sdk.md)
 - [Local credential delivery](../.sdlc/adrs/0009-local-credential-delivery.md)
+
+- [Credential authenticate and test extension proposal v1](../.sdlc/proposals/credential-authenticate-test-v1.md)

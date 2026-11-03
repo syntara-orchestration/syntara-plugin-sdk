@@ -267,9 +267,38 @@ contract: **Step type -> Category -> Runner -> Execution**.
 `ExecutionContext` carries the invocation ID, an optional workflow run ID,
 bounded non-secret runtime data, and a cooperative cancellation signal. It
 intentionally exposes no protobuf, gRPC, container, worker, or Execution Plane
-types, and no raw credential values; typed credential access is tracked
-separately. A credential delivered to a local run therefore arrives as a file
-the launcher mounted, but no accessor hands its path to step code yet.
+types, and no raw credential values.
+
+### Credential access
+
+An Action's installed `integrationType` and its linked `credentialTypes` define
+which recipe identifiers the step may request. The host supplies a provider for
+approved bindings; the supplied path names never grant permission themselves.
+A custom `CredentialProvider` must return a fresh `ScopedCredentialProvider`
+from `restrict(names, on_read)`. The view retains only the named bindings,
+reports every read through `on_read`, and revokes access on `close`. Providers
+that cannot supply this restricted view fail safely. During `run`, call `context.credential("example.tracker.api-token").read()` to
+obtain a detached credential document. The handle and provider do not expose
+values in their representations and cannot be serialized. A handle expires as
+soon as the invocation returns, including on failure. Missing, undeclared,
+unauthorized, unavailable, and expired bindings raise `CredentialAccessError`
+with a safe `reason` and no names, paths, or provider details.
+
+The returned document contains sensitive values. Use them only for the intended
+operation; never put them in logs, inputs, results, or error messages. SDK-generated
+errors and diagnostics do not include values read through the handle. The SDK
+rejects wrapper fields containing those values and suppresses business traceback
+details after a read. The wrapper check has bounded work and fails closed if it
+cannot complete its scan. The SDK cannot redact logs emitted by step code, so
+step authors must not log returned values. The SDK does not provision production
+files or implement a vault. A Python step is not sandboxed by this accessor;
+the host must provision only files authorized for the invocation and enforce
+its own process isolation.
+
+`CredentialRecipe` and `IntegrationType` Pydantic views validate and serialize
+the existing v1alpha1 authoring documents; the canonical JSON Schemas remain
+the source of truth. Authenticate and test extensions are described only in the
+[versioned proposal](../.sdlc/proposals/credential-authenticate-test-v1.md).
 
 ### Contract drift validation
 

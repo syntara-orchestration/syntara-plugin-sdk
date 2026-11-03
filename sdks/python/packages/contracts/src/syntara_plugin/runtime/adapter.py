@@ -29,6 +29,7 @@ from .container import (
     StepRegistry,
 )
 from .context import ExecutionContext
+from .credentials import FileCredentialProvider
 from .execution import StepExecutionError
 from .outcome import StandardOutputWrapper, thaw_json
 from .step import BaseStep
@@ -58,7 +59,17 @@ class ResultObjectStore(Protocol):
 def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
     """Build the transport-independent context for one container invocation."""
 
+    try:
+        provider = FileCredentialProvider(
+            invocation.credential_file_paths, local_directory=invocation._credential_directory
+        )
+    except ValueError:
+        raise ContainerInvocationError(
+            FailureCode.INVALID_INPUT, "Credential file paths must be approved.",
+            outcome="not_started",
+        ) from None
     return ExecutionContext(
+        credential_provider=provider,
         invocation_id=invocation.invocation_id,
         workflow_run_id=invocation.workflow_run_id,
         runtime_context=invocation.runtime_context,
