@@ -168,6 +168,7 @@ class RunTarget:
     input_schema: Mapping[str, Any]
     schema_digests: Mapping[str, str]
     workload_image: str | None = None
+    workload_id: str | None = None
     step_revision_id: str = ""
     integration_type: str | None = None
 
@@ -651,6 +652,7 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         input_schema=selected["input"],
         schema_digests=selected["schemaDigests"],
         workload_image=selected.get("runtime", {}).get("workload"),
+        workload_id=selected.get("runtime", {}).get("workload"),
         step_revision_id=str(selected["step_revision_id"]),
         integration_type=selected.get("integrationType"),
     )

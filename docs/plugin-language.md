@@ -56,8 +56,15 @@ Schema: [`plugin.schema.json`](../contracts/schemas/v1alpha1/plugin.schema.json)
 | --- | --- |
 | `spec.targets` | Required list of contained YAML target paths. These are step types, integration types, and credential recipes included in the release. |
 | `spec.documentation.path` | Required contained UTF-8 Markdown file published with the plugin. |
-| `spec.workload.image` | Optional logical image ID shared by every `custom-runner` step type. A plugin has at most one runner image, which is bound to an immutable container digest during build. |
+| `spec.workload.image` | Legacy optional logical image ID shared by every `custom-runner` Step type. |
+| `spec.workloads.<id>.image` | Logical workload/image ID used by custom-runner Step types that name the corresponding workload in `spec.runtime.workload`. A plugin may declare multiple workload IDs. These are logical IDs, not registry references. |
 | `spec.providers` | Optional declarative form-provider image definitions. Each item has an `id` and a logical `image` ID. |
+
+For new custom-runner releases, define the available image options and immutable
+image digests in a separate `kind: RuntimeBinding` manifest. See the
+[RuntimeBindings guide](runtime-bindings.md) and the source/resolved schemas in
+the contracts bundle. A workload image can then be updated without changing
+the plugin artifact when the step contract stays the same.
 
 ## `kind: Action`
 

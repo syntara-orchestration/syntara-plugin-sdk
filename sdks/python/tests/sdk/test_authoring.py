@@ -973,22 +973,30 @@ def test_custom_runner_accepts_digest_pinned_registry_reference_with_port(tmp_pa
     }
 
 
-def test_plugin_rejects_multiple_workload_images() -> None:
+def test_plugin_supports_multiple_named_workloads() -> None:
     plugin = _plugin()
     specification = plugin["spec"]
     assert isinstance(specification, dict)
     specification["workloads"] = {
-        "python-workload": {"language": "python"},
-        "node-workload": {"language": "node"},
+        "python": {"image": "python-runtime"},
+        "bash": {"image": "bash-runtime"},
     }
     del specification["workload"]
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action["spec"]["runtime"]["workload"] = "python"
+    target = Target("steps/create-issue/manifest.yaml", action)
 
-    typed_plugin = _typed_plugin(plugin)
+    result = compile_model(
+        _typed_plugin(plugin),
+        [target],
+        image_bindings={"python-runtime": DIGEST, "bash-runtime": DIGEST},
+    )
 
-    with pytest.raises(CompilationError) as error:
-        compile_model(typed_plugin, [])
-
-    assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
+    assert result.descriptor["spec"]["workloads"] == {
+        "bash": {"abi": "syntara.container/v1alpha1", "image": DIGEST},
+        "python": {"abi": "syntara.container/v1alpha1", "image": DIGEST},
+    }
+    assert result.descriptor["spec"]["targets"][0]["runtime"]["workload"] == "python"
 
 
 def test_plugin_workload_does_not_declare_a_language() -> None:
@@ -1022,7 +1030,7 @@ def test_custom_runner_action_requires_one_root_workload() -> None:
     assert "WORKLOAD_MISSING" in {item.code for item in error.value.diagnostics}
 
 
-def test_action_does_not_select_a_workload() -> None:
+def test_action_can_select_a_declared_workload() -> None:
     action = _action({"kind": "inline", "value": {"type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
@@ -1032,10 +1040,50 @@ def test_action_does_not_select_a_workload() -> None:
     typed_plugin = _typed_plugin(_plugin())
     target = Target("steps/create-issue/manifest.yaml", action)
 
-    with pytest.raises(CompilationError) as error:
-        compile_model(typed_plugin, [target])
+    result = compile_model(typed_plugin, [target], image_bindings={"plugin-workload": DIGEST})
+    assert result.descriptor["spec"]["targets"][0]["runtime"]["workload"] == "plugin-workload"
 
-    assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
+
+def test_multiple_workloads_require_explicit_step_assignment() -> None:
+    plugin = _plugin()
+    specification = plugin["spec"]
+    assert isinstance(specification, dict)
+    del specification["workload"]
+    specification["workloads"] = {
+        "python": {"image": "python-runtime"},
+        "bash": {"image": "bash-runtime"},
+    }
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(plugin),
+            [Target("steps/create-issue/manifest.yaml", _action({"kind": "inline", "value": {"type": "object"}}))],
+            image_bindings={"python-runtime": DIGEST, "bash-runtime": DIGEST},
+        )
+
+    assert "WORKLOAD_STEP_ASSIGNMENT_INVALID" in {item.code for item in error.value.diagnostics}
+
+
+def test_image_only_change_preserves_plugin_and_step_revision_ids() -> None:
+    plugin = _plugin()
+    specification = plugin["spec"]
+    assert isinstance(specification, dict)
+    del specification["workload"]
+    specification["workloads"] = {"python": {"image": "python-runtime"}}
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action["spec"]["runtime"]["workload"] = "python"
+    target = Target("steps/create-issue/manifest.yaml", action)
+    first = compile_model(
+        _typed_plugin(plugin), [target], image_bindings={"python-runtime": DIGEST}
+    )
+    second = compile_model(
+        _typed_plugin(plugin),
+        [target],
+        image_bindings={"python-runtime": "quay.io/acme/issue-tools@sha256:" + "b" * 64},
+    )
+
+    assert first.descriptor["spec"]["plugin_revision_id"] == second.descriptor["spec"]["plugin_revision_id"]
+    assert first.descriptor["spec"]["targets"][0]["step_revision_id"] == second.descriptor["spec"]["targets"][0]["step_revision_id"]
 
 
 def test_rejects_case_collisions_archives_and_oversized_assets(tmp_path: Path) -> None:

@@ -4,10 +4,14 @@ from .bundle import (
     CatalogCheckpoint,
     CatalogDiagnostic,
     ContractBundle,
+    RuntimeBindingCheckpoint,
+    RuntimeBindingDiagnostic,
     bundle_digest,
     load_bundle,
     validate_catalog_index,
     validate_document,
+    validate_runtime_binding,
+    validate_runtime_binding_index,
 )
 from .canonical import (
     CanonicalJsonError,
@@ -36,6 +40,8 @@ __all__ = [
     "CatalogDiagnostic",
     "CanonicalJsonError",
     "ContractBundle",
+    "RuntimeBindingCheckpoint",
+    "RuntimeBindingDiagnostic",
     "FixtureBundle",
     "bundle_digest",
     "canonical_json_bytes",
@@ -55,5 +61,7 @@ __all__ = [
     "validate_plugin_descriptor_semantics",
     "is_digest_image_reference",
     "validate_catalog_index",
+    "validate_runtime_binding",
+    "validate_runtime_binding_index",
     "validate_document",
 ]

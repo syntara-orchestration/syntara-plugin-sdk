@@ -21,13 +21,17 @@
           "properties": {
             "kind": {"enum": ["platform-runner", "custom-runner"]},
             "entryPoint": {"$ref": "step.schema.json#/$defs/entryPoint"},
+            "workload": {"$ref": "common.schema.json#/$defs/identifier"},
             "implementation": {"$ref": "step.schema.json#/$defs/implementation"},
             "operation": {"$ref": "http-operation.schema.json#/$defs/operation"}
           },
           "allOf": [
             {
               "if": {"properties": {"kind": {"const": "platform-runner"}}},
-              "then": {"required": ["implementation"], "not": {"required": ["entryPoint"]}}
+              "then": {
+                "required": ["implementation"],
+                "not": {"anyOf": [{"required": ["entryPoint"]}, {"required": ["workload"]}]}
+              }
             },
             {
               "if": {"required": ["operation"]},

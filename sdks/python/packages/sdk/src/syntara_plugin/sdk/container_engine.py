@@ -22,11 +22,13 @@ the workload died instead of a generic timeout.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import uuid
@@ -102,6 +104,115 @@ def detect_engines() -> list[ContainerEngine]:
         if completed.returncode == 0:
             engines.append(ContainerEngine(command=command))
     return engines
+
+
+@contextmanager
+def load_oci_archive(archive: Path, *, expected_digest: str) -> Iterator[str]:
+    """Load one verified SDK-built OCI archive into Podman for an image-mode run."""
+    from hashlib import sha256
+
+    from .workload import workload_archive_digest
+
+    archive = archive.expanduser()
+    if workload_archive_digest(archive) != expected_digest:
+        raise RunExecutionError("workload OCI archive digest differs from the selected RuntimeBinding")
+    if shutil.which("podman") is None:
+        raise RunExecutionError(
+            "Podman is required to load a RuntimeBinding OCI archive for image-mode execution",
+            next_steps=("install Podman and retry", _SELF_MANAGED_NEXT_STEP),
+        )
+
+    try:
+        with tarfile.open(archive, mode="r:") as image_archive:
+            members = {member.name: member for member in image_archive.getmembers()}
+            index_member = members.get("index.json")
+            if index_member is None or not index_member.isfile() or index_member.size > 1024 * 1024:
+                raise RunExecutionError("workload OCI archive has no bounded index.json")
+            index_handle = image_archive.extractfile(index_member)
+            if index_handle is None:
+                raise RunExecutionError("workload OCI archive index.json cannot be read")
+            index_document = json.loads(index_handle.read())
+            manifests = index_document.get("manifests")
+            if not isinstance(manifests, list) or len(manifests) != 1:
+                raise RunExecutionError("workload OCI archive must contain one image manifest")
+            descriptor = manifests[0]
+            annotations = descriptor.get("annotations")
+            local_reference = annotations.get("org.opencontainers.image.ref.name")
+            if not isinstance(local_reference, str) or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:/-]*:syntara-registered-[0-9a-f]{32}",
+                local_reference,
+            ) is None:
+                raise RunExecutionError("workload OCI archive has no SDK-generated local image reference")
+            manifest_digest = descriptor.get("digest")
+            if not isinstance(manifest_digest, str) or not manifest_digest.startswith("sha256:"):
+                raise RunExecutionError("workload OCI archive manifest digest is invalid")
+            manifest_member = members.get(
+                f"blobs/sha256/{manifest_digest.removeprefix('sha256:')}"
+            )
+            if manifest_member is None or not manifest_member.isfile() or manifest_member.size > 16 * 1024 * 1024:
+                raise RunExecutionError("workload OCI archive manifest is missing or oversized")
+            manifest_handle = image_archive.extractfile(manifest_member)
+            if manifest_handle is None:
+                raise RunExecutionError("workload OCI archive manifest cannot be read")
+            manifest = json.loads(manifest_handle.read())
+            config = manifest.get("config")
+            config_digest = config.get("digest") if isinstance(config, Mapping) else None
+            if not isinstance(config_digest, str) or not config_digest.startswith("sha256:"):
+                raise RunExecutionError("workload OCI archive config digest is invalid")
+            config_member = members.get(f"blobs/sha256/{config_digest.removeprefix('sha256:')}")
+            if config_member is None or not config_member.isfile() or config_member.size > 16 * 1024 * 1024:
+                raise RunExecutionError("workload OCI archive config is missing or oversized")
+            config_handle = image_archive.extractfile(config_member)
+            if config_handle is None:
+                raise RunExecutionError("workload OCI archive config cannot be read")
+            config_bytes = config_handle.read()
+            if f"sha256:{sha256(config_bytes).hexdigest()}" != config_digest:
+                raise RunExecutionError("workload OCI archive config digest does not match its bytes")
+    except RunExecutionError:
+        raise
+    except (OSError, tarfile.TarError, json.JSONDecodeError, AttributeError, KeyError, TypeError) as error:
+        raise RunExecutionError("could not inspect the selected workload OCI archive") from error
+
+    loaded = False
+    try:
+        try:
+            result = subprocess.run(
+                ["podman", "load", "--input", str(archive)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RunExecutionError("Podman could not load the selected workload OCI archive") from error
+        if result.returncode != 0:
+            raise RunExecutionError("Podman could not load the selected workload OCI archive")
+        loaded = True
+        try:
+            inspected = subprocess.run(
+                ["podman", "image", "inspect", "--format", "{{.Id}}", local_reference],
+                capture_output=True,
+                text=True,
+                timeout=_INSPECT_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RunExecutionError("could not verify the image loaded from the OCI archive") from error
+        if inspected.returncode != 0 or inspected.stdout.strip() != config_digest:
+            raise RunExecutionError("loaded workload image does not match the selected OCI archive")
+        yield local_reference
+    finally:
+        if loaded:
+            try:
+                subprocess.run(
+                    ["podman", "image", "rm", "--ignore", local_reference],
+                    capture_output=True,
+                    text=True,
+                    timeout=_INSPECT_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
 
 
 def _select_engine(image: str) -> ContainerEngine:

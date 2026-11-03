@@ -21,6 +21,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from syntara_plugin.contracts import load_bundle, validate_runtime_binding
+
 from .artifact import OCI_ARTIFACT_TYPE, PluginArtifact
 from .artifact_archive import ArtifactArchiveError, _verify_plugin_contents
 from .catalog import (
@@ -32,6 +34,20 @@ from .catalog import (
     build_catalog_index_artifact,
 )
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob
+from .runtime_binding import (
+    OCI_RUNTIME_BINDING_ARTIFACT_TYPE,
+    OCI_RUNTIME_BINDING_CONFIG_MEDIA_TYPE,
+    OCI_RUNTIME_BINDING_DOCUMENT_MEDIA_TYPE,
+    RuntimeBindingArtifact,
+)
+from .runtime_binding_index import (
+    OCI_RUNTIME_BINDING_INDEX_ARTIFACT_TYPE,
+    OCI_RUNTIME_BINDING_INDEX_CONFIG_MEDIA_TYPE,
+    OCI_RUNTIME_BINDING_INDEX_DOCUMENT_MEDIA_TYPE,
+    RuntimeBindingIndexArtifact,
+    RuntimeBindingIndexSnapshot,
+    build_runtime_binding_index_artifact,
+)
 
 _REPOSITORY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,254}$")
 _CHANNEL_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
@@ -198,6 +214,34 @@ class PluginArtifactPublicationTarget(CatalogIndexPublicationTarget):
     must explicitly choose the repository that will hold the plugin payload;
     publishing an index cannot accidentally publish a plugin payload there.
     """
+
+
+@dataclass(frozen=True)
+class RuntimeBindingPublication:
+    """Immutable publication coordinates for one runtime-binding artifact."""
+
+    repository: str
+    channel: str
+    manifest_digest: str
+
+    @property
+    def immutable_reference(self) -> str:
+        """Return the canonical repository-plus-digest identity."""
+        return f"{self.repository}@{self.manifest_digest}"
+
+
+@dataclass(frozen=True)
+class RuntimeBindingIndexPublication:
+    """Immutable coordinates for one per-plugin binding-index revision."""
+
+    repository: str
+    channel: str
+    manifest_digest: str
+
+    @property
+    def immutable_reference(self) -> str:
+        """Return the canonical repository-plus-digest identity."""
+        return f"{self.repository}@{self.manifest_digest}"
 
 
 @dataclass(frozen=True)
@@ -468,6 +512,85 @@ class CatalogIndexPublisher:
             raise CatalogIndexPublicationError("REGISTRY_DIGEST_MISMATCH")
 
 
+class RuntimeBindingArtifactPublisher(CatalogIndexPublisher):
+    """Publish one prebuilt runtime-binding OCI artifact without changing a catalog."""
+
+    def publish(self, artifact: RuntimeBindingArtifact) -> RuntimeBindingPublication:  # type: ignore[override]
+        """Upload exact, validated binding bytes, then advance only the selected channel."""
+        _validate_runtime_binding_artifact(artifact)
+        for blob in (artifact.config, artifact.binding_document):
+            self._ensure_blob(blob)
+        self._put_manifest(artifact.manifest, artifact.digest)
+        return RuntimeBindingPublication(
+            repository=self._target.repository,
+            channel=self._target.channel,
+            manifest_digest=artifact.digest,
+        )
+
+
+class RuntimeBindingIndexPublisher(CatalogIndexPublisher):
+    """Publish and read one per-plugin runtime-binding discovery index."""
+
+    def publish(self, artifact: RuntimeBindingIndexArtifact) -> RuntimeBindingIndexPublication:  # type: ignore[override]
+        """Upload validated index bytes, then advance its plugin-scoped channel."""
+        _validate_runtime_binding_index_artifact(artifact)
+        for blob in (artifact.config, artifact.document):
+            self._ensure_blob(blob)
+        self._put_manifest(artifact.manifest, artifact.digest)
+        return RuntimeBindingIndexPublication(
+            repository=self._target.repository,
+            channel=self._target.channel,
+            manifest_digest=artifact.digest,
+        )
+
+    def read_current(self) -> RuntimeBindingIndexSnapshot | None:  # type: ignore[override]
+        """Read the index currently named by this binding channel, if present."""
+        return self._read_runtime_binding_index(self._target.channel, allow_missing=True)
+
+    def _read_runtime_binding_index(
+        self, reference: str, *, allow_missing: bool
+    ) -> RuntimeBindingIndexSnapshot | None:
+        response = self._request(
+            "GET", f"{self._repository_base_url()}/manifests/{quote(reference, safe=':')}"
+        )
+        if response.status_code == 404 and allow_missing:
+            return None
+        if response.status_code != 200:
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_FETCH_FAILED")
+        manifest_digest = response.header("Docker-Content-Digest")
+        if manifest_digest is None or manifest_digest != _sha256_digest(response.content):
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_MANIFEST_DIGEST_INVALID")
+        manifest = _json_mapping(response.content, "RUNTIME_BINDING_INDEX_MANIFEST_INVALID")
+        config_digest, document_digest = _runtime_binding_index_descriptor_digests(manifest)
+        config_response = self._request("GET", self._blob_url(config_digest))
+        document_response = self._request("GET", self._blob_url(document_digest))
+        if config_response.status_code != 200 or document_response.status_code != 200:
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_CONTENT_FETCH_FAILED")
+        if (
+            _sha256_digest(config_response.content) != config_digest
+            or _sha256_digest(document_response.content) != document_digest
+        ):
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_CONTENT_DIGEST_INVALID")
+        config = _json_mapping(config_response.content, "RUNTIME_BINDING_INDEX_CONFIG_INVALID")
+        document = _json_mapping(
+            document_response.content, "RUNTIME_BINDING_INDEX_DOCUMENT_INVALID"
+        )
+        try:
+            artifact = build_runtime_binding_index_artifact(document)
+        except ValueError as error:
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_DOCUMENT_INVALID") from error
+        _validate_runtime_binding_index_envelope(
+            manifest,
+            config,
+            document,
+            artifact,
+            document_digest,
+        )
+        if response.content != artifact.manifest.content:
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_MANIFEST_INVALID")
+        return RuntimeBindingIndexSnapshot(manifest_digest=manifest_digest, document=document)
+
+
 class PluginArtifactPublisher(CatalogIndexPublisher):
     """Publish one already-built plugin metadata artifact to one selected repository.
 
@@ -543,6 +666,139 @@ def _validate_plugin_artifact(artifact: PluginArtifact) -> None:
         _verify_plugin_contents(artifact.config, artifact.plugin_manifest, artifact.content_bundle)
     except ArtifactArchiveError as error:
         raise CatalogIndexPublicationError("ARTIFACT_CONTENT_INVALID") from error
+
+
+def _validate_runtime_binding_artifact(artifact: RuntimeBindingArtifact) -> None:
+    """Reject substituted blobs or a binding OCI envelope before upload."""
+    blobs = (artifact.config, artifact.binding_document, artifact.manifest)
+    for blob in blobs:
+        expected = OciBlob.create(
+            blob.content,
+            blob.descriptor.media_type,
+            annotations=blob.descriptor.annotations,
+        )
+        if expected.descriptor != blob.descriptor:
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_DIGEST_MISMATCH")
+    try:
+        manifest = json.loads(artifact.manifest.content.decode("utf-8"))
+        config = json.loads(artifact.config.content.decode("utf-8"))
+        document = json.loads(artifact.binding_document.content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_CONTENT_INVALID") from error
+    if not isinstance(manifest, Mapping) or not isinstance(config, Mapping) or not isinstance(document, Mapping):
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_CONTENT_INVALID")
+    spec = document.get("spec")
+    plugin_link = spec.get("plugin") if isinstance(spec, Mapping) else None
+    plugin_digest = plugin_link.get("digest") if isinstance(plugin_link, Mapping) else None
+    if (
+        artifact.config.descriptor.media_type != OCI_RUNTIME_BINDING_CONFIG_MEDIA_TYPE
+        or artifact.binding_document.descriptor.media_type != OCI_RUNTIME_BINDING_DOCUMENT_MEDIA_TYPE
+        or manifest.get("schemaVersion") != 2
+        or manifest.get("mediaType") != OCI_IMAGE_MANIFEST_MEDIA_TYPE
+        or manifest.get("artifactType") != OCI_RUNTIME_BINDING_ARTIFACT_TYPE
+        or manifest.get("config") != artifact.config.descriptor.as_dict()
+        or manifest.get("layers") != [artifact.binding_document.descriptor.as_dict()]
+        or not isinstance(manifest.get("subject"), Mapping)
+        or manifest["subject"].get("digest") != plugin_digest
+        or manifest["subject"].get("mediaType") != OCI_IMAGE_MANIFEST_MEDIA_TYPE
+        or config.get("bindingDocumentDigest") != artifact.binding_document.descriptor.digest
+        or config.get("pluginArtifactDigest") != plugin_digest
+        or config.get("contractBundleDigest") != load_bundle().digest
+    ):
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_ENVELOPE_INVALID")
+    diagnostics = validate_runtime_binding(load_bundle(), document, resolved=True)
+    if diagnostics:
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_CONTENT_INVALID")
+
+
+def _validate_runtime_binding_index_artifact(artifact: RuntimeBindingIndexArtifact) -> None:
+    """Reject substituted documents or a malformed OCI binding-index envelope."""
+    blobs = (artifact.config, artifact.document, artifact.manifest)
+    for blob in blobs:
+        expected = OciBlob.create(
+            blob.content,
+            blob.descriptor.media_type,
+            annotations=blob.descriptor.annotations,
+        )
+        if expected.descriptor != blob.descriptor:
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_DIGEST_MISMATCH")
+    try:
+        manifest = json.loads(artifact.manifest.content.decode("utf-8"))
+        config = json.loads(artifact.config.content.decode("utf-8"))
+        document = json.loads(artifact.document.content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_CONTENT_INVALID") from error
+    if not isinstance(manifest, Mapping) or not isinstance(config, Mapping) or not isinstance(document, Mapping):
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_CONTENT_INVALID")
+    try:
+        rebuilt = build_runtime_binding_index_artifact(document)
+    except ValueError as error:
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_CONTENT_INVALID") from error
+    _validate_runtime_binding_index_envelope(
+        manifest,
+        config,
+        document,
+        rebuilt,
+        artifact.document.descriptor.digest,
+    )
+    if artifact.manifest.content != rebuilt.manifest.content:
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_MANIFEST_INVALID")
+
+
+def _validate_runtime_binding_index_envelope(
+    manifest: Mapping[str, Any],
+    config: Mapping[str, Any],
+    document: Mapping[str, Any],
+    artifact: RuntimeBindingIndexArtifact,
+    document_digest: str,
+) -> None:
+    """Check every binding-index OCI descriptor and config link."""
+    metadata = document.get("metadata")
+    plugin_digest = metadata.get("pluginDigest") if isinstance(metadata, Mapping) else None
+    generation = metadata.get("generation") if isinstance(metadata, Mapping) else None
+    if (
+        artifact.config.descriptor.media_type != OCI_RUNTIME_BINDING_INDEX_CONFIG_MEDIA_TYPE
+        or artifact.document.descriptor.media_type != OCI_RUNTIME_BINDING_INDEX_DOCUMENT_MEDIA_TYPE
+        or manifest.get("schemaVersion") != 2
+        or manifest.get("mediaType") != OCI_IMAGE_MANIFEST_MEDIA_TYPE
+        or manifest.get("artifactType") != OCI_RUNTIME_BINDING_INDEX_ARTIFACT_TYPE
+        or manifest.get("config") != artifact.config.descriptor.as_dict()
+        or manifest.get("layers") != [artifact.document.descriptor.as_dict()]
+        or config.get("documentDigest") != document_digest
+        or config.get("pluginDigest") != plugin_digest
+        or config.get("generation") != generation
+        or config.get("contractBundleDigest") != load_bundle().digest
+    ):
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_ENVELOPE_INVALID")
+
+
+def _runtime_binding_index_descriptor_digests(
+    manifest: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Extract verified index config and document digests from its OCI manifest."""
+    if (
+        manifest.get("schemaVersion") != 2
+        or manifest.get("mediaType") != OCI_IMAGE_MANIFEST_MEDIA_TYPE
+        or manifest.get("artifactType") != OCI_RUNTIME_BINDING_INDEX_ARTIFACT_TYPE
+    ):
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_MANIFEST_INVALID")
+    config = manifest.get("config")
+    layers = manifest.get("layers")
+    if not isinstance(config, Mapping) or not isinstance(layers, list) or len(layers) != 1:
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_MANIFEST_INVALID")
+    layer = layers[0]
+    config_digest = config.get("digest")
+    document_digest = layer.get("digest") if isinstance(layer, Mapping) else None
+    if (
+        config.get("mediaType") != OCI_RUNTIME_BINDING_INDEX_CONFIG_MEDIA_TYPE
+        or not _is_sha256_digest(config_digest)
+        or not isinstance(layer, Mapping)
+        or layer.get("mediaType") != OCI_RUNTIME_BINDING_INDEX_DOCUMENT_MEDIA_TYPE
+        or not _is_sha256_digest(document_digest)
+    ):
+        raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_MANIFEST_INVALID")
+    assert isinstance(config_digest, str) and isinstance(document_digest, str)
+    return config_digest, document_digest
 
 
 def _json_mapping(content: bytes, failure_code: str) -> Mapping[str, Any]:

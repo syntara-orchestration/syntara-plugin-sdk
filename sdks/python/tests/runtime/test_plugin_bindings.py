@@ -398,6 +398,45 @@ def test_binds_every_custom_runner_target_and_skips_other_kinds(plugin_root: Pat
     )
 
 
+def test_workload_selection_binds_only_steps_assigned_to_that_workload(
+    plugin_root: Path,
+) -> None:
+    plugin = _plugin_document(["steps/python.yaml", "steps/bash.yaml"])
+    specification = plugin["spec"]
+    assert isinstance(specification, dict)
+    specification.pop("workload")
+    specification["workloads"] = {
+        "python": {"image": "python-image"},
+        "bash": {"image": "bash-image"},
+    }
+
+    def manifests(package: str) -> dict[str, Any]:
+        python_step = _action_document(f"{package}.steps:SampleActionStep", name="python-step")
+        python_step["spec"]["runtime"]["workload"] = "python"
+        bash_step = _action_document(f"{package}.steps:SampleActionStep", name="bash-step")
+        bash_step["spec"]["runtime"]["workload"] = "bash"
+        return {
+            "docs/README.md": "# Demo plugin\n",
+            "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "steps/python.yaml": python_step,
+            "steps/bash.yaml": bash_step,
+        }
+
+    package = _write_plugin(
+        plugin_root,
+        plugin=plugin,
+        manifests=manifests,
+    )
+
+    python_bindings = load_plugin_bindings(package, workload_id="python")
+    bash_bindings = load_plugin_bindings(package, workload_id="bash")
+
+    assert python_bindings.step_identities == ("sample.demo.python-step",)
+    assert bash_bindings.step_identities == ("sample.demo.bash-step",)
+    with pytest.raises(StepBindingError, match="no custom-runner Step targets for workload"):
+        load_plugin_bindings(package, workload_id="missing")
+
+
 @pytest.mark.parametrize(
     ("identity", "inputs", "expected"),
     [

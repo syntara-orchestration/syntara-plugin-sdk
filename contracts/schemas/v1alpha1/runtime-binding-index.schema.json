@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.syntara.io/v1alpha1/runtime-binding-index.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "syntara.io/v1alpha1"},
+    "kind": {"const": "RuntimeBindingIndex"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pluginDigest", "generation", "issuedAt", "expiresAt"],
+      "properties": {
+        "pluginDigest": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+        "generation": {"type": "integer", "minimum": 1},
+        "issuedAt": {"$ref": "common.schema.json#/$defs/rfc3339Timestamp"},
+        "expiresAt": {"$ref": "common.schema.json#/$defs/rfc3339Timestamp"},
+        "previousIndexDigest": {"$ref": "common.schema.json#/$defs/sha256Digest"}
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "entries"],
+      "properties": {
+        "contractVersion": {"const": "syntara.io/v1alpha1"},
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["bindingRepository", "bindingDigest", "status"],
+            "properties": {
+              "bindingRepository": {"$ref": "common.schema.json#/$defs/repository"},
+              "bindingDigest": {"$ref": "common.schema.json#/$defs/sha256Digest"},
+              "release": {"type": "string", "minLength": 1, "maxLength": 128},
+              "status": {"enum": ["available", "withdrawn"]}
+            }
+          }
+        }
+      }
+    }
+  }
+}

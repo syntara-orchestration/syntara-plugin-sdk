@@ -19,6 +19,18 @@
                     "required": ["image"],
                     "properties": {"image": {"$ref": "common.schema.json#/$defs/identifier"}}
                 },
+                "workloads": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "propertyNames": {"$ref": "common.schema.json#/$defs/identifier"},
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["image"],
+                        "properties": {"image": {"$ref": "common.schema.json#/$defs/identifier"}}
+                    },
+                    "description": "Named custom-runner workloads. Each image is a logical image build ID, not a registry tag."
+                },
                 "providers": {
                     "type": "array",
                     "items": {
@@ -51,7 +63,8 @@
                         "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+\\.ya?ml$"
                     }
                 }
-            }
+            },
+            "not": {"required": ["workload", "workloads"]}
         }
     }
 }
