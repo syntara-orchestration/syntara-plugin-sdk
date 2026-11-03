@@ -1270,7 +1270,19 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
         try:
             value = yaml.load(raw, Loader=UniqueKeyLoader)
         except RecursionError as error:
-            raise ValueError(f"{path.name} is nested too deeply to parse.") from error
+            # Raised directly, not as a ValueError: the classifier below
+            # inspects the message, and this message embeds the filename,
+            # which could itself contain a classifier keyword like "anchors".
+            raise CompilationError(
+                [
+                    _diagnostic(
+                        "DOCUMENT_LIMIT_EXCEEDED",
+                        f"{path.name} is nested too deeply to parse.",
+                        str(path),
+                        "Use a bounded YAML document without anchors or aliases.",
+                    )
+                ]
+            ) from error
         _enforce_document_limits(value)
     except OSError as error:
         raise CompilationError(

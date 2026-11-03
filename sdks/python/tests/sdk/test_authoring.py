@@ -1131,6 +1131,20 @@ def test_deeply_nested_document_reports_a_bounded_diagnostic(tmp_path: Path) -> 
     assert "nested too deeply to parse" in error.value.diagnostics[0].message
 
 
+def test_deeply_nested_document_named_after_a_classifier_keyword(tmp_path: Path) -> None:
+    deep = tmp_path / "anchors.yaml"
+    deep.write_text("[" * 2000 + "1" + "]" * 2000)
+    request = BuildRequest(deep)
+
+    # The diagnostic message embeds the filename; the nesting failure must
+    # not be misclassified as a forbidden-anchor violation because the file
+    # happens to be named "anchors.yaml".
+    with pytest.raises(CompilationError) as error:
+        compile_workspace(request)
+    assert error.value.diagnostics[0].code == "DOCUMENT_LIMIT_EXCEEDED"
+    assert "nested too deeply to parse" in error.value.diagnostics[0].message
+
+
 def test_document_depth_limit_is_enforced_after_a_clean_parse(tmp_path: Path) -> None:
     deep = "\n".join(f"{'  ' * level}key{level}:" for level in range(150))
     deep_root = tmp_path / "depth"
