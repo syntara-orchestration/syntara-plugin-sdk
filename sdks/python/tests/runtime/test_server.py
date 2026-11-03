@@ -696,9 +696,14 @@ def test_runtime_bindings_factory_must_register_a_step() -> None:
         load_runtime_bindings(f"{__name__}:empty_bindings")
 
 
-def test_runtime_bindings_factory_failure_names_the_cause() -> None:
-    with pytest.raises(RuntimeServerError, match="could not be loaded: factory exploded"):
+def test_runtime_bindings_factory_failure_stays_bounded() -> None:
+    with pytest.raises(RuntimeServerError) as exc_info:
         load_runtime_bindings(f"{__name__}:failing_bindings")
+
+    message = str(exc_info.value)
+    assert "could not be loaded" in message
+    assert "factory exploded" not in message
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 def _resolved_record(kind: str = "custom-runner") -> dict[str, object]:

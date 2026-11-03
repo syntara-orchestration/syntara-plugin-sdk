@@ -34,8 +34,15 @@ _MAX_DOCUMENT_BYTES = 1024 * 1024
 _MAX_DOCUMENT_DEPTH = 100
 _MAX_DOCUMENT_NODES = 10_000
 _MAX_PATH_CHARACTERS = 1024
+_KIND_CONTRACTS: Mapping[str, str] = {
+    "Action": "action",
+    "Control": "control",
+    "Trigger": "trigger",
+    "IntegrationType": "integration",
+    "CredentialRecipe": "credential_recipe",
+}
+_DECLARED_KINDS = frozenset(_KIND_CONTRACTS)
 _STEP_KINDS = frozenset({"Action", "Control", "Trigger"})
-_DECLARED_KINDS = _STEP_KINDS | frozenset({"IntegrationType", "CredentialRecipe"})
 _SCHEMA_SOURCE_FIELDS = ("input", "output", "error")
 
 
@@ -48,13 +55,14 @@ def load_plugin_bindings(
 
     Reads ``<package>/<manifests_root>/plugin.yaml`` and the target manifests
     it declares from package resources, in the formats the compiler accepts:
-    YAML or JSON documents with inline or asset-backed schema sources. Each
-    custom-runner Action, Control, and Trigger target is bound through
+    YAML or JSON documents with inline or asset-backed schema sources. Every
+    declared target manifest is validated against its kind contract.
+    Each custom-runner Action, Control, and Trigger target is bound through
     ``InstalledStepManifest.from_manifest`` and
     ``StepDescriptor.for_installed_step`` with its identity derived as
     ``namespace.plugin.step``, so the existing provenance and drift checks
     apply. Platform-runner targets, ``IntegrationType`` targets, and
-    ``CredentialRecipe`` targets are skipped.
+    ``CredentialRecipe`` targets are skipped without binding.
 
     Args:
         package: The importable plugin package that carries the manifests.
@@ -146,9 +154,12 @@ def _custom_runner_target(
 ) -> tuple[str, Mapping[str, Any]] | None:
     """Return the metadata name and runtime of one custom-runner Step target.
 
-    Returns ``None`` for targets the wrapper skips: ``IntegrationType`` and
-    ``CredentialRecipe`` targets, and Step targets whose runtime is not
-    ``custom-runner``. Unknown kinds are rejected.
+    Every declared target is first validated against its kind contract, so a
+    malformed platform-runner, ``IntegrationType``, or ``CredentialRecipe``
+    document is rejected even though it is never bound. Returns ``None`` for
+    targets the wrapper skips: ``IntegrationType`` and ``CredentialRecipe``
+    targets, and Step targets whose runtime is not ``custom-runner``.
+    Unknown kinds are rejected.
     """
 
     kind = document.get("kind")
@@ -156,6 +167,13 @@ def _custom_runner_target(
         message = (
             f"packaged target manifest {target_path!r} declares unsupported "
             f"kind {kind!r}; expected one of {', '.join(sorted(_DECLARED_KINDS))}"
+        )
+        raise StepBindingError(message)
+    contract_errors = validate_document(load_bundle(), _KIND_CONTRACTS[kind], document)
+    if contract_errors:
+        message = (
+            f"packaged target manifest {target_path!r} violates its contract: "
+            + "; ".join(contract_errors)
         )
         raise StepBindingError(message)
     if kind not in _STEP_KINDS:
@@ -236,10 +254,10 @@ def _declared_step(entry_point: object, target_path: str) -> BaseStep[Any, Any]:
         raise StepBindingError(message)
     try:
         module = importlib.import_module(module_name)
-    except ImportError as error:
+    except Exception as error:
         message = (
             f"could not import step entry point {entry_point!r} declared by "
-            f"{target_path!r}: {error}"
+            f"{target_path!r}"
         )
         raise StepBindingError(message) from error
     step_class = getattr(module, class_name, None)
@@ -261,6 +279,12 @@ def _declared_step(entry_point: object, target_path: str) -> BaseStep[Any, Any]:
         message = (
             f"step class {entry_point!r} declared by {target_path!r} must be "
             "constructible without arguments"
+        )
+        raise StepBindingError(message) from error
+    except Exception as error:
+        message = (
+            f"step class {entry_point!r} declared by {target_path!r} could not "
+            "be constructed"
         )
         raise StepBindingError(message) from error
 

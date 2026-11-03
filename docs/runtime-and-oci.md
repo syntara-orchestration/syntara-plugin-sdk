@@ -115,8 +115,10 @@ resources, in the formats the compiler accepts. Package the plugin workspace
 inside the plugin wheel under `manifests/`, mirroring the source layout the
 [Existing Step](../examples/existing-step) example uses. Each Step identity is
 derived as `namespace.plugin.step` from the plugin metadata and each target's
-`metadata.name`; identities are never hard-coded. Platform-runner,
-`IntegrationType`, and `CredentialRecipe` targets are skipped. Startup fails
+`metadata.name`; identities are never hard-coded. Every declared target
+manifest is validated against its kind contract; platform-runner,
+`IntegrationType`, and `CredentialRecipe` targets are then skipped without
+binding. Startup fails
 with an actionable error when a manifest or declared asset is missing or
 malformed, an entry point cannot be imported or does not name a `BaseStep`
 subclass, the manifest kind does not match the implementation, a step

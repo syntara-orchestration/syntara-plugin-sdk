@@ -103,6 +103,14 @@ class WrongKindStep(ControlStep[SampleActionInput, SampleActionOutput]):
 
 class NotAStep:
     """A plain class that is not a BaseStep subclass."""
+
+
+class ExplodingStep(ActionStep[SampleActionInput, SampleActionOutput]):
+    def __init__(self) -> None:
+        raise ValueError("constructor exploded")
+
+    def run(self, inputs: SampleActionInput, context: ExecutionContext) -> SampleActionOutput:
+        return SampleActionOutput(ticket_id=inputs.title)
 '''
 
 _ACTION_INPUT_SCHEMA = {
@@ -249,7 +257,10 @@ def _platform_action_document() -> dict[str, Any]:
             "description": "Fetches one URL through the platform runner.",
         },
         "spec": {
-            "runtime": {"kind": "platform-runner", "implementation": "http.v1"},
+            "runtime": {
+                "kind": "platform-runner",
+                "implementation": "syntara.http.request@1.0.0",
+            },
             "input": {"kind": "inline", "value": {"type": "object"}},
             "output": {"kind": "inline", "value": {"type": "object"}},
         },
@@ -265,7 +276,12 @@ def _integration_document() -> dict[str, Any]:
             "displayName": "Tracker",
             "description": "One external issue tracker.",
         },
-        "spec": {"endpoint": "https://tracker.example.test"},
+        "spec": {
+            "id": "sample.demo.tracker",
+            "endpointKinds": ["webhook"],
+            "credentialTypes": ["sample.demo.token"],
+            "configuration": {"kind": "inline", "value": {"type": "object"}},
+        },
     }
 
 
@@ -278,7 +294,17 @@ def _credential_recipe_document() -> dict[str, Any]:
             "displayName": "Tracker token",
             "description": "One tracker API token.",
         },
-        "spec": {"kind": "token"},
+        "spec": {
+            "id": "sample.demo.token",
+            "integrationType": "sample.demo.tracker",
+            "credentialSchema": {"kind": "inline", "value": {"type": "object"}},
+            "secretFields": ["token"],
+            "issuance": {
+                "kind": "oauth2-authorization-code.v1",
+                "scopes": ["repo"],
+                "pkce": True,
+            },
+        },
     }
 
 
@@ -302,6 +328,7 @@ def _write_plugin(
     manifests: Callable[[str], Mapping[str, Any]] | Mapping[str, Any],
     manifests_root: str = "manifests",
     serialize: Callable[[Mapping[str, Any]], str] | None = None,
+    extra_modules: Mapping[str, str] | None = None,
 ) -> str:
     """Write one importable plugin package with its packaged manifests."""
 
@@ -310,6 +337,8 @@ def _write_plugin(
     (root / manifests_root).mkdir(parents=True)
     (root / "__init__.py").write_text("", encoding="utf-8")
     (root / "steps.py").write_text(_STEPS_SOURCE, encoding="utf-8")
+    for module_name, source in (extra_modules or {}).items():
+        (root / module_name).write_text(source, encoding="utf-8")
     document = plugin(package) if callable(plugin) else plugin
     _write_document(root / manifests_root / "plugin.yaml", document, serialize)
     resolved = manifests(package) if callable(manifests) else manifests
@@ -610,6 +639,44 @@ def test_entry_point_that_is_not_a_base_step(plugin_root: Path) -> None:
         load_plugin_bindings(package)
 
 
+def test_module_level_import_failure_is_wrapped(plugin_root: Path) -> None:
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/create-ticket.yaml"]),
+        manifests=lambda package_name: {
+            "docs/README.md": "# Demo plugin\n",
+            "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "steps/create-ticket.yaml": _action_document(
+                f"{package_name}.exploding:Step"
+            ),
+        },
+        extra_modules={
+            "exploding.py": '"""A module that fails at import time."""\n\n'
+            'raise RuntimeError("module exploded")\n',
+        },
+    )
+
+    with pytest.raises(StepBindingError, match="could not import"):
+        load_plugin_bindings(package)
+
+
+def test_constructor_failure_is_wrapped(plugin_root: Path) -> None:
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/create-ticket.yaml"]),
+        manifests=lambda package_name: {
+            "docs/README.md": "# Demo plugin\n",
+            "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "steps/create-ticket.yaml": _action_document(
+                f"{package_name}.steps:ExplodingStep"
+            ),
+        },
+    )
+
+    with pytest.raises(StepBindingError, match="could not be constructed"):
+        load_plugin_bindings(package)
+
+
 def test_kind_mismatch_between_manifest_and_implementation(plugin_root: Path) -> None:
     package = _write_plugin(
         plugin_root,
@@ -684,7 +751,7 @@ def test_credential_recipe_targets_are_skipped(plugin_root: Path) -> None:
     assert bindings.step_identities == ("sample.demo.create-ticket",)
 
 
-def test_integration_type_with_custom_runner_runtime_is_skipped(plugin_root: Path) -> None:
+def test_integration_type_with_custom_runner_runtime_is_rejected(plugin_root: Path) -> None:
     def manifests(package_name: str) -> dict[str, Any]:
         return {
             "docs/README.md": "# Demo plugin\n",
@@ -698,6 +765,10 @@ def test_integration_type_with_custom_runner_runtime_is_skipped(plugin_root: Pat
                     "description": "One external issue tracker.",
                 },
                 "spec": {
+                    "id": "sample.demo.tracker",
+                    "endpointKinds": ["webhook"],
+                    "credentialTypes": ["sample.demo.token"],
+                    "configuration": {"kind": "inline", "value": {"type": "object"}},
                     "runtime": {
                         "kind": "custom-runner",
                         "entryPoint": f"{package_name}.steps:SampleActionStep",
@@ -715,9 +786,64 @@ def test_integration_type_with_custom_runner_runtime_is_skipped(plugin_root: Pat
         manifests=manifests,
     )
 
-    bindings = load_plugin_bindings(package)
+    # Every target is contract-validated before skipping, so an
+    # IntegrationType cannot smuggle in a custom-runner runtime.
+    with pytest.raises(StepBindingError, match="violates its contract"):
+        load_plugin_bindings(package)
 
-    assert bindings.step_identities == ("sample.demo.create-ticket",)
+
+@pytest.mark.parametrize(
+    "malformed_target",
+    [
+        # A platform-runner Action missing its required implementation.
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "Action",
+            "metadata": {
+                "name": "fetch-http",
+                "displayName": "Fetch HTTP",
+                "description": "Fetches one URL through the platform runner.",
+            },
+            "spec": {
+                "runtime": {"kind": "platform-runner"},
+                "input": {"kind": "inline", "value": {"type": "object"}},
+                "output": {"kind": "inline", "value": {"type": "object"}},
+            },
+        },
+        # An IntegrationType missing its required spec fields.
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "IntegrationType",
+            "metadata": {
+                "name": "tracker",
+                "displayName": "Tracker",
+                "description": "One external issue tracker.",
+            },
+            "spec": {"endpoint": "https://tracker.example.test"},
+        },
+    ],
+)
+def test_malformed_skipped_targets_are_rejected(
+    plugin_root: Path, malformed_target: dict[str, Any]
+) -> None:
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/skipped.yaml", "steps/create-ticket.yaml"]),
+        manifests=lambda package_name: {
+            "docs/README.md": "# Demo plugin\n",
+            "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "steps/skipped.yaml": malformed_target,
+            "steps/create-ticket.yaml": _action_document(
+                f"{package_name}.steps:SampleActionStep"
+            ),
+        },
+    )
+
+    # Skipped kinds are contract-validated before filtering, so a malformed
+    # platform-runner or IntegrationType document fails startup even when a
+    # valid custom-runner target exists.
+    with pytest.raises(StepBindingError, match="violates its contract"):
+        load_plugin_bindings(package)
 
 
 def test_manifests_root_override(plugin_root: Path) -> None:
@@ -852,13 +978,11 @@ def test_unknown_target_kind_is_rejected(plugin_root: Path) -> None:
 @pytest.mark.parametrize(
     ("asset_path", "message"),
     [
-        ("../outside.json", "must not contain empty, '.', or '..' segments"),
-        ("/etc/passwd", "must be a relative POSIX path"),
         (".hidden.json", "must not contain hidden segments"),
-        ("schemas/../outside.json", "must not contain empty, '.', or '..' segments"),
+        ("x" * 1030, "must not exceed 1024 characters"),
     ],
 )
-def test_unsafe_asset_paths_are_rejected_at_the_containment_layer(
+def test_asset_paths_the_contract_allows_are_rejected_at_the_containment_layer(
     plugin_root: Path, asset_path: str, message: str
 ) -> None:
     package = _write_plugin(
@@ -873,8 +997,32 @@ def test_unsafe_asset_paths_are_rejected_at_the_containment_layer(
         },
     )
 
-    # Pin the containment layer's own messages: without them, a traversal
-    # path is only rejected later by the contract layer, after the wrapper
-    # has already read the file outside the manifests root.
+    # The contract's asset-path pattern allows these; only the wrapper's
+    # containment layer rejects them, so its messages are pinned here.
     with pytest.raises(StepBindingError, match=re.escape(message)):
+        load_plugin_bindings(package)
+
+
+@pytest.mark.parametrize(
+    "asset_path",
+    ["../outside.json", "/etc/passwd", "schemas/../outside.json"],
+)
+def test_traversal_asset_paths_are_rejected_by_the_target_contract(
+    plugin_root: Path, asset_path: str
+) -> None:
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/create-ticket.yaml"]),
+        manifests=lambda package_name: {
+            "docs/README.md": "# Demo plugin\n",
+            "steps/create-ticket.yaml": _action_document(
+                f"{package_name}.steps:SampleActionStep",
+                input_source={"kind": "asset", "path": asset_path},
+            ),
+        },
+    )
+
+    # Every target is contract-validated before assets resolve, so traversal
+    # paths are rejected by the contract pattern itself.
+    with pytest.raises(StepBindingError, match="violates its contract"):
         load_plugin_bindings(package)
