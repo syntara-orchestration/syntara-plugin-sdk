@@ -17,6 +17,7 @@ from syntara_plugin.testing import (
     build_execution_context,
     invoke_step,
     invoke_step_in_container,
+    secret_sentinel,
 )
 from syntara_plugin.testing.payloads import (
     FailingReferenceStep,
@@ -361,6 +362,19 @@ def test_equivalence_assertion_requires_direct_first() -> None:
     container = invoke_step_in_container(ReferenceControlStep(), {"title": "x"})
     with pytest.raises(AssertionError, match="direct outcome first"):
         assert_outcomes_equivalent(container, direct)
+
+
+def test_synthetic_sensitive_input_does_not_leak_on_either_invocation_path() -> None:
+    sentinel = secret_sentinel()
+    inputs = {"title": "deploy", "api_token": sentinel}
+    context = build_execution_context(invocation_id="sensitive-input-redaction")
+    direct = invoke_step(ReferenceControlStep(), inputs, context=context)
+    container = invoke_step_in_container(ReferenceControlStep(), inputs, context=context)
+
+    assert_outcomes_equivalent(direct, container)
+    assert direct.ok and container.ok
+    assert_no_secrets(direct, [sentinel])
+    assert_no_secrets(container, [sentinel])
 
 
 def test_equivalence_assertion_detects_different_outcomes() -> None:
