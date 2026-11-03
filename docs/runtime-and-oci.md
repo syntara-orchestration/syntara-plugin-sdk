@@ -123,7 +123,7 @@ def create_bindings() -> StepBindings:
 manifests it declares, and any asset-backed schema documents from package
 resources, in the formats the compiler accepts. Package the plugin workspace
 inside the plugin wheel under `manifests/`, mirroring the source layout the
-[Existing step type](../examples/existing-step) example uses. Each step type identity is
+[Existing step types](../examples/existing-step) example uses. Each step type identity is
 derived as `namespace.plugin.step` from the plugin metadata and each target's
 `metadata.name`; identities are never hard-coded. Every declared target
 manifest is validated against its kind contract; platform-runner,
@@ -188,7 +188,7 @@ resolved Python entry points. The final image owns its runtime-config file and
 adapter package versions; platform registration and image selection remain
 outside this SDK boundary.
 
-The checked-in [Existing step type](../examples/existing-step) prototype exercises
+The checked-in [Existing step types](../examples/existing-step) prototype exercises
 this path for Action, Control, and Trigger. `make test-integration` builds its
 plugin wheel, installs it with the Python contracts distribution, and invokes
 all three manifest-declared entry points over the container ABI. The current
@@ -573,7 +573,7 @@ needed data already lives. The SDK does not implement them.
   by the revision check.
 - **Staging and import**: install the artifact's plugin wheel and the
   registration manifest into the workload image, as the `--with-workload`
-  flow and the Existing step type example's Containerfile do.
+  flow and the Existing step types example's Containerfile do.
 - **Trust**: `InstalledStepManifest.from_manifest` is the authorized-document
   boundary. The SDK records opaque provenance for factory-created objects but
   cannot establish remote or cryptographic provenance; the platform supplies
