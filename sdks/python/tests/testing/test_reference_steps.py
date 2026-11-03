@@ -76,9 +76,13 @@ def test_reference_success_matches_the_installed_contract_on_both_paths(
     container = invoke_step_in_container(reference_binding, case.inputs, context=context)
 
     assert_outcomes_equivalent(direct, container)
-    assert direct.ok and direct.status == 0 and direct.status_message == "Completed"
-    assert direct.error is None and direct.raised is None
-    assert direct.run_calls == container.run_calls == 1
+    assert direct.ok
+    assert direct.status == 0
+    assert direct.status_message == "Completed"
+    assert direct.error is None
+    assert direct.raised is None
+    assert direct.run_calls == 1
+    assert container.run_calls == 1
     assert direct.output == {
         "summary": f"processed {case.inputs['title']}",
         "priority": case.inputs.get("priority", "low"),
@@ -101,7 +105,11 @@ def test_reference_invalid_input_short_circuits_on_both_paths(
     container = invoke_step_in_container(reference_binding, case.inputs, context=context)
 
     assert_outcomes_equivalent(direct, container)
-    assert not direct.ok and direct.status == 1
-    assert direct.raised is None and direct.output is None
-    assert direct.error is not None and direct.error.code == "INVALID_INPUT"
-    assert direct.run_calls == container.run_calls == 0
+    assert not direct.ok
+    assert direct.status == 1
+    assert direct.raised is None
+    assert direct.output is None
+    assert direct.error is not None
+    assert direct.error.code == "INVALID_INPUT"
+    assert direct.run_calls == 0
+    assert container.run_calls == 0
