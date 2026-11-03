@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import uuid
 from io import StringIO
 from pathlib import Path
@@ -403,6 +404,88 @@ _LEAK_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {"echo": {"type": "string"}},
     "required": ["echo"],
+}
+
+_SCALAR_LEAK_SOURCE = '''"""A custom-runner Action step that returns numeric credential values."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import ActionStep, ExecutionContext
+
+
+class ScalarLeakInput(BaseModel):
+    title: str
+    priority: str = "low"
+    api_token: str = ""
+
+
+class ScalarLeakOutput(BaseModel):
+    pin: int
+    ratio: float
+    enabled: bool
+    nested: dict
+    label: str
+
+
+class ScalarLeakStep(ActionStep[ScalarLeakInput, ScalarLeakOutput]):
+    def run(self, inputs: ScalarLeakInput, context: ExecutionContext) -> ScalarLeakOutput:
+        # A workload that read its mounted credential and returned what it
+        # found: every value here equals one the author supplied.
+        return ScalarLeakOutput(
+            pin=123456,
+            ratio=12.34,
+            enabled=True,
+            nested={"pin": 123456, "enabled": True},
+            label="pin 123456 ratio 12.34",
+        )
+'''
+
+_SCALAR_LEAK_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "pin": {"type": "integer"},
+        "ratio": {"type": "number"},
+        "enabled": {"type": "boolean"},
+        "nested": {"type": "object"},
+        "label": {"type": "string"},
+    },
+    "required": ["pin", "ratio", "enabled", "nested", "label"],
+}
+
+_SCALAR_CREDENTIAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["pin", "ratio", "enabled"],
+    "properties": {
+        "pin": {"type": "integer"},
+        "ratio": {"type": "number"},
+        "enabled": {"type": "boolean"},
+    },
+}
+
+_ONE_REQUIRED_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["username"],
+    "properties": {"username": {"type": "string"}, "password": {"type": "string"}},
+}
+
+_ONE_OPTIONAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"token": {"type": "string", "minLength": 8}},
+}
+
+_MIXED_CREDENTIAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["token", "pin", "enabled"],
+    "properties": {
+        "token": {"type": "string", "minLength": 8},
+        "pin": {"type": "integer"},
+        "enabled": {"type": "boolean"},
+    },
 }
 
 
@@ -2865,6 +2948,28 @@ def test_step_stdout_is_scrubbed_of_supplied_secrets(tmp_path: Path, capsys) -> 
     assert "SECRET-KEY-99" not in captured.out
 
 
+def test_step_stderr_writes_are_scrubbed_of_supplied_secrets(
+    tmp_path: Path, capsys
+) -> None:
+    """A Step writing straight to sys.stderr cannot leak a secret either."""
+
+    stderr_source = _SHORT_SECRET_SOURCE.replace(
+        'return KeyOutput(echo=f"processed key {inputs.api_key}")',
+        'import sys\n'
+        '        print(f"DEBUG: using key {inputs.api_key}", file=sys.stderr)\n'
+        '        return KeyOutput(echo="done")',
+    )
+    workspace = _write_key_workspace(tmp_path / "ws", stderr_source)
+
+    status = _run_input(workspace, '{"title": "x", "api_key": "SECRET-KEY-99"}')
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "DEBUG: using key ***" in captured.err
+    assert "SECRET-KEY-99" not in captured.err
+    assert "SECRET-KEY-99" not in captured.out
+
+
 def test_ambiguous_target_guidance_keeps_the_tls_options(
     tmp_path: Path, capsys
 ) -> None:
@@ -2907,3 +3012,908 @@ def test_ambiguous_target_guidance_keeps_the_tls_options(
         f"--tls-ca '{material}/ca.crt' --tls-cert '{material}/client.crt' "
         f"--tls-key '{material}/client.key'" in captured.err
     )
+
+
+_CREDENTIAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["token"],
+    "properties": {"token": {"type": "string", "minLength": 8}},
+}
+_PAIR_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["username", "password"],
+    "properties": {"username": {"type": "string"}, "password": {"type": "string"}},
+}
+_TOKEN = "tok-abcdef123456"
+_RECIPE = "run.tracker.api-token"
+_INTEGRATION = "run.tracker.connection"
+
+
+def _write_credential_workspace(
+    root: Path,
+    *,
+    integration_type: str | None = _INTEGRATION,
+    credential_schema: dict[str, Any] | None = None,
+    leaking: bool = False,
+    scalar_leaking: bool = False,
+) -> Path:
+    """Write a workspace whose Action reaches one credential recipe.
+
+    No example plugin declares an integration type, so the run command's
+    credential paths need a workspace built here.
+    """
+
+    package = f"cred_pkg_{uuid.uuid4().hex[:8]}"
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / package).mkdir(parents=True, exist_ok=True)
+    (root / "plugin.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: run
+  name: cred-fixture-{uuid.uuid4().hex[:8]}
+  version: 0.1.0
+  displayName: Credential tests
+  description: Credential fixtures.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: run-workload
+  targets:
+    - steps/echo/manifest.yaml
+    - steps/connection/manifest.yaml
+    - steps/recipe/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    declared = (
+        f"  integrationType: {integration_type}\n" if integration_type is not None else ""
+    )
+    if scalar_leaking:
+        source, class_name = _SCALAR_LEAK_SOURCE, "ScalarLeakStep"
+        output_schema = _SCALAR_LEAK_OUTPUT_SCHEMA
+    elif leaking:
+        source, class_name = _LEAKING_SOURCE, "LeakStep"
+        output_schema = _LEAK_OUTPUT_SCHEMA
+    else:
+        source, class_name = _STEP_SOURCE, "EchoStep"
+        output_schema = _ECHO_OUTPUT_SCHEMA
+    (root / "steps/echo").mkdir(parents=True, exist_ok=True)
+    (root / "steps/echo/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: echo
+  displayName: Echo
+  description: Fixture target.
+spec:
+{declared}  runtime:
+    kind: custom-runner
+    entryPoint: {package}.steps:{class_name}
+  input:
+    kind: inline
+    value: {_ECHO_SCHEMA}
+  output:
+    kind: inline
+    value: {output_schema}
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    (root / "steps/connection").mkdir(parents=True, exist_ok=True)
+    (root / "steps/connection/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: IntegrationType
+metadata:
+  name: connection
+  displayName: Tracker connection
+  description: Connects a tracker.
+spec:
+  id: {_INTEGRATION}
+  endpointKinds: [tracker-cloud]
+  credentialTypes: [{_RECIPE}]
+  configuration:
+    kind: inline
+    value: {{type: object}}
+""",
+        encoding="utf-8",
+    )
+    (root / "steps/recipe").mkdir(parents=True, exist_ok=True)
+    (root / "steps/recipe/manifest.yaml").write_text(
+        f"""apiVersion: syntara.io/v1alpha1
+kind: CredentialRecipe
+metadata:
+  name: api-token
+  displayName: API token
+  description: A tracker API token.
+spec:
+  id: {_RECIPE}
+  integrationType: {_INTEGRATION}
+  credentialSchema:
+    kind: inline
+    value: {credential_schema or _CREDENTIAL_SCHEMA}
+  secretFields: [token, password]
+  issuance:
+    kind: static-bearer.v1
+""",
+        encoding="utf-8",
+    )
+    (root / "docs/README.md").write_text("# Credential tests\n", encoding="utf-8")
+    (root / f"{package}/__init__.py").write_text("", encoding="utf-8")
+    (root / f"{package}/steps.py").write_text(source, encoding="utf-8")
+    return root
+
+
+def _credential_run(
+    workspace: Path, *source: str, extra: list[str] | None = None
+) -> list[str]:
+    """Build one run invocation supplying inputs and zero or more credentials."""
+
+    arguments = [
+        "run",
+        "--manifest",
+        str(workspace / "plugin.yaml"),
+        "echo",
+        "--input",
+        '{"title": "Broken build"}',
+    ]
+    for item in source:
+        arguments.extend(["--credential", item])
+    return arguments + (extra or [])
+
+
+def test_a_credential_from_stdin_is_delivered_and_reported_by_name(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The primary path: the value never touches the command line or disk."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setattr("sys.stdin", StringIO(f"{_TOKEN}\n"))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert _report_field(captured.out, "Credentials") == _RECIPE
+    assert _TOKEN not in captured.out
+    assert _TOKEN not in captured.err
+
+
+def test_a_credential_from_an_environment_variable_never_reaches_the_step(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """env: is a convenience for the CLI, not a delivery mechanism."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setenv("TRACKER_TOKEN", _TOKEN)
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=env:TRACKER_TOKEN"))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert _report_field(captured.out, "Credentials") == _RECIPE
+    assert _TOKEN not in captured.out
+
+
+def test_a_credential_from_a_file_outside_the_workspace_is_accepted(
+    tmp_path: Path, capsys
+) -> None:
+    secret = tmp_path / "token"
+    secret.write_text(f"{_TOKEN}\n", encoding="utf-8")
+    secret.chmod(0o600)
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=file:{secret}"))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert _report_field(captured.out, "Credentials") == _RECIPE
+    assert "readable by other local users" not in captured.err
+
+
+def test_a_world_readable_credential_file_warns_without_refusing(
+    tmp_path: Path, capsys
+) -> None:
+    """Permissions are the author's call; the risk is still worth naming."""
+
+    secret = tmp_path / "token"
+    secret.write_text(_TOKEN, encoding="utf-8")
+    secret.chmod(0o644)
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=file:{secret}"))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert f"warning: {secret} is readable by other local users" in captured.err
+    assert _TOKEN not in captured.err
+
+
+def test_a_credential_file_inside_the_workspace_is_refused(tmp_path: Path, capsys) -> None:
+    """A secret in the workspace can reach the artifact or version control."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    secret = workspace / "token"
+    secret.write_text(_TOKEN, encoding="utf-8")
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=file:{secret}"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "inside the plugin workspace" in captured.err
+    assert _TOKEN not in captured.err
+
+
+def test_an_inline_credential_value_is_refused_with_the_three_sources(
+    tmp_path: Path, capsys
+) -> None:
+    """The same reason --input-file exists: history and /proc/<pid>/cmdline."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, f"{_RECIPE}={_TOKEN}"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "does not accept an inline value" in captured.err
+    assert "--credential NAME=-" in captured.err
+    assert "--credential NAME=file:PATH" in captured.err
+    assert "--credential NAME=env:VAR" in captured.err
+    # The refused value is exactly the text that must not be echoed back.
+    assert _TOKEN not in captured.err
+
+
+def test_a_credential_name_outside_the_integration_type_is_refused(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, "run.tracker.other=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "is not a credential recipe reachable from run." in captured.err
+    assert f"Reachable through {_INTEGRATION}: {_RECIPE}" in captured.err
+
+
+def test_a_credential_name_the_secret_mount_cannot_hold_is_refused(
+    tmp_path: Path, capsys
+) -> None:
+    """A name outside the ABI mount charset fails as usage, not mid-run."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, "run.tracker:api-token=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "cannot be delivered as a credential file" in captured.err
+    assert "letters, digits, '.', '_', and '-'" in captured.err
+
+
+def test_fields_the_recipe_does_not_declare_secret_are_still_scrubbed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A partial secretFields declaration must not decide what leaks."""
+
+    from types import SimpleNamespace
+
+    from syntara_plugin.sdk.runner import (
+        CredentialRecipe,
+        CredentialSpec,
+        credential_secret_values,
+        load_credentials,
+    )
+
+    monkeypatch.setenv(
+        "TRACKER_CREDENTIAL", '{"username": "user-one", "token": "tok-abcdef123456"}'
+    )
+    recipe = CredentialRecipe(
+        name=_RECIPE,
+        schema={
+            "type": "object",
+            "properties": {
+                "username": {"type": "string"},
+                "token": {"type": "string", "minLength": 8},
+            },
+            "required": ["username", "token"],
+        },
+        secret_fields=("token",),
+    )
+    spec = CredentialSpec(_RECIPE, "env", "TRACKER_CREDENTIAL")
+    target = SimpleNamespace(identity="run.cred-fixture.echo", integration_type=_INTEGRATION)
+
+    loaded, _warnings = load_credentials(
+        (spec,), {_RECIPE: recipe}, target, workspace=tmp_path
+    )
+
+    scrubbed = credential_secret_values(loaded)
+    assert "tok-abcdef123456" in scrubbed
+    assert "user-one" in scrubbed  # not declared in secretFields, still scrubbed
+
+
+def test_source_mode_warns_the_credential_path_is_not_the_production_mount(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Source mode cannot create /var/run/syntara/secrets, so the author hears it."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "delivers credential files at a temporary path" in captured.err
+    assert "/var/run/syntara/secrets" in captured.err
+    assert "invocation.credential_file_paths" in captured.err
+
+
+def test_a_target_without_an_integration_type_reaches_no_credential(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws", integration_type=None)
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "declares no integrationType" in captured.err
+
+
+def test_a_credential_violating_its_schema_names_the_field_never_the_value(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setattr("sys.stdin", StringIO("short"))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert f"{_RECIPE}/token: minLength constraint is not satisfied" in captured.err
+    assert "short" not in captured.err
+
+
+def test_a_raw_value_is_wrapped_into_the_recipes_only_field(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A single-field recipe accepts the bare token authors actually hold."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 0
+
+
+def test_a_multi_field_recipe_requires_the_complete_document(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """There is no unambiguous field to wrap a raw value into."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws", credential_schema=_PAIR_SCHEMA)
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "more than one field, so a raw value cannot be wrapped" in captured.err
+    assert "Declared fields: password, username" in captured.err
+    assert _TOKEN not in captured.err
+
+
+def test_a_multi_field_recipe_accepts_a_json_document(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws", credential_schema=_PAIR_SCHEMA)
+    monkeypatch.setattr(
+        "sys.stdin", StringIO(json.dumps({"username": "ana", "password": _TOKEN}))
+    )
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert _report_field(captured.out, "Credentials") == _RECIPE
+    assert _TOKEN not in captured.out
+
+
+def test_an_unset_environment_variable_is_a_usage_error(tmp_path: Path, capsys, monkeypatch) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.delenv("TRACKER_TOKEN", raising=False)
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=env:TRACKER_TOKEN"))
+
+    assert status == 2
+    assert "the environment variable TRACKER_TOKEN is not set" in capsys.readouterr().err
+
+
+def test_an_unreadable_credential_file_is_a_usage_error(tmp_path: Path, capsys) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    missing = tmp_path / "absent"
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=file:{missing}"))
+
+    assert status == 2
+    assert f"the credential file {missing} could not be read" in capsys.readouterr().err
+
+
+def test_an_empty_credential_source_names_no_file(tmp_path: Path, capsys) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=file:"))
+
+    assert status == 2
+    assert "names no file" in capsys.readouterr().err
+
+
+def test_a_credential_without_a_source_is_a_usage_error(tmp_path: Path, capsys) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, _RECIPE))
+
+    assert status == 2
+    assert "--credential expects NAME=SOURCE" in capsys.readouterr().err
+
+
+def test_the_same_credential_cannot_be_supplied_twice(tmp_path: Path, capsys) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(
+        _credential_run(workspace, f"{_RECIPE}=env:A", f"{_RECIPE}=env:B")
+    )
+
+    assert status == 2
+    assert f"--credential {_RECIPE} was supplied more than once" in capsys.readouterr().err
+
+
+def test_only_one_credential_can_read_standard_input(tmp_path: Path, capsys) -> None:
+    """Standard input is one stream, so it can carry exactly one value."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-", "run.tracker.other=-"))
+
+    assert status == 2
+    assert "only one credential can be read from standard input" in capsys.readouterr().err
+
+
+def test_a_credential_and_the_input_cannot_both_read_standard_input(
+    tmp_path: Path, capsys
+) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "echo",
+            "--input-file",
+            "-",
+            "--credential",
+            f"{_RECIPE}=-",
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "only one of --input-file - and --credential NAME=- can read" in captured.err
+
+
+def test_a_credential_is_refused_for_a_runtime_the_author_manages(
+    tmp_path: Path, capsys
+) -> None:
+    """The CLI cannot mount anything into a container it did not start."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(
+        _credential_run(
+            workspace,
+            f"{_RECIPE}=env:TRACKER_TOKEN",
+            extra=["--mode", "image", "--address", "127.0.0.1:50051"],
+        )
+    )
+
+    assert status == 2
+    assert "--credential cannot be used with --address" in capsys.readouterr().err
+
+
+def test_scalar_credential_values_are_scrubbed_from_the_output(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """An integer, float, or boolean credential cannot leak through --json."""
+
+    workspace = _write_credential_workspace(
+        tmp_path / "ws",
+        credential_schema=_SCALAR_CREDENTIAL_SCHEMA,
+        scalar_leaking=True,
+    )
+    monkeypatch.setattr(
+        "sys.stdin",
+        StringIO(json.dumps({"pin": 123456, "ratio": 12.34, "enabled": True})),
+    )
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-", extra=["--json"]))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert document["output"] == {
+        "pin": "***",
+        "ratio": "***",
+        "enabled": "***",
+        "nested": {"pin": "***", "enabled": "***"},
+        "label": "pin *** ratio ***",
+    }
+    assert "123456" not in captured.out
+    assert "12.34" not in captured.out
+
+
+def test_delivered_credential_values_read_back_as_output_are_scrubbed(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A Step that reads the delivered file and returns it cannot leak it.
+
+    The step-side accessor is a later story, so the handler wrapper stands in
+    for it: it reads the delivered file exactly as the Step eventually will
+    and returns the document — a string and a non-string field alike — as
+    the Step's output. The delivered values themselves, not look-alike
+    constants, are what the scrub machinery must catch.
+    """
+
+    from dataclasses import replace as dataclass_replace
+
+    from syntara_plugin.sdk import runner as runner_module
+
+    workspace = _write_credential_workspace(
+        tmp_path / "ws", credential_schema=_MIXED_CREDENTIAL_SCHEMA
+    )
+    supplied = {"token": _TOKEN, "pin": 123456, "enabled": True}
+    original = runner_module.container_step_for_binding
+
+    def echoing_binding(*args: Any, **kwargs: Any) -> Any:
+        handler = original(*args, **kwargs)
+
+        def echoing(invocation: Any) -> Any:
+            result = handler(invocation)
+            read_back = {
+                name: json.loads(Path(path).read_text(encoding="utf-8"))
+                for name, path in invocation.credential_file_paths.items()
+            }
+            return dataclass_replace(result, output=read_back)
+
+        return echoing
+
+    monkeypatch.setattr(runner_module, "container_step_for_binding", echoing_binding)
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps(supplied)))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-", extra=["--json"]))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert document["output"] == {
+        _RECIPE: {"token": "***", "pin": "***", "enabled": "***"}
+    }
+    assert _TOKEN not in captured.out
+    assert _TOKEN not in captured.err
+    assert "123456" not in captured.out
+
+
+def test_scalar_scrubbing_distinguishes_bool_int_and_float() -> None:
+    """bool subclasses int, so True must not match the credential integer 1."""
+
+    from syntara_plugin.sdk.runner import _scrub_structure
+
+    assert _scrub_structure({"count": 1, "flag": True}, (), (1,)) == {
+        "count": "***",
+        "flag": True,
+    }
+    assert _scrub_structure({"value": 1.0}, (), (1,)) == {"value": 1.0}
+    assert _scrub_structure({"value": 1.0}, (), (1.0,)) == {"value": "***"}
+    assert _scrub_structure([True, [False]], (), (True,)) == ["***", [False]]
+
+
+def test_a_pre_health_liveness_failure_is_scrubbed() -> None:
+    """A container log captured before health cannot carry a credential."""
+
+    from syntara_plugin.sdk.runner import RunExecutionError, _scrubbing_liveness
+
+    def dead_probe() -> None:
+        raise RunExecutionError(
+            "the workload container exited before its runtime became healthy",
+            detail=("container log (last lines):", f"startup failed: token {_TOKEN}"),
+        )
+
+    probe = _scrubbing_liveness(dead_probe, (_TOKEN,))
+
+    with pytest.raises(RunExecutionError) as raised:
+        probe()
+
+    detail = "\n".join(raised.value.detail)
+    assert _TOKEN not in detail
+    assert "token ***" in detail
+
+
+def test_a_recipe_with_one_optional_field_wraps_a_raw_value(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Exactly one declared property is wrappable, required or not."""
+
+    workspace = _write_credential_workspace(
+        tmp_path / "ws", credential_schema=_ONE_OPTIONAL_SCHEMA
+    )
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 0
+
+
+def test_a_recipe_with_optional_fields_requires_the_complete_document(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """One required property among several declared is no wrapping field."""
+
+    workspace = _write_credential_workspace(
+        tmp_path / "ws", credential_schema=_ONE_REQUIRED_SCHEMA
+    )
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "more than one field, so a raw value cannot be wrapped" in captured.err
+    assert "Declared fields: password, username" in captured.err
+    assert _TOKEN not in captured.err
+
+
+def test_raw_wrapping_follows_declared_properties_not_required() -> None:
+    """The declared set, not the required list, decides wrappability."""
+
+    from syntara_plugin.sdk.runner import CredentialRecipe, _sole_credential_field
+
+    def recipe(schema: dict[str, Any]) -> CredentialRecipe:
+        return CredentialRecipe(name=_RECIPE, schema=schema, secret_fields=())
+
+    one_required = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}},
+        "required": ["token"],
+    }
+    one_optional = {"type": "object", "properties": {"token": {"type": "string"}}}
+    many_one_required = {
+        "type": "object",
+        "properties": {"username": {}, "password": {}},
+        "required": ["username"],
+    }
+    many_optional = {"type": "object", "properties": {"username": {}, "password": {}}}
+
+    assert _sole_credential_field(recipe(one_required)) == "token"
+    assert _sole_credential_field(recipe(one_optional)) == "token"
+    assert _sole_credential_field(recipe(many_one_required)) is None
+    assert _sole_credential_field(recipe(many_optional)) is None
+
+
+def test_a_credential_name_at_the_filename_limit_is_parsed() -> None:
+    """255 bytes is the common NAME_MAX, so it must still be accepted."""
+
+    from syntara_plugin.sdk.runner import parse_credential_options
+
+    name = "a" * 255
+    specs = parse_credential_options((f"{name}=-",))
+    assert specs[0].name == name
+
+
+def test_an_overlong_credential_name_is_refused_as_usage(
+    tmp_path: Path, capsys
+) -> None:
+    """A name no filesystem can hold fails before any invocation starts."""
+
+    name = "a" * 256
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, f"{name}=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "cannot be delivered as a credential file" in captured.err
+    assert "ENAMETOOLONG" in captured.err
+
+
+def test_a_credential_file_write_failure_is_a_structured_error(monkeypatch) -> None:
+    """An unexpected delivery failure names the credential, never its value."""
+
+    from syntara_plugin.sdk.runner import (
+        LoadedCredential,
+        RunExecutionError,
+        credential_files,
+    )
+
+    def refuse(self: Path, data: bytes) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+    credential = LoadedCredential(
+        name=_RECIPE, document={"token": _TOKEN}, secret_values=(_TOKEN,)
+    )
+
+    with pytest.raises(RunExecutionError) as raised:
+        with credential_files((credential,), container_readable=False):
+            pass
+
+    assert "could not be created" in raised.value.message
+    assert _TOKEN not in raised.value.message
+    assert _TOKEN not in "\n".join(raised.value.detail)
+
+
+def test_template_mode_never_reads_a_credential(tmp_path: Path, capsys) -> None:
+    """Nothing executes, so --credential NAME=- must not block on stdin."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "echo",
+            "--credential",
+            f"{_RECIPE}=-",
+        ]
+    )
+
+    assert status == 2
+    assert json.loads(capsys.readouterr().out) == {"title": "", "priority": "low"}
+
+
+def test_a_malformed_credential_option_is_refused_in_template_mode(
+    tmp_path: Path, capsys
+) -> None:
+    """A usage error must not be swallowed by the template path."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "echo",
+            "--credential",
+            f"{_RECIPE}={_TOKEN}",
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "does not accept an inline value" in captured.err
+    assert _TOKEN not in captured.err
+
+
+def test_the_json_document_lists_credential_names_only(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-", extra=["--json"]))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert document["credentials"] == [_RECIPE]
+    assert _TOKEN not in captured.out
+
+
+def test_a_run_without_credentials_reports_none(tmp_path: Path, capsys) -> None:
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, extra=["--json"]))
+
+    assert status == 0
+    assert json.loads(capsys.readouterr().out)["credentials"] == []
+
+
+def test_a_credential_a_step_leaks_is_scrubbed_everywhere(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Delivery joins the scrub set, so a leaking Step cannot print the value."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws", leaking=True)
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(
+        _credential_run(
+            workspace,
+            f"{_RECIPE}=-",
+            extra=["--input", json.dumps({"title": _TOKEN, "api_token": _TOKEN * 2})],
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert status in (0, 1)
+    assert _TOKEN not in captured.out
+    assert _TOKEN not in captured.err
+
+
+def test_the_credential_directory_is_removed_after_the_run(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Nothing outlives the invocation: the delivery file is not a cache."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+    created: list[Path] = []
+    original = tempfile.mkdtemp
+
+    def recording_mkdtemp(*args: Any, **kwargs: Any) -> str:
+        directory = original(*args, **kwargs)
+        if str(kwargs.get("prefix", "")).startswith("syntara-run-secrets-"):
+            created.append(Path(directory))
+        return directory
+
+    monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 0
+    assert created
+    for directory in created:
+        assert not directory.exists()
+
+
+def test_a_run_without_credentials_creates_no_secret_directory(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """No credentials means no local path exception is granted at all."""
+
+    workspace = _write_credential_workspace(tmp_path / "ws")
+    created: list[str] = []
+    original = tempfile.mkdtemp
+
+    def recording_mkdtemp(*args: Any, **kwargs: Any) -> str:
+        created.append(str(kwargs.get("prefix", "")))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
+
+    status = main(_credential_run(workspace))
+
+    assert status == 0
+    assert not [prefix for prefix in created if prefix.startswith("syntara-run-secrets-")]
+
+
+def test_a_credential_file_warning_reaches_stderr_under_json(
+    tmp_path: Path, capsys
+) -> None:
+    """stdout owes a --json consumer one document; the warning belongs on stderr."""
+
+    secret = tmp_path / "token"
+    secret.write_text(_TOKEN, encoding="utf-8")
+    secret.chmod(0o644)
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(
+        _credential_run(workspace, f"{_RECIPE}=file:{secret}", extra=["--json"])
+    )
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "readable by other local users" in captured.err
+    # stdout stays exactly one parseable document.
+    assert json.loads(captured.out)["credentials"] == [_RECIPE]

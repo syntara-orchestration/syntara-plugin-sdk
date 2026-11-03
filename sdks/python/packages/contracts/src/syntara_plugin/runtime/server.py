@@ -206,7 +206,12 @@ def load_runtime_server_config(
 
 
 def load_runtime_bindings(specification: str) -> StepBindings:
-    """Load one image-owned ``StepBindings`` factory."""
+    """Load one image-owned ``StepBindings`` factory.
+
+    The startup error stays bounded and free of raw factory exception text,
+    which may contain credentials, URLs, or filesystem paths; the original
+    exception is preserved as the cause for the traceback.
+    """
 
     module_name, separator, attribute_name = specification.rpartition(":")
     if not separator or not module_name or not attribute_name:

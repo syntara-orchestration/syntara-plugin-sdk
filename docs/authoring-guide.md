@@ -55,7 +55,7 @@ flowchart LR
 | [Package](#package-the-plugin) | A deterministic OCI archive | `syntara-plugin build` |
 | [Publish](#publish-the-release) | A discoverable catalog release | `syntara-plugin publish` |
 
-After the journey, [Compose Steps into workflows](#compose-steps-into-workflows)
+After the journey, [Compose step types into workflows](#compose-step-types-into-workflows)
 gives design guidance, and
 [Identity and execution boundaries](#identity-and-execution-boundaries)
 explains what the SDK enforces between your code and the platform.
@@ -119,7 +119,7 @@ build workflows around that step type.
 | `control` | Shapes the flow of a workflow, or invokes another workflow. | Invoke a deploy workflow |
 | `trigger` | Starts a workflow from an external event. | Record opened (webhook) |
 
-Most Steps are Actions. Choose `control` only for orchestration behavior,
+Most step types are Actions. Choose `control` only for orchestration behavior,
 not as a general label for every capability.
 
 > **Note:** The example implements Normalize records as a `ControlStep` so
@@ -149,7 +149,7 @@ and then to [Package](#package-the-plugin).
 
 Decide whether a capability is one step type or several step types now, because the
 decision shapes your contracts. For guidance, see
-[One opaque step type or several workflow Steps](#one-opaque-step-type-or-several-workflow-steps).
+[One opaque step type or several workflow steps](#one-opaque-step-type-or-several-workflow-steps).
 
 ## Declare the contract
 
@@ -167,7 +167,7 @@ flowchart LR
 
 The manifest is the public contract of your step type: its input schema defines
 the form and the validation rules, and its output schema defines what
-downstream Steps receive. Write the manifest before the code. The code must
+downstream workflow steps receive. Write the manifest before the code. The code must
 conform to the manifest, never the reverse.
 
 ### Read the example workspace
@@ -185,7 +185,7 @@ examples/python-steps/
 ```
 
 The `plugin.yaml` file names the plugin, declares the workload image that all
-custom-runner Steps share, and lists the step type manifests:
+custom-runner step types share, and lists the step type manifests:
 
 ```yaml
 apiVersion: syntara.io/v1alpha1
@@ -366,12 +366,12 @@ practices:
 
 - Add a `description` to the root object and to every user-facing property.
   Descriptions become form help and output documentation.
-- Use `asset` for schemas that are long or shared between Steps.
+- Use `asset` for schemas that are long or shared between step types.
 - Constrain inputs with `required`, `enum`, `minLength`, and
   `additionalProperties: false`, so that invalid input fails before your code
   runs.
 - Declare the output precisely. The output schema is all that downstream
-  Steps can rely on.
+  step types can rely on.
 - Mark secret input fields with `writeOnly: true` or `format: password`.
 
 > **Important:** Marking a field as secret controls local redaction in
@@ -379,9 +379,13 @@ practices:
 > such as `api_token`. It is not a credential delivery mechanism. Production
 > credentials belong in an
 > [`IntegrationType`](plugin-language.md#kind-integrationtype) and its
-> [`CredentialRecipe`](plugin-language.md#kind-credentialrecipe). Credential
-> delivery to custom runners is not available in this SDK revision, so do
-> not copy the example's `api_token` input for real credentials.
+> [`CredentialRecipe`](plugin-language.md#kind-credentialrecipe), and
+> `syntara-plugin run --credential` delivers one of those locally as a
+> read-only file; see
+> [Supplying credentials](running-locally.md#supplying-credentials).
+> Production delivery by the Execution Plane, and the typed accessor a step
+> type would use to read the file, are still follow-on work. Either way, do not
+> copy the example's `api_token` input for real credentials.
 
 For every manifest field, see the
 [Plugin language reference](plugin-language.md).
@@ -424,10 +428,10 @@ To convert the generated Action to a custom runner, follow these steps:
 
 4. Create the `incident_tracker` package at the workspace root, with a
    `request.py` module that defines `RequestStep`, as described in
-   [Implement the Step](#implement-the-step). The input model must include
+   [Implement the step type](#implement-the-step-type). The input model must include
    both `resource` and `title`, matching `schemas/request.input.yaml`.
 
-## Implement the Step
+## Implement the step type
 
 **Stage 3 of 6: Implement** (custom runner only). Next: [Verify](#verify-locally).
 
@@ -515,7 +519,7 @@ Follow these rules in every implementation:
 
 - **Mirror the manifest.** The Pydantic models must accept every value that
   the input schema allows and emit only values that the output schema allows.
-  [Run one Step type](#run-one-step-type) checks this.
+  [Run one step type](#run-one-step-type) checks this.
 - **Override `run()`, not `execute()`.** The SDK calls `execute()`, which
   calls `run()`.
 - **Return the output model.** Do not return a dictionary or a wrapper; the
@@ -602,7 +606,7 @@ something that the previous one cannot:
 
 > **Important:** `validate` and `build` never import your Python code. A
 > misspelled entry point or a model that drifts from the manifest passes both.
-> For custom-runner Steps, run `syntara-plugin run` or `pytest` before you
+> For custom-runner step types, run `syntara-plugin run` or `pytest` before you
 > package.
 
 ### Validate and inspect
@@ -844,7 +848,7 @@ and for the image pattern, see [Image mode](running-locally.md#image-mode).
 
 ## Publish the release
 
-**Stage 6 of 6: Publish.** Next: [Compose Steps into workflows](#compose-steps-into-workflows).
+**Stage 6 of 6: Publish.** Next: [Compose step types into workflows](#compose-step-types-into-workflows).
 
 ```mermaid
 flowchart LR
@@ -967,7 +971,7 @@ step type:
   idempotency keys, derive the key from input values that stay the same
   across retries. When you cannot tell whether the operation happened, use
   `outcome="unknown"` and `retryable=False`.
-- Split Steps at retry boundaries, as in Option B.
+- Split workflow step types at retry boundaries, as in Option B.
 
 A manifest `error` schema is optional. It documents a domain error shape and
 does not replace the SDK-owned failure envelope.
@@ -1056,8 +1060,10 @@ build-generated revision IDs. For more information, see
 The `entryPoint` value names your implementation inside the workload image.
 The build binds the plugin's logical image ID to an immutable
 `repository@sha256:<digest>` reference, never a mutable tag. Inside the
-image, a bindings factory registers each step type through its installed manifest,
-so that the manifest schema stays the execution contract. The SDK publishes
+image, a bindings factory delegates to `load_plugin_bindings`, which reads
+the packaged `plugin.yaml` and registers each custom-runner step type through
+its installed manifest, so that the manifest schema stays the execution
+contract. The SDK publishes
 no universal base image; each language adapter provides its own image recipe
 on top of the shared container ABI. The Python adapter is
 `syntara_plugin.runtime` in the `syntara-plugin-contracts` distribution. For

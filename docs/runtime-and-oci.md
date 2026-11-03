@@ -58,6 +58,16 @@ The ABI carries approved credential-file paths, not credential values. The
 launcher is responsible for authorizing the paths and making the files
 available to the workload; those host-side policies are outside this SDK.
 
+An approved path is one under `/var/run/syntara/secrets/`, enforced on both
+the sending and the receiving side. There is one deliberate, default-off
+exception: a client and a runtime may each be given one local credential
+directory, and then also accept a file directly inside it. Nothing on a host
+can write under `/var/run` without privilege, so `syntara-plugin run` uses
+this for its in-process loopback runtime in source mode; see
+[Running locally](running-locally.md#supplying-credentials). A deployed
+workload never sets it and accepts approved mount paths only. Image mode
+needs no exception: it mounts the file at the approved path.
+
 Credential values must never appear in business output, wrapper status or
 error fields, raised error messages, or logs. Pass approved file paths or
 handles through the runtime boundary; do not copy secret values into inputs or
@@ -96,25 +106,36 @@ adapters use the same envelope and put their own bootstrap fields under
 `bindingsFactory` is a Python import path, not a filesystem path and not part
 of the language-neutral runtime config envelope. The adapter imports
 `acme_plugin.runtime` and calls its `create_bindings` function. That function
-takes no arguments and returns a non-empty `StepBindings` object. Every bound
-step type must use a descriptor created from its installed custom-runner manifest
-(see [Typed Python step types](#typed-python-step-types)); the server rejects
+takes no arguments and returns a non-empty `StepBindings` object. Write it as
+a one-line delegation to `load_plugin_bindings`, which loads the packaged
+`plugin.yaml` and binds every custom-runner step type through its installed
+manifest (see [Typed Python step types](#typed-python-step-types)); the server rejects
 implementation-derived descriptors when it starts:
 
 ```python
-from syntara_plugin.runtime import InstalledStepManifest, StepBindings, StepDescriptor
+from syntara_plugin.runtime import StepBindings, load_plugin_bindings
 
 def create_bindings() -> StepBindings:
-    bindings = StepBindings()
-    step = EchoStep()
-    installed_step = InstalledStepManifest.from_manifest(
-        "acme.echo.v1", installed_manifest, installed_assets
-    )
-    bindings.bind(StepDescriptor.for_installed_step(step, installed_step), step)
-    return bindings
+    return load_plugin_bindings("acme_plugin")
 ```
 
-The factory is plugin-specific, not Step-type-specific. A workload image may
+`load_plugin_bindings` reads `<package>/manifests/plugin.yaml`, the target
+manifests it declares, and any asset-backed schema documents from package
+resources, in the formats the compiler accepts. Package the plugin workspace
+inside the plugin wheel under `manifests/`, mirroring the source layout the
+[Existing step type](../examples/existing-step) example uses. Each step type identity is
+derived as `namespace.plugin.step` from the plugin metadata and each target's
+`metadata.name`; identities are never hard-coded. Every declared target
+manifest is validated against its kind contract; platform-runner,
+`IntegrationType`, and `CredentialRecipe` targets are then skipped without
+binding. Startup fails
+with an actionable error when a manifest or declared asset is missing or
+malformed, an entry point cannot be imported or does not name a `BaseStep`
+subclass, the manifest kind does not match the implementation, a step
+identity is declared twice, or the plugin declares no custom-runner step type
+target.
+
+The factory is plugin-specific, not step-type-specific. A workload image may
 provide one or more installed bindings. At startup the platform supplies trusted
 resolved execution data as a read-only JSON file, named by
 `SYNTARA_RESOLVED_EXECUTION`. The file must conform to the versioned
@@ -167,7 +188,7 @@ resolved Python entry points. The final image owns its runtime-config file and
 adapter package versions; platform registration and image selection remain
 outside this SDK boundary.
 
-The checked-in [Existing Step](../examples/existing-step) prototype exercises
+The checked-in [Existing step type](../examples/existing-step) prototype exercises
 this path for Action, Control, and Trigger. `make test-integration` builds its
 plugin wheel, installs it with the Python contracts distribution, and invokes
 all three manifest-declared entry points over the container ABI. The current
@@ -235,7 +256,7 @@ author-defined `run()` hook, so examples below implement `run()`.
 The three executable step type classes share the same lifecycle. A catalog
 **step type** (for example, Create GitHub Issue) belongs to one **Category**;
 runner ownership is selected independently, and execution consumes the final
-contract: **Step type -> Category -> Runner -> Execution**.
+contract: **step type -> Category -> Runner -> Execution**.
 
 | Class | Category |
 | --- | --- |
@@ -247,7 +268,8 @@ contract: **Step type -> Category -> Runner -> Execution**.
 bounded non-secret runtime data, and a cooperative cancellation signal. It
 intentionally exposes no protobuf, gRPC, container, worker, or Execution Plane
 types, and no raw credential values; typed credential access is tracked
-separately.
+separately. A credential delivered to a local run therefore arrives as a file
+the launcher mounted, but no accessor hands its path to step code yet.
 
 ### Contract drift validation
 
@@ -346,6 +368,12 @@ owned by the schema-drift validation story. A Trigger's executor input is its
 registered `spec.input` schema; `spec.configuration` remains separate driver
 configuration and is not reinterpreted as invocation input.
 
+A packaged plugin does not need to run this sequence by hand:
+`load_plugin_bindings("acme_plugin")` reads the packaged `plugin.yaml`, its
+target manifests, and asset-backed schema documents from package resources,
+and binds every custom-runner step type with the identity
+`namespace.plugin.step`. The underlying calls it wraps, for one target:
+
 For an installed custom-runner step type, first resolve its manifest with
 `InstalledStepManifest.from_manifest()`. Inline and asset-backed `spec.input`
 and `spec.output` document sources are supported, and the manifest and resolved
@@ -441,7 +469,7 @@ A missing or unknown category is a protocol error. Inline output and object refe
 mutually exclusive; either may carry a deliberate failure's optional business
 result.
 
-Platform-runner Steps remain declarative and are not bound to a Python
+Platform-runner step types remain declarative and are not bound to a Python
 implementation by this runtime path.
 
 Direct execution is transport-independent: importing `syntara_plugin.runtime`
@@ -526,6 +554,45 @@ binding alone does not prove that its image contains a matching manifest.
 
 See the [plugin language reference](plugin-language.md) for the manifest
 fields.
+
+## Automation Orchestrator integration contract
+
+The SDK ships the runtime pieces an installation needs; the platform around
+them owns verification and lifecycle. This section is a handoff map: each
+item is a duty the platform already performs, with a pointer to where the
+needed data already lives. The SDK does not implement them.
+
+- **Digest verification**: pull the plugin artifact by digest (the digest is
+  the OCI address), read workload image digests from the compiled
+  descriptor's `spec.workloads` inside the artifact, and deploy images by
+  digest. The registration manifest and resolved execution data carry the
+  step revision IDs, entry points, ABIs, and schema digests; the runtime
+  server cross-checks them against the installed bindings at startup and
+  refuses to start on any mismatch. Each step revision ID digests the full
+  compiled target, including its metadata, so metadata integrity is covered
+  by the revision check.
+- **Staging and import**: install the artifact's plugin wheel and the
+  registration manifest into the workload image, as the `--with-workload`
+  flow and the Existing step type example's Containerfile do.
+- **Trust**: `InstalledStepManifest.from_manifest` is the authorized-document
+  boundary. The SDK records opaque provenance for factory-created objects but
+  cannot establish remote or cryptographic provenance; the platform supplies
+  verified documents and resolved execution data.
+- **Dependency compatibility**: the registration manifest records the
+  `sdkVersion`, and the workload image owns its contracts distribution and
+  adapter versions. The platform checks them against the compiled
+  descriptor's declared ABI before dispatch.
+- **Import isolation**: one workload image holds one plugin today. Running
+  several plugins in one Python interpreter is a platform concern; the SDK
+  gives each plugin its own package and manifest namespace but no import
+  sandbox.
+- **Caching**: resolution is keyed by immutable step revision ID, and the
+  image-local `StepBindings` lookup is keyed by step identity. Both are safe
+  to cache for the lifetime of the installed revision they were verified
+  against.
+- **Retirement**: deregistering revisions and garbage-collecting unreferenced
+  artifacts and images are platform registry operations; the SDK never
+  bypasses the trusted chain.
 
 ## Registry and catalog model
 

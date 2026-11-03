@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from syntara_plugin.runtime import ExecutionContext, invoke
 from syntara_plugin.sdk import (
     BuildRequest,
     build_catalog_index_artifact,
@@ -29,6 +30,7 @@ from syntara_plugin.testing import (
 )
 
 _EXAMPLE = Path(__file__).resolve().parents[4] / "examples" / "existing-step"
+_MANIFESTS = _EXAMPLE / "src" / "existing_step" / "manifests"
 sys.path.insert(0, str(_EXAMPLE / "src"))
 IMAGE_BINDING = "registry.example.test/existing-step@sha256:" + "a" * 64
 IDENTITIES = {
@@ -75,7 +77,7 @@ def test_manifest_entry_points_execute_through_both_paths(
 ) -> None:
     binding = step_bindings.bind_step(
         ENTRY_POINTS[kind],
-        workspace=_EXAMPLE,
+        workspace=_MANIFESTS,
         identity=IDENTITIES[kind],
     )
     context = mock_execution_context(
@@ -108,7 +110,7 @@ def test_invalid_inputs_block_both_paths_before_the_business_hook(
 ) -> None:
     binding = step_bindings.bind_step(
         ENTRY_POINTS[kind],
-        workspace=_EXAMPLE,
+        workspace=_MANIFESTS,
         identity=IDENTITIES[kind],
     )
     context = mock_execution_context()
@@ -123,9 +125,46 @@ def test_invalid_inputs_block_both_paths_before_the_business_hook(
     assert_outcomes_equivalent(direct, container)
 
 
+def test_packaged_bindings_factory_loads_and_executes_every_manifest_entry_point() -> None:
+    from existing_step.runtime import create_bindings
+
+    bindings = create_bindings()
+
+    assert bindings.step_identities == tuple(sorted(IDENTITIES.values()))
+    cases: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+        "action": (
+            {"title": "existing step"},
+            {"ticket_id": "packaged-action:existing step"},
+        ),
+        "control": (
+            {"records": ["Alpha", "Beta"]},
+            {"count": 2, "normalized": ["alpha", "beta"]},
+        ),
+        "trigger": (
+            {"repository": "syntara-plugin-sdk"},
+            {
+                "event_id": "packaged-run:syntara-plugin-sdk",
+                "repository": "syntara-plugin-sdk",
+            },
+        ),
+    }
+    context = ExecutionContext(
+        invocation_id="packaged-action", workflow_run_id="packaged-run"
+    )
+    for kind, (inputs, expected) in cases.items():
+        result = invoke(bindings.binding(IDENTITIES[kind]), inputs, context)
+        assert result.status_code == 0, kind
+        assert result.result == expected, kind
+
+    invalid = invoke(bindings.binding(IDENTITIES["action"]), {}, context)
+    assert invalid.status_code != 0
+    assert invalid.error_result is not None
+    assert invalid.error_result.code == "INVALID_INPUT"
+
+
 def test_compiled_plugin_builds_reproducible_artifact_and_catalog_entry() -> None:
     request = BuildRequest(
-        root_manifest=_EXAMPLE / "plugin.yaml",
+        root_manifest=_MANIFESTS / "plugin.yaml",
         image_bindings={"existing-step-workload": IMAGE_BINDING},
     )
     compilation = compile_workspace(request)

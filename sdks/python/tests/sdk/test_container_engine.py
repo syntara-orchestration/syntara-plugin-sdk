@@ -206,6 +206,47 @@ def test_liveness_probe_raises_with_exit_status_and_logs(monkeypatch) -> None:
     assert any("--mode source" in step for step in raised.value.next_steps)
 
 
+def test_liveness_probe_scrubs_secrets_before_truncating_log_lines(monkeypatch) -> None:
+    """A credential a dying workload printed cannot survive as a fragment.
+
+    Redaction must run on the full log line, before the bounded-length cut:
+    truncating first could leave the head of a secret recognizable.
+    """
+
+    secret = "tok-abcdef123456"
+    padding = "x" * (container_engine._LOG_LINE_LENGTH + 100)
+
+    def fake_run(command, **_kwargs):
+        arguments = list(command)
+        if "inspect" in arguments:
+            return SimpleNamespace(returncode=0, stdout="false 1\n", stderr="")
+        if "logs" in arguments:
+            return SimpleNamespace(
+                returncode=0, stdout=f"startup failed: {secret} {padding}\n", stderr=""
+            )
+        raise AssertionError(f"unexpected engine command: {command}")
+
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+    engine = container_engine.ContainerEngine("podman")
+
+    def scrub(text: str) -> str:
+        return text.replace(secret, "***")
+
+    probe = container_engine._container_liveness(
+        engine, "syntara-run-x", "some-image", scrub
+    )
+
+    with pytest.raises(RunExecutionError) as raised:
+        probe()
+
+    log_lines = [line for line in raised.value.detail if "startup failed" in line]
+    assert log_lines, raised.value.detail
+    joined = "\n".join(log_lines)
+    assert secret not in joined
+    assert "startup failed: ***" in joined
+    assert all(len(line) <= container_engine._LOG_LINE_LENGTH for line in log_lines)
+
+
 def test_liveness_probe_stays_quiet_while_the_container_runs(monkeypatch) -> None:
     """A running container never trips the probe."""
 
@@ -603,3 +644,75 @@ def test_sigterm_runs_the_cleanup(monkeypatch) -> None:
     finally:
         managed.__exit__(None, None, None)
     assert len(removed) == 1
+
+
+def test_managed_runtime_mounts_credentials_read_only_at_the_approved_mount(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Each credential is bind-mounted at the ABI path, read-only and relabelled."""
+
+    from syntara_plugin.sdk.container_engine import _TlsMaterial
+
+    material = _TlsMaterial(
+        client_ca=tmp_path / "ca.crt", client_certificate=tmp_path / "client.crt",
+        client_key=tmp_path / "client.key", server_certificate=tmp_path / "server.crt",
+        server_key=tmp_path / "server.key",
+    )
+    first = tmp_path / "run.tracker.api-token"
+    second = tmp_path / "run.tracker.webhook-secret"
+    for path in (first, second):
+        path.write_text("{}", encoding="utf-8")
+    seen: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "run":
+            seen.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="true 0\n", stderr="")
+
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        container_engine, "_select_engine", lambda image: container_engine.ContainerEngine("podman")
+    )
+    monkeypatch.setattr(container_engine, "_generate_tls_material", lambda directory: material)
+    with container_engine.managed_runtime(
+        "image", None, {first.name: str(first), second.name: str(second)}
+    ):
+        pass
+
+    command = seen[0]
+    volumes = [value for value in command if value.startswith(str(tmp_path))]
+    assert f"{first}:/var/run/syntara/secrets/{first.name}:ro,Z" in volumes
+    assert f"{second}:/var/run/syntara/secrets/{second.name}:ro,Z" in volumes
+    # A credential is never handed to the container as an environment variable.
+    assert not [value for value in command if value.startswith("SYNTARA_CREDENTIAL")]
+    assert not [
+        value
+        for index, value in enumerate(command)
+        if command[index - 1] == "--env" and "api-token" in value
+    ]
+
+
+def test_managed_runtime_mounts_nothing_without_credentials(monkeypatch, tmp_path: Path) -> None:
+    from syntara_plugin.sdk.container_engine import _TlsMaterial
+
+    material = _TlsMaterial(
+        client_ca=tmp_path / "ca.crt", client_certificate=tmp_path / "client.crt",
+        client_key=tmp_path / "client.key", server_certificate=tmp_path / "server.crt",
+        server_key=tmp_path / "server.key",
+    )
+    seen: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "run":
+            seen.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="true 0\n", stderr="")
+
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        container_engine, "_select_engine", lambda image: container_engine.ContainerEngine("podman")
+    )
+    monkeypatch.setattr(container_engine, "_generate_tls_material", lambda directory: material)
+    with container_engine.managed_runtime("image"):
+        pass
+
+    assert not [value for value in seen[0] if "/var/run/syntara/secrets" in value]
