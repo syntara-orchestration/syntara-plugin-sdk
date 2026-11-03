@@ -122,6 +122,8 @@ def test_custom_workspace_field_map_and_determinism(
     )
     assert model.model_dump(by_alias=True)["issue-count"] == 3
     assert model.model_dump(by_alias=True)["schema"] == "low"
+    with pytest.raises(ValidationError):
+        model.model_validate({"resource": "r", "issue-count": 3, "details": {}, "tags": ["a"]})
 
 
 def test_generated_models_enforce_supported_constraints(

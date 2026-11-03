@@ -962,7 +962,8 @@ def _schema_from_field_map(document: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"field is not valid: {name!r}")
         normalized = dict(specification)
         normalized.pop("name", None)
-        normalized.pop("required", None)
+        if isinstance(specification.get("required"), bool):
+            normalized.pop("required", None)
         properties[name] = normalized
         if specification.get("required") is True:
             required.append(name)

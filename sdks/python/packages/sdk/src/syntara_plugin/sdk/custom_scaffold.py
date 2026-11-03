@@ -81,6 +81,9 @@ def write_custom_workspace(
         "plugin.yaml": _json(plugin),
         target_path: _json(target),
         input_path: _json(schema),
+        f"{package}/manifests/plugin.yaml": _json(plugin),
+        f"{package}/manifests/{target_path}": _json(target),
+        f"{package}/manifests/{input_path}": _json(schema),
         "syntara-plugin.yaml": (
             "apiVersion: syntara.io/v1alpha1\nkind: PluginBuildSettings\nmanifest: plugin.yaml\n"
             f"build:\n  artifactOutput: dist/{name}.oci.tar\n  workload:\n"
@@ -97,7 +100,7 @@ def write_custom_workspace(
         "pyproject.toml": _pyproject(name, version, package),
         f"{package}/__init__.py": '"""Custom-runner plugin package."""\n',
         f"{package}/step.py": _step(schema),
-        f"{package}/runtime.py": _runtime(package, target_path, input_path),
+        f"{package}/runtime.py": _runtime(package),
         "docs/README.md": _readme(name, action),
     }
     for relative, contents in files.items():
@@ -388,38 +391,15 @@ def _constraint_value(schema: dict[str, Any], keyword: str) -> object:
     return value
 
 
-def _runtime(package: str, target: str, input_path: str) -> str:
-    return f'''"""Temporary single-Action adapter pending the binding helper."""
+def _runtime(package: str) -> str:
+    return f'''"""Load bindings from the packaged plugin manifests."""
 
-import json
-from importlib.resources import files
-from pathlib import Path
-from typing import Any
-
-from syntara_plugin.runtime import InstalledStepManifest, StepBindings, StepDescriptor
-
-from .step import ActionImplementation
-
-
-def _read(path: str) -> dict[str, Any]:
-    packaged = files({package!r}).joinpath("manifests", *path.split("/"))
-    if packaged.is_file():
-        return json.loads(packaged.read_text(encoding="utf-8"))
-    # Source checkout: the wheel includes these same files as package resources.
-    return json.loads((Path(__file__).resolve().parent.parent / path).read_text(encoding="utf-8"))
+from syntara_plugin.runtime import StepBindings, load_plugin_bindings
 
 
 def create_bindings() -> StepBindings:
-    """Bind this scaffold's one Action using its packaged manifest and input asset."""
-    plugin = _read("plugin.yaml")
-    target = _read({target!r})
-    identity = ".".join((plugin["metadata"]["namespace"], plugin["metadata"]["name"],
-                         target["metadata"]["name"]))
-    installed = InstalledStepManifest.from_manifest(identity, target, {{{input_path!r}: _read({input_path!r})}})
-    step = ActionImplementation()
-    bindings = StepBindings()
-    bindings.bind(StepDescriptor.for_installed_step(step, installed), step)
-    return bindings
+    """Bind every custom-runner target declared by this packaged plugin."""
+    return load_plugin_bindings({package!r})
 '''
 
 
@@ -440,10 +420,6 @@ dependencies = ["syntara-plugin-contracts>=0.1.0a1"]
 [tool.hatch.build.targets.wheel]
 packages = ["{package}"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"plugin.yaml" = "{package}/manifests/plugin.yaml"
-"steps" = "{package}/manifests/steps"
-"schemas" = "{package}/manifests/schemas"
 '''
 
 
@@ -491,7 +467,7 @@ Before building the image, prepare `wheels/` with this package and its runtime
 dependencies, for example `python -m pip wheel --wheel-dir wheels .`. Configure a
 workload registry in `syntara-plugin.yaml` before using `build --with-workload`.
 
-The single-Action `runtime.py` binding adapter is temporary pending the public
-packaged-manifest binding helper. It reads the scaffold's JSON-formatted YAML
-manifests and input asset; update it when adding targets or changing their paths.
+The generated runtime loads the packaged plugin manifests through the SDK's
+packaged-manifest binding helper. Update the generated manifests and schemas
+together when adding targets or changing their paths.
 """
