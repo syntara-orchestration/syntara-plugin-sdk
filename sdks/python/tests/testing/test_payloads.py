@@ -48,6 +48,7 @@ def test_payload_cases_cover_the_declared_outcomes() -> None:
         + len(DELIBERATE_FAILURE_CASES)
         + len(INVALID_OUTPUT_CASES)
     )
+    assert "valid_credential_reference" in {case.name for case in VALID_INPUT_CASES}
 
 
 def test_valid_cases_succeed_against_the_reference_step() -> None:

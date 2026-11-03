@@ -86,8 +86,11 @@ path; neither produces a wrapper.
 
 Runtime contract tests cover inline and asset-resolved output and error schemas,
 trusted schema digest matching, structured error round trips, inline and
-object-reference reconstruction, and rejection of invalid error results. Transport and object-store
-errors are checked for safe normalization without retaining backend exceptions.
+object-reference reconstruction, and rejection of invalid error results.
+Transport-error normalization is covered in
+[`test_container_protocol.py`](../sdks/python/tests/runtime/test_container_protocol.py);
+object-store failure normalization is covered in
+[`test_adapter.py`](../sdks/python/tests/runtime/test_adapter.py).
 
 `assert_outcomes_equivalent(direct, container)` asserts the two SDK paths
 agree on success, status, status message, output, and error envelope (digests
@@ -105,8 +108,13 @@ invalid-enum, schema-invalid output, and deliberate-failure `PayloadCase` data.
 the same Pydantic models and are importable through `module:Class` entry points.
 `FailingReferenceStep` raises `StepFailure` to produce a valid nonzero wrapper;
 `schema_violating_binding()` exercises invalid output without a valid wrapper.
-The suite also checks that unexpected exceptions produce safe caller-facing
-messages and a container failure.
+The container-invocation tests also cover safe terminal failures and unexpected
+exceptions that produce a container failure.
+
+`VALID_INPUT_CASES` retains the historical `valid_credential_reference` entry
+for compatibility. Despite its legacy name, it passes a fixed synthetic value
+through the ordinary `api_token` input field; it does not test credential
+delivery or access. That coverage belongs to AAP-95450.
 
 ```python
 import logging

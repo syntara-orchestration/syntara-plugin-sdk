@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 from syntara_plugin.runtime import ControlStep, ExecutionContext, FailureCode, StepExecutionError
-from syntara_plugin.runtime.container import ContainerRemoteError
+from syntara_plugin.runtime.container import ContainerInvocationError, ContainerRemoteError
 from syntara_plugin.testing import (
     INVALID_INPUT_CASES,
     assert_no_secrets,
@@ -29,6 +29,17 @@ from syntara_plugin.testing.payloads import (
 class CrashingStep(ReferenceControlStep):
     def run(self, inputs: Any, context: Any) -> Any:
         raise RuntimeError("the business logic crashed")
+
+
+class TerminalFailureStep(ReferenceControlStep):
+    """Raises a safe terminal failure instead of returning a wrapper."""
+
+    def run(self, inputs: Any, context: Any) -> Any:
+        raise ContainerInvocationError(
+            FailureCode.UPSTREAM_TRANSIENT,
+            "The upstream service is temporarily unavailable.",
+            retryable=True,
+        )
 
 
 class _EchoInput(BaseModel):
@@ -159,6 +170,20 @@ def test_deliberate_failures_are_equivalent_with_matching_codes() -> None:
     assert direct.error.code == container.error.code == "UPSTREAM_TRANSIENT"
     assert direct.error.message == container.error.message == "The upstream service rejected the request."
     assert direct.error.retryable is container.error.retryable is True
+
+
+def test_terminal_failures_are_equivalent_as_raised_failures() -> None:
+    context = build_execution_context(invocation_id="equiv-terminal-failure")
+    direct = invoke_step(TerminalFailureStep(), {"title": "x"}, context=context)
+    container = invoke_step_in_container(TerminalFailureStep(), {"title": "x"}, context=context)
+
+    assert_outcomes_equivalent(direct, container)
+    assert isinstance(direct.raised, StepExecutionError)
+    assert direct.raised.failure_code is FailureCode.OUTCOME_UNKNOWN
+    assert isinstance(container.raised, ContainerRemoteError)
+    assert container.raised.code is FailureCode.OUTCOME_UNKNOWN
+    assert direct.raw is None
+    assert container.raw is None
 
 
 def test_schema_invalid_outputs_are_equivalent_as_raised_failures() -> None:

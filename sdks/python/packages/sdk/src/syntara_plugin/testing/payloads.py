@@ -132,6 +132,13 @@ VALID_INPUT_CASES: tuple[PayloadCase, ...] = (
         {"title": "Deploy failed", "priority": "high", "count": 2, "tags": ["production"]},
         Expectation.VALID,
     ),
+    # Preserve the historical public fixture name. This is an ordinary
+    # synthetic input, not credential-reference delivery coverage.
+    PayloadCase(
+        "valid_credential_reference",
+        {"title": "Deploy failed", "api_token": FIXED_SECRET_SENTINEL},
+        Expectation.VALID,
+    ),
 )
 
 INVALID_INPUT_CASES: tuple[PayloadCase, ...] = (
