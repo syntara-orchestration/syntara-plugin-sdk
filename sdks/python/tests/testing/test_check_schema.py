@@ -61,12 +61,64 @@ def test_missing_property_is_reported_per_side() -> None:
     assert ".required: missing from the target schema" in issues
 
 
-def test_required_drift_reports_the_diverging_list() -> None:
+def test_required_drift_reports_the_diverging_member() -> None:
     drifted = {**RELEASE_SCHEMA, "required": ["releaseId"]}
     issues = schema_agreement_issues(RELEASE_SCHEMA, drifted)
     assert issues == (
-        ".required: 2 item(s) in the source schema vs 1 in the target schema",
+        ".required: 'publishedAt' in the source schema "
+        "but not the target schema",
     )
+
+
+def test_set_valued_keywords_ignore_member_order() -> None:
+    """``required`` and ``enum`` are unordered in Draft 2020-12."""
+
+    reordered = {
+        **RELEASE_SCHEMA,
+        "required": ["publishedAt", "releaseId"],
+        "properties": {
+            **RELEASE_SCHEMA["properties"],
+            "status": {"type": "string", "enum": ["draft", "published", "archived"]},
+        },
+    }
+    differently_ordered = {
+        **reordered,
+        "properties": {
+            **reordered["properties"],
+            "status": {"type": "string", "enum": ["archived", "draft", "published"]},
+        },
+    }
+    assert schema_agreement_issues(reordered, differently_ordered) == ()
+
+
+def test_enum_drift_reports_the_diverging_member() -> None:
+    source = {"properties": {"status": {"enum": ["draft", "published"]}}}
+    target = {"properties": {"status": {"enum": ["draft", "archived"]}}}
+    issues = schema_agreement_issues(source, target)
+    assert issues == (
+        ".properties.status.enum: 'published' in the source schema "
+        "but not the target schema",
+        ".properties.status.enum: 'archived' in the target schema "
+        "but not the source schema",
+    )
+
+
+def test_mixed_type_mapping_keys_do_not_crash() -> None:
+    """PyYAML parses unquoted ``on:`` / ``yes:`` keys as booleans."""
+
+    source = {"type": "object", "properties": {"on": {"type": "boolean"}}}
+    target = {"type": "object", "properties": {"on": {"type": "string"}}}
+    issues = schema_agreement_issues(source, target)
+    assert issues == (
+        ".properties.on.type: 'boolean' in the source schema "
+        "vs 'string' in the target schema",
+    )
+
+
+def test_yaml_boolean_keys_beside_string_keys_do_not_crash() -> None:
+    mixed_source = {"properties": {True: {"type": "boolean"}, "name": {"type": "string"}}}
+    mixed_target = {"properties": {True: {"type": "boolean"}, "name": {"type": "string"}}}
+    assert schema_agreement_issues(mixed_source, mixed_target) == ()
 
 
 def test_assert_raises_with_labels_and_every_issue() -> None:
@@ -89,6 +141,12 @@ def test_assert_raises_with_labels_and_every_issue() -> None:
     assert ".properties.releaseId.type" in message
     assert ".type: missing from the target schema" in message
     assert excinfo.value.issues
+    assert not message.startswith("declared schemas do not agree")
+    assert message.count("do not agree") == 1
+    assert any(
+        issue.startswith(".properties.releaseId.type")
+        for issue in excinfo.value.issues
+    )
 
 
 def test_mismatched_shapes_report_the_location() -> None:
