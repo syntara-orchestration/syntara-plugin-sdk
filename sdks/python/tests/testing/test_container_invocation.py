@@ -372,7 +372,8 @@ def test_synthetic_sensitive_input_does_not_leak_on_either_invocation_path() -> 
     container = invoke_step_in_container(ReferenceControlStep(), inputs, context=context)
 
     assert_outcomes_equivalent(direct, container)
-    assert direct.ok and container.ok
+    assert direct.ok
+    assert container.ok
     assert_no_secrets(direct, [sentinel])
     assert_no_secrets(container, [sentinel])
 
