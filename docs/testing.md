@@ -90,29 +90,60 @@ object-reference reconstruction, and rejection of invalid error results. Transpo
 errors are checked for safe normalization without retaining backend exceptions.
 
 `assert_outcomes_equivalent(direct, container)` asserts the two SDK paths
-agree on success, status, output, and error envelope (digests deliberately
-excluded; raised failures compare their failure codes when both carry one).
+agree on success, status, status message, output, and error envelope (digests
+are excluded; raised failures compare their failure codes). The reference
+suite checks input and output schema validation, the typed hook and its
+short-circuiting, and valid wrappers through the SDK. Its container assertions
+check that the ABI carries the same wrapper fields and the applied output
+schema digest, and maps failures without a wrapper to `ContainerFailure`.
 
 ## Sample payloads and secret redaction
 
-`syntara_plugin.testing.payloads` ships the seven contract categories as
-`PayloadCase` data: valid, missing-required, wrong-type, invalid-enum,
-schema-invalid output, a raised exception, and sensitive credential
-references, with `ReferenceControlStep`, `FailingReferenceStep`, and
-`schema_violating_binding()` as the matching stand-ins. The failure payload
-currently exercises the no-valid-outcome exception path. Use `StepFailure` to
-test a valid nonzero wrapper.
+`syntara_plugin.testing.payloads` provides valid, missing-required, wrong-type,
+invalid-enum, schema-invalid output, and deliberate-failure `PayloadCase` data.
+`ReferenceActionStep`, `ReferenceControlStep`, and `ReferenceTriggerStep` use
+the same Pydantic models and are importable through `module:Class` entry points.
+`FailingReferenceStep` raises `StepFailure` to produce a valid nonzero wrapper;
+`schema_violating_binding()` exercises invalid output without a valid wrapper.
+The suite also checks that unexpected exceptions produce safe caller-facing
+messages and a container failure.
 
 ```python
 import logging
+from unittest.mock import Mock
 
-from syntara_plugin.testing import secret_sentinel, assert_no_secrets
+import pytest
+from syntara_plugin.runtime import ControlStep, ExecutionContext
+from syntara_plugin.testing import assert_no_secrets, invoke_step, secret_sentinel
+from syntara_plugin.testing.payloads import ReferenceInput, ReferenceOutput
 
-token = secret_sentinel()
-with caplog.at_level(logging.INFO):
-    outcome = invoke_step(binding, {"title": "x", "api_token": token}, context=ctx)
-assert_no_secrets(outcome, [token], caplog=caplog)
+
+class ExampleStep(ControlStep[ReferenceInput, ReferenceOutput]):
+    def __init__(self, synthetic_value: str, dependency: Mock) -> None:
+        self.synthetic_value = synthetic_value
+        self.dependency = dependency
+
+    def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
+        logging.getLogger(__name__).info("Calling dependency")
+        return ReferenceOutput(
+            summary=self.dependency(self.synthetic_value), priority=inputs.priority
+        )
+
+
+def test_no_secret_leaks(caplog: pytest.LogCaptureFixture) -> None:
+    synthetic_value = secret_sentinel()
+    dependency = Mock(return_value="accepted")
+    step = ExampleStep(synthetic_value, dependency)
+    with caplog.at_level(logging.INFO):
+        outcome = invoke_step(step, {"title": "test"})
+
+    assert outcome.ok
+    dependency.assert_called_once_with(synthetic_value)
+    assert_no_secrets(outcome, [synthetic_value], caplog=caplog)
 ```
+
+The test injects a synthetic value and a mocked dependency solely to exercise
+leak detection; it does not model credential delivery.
 
 `assert_no_secrets` scans the status message, error message, raised exception,
 serialized output, raw envelope, and the pytest log capture. When scanning
@@ -125,6 +156,12 @@ Credential values must not appear in outputs, wrapper fields, raised errors,
 or logs. `assert_no_secrets` detects leaks in both outcomes and captured logs;
 it does not sanitize them. Keep secrets out of exception text and log messages
 on both invocation paths.
+
+Use `secret_sentinel()` to create a synthetic value for a leak assertion. This
+is separate from credential delivery. The current step-facing `ExecutionContext`
+has no credential accessor; approved credential file paths are tested at the
+[container ABI boundary](runtime-and-oci.md#container-abi), including rejection
+of unapproved paths. Do not put credential values in inputs or runtime context.
 
 ## Conformance in one call
 

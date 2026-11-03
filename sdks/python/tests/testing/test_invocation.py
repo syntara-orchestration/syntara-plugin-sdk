@@ -15,12 +15,12 @@ from syntara_plugin.runtime import (
     StepFailure,
 )
 from syntara_plugin.testing import (
-    FIXED_SECRET_SENTINEL,
     INVALID_INPUT_CASES,
     HarnessUsageError,
     assert_no_secrets,
     build_execution_context,
     invoke_step,
+    secret_sentinel,
 )
 from syntara_plugin.testing.payloads import (
     ReferenceControlStep,
@@ -183,12 +183,13 @@ def test_unprovenanced_bindings_are_rejected_with_guidance() -> None:
         invoke_step(binding, {"value": "x"})
 
 
-def test_credential_reference_input_does_not_leak_into_the_outcome() -> None:
+def test_synthetic_sensitive_input_does_not_leak_into_the_outcome() -> None:
+    sentinel = secret_sentinel()
     outcome = invoke_step(
-        ReferenceControlStep(), {"title": "deploy", "api_token": FIXED_SECRET_SENTINEL}
+        ReferenceControlStep(), {"title": "deploy", "api_token": sentinel}
     )
     assert outcome.ok
-    assert_no_secrets(outcome, [FIXED_SECRET_SENTINEL])
+    assert_no_secrets(outcome, [sentinel])
 
 
 def test_raw_contexts_are_held_to_the_same_identity_rules() -> None:
