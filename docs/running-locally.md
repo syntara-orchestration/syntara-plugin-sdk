@@ -182,7 +182,10 @@ the summary, and their values are redacted everywhere they could surface:
 
 A credential supplied with `--credential` is scrubbed the same way: the value
 you gave and every value in the delivered credential document are added
-to the same set. See [Supplying credentials](#supplying-credentials).
+to the same set. Non-string credential values are matched in their original
+types too, so a step that returns the integer, float, or boolean it was
+handed gets it masked — not only its text form. See
+[Supplying credentials](#supplying-credentials).
 
 Scrubbing matches the value case-insensitively. Redaction is driven by the
 declared schema and the values you supplied, so it cannot catch everything:
@@ -195,8 +198,10 @@ over-mask a public field like `authorization_url`. Prefer `--input-file`
 over `--input` so secret values stay out of your shell history and other
 local users' view of `/proc/<pid>/cmdline` in the first place. When a
 managed container dies before becoming healthy, its last log lines are
-printed to explain why; those lines come from the image itself and are not
-secret-scrubbed, so they carry whatever the image printed.
+printed to explain why; those lines come from the image itself and are
+secret-scrubbed — each full line, before any length limit is applied — so
+a credential the workload printed as it died cannot leak, though anything
+else the image printed is carried through.
 
 ## Supplying credentials
 
@@ -221,10 +226,13 @@ printf '%s' "$TOKEN" | syntara-plugin run --manifest plugin.yaml create-issue \
 Everything is checked before anything executes: `NAME` must resolve to a
 reachable recipe, must contain only the characters the secret mount allows
 (letters, digits, `.`, `_`, `-` — anything else could never be delivered as a
-mounted file), and the value must satisfy that recipe's
+mounted file), must fit in one filename component at that mount (at most 255
+bytes — a longer name could never be delivered, so it is refused as usage),
+and the value must satisfy that recipe's
 `credentialSchema`. A value that parses as a JSON object is taken as the
 complete credential document; any other text is a raw value, wrapped into the
-single field the recipe declares. A recipe with several fields has no
+recipe's only declared field, required or optional. A recipe that declares
+several fields — however many of them are required — has no
 unambiguous wrapping, so it requires the full document:
 
 ```text
@@ -271,7 +279,11 @@ Credentials:    example.tracker.api-token
 
 The supplied value and every value in the delivered document join the set the
 run masks — not only the recipe's declared `secretFields`, so a missing or
-partial declaration cannot decide what leaks — so they are scrubbed from the
+partial declaration cannot decide what leaks. Values are matched both as
+text (case-insensitively, including their string form when a step
+interpolates a number into a message) and, for non-string values, as exact
+original-typed matches in step output, so a returned integer, float, or
+boolean is masked too. They are scrubbed from the
 report, `--json`, errors, hints, progress, step output, and tracebacks
 exactly as a sensitive input is.
 

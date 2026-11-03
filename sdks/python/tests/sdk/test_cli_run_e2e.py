@@ -1084,7 +1084,7 @@ def test_image_mode_sends_the_approved_mount_path_and_mounts_the_file(
 
     @contextmanager
     def fake_managed_runtime(
-        image: str, target: Any = None, credential_files: Any = None
+        image: str, target: Any = None, credential_files: Any = None, **_kwargs: Any
     ) -> Any:
         mounted["files"] = dict(credential_files or {})
         mounted["contents"] = {

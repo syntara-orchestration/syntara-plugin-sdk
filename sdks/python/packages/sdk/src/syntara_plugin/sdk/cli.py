@@ -1250,7 +1250,13 @@ def _run_image_mode(
     """
 
     from .container_engine import managed_runtime
-    from .runner import DEFAULT_ADDRESS, RunExecutionError, credential_files, run_image
+    from .runner import (
+        DEFAULT_ADDRESS,
+        RunExecutionError,
+        credential_files,
+        run_image,
+        run_secret_scrubber,
+    )
 
     tls = _run_tls_options(arguments)
     if arguments.address is not None or tls is not None:
@@ -1276,7 +1282,14 @@ def _run_image_mode(
         print(f"==> starting workload container {target.workload_image}", file=sys.stderr)
     with (
         credential_files(credentials, container_readable=True) as (_, host_paths),
-        managed_runtime(target.workload_image, target, host_paths) as runtime,
+        managed_runtime(
+            target.workload_image,
+            target,
+            host_paths,
+            # The engine reads a dead container's logs before the runner's
+            # health check exists, so it scrubs them as it reads them.
+            scrub=run_secret_scrubber(target.input_schema, inputs, credentials),
+        ) as runtime,
     ):
         return run_image(
             runtime.address,

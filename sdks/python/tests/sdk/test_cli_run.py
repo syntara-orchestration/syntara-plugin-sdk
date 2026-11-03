@@ -406,6 +406,88 @@ _LEAK_OUTPUT_SCHEMA: dict[str, Any] = {
     "required": ["echo"],
 }
 
+_SCALAR_LEAK_SOURCE = '''"""A custom-runner Action step that returns numeric credential values."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import ActionStep, ExecutionContext
+
+
+class ScalarLeakInput(BaseModel):
+    title: str
+    priority: str = "low"
+    api_token: str = ""
+
+
+class ScalarLeakOutput(BaseModel):
+    pin: int
+    ratio: float
+    enabled: bool
+    nested: dict
+    label: str
+
+
+class ScalarLeakStep(ActionStep[ScalarLeakInput, ScalarLeakOutput]):
+    def run(self, inputs: ScalarLeakInput, context: ExecutionContext) -> ScalarLeakOutput:
+        # A workload that read its mounted credential and returned what it
+        # found: every value here equals one the author supplied.
+        return ScalarLeakOutput(
+            pin=123456,
+            ratio=12.34,
+            enabled=True,
+            nested={"pin": 123456, "enabled": True},
+            label="pin 123456 ratio 12.34",
+        )
+'''
+
+_SCALAR_LEAK_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "pin": {"type": "integer"},
+        "ratio": {"type": "number"},
+        "enabled": {"type": "boolean"},
+        "nested": {"type": "object"},
+        "label": {"type": "string"},
+    },
+    "required": ["pin", "ratio", "enabled", "nested", "label"],
+}
+
+_SCALAR_CREDENTIAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["pin", "ratio", "enabled"],
+    "properties": {
+        "pin": {"type": "integer"},
+        "ratio": {"type": "number"},
+        "enabled": {"type": "boolean"},
+    },
+}
+
+_ONE_REQUIRED_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["username"],
+    "properties": {"username": {"type": "string"}, "password": {"type": "string"}},
+}
+
+_ONE_OPTIONAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"token": {"type": "string", "minLength": 8}},
+}
+
+_MIXED_CREDENTIAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["token", "pin", "enabled"],
+    "properties": {
+        "token": {"type": "string", "minLength": 8},
+        "pin": {"type": "integer"},
+        "enabled": {"type": "boolean"},
+    },
+}
+
 
 def _write_custom_workspace(
     root: Path,
@@ -2866,6 +2948,28 @@ def test_step_stdout_is_scrubbed_of_supplied_secrets(tmp_path: Path, capsys) -> 
     assert "SECRET-KEY-99" not in captured.out
 
 
+def test_step_stderr_writes_are_scrubbed_of_supplied_secrets(
+    tmp_path: Path, capsys
+) -> None:
+    """A Step writing straight to sys.stderr cannot leak a secret either."""
+
+    stderr_source = _SHORT_SECRET_SOURCE.replace(
+        'return KeyOutput(echo=f"processed key {inputs.api_key}")',
+        'import sys\n'
+        '        print(f"DEBUG: using key {inputs.api_key}", file=sys.stderr)\n'
+        '        return KeyOutput(echo="done")',
+    )
+    workspace = _write_key_workspace(tmp_path / "ws", stderr_source)
+
+    status = _run_input(workspace, '{"title": "x", "api_key": "SECRET-KEY-99"}')
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert "DEBUG: using key ***" in captured.err
+    assert "SECRET-KEY-99" not in captured.err
+    assert "SECRET-KEY-99" not in captured.out
+
+
 def test_ambiguous_target_guidance_keeps_the_tls_options(
     tmp_path: Path, capsys
 ) -> None:
@@ -2933,6 +3037,7 @@ def _write_credential_workspace(
     integration_type: str | None = _INTEGRATION,
     credential_schema: dict[str, Any] | None = None,
     leaking: bool = False,
+    scalar_leaking: bool = False,
 ) -> Path:
     """Write a workspace whose Action reaches one credential recipe.
 
@@ -2967,10 +3072,15 @@ spec:
     declared = (
         f"  integrationType: {integration_type}\n" if integration_type is not None else ""
     )
-    source, class_name = (
-        (_LEAKING_SOURCE, "LeakStep") if leaking else (_STEP_SOURCE, "EchoStep")
-    )
-    output_schema = _LEAK_OUTPUT_SCHEMA if leaking else _ECHO_OUTPUT_SCHEMA
+    if scalar_leaking:
+        source, class_name = _SCALAR_LEAK_SOURCE, "ScalarLeakStep"
+        output_schema = _SCALAR_LEAK_OUTPUT_SCHEMA
+    elif leaking:
+        source, class_name = _LEAKING_SOURCE, "LeakStep"
+        output_schema = _LEAK_OUTPUT_SCHEMA
+    else:
+        source, class_name = _STEP_SOURCE, "EchoStep"
+        output_schema = _ECHO_OUTPUT_SCHEMA
     (root / "steps/echo").mkdir(parents=True, exist_ok=True)
     (root / "steps/echo/manifest.yaml").write_text(
         f"""apiVersion: syntara.io/v1alpha1
@@ -3419,6 +3529,236 @@ def test_a_credential_is_refused_for_a_runtime_the_author_manages(
 
     assert status == 2
     assert "--credential cannot be used with --address" in capsys.readouterr().err
+
+
+def test_scalar_credential_values_are_scrubbed_from_the_output(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """An integer, float, or boolean credential cannot leak through --json."""
+
+    workspace = _write_credential_workspace(
+        tmp_path / "ws",
+        credential_schema=_SCALAR_CREDENTIAL_SCHEMA,
+        scalar_leaking=True,
+    )
+    monkeypatch.setattr(
+        "sys.stdin",
+        StringIO(json.dumps({"pin": 123456, "ratio": 12.34, "enabled": True})),
+    )
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-", extra=["--json"]))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert document["output"] == {
+        "pin": "***",
+        "ratio": "***",
+        "enabled": "***",
+        "nested": {"pin": "***", "enabled": "***"},
+        "label": "pin *** ratio ***",
+    }
+    assert "123456" not in captured.out
+    assert "12.34" not in captured.out
+
+
+def test_delivered_credential_values_read_back_as_output_are_scrubbed(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A Step that reads the delivered file and returns it cannot leak it.
+
+    The step-side accessor is a later story, so the handler wrapper stands in
+    for it: it reads the delivered file exactly as the Step eventually will
+    and returns the document — a string and a non-string field alike — as
+    the Step's output. The delivered values themselves, not look-alike
+    constants, are what the scrub machinery must catch.
+    """
+
+    from dataclasses import replace as dataclass_replace
+
+    from syntara_plugin.sdk import runner as runner_module
+
+    workspace = _write_credential_workspace(
+        tmp_path / "ws", credential_schema=_MIXED_CREDENTIAL_SCHEMA
+    )
+    supplied = {"token": _TOKEN, "pin": 123456, "enabled": True}
+    original = runner_module.container_step_for_binding
+
+    def echoing_binding(*args: Any, **kwargs: Any) -> Any:
+        handler = original(*args, **kwargs)
+
+        def echoing(invocation: Any) -> Any:
+            result = handler(invocation)
+            read_back = {
+                name: json.loads(Path(path).read_text(encoding="utf-8"))
+                for name, path in invocation.credential_file_paths.items()
+            }
+            return dataclass_replace(result, output=read_back)
+
+        return echoing
+
+    monkeypatch.setattr(runner_module, "container_step_for_binding", echoing_binding)
+    monkeypatch.setattr("sys.stdin", StringIO(json.dumps(supplied)))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-", extra=["--json"]))
+
+    assert status == 0
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert document["output"] == {
+        _RECIPE: {"token": "***", "pin": "***", "enabled": "***"}
+    }
+    assert _TOKEN not in captured.out
+    assert _TOKEN not in captured.err
+    assert "123456" not in captured.out
+
+
+def test_scalar_scrubbing_distinguishes_bool_int_and_float() -> None:
+    """bool subclasses int, so True must not match the credential integer 1."""
+
+    from syntara_plugin.sdk.runner import _scrub_structure
+
+    assert _scrub_structure({"count": 1, "flag": True}, (), (1,)) == {
+        "count": "***",
+        "flag": True,
+    }
+    assert _scrub_structure({"value": 1.0}, (), (1,)) == {"value": 1.0}
+    assert _scrub_structure({"value": 1.0}, (), (1.0,)) == {"value": "***"}
+    assert _scrub_structure([True, [False]], (), (True,)) == ["***", [False]]
+
+
+def test_a_pre_health_liveness_failure_is_scrubbed() -> None:
+    """A container log captured before health cannot carry a credential."""
+
+    from syntara_plugin.sdk.runner import RunExecutionError, _scrubbing_liveness
+
+    def dead_probe() -> None:
+        raise RunExecutionError(
+            "the workload container exited before its runtime became healthy",
+            detail=("container log (last lines):", f"startup failed: token {_TOKEN}"),
+        )
+
+    probe = _scrubbing_liveness(dead_probe, (_TOKEN,))
+
+    with pytest.raises(RunExecutionError) as raised:
+        probe()
+
+    detail = "\n".join(raised.value.detail)
+    assert _TOKEN not in detail
+    assert "token ***" in detail
+
+
+def test_a_recipe_with_one_optional_field_wraps_a_raw_value(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """Exactly one declared property is wrappable, required or not."""
+
+    workspace = _write_credential_workspace(
+        tmp_path / "ws", credential_schema=_ONE_OPTIONAL_SCHEMA
+    )
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 0
+
+
+def test_a_recipe_with_optional_fields_requires_the_complete_document(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """One required property among several declared is no wrapping field."""
+
+    workspace = _write_credential_workspace(
+        tmp_path / "ws", credential_schema=_ONE_REQUIRED_SCHEMA
+    )
+    monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
+
+    status = main(_credential_run(workspace, f"{_RECIPE}=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "more than one field, so a raw value cannot be wrapped" in captured.err
+    assert "Declared fields: password, username" in captured.err
+    assert _TOKEN not in captured.err
+
+
+def test_raw_wrapping_follows_declared_properties_not_required() -> None:
+    """The declared set, not the required list, decides wrappability."""
+
+    from syntara_plugin.sdk.runner import CredentialRecipe, _sole_credential_field
+
+    def recipe(schema: dict[str, Any]) -> CredentialRecipe:
+        return CredentialRecipe(name=_RECIPE, schema=schema, secret_fields=())
+
+    one_required = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}},
+        "required": ["token"],
+    }
+    one_optional = {"type": "object", "properties": {"token": {"type": "string"}}}
+    many_one_required = {
+        "type": "object",
+        "properties": {"username": {}, "password": {}},
+        "required": ["username"],
+    }
+    many_optional = {"type": "object", "properties": {"username": {}, "password": {}}}
+
+    assert _sole_credential_field(recipe(one_required)) == "token"
+    assert _sole_credential_field(recipe(one_optional)) == "token"
+    assert _sole_credential_field(recipe(many_one_required)) is None
+    assert _sole_credential_field(recipe(many_optional)) is None
+
+
+def test_a_credential_name_at_the_filename_limit_is_parsed() -> None:
+    """255 bytes is the common NAME_MAX, so it must still be accepted."""
+
+    from syntara_plugin.sdk.runner import parse_credential_options
+
+    name = "a" * 255
+    specs = parse_credential_options((f"{name}=-",))
+    assert specs[0].name == name
+
+
+def test_an_overlong_credential_name_is_refused_as_usage(
+    tmp_path: Path, capsys
+) -> None:
+    """A name no filesystem can hold fails before any invocation starts."""
+
+    name = "a" * 256
+    workspace = _write_credential_workspace(tmp_path / "ws")
+
+    status = main(_credential_run(workspace, f"{name}=-"))
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "cannot be delivered as a credential file" in captured.err
+    assert "ENAMETOOLONG" in captured.err
+
+
+def test_a_credential_file_write_failure_is_a_structured_error(monkeypatch) -> None:
+    """An unexpected delivery failure names the credential, never its value."""
+
+    from syntara_plugin.sdk.runner import (
+        LoadedCredential,
+        RunExecutionError,
+        credential_files,
+    )
+
+    def refuse(self: Path, data: bytes) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+    credential = LoadedCredential(
+        name=_RECIPE, document={"token": _TOKEN}, secret_values=(_TOKEN,)
+    )
+
+    with pytest.raises(RunExecutionError) as raised:
+        with credential_files((credential,), container_readable=False):
+            pass
+
+    assert "could not be created" in raised.value.message
+    assert _TOKEN not in raised.value.message
+    assert _TOKEN not in "\n".join(raised.value.detail)
 
 
 def test_template_mode_never_reads_a_credential(tmp_path: Path, capsys) -> None:

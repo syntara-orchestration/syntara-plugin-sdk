@@ -113,6 +113,10 @@ CREDENTIAL_MOUNT_DIRECTORY = "/var/run/syntara/secrets"
 # outside it can never be delivered as a mounted credential file, so it is
 # refused at parse time instead of failing mid-run on a malformed mount.
 _CREDENTIAL_FILE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+# The common filesystem limit for one filename component (Linux NAME_MAX);
+# the approved secret mount path keeps the credential name, so a longer one
+# cannot be delivered at all.
+_CREDENTIAL_NAME_MAX_BYTES = 255
 _CREDENTIAL_SOURCE_STEPS = (
     "--credential NAME=- to read one value from standard input",
     "--credential NAME=file:PATH to read a file outside the workspace",
@@ -421,7 +425,9 @@ def _collect_nested_strings(
         candidates.append((value, min_length))
     elif isinstance(value, bool):
         return
-    elif isinstance(value, int):
+    elif isinstance(value, (int, float)):
+        # A number a Step interpolates into text is scrubbed by its string
+        # form; the original-typed match is handled by _scrub_scalar.
         candidates.append((str(value), min_length))
     elif isinstance(value, Mapping):
         for item in value.values():
@@ -440,18 +446,36 @@ def _scrub_text(text: str, secrets: tuple[str, ...]) -> str:
     return text
 
 
-def _scrub_structure(value: Any, secrets: tuple[str, ...]) -> Any:
+def _scrub_structure(
+    value: Any, secrets: tuple[str, ...], scalars: tuple[Any, ...] = ()
+) -> Any:
     if isinstance(value, str):
         return _scrub_text(value, secrets)
     if isinstance(value, Mapping):
         return {
             (_scrub_text(key, secrets) if isinstance(key, str) else key): _scrub_structure(
-                item, secrets
+                item, secrets, scalars
             )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_scrub_structure(item, secrets) for item in value]
+        return [_scrub_structure(item, secrets, scalars) for item in value]
+    return _scrub_scalar(value, scalars)
+
+
+def _scrub_scalar(value: Any, scalars: tuple[Any, ...]) -> Any:
+    """Replace a scalar that equals a supplied credential value, exactly.
+
+    Matching is by strict type as well as value, so the boolean ``True`` is
+    never treated as the integer ``1`` (``bool`` subclasses ``int`` and the
+    two compare equal) and the integer ``1`` never matches the float ``1.0``.
+    Numbers are never matched inside longer text: that would redact unrelated
+    output, so textual scrubbing stays string-for-string.
+    """
+
+    for scalar in scalars:
+        if type(value) is type(scalar) and value == scalar:
+            return _REDACTED
     return value
 
 
@@ -819,6 +843,9 @@ class LoadedCredential:
     name: str
     document: Mapping[str, Any]
     secret_values: tuple[str, ...]
+    # Credential scalars in their original types, so a Step returning the
+    # integer or boolean it was handed gets it masked like any string secret.
+    secret_scalars: tuple[Any, ...] = ()
 
 
 def parse_credential_options(raw: Sequence[str] | None) -> tuple[CredentialSpec, ...]:
@@ -863,6 +890,16 @@ def _credential_spec(name: str, source: str) -> CredentialSpec:
             detail=(
                 "A credential name may contain only letters, digits, '.', '_', and '-':",
                 "the ABI's secret mount has no path for anything else.",
+            ),
+            next_steps=("rename the CredentialRecipe, or supply a mount-safe name",),
+        )
+    if len(name.encode("utf-8")) > _CREDENTIAL_NAME_MAX_BYTES:
+        raise RunUsageError(
+            f"--credential {name} cannot be delivered as a credential file",
+            detail=(
+                f"A credential name longer than {_CREDENTIAL_NAME_MAX_BYTES} bytes cannot be "
+                "represented as one filename component:",
+                "the delivery filesystem rejects it with ENAMETOOLONG.",
             ),
             next_steps=("rename the CredentialRecipe, or supply a mount-safe name",),
         )
@@ -951,6 +988,7 @@ def load_credentials(
                 name=spec.name,
                 document=document,
                 secret_values=_credential_secret_values(document, raw),
+                secret_scalars=_credential_secret_scalars(document),
             )
         )
     return tuple(loaded), tuple(warnings)
@@ -1066,11 +1104,14 @@ def _credential_document(
 
 
 def _sole_credential_field(recipe: CredentialRecipe) -> str | None:
-    """Return the only field a raw value can be wrapped into, when there is one."""
+    """Return the only field a raw value can be wrapped into, when there is one.
 
-    required = recipe.schema.get("required")
-    if isinstance(required, Sequence) and not isinstance(required, str) and len(required) == 1:
-        return str(required[0])
+    The count that decides is the declared property set, never ``required``:
+    a recipe declaring ``username`` and an optional ``password`` has no
+    unambiguous field to wrap a raw value into, so it requires the complete
+    document even though exactly one property is required.
+    """
+
     properties = _declared_properties(recipe.schema)
     if len(properties) == 1:
         return str(next(iter(properties)))
@@ -1134,6 +1175,33 @@ def _credential_secret_values(document: Mapping[str, Any], raw: str) -> tuple[st
     return tuple(picked)
 
 
+def _credential_secret_scalars(document: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Collect every non-string credential scalar in its original type.
+
+    Strings are handled by ``_credential_secret_values``; booleans, integers,
+    and floats are matched structurally instead, because a Step can return a
+    supplied number exactly as it received it and no string representation
+    would catch it. ``None`` is skipped: scrubbing it would redact every
+    legitimate null in a Step's output.
+    """
+
+    picked: list[Any] = []
+    _collect_nested_scalars(document, picked)
+    return tuple(picked)
+
+
+def _collect_nested_scalars(value: Any, picked: list[Any]) -> None:
+    if isinstance(value, (bool, int, float)):
+        if not any(scalar == value and type(scalar) is type(value) for scalar in picked):
+            picked.append(value)
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            _collect_nested_scalars(item, picked)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_nested_scalars(item, picked)
+
+
 @contextlib.contextmanager
 def credential_files(
     credentials: Sequence[LoadedCredential], *, container_readable: bool
@@ -1158,8 +1226,18 @@ def credential_files(
         paths: dict[str, str] = {}
         for credential in credentials:
             path = directory / credential.name
-            path.write_bytes(canonical_json_bytes(dict(credential.document)))
-            path.chmod(0o644 if container_readable else 0o600)
+            try:
+                path.write_bytes(canonical_json_bytes(dict(credential.document)))
+                path.chmod(0o644 if container_readable else 0o600)
+            except OSError as error:
+                # Name and failure category only: the value that failed to be
+                # written is the one that must never reach the error surface.
+                raise RunExecutionError(
+                    f"the credential file for {credential.name} could not be created",
+                    next_steps=(
+                        "check the permissions and available space in the temporary directory",
+                    ),
+                ) from error
             paths[credential.name] = str(path)
         yield directory, paths
     finally:
@@ -1182,6 +1260,17 @@ def credential_secret_values(credentials: Sequence[LoadedCredential]) -> tuple[s
     for credential in credentials:
         for value in credential.secret_values:
             if value not in picked:
+                picked.append(value)
+    return tuple(picked)
+
+
+def credential_secret_scalars(credentials: Sequence[LoadedCredential]) -> tuple[Any, ...]:
+    """Return every non-string credential scalar that must be scrubbed."""
+
+    picked: list[Any] = []
+    for credential in credentials:
+        for value in credential.secret_scalars:
+            if not any(scalar == value and type(scalar) is type(value) for scalar in picked):
                 picked.append(value)
     return tuple(picked)
 
@@ -1260,8 +1349,14 @@ def run_source(
         try:
             # The Step runs in this process; anything it prints belongs on stderr,
             # scrubbed of supplied secrets, so stdout keeps carrying only the
-            # report (or the --json document).
-            with contextlib.redirect_stdout(scrubbing_stderr):
+            # report (or the --json document). Both streams are redirected:
+            # wrapping only stdout would let a Step that writes to sys.stderr
+            # directly — print(..., file=sys.stderr), logging — print a supplied
+            # secret verbatim.
+            with (
+                contextlib.redirect_stdout(scrubbing_stderr),
+                contextlib.redirect_stderr(scrubbing_stderr),
+            ):
                 return _execute_over_channel(
                     _ChannelExecution(
                         channel=channel,
@@ -1397,14 +1492,22 @@ class _ChannelExecution:
 
 def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     client = ContainerClient(execution.channel, execution.local_credential_directory)
+    target = execution.target
+    inputs = execution.inputs
+    # The scrub set exists before the health check, not after it: a managed
+    # container that exits while booting has its log lines copied into the
+    # failure detail, and those lines may carry a credential the workload
+    # read from its mount before it died.
+    secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(
+        execution.credentials
+    )
+    scalars = credential_secret_scalars(execution.credentials)
     advertised = _health(
         client,
         execution.address,
         startup_seconds=execution.startup_seconds,
-        liveness=execution.liveness,
+        liveness=_scrubbing_liveness(execution.liveness, secrets),
     )
-    target = execution.target
-    inputs = execution.inputs
     dispatch_id = target.step_revision_id if execution.mode == "image" else target.identity
     if dispatch_id not in advertised:
         listed = ", ".join(sorted(advertised)) or "none"
@@ -1426,11 +1529,10 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         timeout_seconds=execution.timeout_seconds,
         runtime_context={},
     )
-    secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(
-        execution.credentials
-    )
     credential_names = tuple(credential.name for credential in execution.credentials)
-    redacted_inputs = _scrub_structure(redact_inputs(target.input_schema, inputs), secrets)
+    redacted_inputs = _scrub_structure(
+        redact_inputs(target.input_schema, inputs), secrets, scalars
+    )
     terminal = _consume(client, invocation, _scrubbing_progress(execution.on_progress, secrets))
     detail = (
         _scrub_text("\n\n".join(execution.captured_detail).rstrip(), secrets)
@@ -1482,7 +1584,9 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         workflow_run_id=workflow_run_id,
         status=result.status_code,
         status_message=_scrub_text(result.status_message, secrets),
-        output=_scrub_structure(result.output, secrets) if result.output is not None else None,
+        output=_scrub_structure(result.output, secrets, scalars)
+        if result.output is not None
+        else None,
         object_reference=(
             _scrub_text(result.object_reference, secrets)
             if result.object_reference is not None
@@ -1576,6 +1680,51 @@ def _scrubbing_progress(
         )
 
     return wrapped
+
+
+def _scrubbing_liveness(
+    liveness: Callable[[], None] | None, secrets: tuple[str, ...]
+) -> Callable[[], None] | None:
+    """Wrap the liveness probe so a pre-health failure cannot leak a secret.
+
+    The probe raises with the container's log lines when a managed container
+    exits before becoming healthy. The engine already scrubs those lines as
+    it reads them; this second layer covers any other probe, so no detail
+    reaches the author unscrubbed regardless of who built the failure.
+    """
+
+    if liveness is None:
+        return None
+
+    def probe() -> None:
+        try:
+            liveness()
+        except RunExecutionError as error:
+            raise RunExecutionError(
+                _scrub_text(error.message, secrets),
+                failure_code=error.failure_code,
+                detail=tuple(_scrub_text(line, secrets) for line in error.detail),
+                next_steps=error.next_steps,
+            ) from error
+
+    return probe
+
+
+def run_secret_scrubber(
+    input_schema: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    credentials: Sequence[LoadedCredential],
+) -> Callable[[str], str]:
+    """Return a one-argument scrubber for every secret this run supplies.
+
+    The engine reads a dead container's logs before the runner's health check
+    exists, so the caller hands this scrubber down to the engine: log lines
+    are redacted as they are read, before any truncation could cut a secret
+    into a recognizable fragment.
+    """
+
+    secrets = _secret_values(input_schema, inputs) + credential_secret_values(credentials)
+    return lambda text: _scrub_text(text, secrets)
 
 
 def _consume(

@@ -144,6 +144,8 @@ def managed_runtime(
     image: str,
     target: RunTarget | None = None,
     credential_files: Mapping[str, str] | None = None,
+    *,
+    scrub: Callable[[str], str] | None = None,
 ) -> Iterator[ManagedRuntime]:
     """Run one workload image for the duration of the block, then remove it.
 
@@ -212,7 +214,7 @@ def managed_runtime(
                 _published_runtime(
                     engine, image, name, material, resolved_path, credential_files or {}
                 ),
-                liveness=_container_liveness(engine, name, image),
+                liveness=_container_liveness(engine, name, image, scrub),
             )
             yield runtime
         finally:
@@ -361,13 +363,19 @@ def _restore_sigterm(previous: Any) -> None:
         pass
 
 
-def _container_liveness(engine: ContainerEngine, name: str, image: str) -> Callable[[], None]:
+def _container_liveness(
+    engine: ContainerEngine,
+    name: str,
+    image: str,
+    scrub: Callable[[str], str] | None = None,
+) -> Callable[[], None]:
     """Return a probe that raises once the managed container has exited.
 
     The probe is consulted by the runner's health retry loop, so a container
     whose process died fails fast with its exit status and log instead of
     consuming the whole startup window. Checks are rate-limited to once per
-    second because the loop retries every quarter second.
+    second because the loop retries every quarter second. ``scrub`` redacts
+    the run's secrets from each log line as it is read.
     """
 
     last_check = 0.0
@@ -380,7 +388,7 @@ def _container_liveness(engine: ContainerEngine, name: str, image: str) -> Calla
         last_check = now
         exit_code = _container_exit_code(engine, name)
         if exit_code is not None:
-            raise _container_exit_error(engine, name, image, exit_code)
+            raise _container_exit_error(engine, name, image, exit_code, scrub)
 
     return probe
 
@@ -416,12 +424,16 @@ def _container_exit_code(engine: ContainerEngine, name: str) -> int | None:
 
 
 def _container_exit_error(
-    engine: ContainerEngine, name: str, image: str, exit_code: int
+    engine: ContainerEngine,
+    name: str,
+    image: str,
+    exit_code: int,
+    scrub: Callable[[str], str] | None = None,
 ) -> RunExecutionError:
     """Build the failure for a managed container that exited before health."""
 
     detail = [f"container {name} exited with status {exit_code}"]
-    logs = _container_log_tail(engine, name)
+    logs = _container_log_tail(engine, name, scrub=scrub)
     if logs:
         detail.append("container log (last lines):")
         detail.extend(logs)
@@ -437,9 +449,18 @@ def _container_exit_error(
 
 
 def _container_log_tail(
-    engine: ContainerEngine, name: str, *, limit: int = _LOG_TAIL_LINES
+    engine: ContainerEngine,
+    name: str,
+    *,
+    limit: int = _LOG_TAIL_LINES,
+    scrub: Callable[[str], str] | None = None,
 ) -> tuple[str, ...]:
-    """Return the last lines of the container's combined output, bounded."""
+    """Return the last lines of the container's combined output, bounded.
+
+    Redaction runs on the full line before it is truncated, so cutting a line
+    to its bounded length cannot leave a recognizable fragment of a secret
+    the workload printed as it died.
+    """
 
     try:
         completed = subprocess.run(
@@ -454,9 +475,10 @@ def _container_log_tail(
         return ()
     if completed.returncode != 0:
         return ()
-    return tuple(
-        line[:_LOG_LINE_LENGTH] for line in completed.stdout.splitlines()[-limit:]
-    )
+    lines = completed.stdout.splitlines()[-limit:]
+    if scrub is not None:
+        lines = [scrub(line) for line in lines]
+    return tuple(line[:_LOG_LINE_LENGTH] for line in lines)
 
 
 def _remove_container(engine: ContainerEngine, name: str) -> None:
