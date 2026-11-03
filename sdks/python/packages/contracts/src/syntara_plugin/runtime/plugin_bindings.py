@@ -17,7 +17,6 @@ from typing import Any
 
 import yaml
 from syntara_plugin.contracts import load_bundle, validate_document
-from yaml.constructor import ConstructorError
 from yaml.tokens import AliasToken, AnchorToken
 
 from .bindings import (
@@ -27,6 +26,7 @@ from .bindings import (
     StepDescriptor,
 )
 from .step import BaseStep
+from .yaml_loader import UniqueKeyLoader
 
 PLUGIN_MANIFEST_FILENAME = "plugin.yaml"
 DEFAULT_MANIFESTS_ROOT = "manifests"
@@ -310,7 +310,7 @@ def _parse_document(raw: bytes, label: str) -> dict[str, Any]:
         message = f"packaged manifest {label!r} must not use YAML anchors or aliases"
         raise StepBindingError(message)
     try:
-        value = yaml.load(raw, Loader=_UniqueKeyLoader)
+        value = yaml.load(raw, Loader=UniqueKeyLoader)
     except RecursionError:
         message = f"packaged manifest {label!r} is nested too deeply to parse"
         raise StepBindingError(message) from None
@@ -427,38 +427,3 @@ def _asset_path(source: Mapping[str, Any], target_path: str) -> str:
         )
         raise StepBindingError(message)
     return asset_path
-
-
-class _UniqueKeyLoader(yaml.SafeLoader):
-    """A YAML loader that rejects duplicate mapping keys."""
-
-
-def _construct_mapping(
-    loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
-) -> dict[object, object]:
-    mapping: dict[object, object] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            duplicate = key in mapping
-        except TypeError:
-            raise ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "unsupported unhashable mapping key",
-                key_node.start_mark,
-            ) from None
-        if duplicate:
-            raise ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                f"duplicate key {key!r}",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping
-)

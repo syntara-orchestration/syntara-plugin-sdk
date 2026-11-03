@@ -1105,3 +1105,41 @@ def test_rejects_yaml_anchors_and_aliases(tmp_path: Path) -> None:
     with pytest.raises(CompilationError) as error:
         _compile(root)
     assert error.value.diagnostics[0].code == "YAML_ALIAS_FORBIDDEN"
+
+
+def test_rejects_complex_yaml_mapping_keys(tmp_path: Path) -> None:
+    complex_keys = tmp_path / "complex-keys.yaml"
+    complex_keys.write_text("? [a, b]\n: value\n")
+    request = BuildRequest(complex_keys)
+
+    with pytest.raises(CompilationError) as error:
+        compile_workspace(request)
+    assert error.value.diagnostics[0].code == "YAML_INVALID"
+    assert "unhashable mapping key" in error.value.diagnostics[0].message
+
+
+def test_deeply_nested_document_reports_a_bounded_diagnostic(tmp_path: Path) -> None:
+    deep = tmp_path / "deep.yaml"
+    deep.write_text("[" * 2000 + "1" + "]" * 2000)
+    request = BuildRequest(deep)
+
+    # Without the recursion guard, yaml.load itself raises RecursionError
+    # before the document depth limit can fire.
+    with pytest.raises(CompilationError) as error:
+        compile_workspace(request)
+    assert error.value.diagnostics[0].code == "DOCUMENT_LIMIT_EXCEEDED"
+    assert "nested too deeply to parse" in error.value.diagnostics[0].message
+
+
+def test_document_depth_limit_is_enforced_after_a_clean_parse(tmp_path: Path) -> None:
+    deep = "\n".join(f"{'  ' * level}key{level}:" for level in range(150))
+    deep_root = tmp_path / "depth"
+    deep_root.write_text(deep + "\n")
+    request = BuildRequest(deep_root)
+
+    # Parses without hitting yaml's own recursion limit; only the compiler's
+    # depth bound rejects it.
+    with pytest.raises(CompilationError) as error:
+        compile_workspace(request)
+    assert error.value.diagnostics[0].code == "DOCUMENT_LIMIT_EXCEEDED"
+    assert "exceeds 100 nesting levels" in error.value.diagnostics[0].message

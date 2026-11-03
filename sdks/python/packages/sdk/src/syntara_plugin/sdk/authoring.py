@@ -26,7 +26,7 @@ from syntara_plugin.contracts import (
     step_revision_id,
     validate_document,
 )
-from yaml.constructor import ConstructorError
+from syntara_plugin.runtime.yaml_loader import UniqueKeyLoader
 from yaml.tokens import AliasToken, AnchorToken
 
 DEFAULT_CONTAINER_ABI = "syntara.container/v1alpha1"
@@ -1254,7 +1254,10 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
     try:
         raw = _read_regular_file(path, max_bytes, root=root)
         _reject_yaml_aliases(raw)
-        value = yaml.load(raw, Loader=_UniqueKeyLoader)
+        try:
+            value = yaml.load(raw, Loader=UniqueKeyLoader)
+        except RecursionError as error:
+            raise ValueError(f"{path.name} is nested too deeply to parse.") from error
         _enforce_document_limits(value)
     except OSError as error:
         raise CompilationError(
@@ -1285,7 +1288,7 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
                 )
             ]
         ) from error
-    except (yaml.YAMLError, ConstructorError) as error:
+    except yaml.YAMLError as error:
         recursive = "recursive" in str(error).lower()
         code = "DOCUMENT_RECURSIVE" if recursive else "YAML_INVALID"
         remediation = (
@@ -1327,7 +1330,10 @@ def _parse_asset(path: Path, raw: bytes) -> object:
         return json.loads(raw)
     if path.suffix in {".yaml", ".yml"}:
         _reject_yaml_aliases(raw)
-        value = yaml.load(raw, Loader=_UniqueKeyLoader)
+        try:
+            value = yaml.load(raw, Loader=UniqueKeyLoader)
+        except RecursionError as error:
+            raise ValueError("asset is nested too deeply to parse.") from error
         _enforce_document_limits(value)
         return value
     raise ValueError("only .json, .yaml, and .yml assets are supported")
@@ -1475,30 +1481,6 @@ def _ensure_contained(path: Path, root: Path) -> None:
                 )
             ]
         ) from error
-
-
-class _UniqueKeyLoader(yaml.SafeLoader):
-    pass
-
-
-def _construct_mapping(
-    loader: _UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False
-) -> dict[object, object]:
-    mapping: dict[object, object] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if key in mapping:
-            raise ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                f"duplicate key {key!r}",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
 
 
 def _contains_cycle(value: object, ancestors: set[int] | None = None) -> bool:
