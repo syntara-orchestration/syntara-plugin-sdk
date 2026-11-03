@@ -1,4 +1,4 @@
-"""Tests for the shared raw-input step execution boundary."""
+"""Tests for the shared raw-input step type execution boundary."""
 
 from __future__ import annotations
 
@@ -913,7 +913,7 @@ def test_control_and_trigger_output_validation_is_shared_by_direct_and_container
     direct_bindings = StepBindings()
     _bind_installed(direct_bindings, identity, direct_step)
 
-    with pytest.raises(StepExecutionError, match="plugin step") as direct_error:
+    with pytest.raises(StepExecutionError, match="The step returned an invalid response") as direct_error:
         StepExecutor(direct_bindings.binding(identity)).execute({"message": "hello"}, _context())
 
     container_step = step_factory()

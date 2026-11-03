@@ -1,4 +1,4 @@
-"""Example tests for a Control-category Step (descriptor path, no source manifest)."""
+"""Example tests for a Control-category step type (descriptor path, no source manifest)."""
 
 from __future__ import annotations
 

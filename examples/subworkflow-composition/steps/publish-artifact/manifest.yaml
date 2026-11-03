@@ -3,7 +3,7 @@ kind: Action
 metadata:
   name: publish-artifact
   displayName: Publish artifact
-  description: Terminal step of the child workflow; produces the result its parent consumes.
+  description: Terminal step type of the child workflow; produces the result its parent consumes.
 spec:
   runtime:
     kind: custom-runner

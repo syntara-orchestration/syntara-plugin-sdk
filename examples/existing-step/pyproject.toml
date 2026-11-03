@@ -9,7 +9,3 @@ dependencies = ["syntara-plugin-contracts>=0.1.0a1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/existing_step"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"plugin.yaml" = "existing_step/manifests/plugin.yaml"
-"steps" = "existing_step/manifests/steps"

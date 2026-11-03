@@ -12,7 +12,7 @@ child workflow's terminal step.
 ## Calling the child workflow
 
 Add **Call publish artifact** to a parent workflow and supply the artifact name
-and the release channel. The step waits for the child workflow to finish and
+and the release channel. The step type waits for the child workflow to finish and
 returns its `releaseId` and `publishedAt` values, so later steps in the
 parent workflow can read them directly.
 

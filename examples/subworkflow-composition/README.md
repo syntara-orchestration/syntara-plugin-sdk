@@ -53,9 +53,9 @@ uv run --no-sync pytest examples/subworkflow-composition -q
 ```
 
 The tests validate all three manifests against the canonical contract bundle,
-execute each step on the direct and container paths, prove the trigger's event
+execute each type on the direct and container paths, prove the trigger's event
 payload satisfies the terminal step's declared input, and chain the child's
-steps to show the parent receives exactly the result it declares.
+step types to show the parent receives exactly the result it declares.
 
 The pass-through checks use `assert_schemas_agree` from the SDK testing
 harness, which compares two declared schemas field by field (ignoring

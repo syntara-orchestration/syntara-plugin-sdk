@@ -1,4 +1,4 @@
-"""Transport-independent execution for trusted typed plugin steps."""
+"""Transport-independent execution for trusted step types."""
 
 from __future__ import annotations
 
@@ -29,9 +29,9 @@ from .outcome import (
 )
 from .validation import StepInputValidationError, validate_step_inputs
 
-_INVALID_STEP_RESPONSE = "The plugin step returned an invalid response."
-_UNEXPECTED_STEP_FAILURE = "The plugin step did not complete."
-_UNTRUSTED_BINDING = "The plugin step is not bound to a trusted installed descriptor."
+_INVALID_STEP_RESPONSE = "The step returned an invalid response."
+_UNEXPECTED_STEP_FAILURE = "The step did not complete."
+_UNTRUSTED_BINDING = "The step is not bound to a trusted installed descriptor."
 _SCHEMA_DIGEST_MISMATCH = (
     "The runtime context output schema digest does not match the declared schema."
 )
@@ -86,7 +86,7 @@ def _resolve_step_failure_error(
 class StepExecutionError(RuntimeError):
     """A safe SDK failure without a result wrapper and with execution certainty.
 
-    ``not_started`` means the typed step hook was not entered. ``unknown`` means
+    ``not_started`` means the step type hook was not entered. ``unknown`` means
     execution began, so the caller cannot know whether side effects occurred.
     """
 
@@ -147,10 +147,10 @@ class StepFailure(Exception):
 
 
 class StepExecutor:
-    """Execute a trusted typed step from raw JSON input.
+    """Execute a trusted step type from raw JSON input.
 
-    Input validation is selected by the binding's concrete Step kind before the
-    typed hook runs. The executor itself does not own Step-type-specific contracts.
+    Input validation is selected by the binding's concrete step type kind before the
+    typed hook runs. The executor itself does not own step-type-specific contracts.
     """
 
     def __init__(self, binding: StepBinding) -> None:
@@ -299,7 +299,7 @@ def _invoke_with_error_schema(
     input: Mapping[str, Any],
     context: ExecutionContext,
 ) -> tuple[StandardOutputWrapper[Mapping[str, Any]], str | None]:
-    """Invoke one typed step through its trusted descriptor and schema contract.
+    """Invoke one step type through its trusted descriptor and schema contract.
 
     Invalid inputs and author-raised ``StepFailure`` values produce wrappers.
     SDK failures, including invalid output, an untrusted binding, digest mismatch,
@@ -341,7 +341,7 @@ def invoke(
     input: Mapping[str, Any],
     context: ExecutionContext,
 ) -> StandardOutputWrapper[Mapping[str, Any]]:
-    """Invoke one typed step through its trusted descriptor and schema contract."""
+    """Invoke one step type through its trusted descriptor and schema contract."""
 
     return _invoke_with_error_schema(step, input, context)[0]
 

@@ -1,4 +1,4 @@
-"""Factory building drift-verified step bindings for local tests."""
+"""Factory building drift-verified step type bindings for local tests."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def installed_binding(
     input_schema: Mapping[str, Any] | None = None,
     output_schema: Mapping[str, Any] | None = None,
 ) -> StepBinding:
-    """Build one locally installed, executable binding for a step implementation.
+    """Build one locally installed, executable binding for a step type implementation.
 
     The manifest is synthetic but flows through the trusted
     ``InstalledStepManifest.from_manifest`` and ``StepDescriptor.for_installed_step``
@@ -109,8 +109,8 @@ def installed_binding(
     step_class = type(step)
     if "<locals>" in step_class.__qualname__:
         message = (
-            f"{step_class.__qualname__} is defined inside a function. The installed-step "
-            "contract requires an importable module:Class entry point, so step classes "
+            f"{step_class.__qualname__} is defined inside a function. The installed-step type "
+            "contract requires an importable module:Class entry point, so step type classes "
             "must be defined at module level; move the class out of the enclosing function."
         )
         raise HarnessUsageError(message)
@@ -129,7 +129,7 @@ def installed_binding(
 
 
 def _installable_manifest(target: Mapping[str, Any]) -> dict[str, Any]:
-    """Rebuild the raw Step manifest shape from one compiled target.
+    """Rebuild the raw step type manifest shape from one compiled target.
 
     The compiler normalizes targets into a canonical form (top-level identity
     and resolved schemas); ``InstalledStepManifest.from_manifest`` consumes
@@ -168,9 +168,9 @@ class StepBindingsFactory:
 
     ``bind`` installs a local manifest derived from the implementation's own
     schemas (or explicitly supplied ones) and verifies it with
-    ``check_step_contract``; every bound step is executable through
+    ``check_step_contract``; every bound step type is executable through
     :func:`~syntara_plugin.testing.invoke_step`. ``bind_step`` compiles a
-    plugin workspace, installs the compiled Step manifest through the same
+    plugin workspace, installs the compiled step type manifest through the same
     trusted factory, and verifies the target with ``check_target_binding``.
     """
 
@@ -200,7 +200,7 @@ class StepBindingsFactory:
             return self._bindings.binding(key)
         except StepBindingError as error:
             if ":" not in key:
-                message = f"step identity {key!r} has not been bound yet"
+                message = f"step type identity {key!r} has not been bound yet"
                 raise HarnessUsageError(message) from error
             message = f"entry point {key!r} has not been bound yet"
             raise HarnessUsageError(message) from error
@@ -213,15 +213,15 @@ class StepBindingsFactory:
         input_schema: Mapping[str, Any] | None = None,
         output_schema: Mapping[str, Any] | None = None,
     ) -> StepBinding:
-        """Bind one step through a locally installed, drift-verified manifest.
+        """Bind one step type through a locally installed, drift-verified manifest.
 
         The binding is executable through
         :func:`~syntara_plugin.testing.invoke_step`. For compiled workspaces
             prefer :meth:`bind_step`, which installs the real manifest.
 
         Args:
-            step: A step class or instance, or a ``module:Class`` entry point.
-            identity: Step identity; derived from the class when omitted.
+            step: A step type class or instance, or a ``module:Class`` entry point.
+            identity: step type identity; derived from the class when omitted.
             input_schema: Optional declared input schema to install and verify
                 against (defaults to the implementation's own model schema).
             output_schema: Optional declared output schema to install and
@@ -252,11 +252,11 @@ class StepBindingsFactory:
         workspace: Path | str,
         identity: str | None = None,
     ) -> StepBinding:
-        """Compile a workspace, install its Step manifest, and bind the implementation.
+        """Compile a workspace, install its step type manifest, and bind the implementation.
 
         The workspace is compiled through the same canonical compiler the CLI
         ``validate`` command uses (with ``require_image_bindings=False`` since
-        local tests build no images). The matching custom-runner Step
+        local tests build no images). The matching custom-runner step type
         target is located by entry point (or explicitly by ``identity``), its
         compiled manifest is installed through
         ``InstalledStepManifest.from_manifest``, and only that target is
@@ -272,7 +272,7 @@ class StepBindingsFactory:
                 (``pkg:Class`` resolving to ``pkg.steps:Class``) match the
                 manifest as written.
             workspace: Path to the root ``plugin.yaml`` or its directory.
-            identity: Full step identity; located by entry point when omitted.
+            identity: Full step type identity; located by entry point when omitted.
         """
 
         root = Path(workspace)
@@ -359,7 +359,7 @@ class StepBindingsFactory:
         if runtime_kind != "custom-runner":
             message = (
                 f"target {target.get('identity')!r} uses the {runtime_kind!r} runtime; "
-                "only custom-runner Step targets bind Python implementations "
+                "only custom-runner step type targets bind Python implementations "
                 "(platform-runner targets are declarative manifests)"
             )
             raise HarnessUsageError(message)
@@ -374,7 +374,7 @@ def _step_kind(step_class: type[BaseStep[Any, Any]]) -> StepKind:
         return StepKind.CONTROL
     if issubclass(step_class, TriggerStep):
         return StepKind.TRIGGER
-    message = f"{step_class.__qualname__} does not belong to a supported Step kind"
+    message = f"{step_class.__qualname__} does not belong to a supported step type kind"
     raise HarnessUsageError(message)
 
 

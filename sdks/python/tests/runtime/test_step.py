@@ -1,4 +1,4 @@
-"""Tests for the typed Python step execution API."""
+"""Tests for the typed Python step type execution API."""
 
 from __future__ import annotations
 

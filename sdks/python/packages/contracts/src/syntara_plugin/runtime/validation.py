@@ -13,7 +13,7 @@ _MAX_LOCATION_LENGTH = 128
 
 
 class StepInputValidationError(ValueError):
-    """An invalid step input with a caller-safe diagnostic message."""
+    """An invalid step type input with a caller-safe diagnostic message."""
 
     def __init__(self, safe_message: str) -> None:
         super().__init__(safe_message)

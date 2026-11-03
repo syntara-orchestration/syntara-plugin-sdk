@@ -885,7 +885,7 @@ def test_report_issues_are_deduplicated_and_sorted() -> None:
 
 
 def _matching_target(step_class: type[BaseStep[Any, Any]], **overrides: Any) -> dict[str, Any]:
-    """Build one compiled custom-runner Action target matching the step's models."""
+    """Build one compiled custom-runner Action target matching the step type's models."""
 
     target: dict[str, Any] = {
         "kind": "Action",

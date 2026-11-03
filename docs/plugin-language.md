@@ -19,15 +19,15 @@ Every plugin inventory and target document starts with this envelope.
 
 ## Terms and execution model
 
-A **Step type** is a concrete catalog capability such as **HTTP Request**,
-**Create GitHub Issue**, or **Launch AAP Job Template**. Every Step type has
-one lowercase **category**: `action`, `control`, or `trigger`. Action Step
+A **step type** is a concrete catalog capability such as **HTTP Request**,
+**Create GitHub Issue**, or **Launch AAP Job Template**. Every step type has
+one lowercase **category**: `action`, `control`, or `trigger`. `Action` category step
 types cover domain integrations, API calls, scripts, and data manipulation;
 `Control` maps to `control`; and `Trigger` maps to `trigger`. Category states
 the capability's architectural role; it does not choose its execution owner.
 A **Runner** is either Syntara's `platform-runner` or an author-owned
-`custom-runner`. **Execution** is the invocation of the selected Step type
-through that runner or, for control and ingress Step types, through the
+`custom-runner`. **Execution** is the invocation of the selected step type
+through that runner or, for control and ingress step types, through the
 platform control plane.
 
 ```text
@@ -39,11 +39,11 @@ Launch production inventory sync -> control -> platform-runner -> invokes the se
 Pull request webhook -> trigger -> platform-runner -> webhook ingress delivers the event in the control plane
 ```
 
-Use a Control Step type for orchestration behavior in the control plane, such
-as invoking a workflow or composing execution flow. A Control Step type is
+Use a Control step type for orchestration behavior in the control plane, such
+as invoking a workflow or composing execution flow. A Control step type is
 not a generic label for every catalog capability.
 `spec.invocation.kind: orchestration` identifies control-flow metadata; a
-Control Step type that invokes a named workflow uses
+Control step type that invokes a named workflow uses
 `spec.invocation.kind: workflow-invocation` and
 `spec.invocation.workflow`. Category is unrelated to a terminal failure's
 `error_code` classification.
@@ -54,30 +54,30 @@ Schema: [`plugin.schema.json`](../contracts/schemas/v1alpha1/plugin.schema.json)
 
 | Key | Meaning |
 | --- | --- |
-| `spec.targets` | Required list of contained YAML target paths. These are Step types, integration types, and credential recipes included in the release. |
+| `spec.targets` | Required list of contained YAML target paths. These are step types, integration types, and credential recipes included in the release. |
 | `spec.documentation.path` | Required contained UTF-8 Markdown file published with the plugin. |
-| `spec.workload.image` | Optional logical image ID shared by every `custom-runner` Step type. A plugin has at most one runner image, which is bound to an immutable container digest during build. |
+| `spec.workload.image` | Optional logical image ID shared by every `custom-runner` step type. A plugin has at most one runner image, which is bound to an immutable container digest during build. |
 | `spec.providers` | Optional declarative form-provider image definitions. Each item has an `id` and a logical `image` ID. |
 
 ## `kind: Action`
 
-Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json). An `Action` Step type (category `action`) performs a domain operation or integration.
+Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json). An `Action` step type (category `action`) performs a domain operation or integration.
 
 | Key | Meaning |
 | --- | --- |
 | `spec.runtime.kind` | Required execution owner: `platform-runner` or `custom-runner`. |
-| `spec.runtime.implementation` | Required for `platform-runner`; a registered step reference in `<namespace>.<plugin>.<step>@version` form, with a SemVer 2.0.0 version (including optional prerelease and build metadata), such as `example.hello-world.hello@0.1.0`. Forbidden for `custom-runner`. |
+| `spec.runtime.implementation` | Required for `platform-runner`; a registered step type reference in `<namespace>.<plugin>.<step>@version` form, with a SemVer 2.0.0 version (including optional prerelease and build metadata), such as `example.hello-world.hello@0.1.0`. Forbidden for `custom-runner`. |
 | `spec.runtime.operation` | Optional HTTP operation metadata for the built-in `syntara.http.request@<version>` platform runner: an inert method, relative path, and optional mappings. Forbidden for `custom-runner` and all other implementations. |
-| `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the Step implementation inside the digest-pinned runner image. It is an implementation identity, not a placement decision: Syntara policy may run it in the selected host execution path or delegate it to the Execution Plane. |
-| `spec.domain` | Optional qualified domain identifier that groups an Action Step type independently of its runner. |
-| `spec.integrationType` | Optional qualified integration type required by the Action Step type. A workflow selects an instance of this type, not raw credentials. |
+| `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the step type implementation inside the digest-pinned runner image. It is an implementation identity, not a placement decision: Syntara policy may run it in the selected host execution path or delegate it to the Execution Plane. |
+| `spec.domain` | Optional qualified domain identifier that groups an Action step type independently of its runner. |
+| `spec.integrationType` | Optional qualified integration type required by the Action step type. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |
-| `spec.output` | Required JSON Schema source for the Step type's business result. |
+| `spec.output` | Required JSON Schema source for the step type's business result. |
 | `spec.error` | Optional JSON Schema source for failure details, separate from the successful business result schema in `spec.output`. |
 
-Custom-runner Step types implement `spec.runtime.entryPoint` with the typed
-Python API; see [Typed Python steps](runtime-and-oci.md#typed-python-steps).
-Platform-runner references identify a step in any registered plugin. Compilation
+Custom-runner step types implement `spec.runtime.entryPoint` with the typed
+Python API; see [Typed Python step types](runtime-and-oci.md#typed-python-step-types).
+Platform-runner references identify a step type in any registered plugin. Compilation
 preserves the reference; the AO Plugin Registry resolves its image, entry point,
 and ABI during registration. Example references are placeholders and must name
 an implementation available in the target installation.
@@ -101,29 +101,29 @@ The plugin never declares an origin, authorization header, secret, command, or c
 
 ## `kind: Control`
 
-Schema: [`control.schema.json`](../contracts/schemas/v1alpha1/control.schema.json). A `Control` Step category represents orchestration behavior and uses the same runner declaration as every other executable Step type.
+Schema: [`control.schema.json`](../contracts/schemas/v1alpha1/control.schema.json). A `Control` step type category represents orchestration behavior and uses the same runner declaration as every other executable step type.
 
 `spec.invocation.kind: orchestration` identifies control-flow metadata. Use
 `workflow-invocation` together with `spec.invocation.workflow` for a Control
-Step type that invokes a named workflow. `spec.runtime` selects the approved
+step type that invokes a named workflow. `spec.runtime` selects the approved
 `platform-runner` or `custom-runner`; `entryPoint` identifies a custom-runner
 implementation and `implementation` identifies a platform runner. Control contracts
 define public input and business-result output schemas and may optionally
 declare a separate error schema. For a `workflow-invocation`, the parent
-Control Step consumes the child workflow's declared result; the parent's
+Control step type consumes the child workflow's declared result; the parent's
 `spec.output` describes the result exposed by that invocation. Runtime wrapper
 failure metadata is separate from both schemas.
 
 ### Subworkflow composition
 
-A synchronous subworkflow call needs no new Step category. The parent side is
+A synchronous subworkflow call needs no new step type category. The parent side is
 a Control with `spec.invocation.kind: workflow-invocation` and the
 `syntara.workflow.invoke@1.0.0` platform-runner implementation; the child side
 is a Trigger on the `subworkflow.v1` driver, which declares its platform driver
 in `spec.driver` and its executor separately in `spec.runtime`. The child
 Trigger carries the child workflow's parameter schema in `spec.configuration`
 and passes its input through to the child run unchanged, so the parameters are
-defined per workflow rather than fixed per Step type.
+defined per workflow rather than fixed per step type.
 
 These contracts express the composition seams, but they are **not yet a
 confirmed fit** for AO's ANSTRAT-2347 implementation. Recorded gaps:
@@ -135,7 +135,7 @@ confirmed fit** for AO's ANSTRAT-2347 implementation. Recorded gaps:
   child by a UUID `workflow_id`, which no qualified identifier matches.
 - The parent's `spec.output` is the child's declared business result. AO's
   `sub_workflow` result is child execution metadata (`child_execution_id`,
-  `child_workflow_version`, `child_status`, step-keyed `outputs`).
+  `child_workflow_version`, `child_status`, Step-keyed `outputs`).
 
 `spec.invocation.workflow` is a qualified identifier with no version segment,
 so a parent names a child workflow but cannot pin a published version of it;
@@ -145,7 +145,7 @@ child's terminal result to the parent's `spec.output`. Both agreements are
 authoring obligations that an author verifies with their own tests.
 
 The trigger's event payload carries no parent-run identifier: `ExecutionContext`
-has no parent-run field, so a Step executing in the child run cannot know the
+has no parent-run field, so a step type executing in the child run cannot know the
 parent's run id, and stamping the current `workflow_run_id` would name the
 child's own run. Parent/child run correlation is a runtime-context gap
 (AAP-94805) to be resolved by the execution plane, not by the event payload.
@@ -187,16 +187,16 @@ Schema: [`credential-recipe.schema.json`](../contracts/schemas/v1alpha1/credenti
 | `TriggerDriver` | [`trigger-driver.schema.json`](../contracts/schemas/v1alpha1/trigger-driver.schema.json) | `spec.id`, `spec.transport`, `spec.events` |
 | `TriggerEventMapping` | [`trigger-event-mapping.schema.json`](../contracts/schemas/v1alpha1/trigger-event-mapping.schema.json) | `spec.driver`, `spec.event`, `spec.configuration`, `spec.output` |
 
-`Trigger` refers to the Step category `trigger`. `Trigger.driver` chooses a versioned platform
+`Trigger` refers to the step type category `trigger`. `Trigger.driver` chooses a versioned platform
 ingress driver, while `spec.runtime` selects the runner that implements the
-Step type. `spec.configuration` is driver-owned setup and is not runtime
+step type. `spec.configuration` is driver-owned setup and is not runtime
 input. `spec.input` and `spec.output` are the public event and business-result
 contracts. Optional `spec.error` describes the complete structured error result.
 The runtime also enforces the SDK base fields; without `spec.error`, the SDK
 base schema is used. Neither schema describes the runtime wrapper itself.
 The same category also represents a child-workflow entry in reference-mode
 composition; its declared public output is the result consumed by the parent
-`Control` step, not the results of the child's internal steps.
+`Control` step type, not the results of the child's internal step type.
 `TriggerDriver.transport` is one of
 `webhook`, `schedule`, `event-source`, or `poll`.
 
@@ -232,26 +232,26 @@ The plugin projection contains `projection`, `kind: "plugin"`, and the complete
 compiled descriptor without generated IDs. It excludes every workload binding
 referenced by a custom-runner target because that image embeds the registration
 manifest containing these IDs. Provider-only and unreferenced workload bindings
-remain in the projection. The step projection contains `projection`,
+remain in the projection. The step type projection contains `projection`,
 `kind: "step"`, the plugin's namespace/name/version, `sdkVersion`,
 `contractBundleDigest`, and the complete compiled target without its generated
 ID.
 
-**Step revision change rule:** The compiler creates a new `step_revision_id`
+**Step type revision change rule:** The compiler creates a new `step_revision_id`
 when any part of that projection changes. This includes the plugin
-namespace/name/release version; the Step type's category and input, output, or
+namespace/name/release version; the step type's category and input, output, or
 error contracts; its runtime kind, ABI, and declared entry point or
 implementation reference; the exact `sdkVersion`; and the contract-bundle
 digest. A platform-runner implementation reference is part of the compiled
 target and therefore participates in both revision projections.
 
-A Step type revision does not change for a workload image repository, image
-digest, or registration-time image selection; for another Step type; or for
+A step type revision does not change for a workload image repository, image
+digest, or registration-time image selection; for another step type; or for
 plugin documentation. The latter two changes can create a new
-`plugin_revision_id` without changing this Step type's revision.
+`plugin_revision_id` without changing this step type's revision.
 
 Recompiling the same author inputs with a different SDK version or contract
-bundle intentionally creates a distinct Step type revision. Existing published
+bundle intentionally creates a distinct step type revision. Existing published
 revisions remain valid. Before a new custom-runner revision can execute, its
 selected workload image must contain a registration-manifest mapping for that
 new revision.
@@ -290,7 +290,7 @@ properties:
 ```
 
 Descriptions are documentation only: they do not change validation or expose
-credentials. Apply the same pattern to Step type `input`, `output`, and
+credentials. Apply the same pattern to step type `input`, `output`, and
 optional `error`, as well as integration `configuration` and credential schemas.
 
 ## More contracts

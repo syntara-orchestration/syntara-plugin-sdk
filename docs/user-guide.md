@@ -20,7 +20,7 @@ syntara-plugin inspect ./dist/my-plugin.oci.tar
 
 `run` is separate from that loop for one reason: it executes custom-runner
 Steps, and a workspace created by `init` declares a platform-runner action,
-which Syntara's managed runner executes instead. To run a Step locally you
+which Syntara's managed runner executes instead. To run a step type locally you
 need a workspace that declares a custom-runner target and an input file; the
 complete, copy-pasteable workflow using the
 [python-steps example](../examples/python-steps) from a repository checkout:
@@ -38,8 +38,11 @@ syntara-plugin run --manifest examples/python-steps/plugin.yaml create-issue --i
 ```
 
 Every command above runs as printed from the repository root. `run` can also
-execute a workload image you built; see [Running locally](running-locally.md)
-for both modes, target selection, and the meaning of every output field.
+execute a workload image you built, and `--credential NAME=-` supplies a
+credential the Step's integration type declares, reading it from standard
+input and delivering it as a read-only file rather than an environment
+variable. See [Running locally](running-locally.md) for both modes, target
+selection, credential sources, and the meaning of every output field.
 
 The default build has no registry side effects. It compiles the selected manifest, validates the contracts, and writes a deterministic OCI-layout tar archive.
 

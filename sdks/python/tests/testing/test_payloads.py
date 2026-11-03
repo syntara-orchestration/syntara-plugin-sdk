@@ -232,7 +232,7 @@ class _OpaqueArgsStep(ControlStep[_ChainInput, _ChainOutput]):
 
 
 def test_normalized_step_failures_do_not_retain_secret_exception_chains() -> None:
-    """Normalized SDK failures do not expose step exception payloads."""
+    """Normalized SDK failures do not expose step type exception payloads."""
 
     token = secret_sentinel()
     context = build_execution_context(invocation_id="chain-redaction")
@@ -244,7 +244,7 @@ def test_normalized_step_failures_do_not_retain_secret_exception_chains() -> Non
 
 
 def test_function_local_step_classes_are_rejected_with_guidance() -> None:
-    """The installed-step contract requires importable entry points."""
+    """The installed-step type contract requires importable entry points."""
 
     class LocalStep(ControlStep[_ChainInput, _ChainOutput]):
         def run(self, inputs: _ChainInput, context: ExecutionContext) -> _ChainOutput:

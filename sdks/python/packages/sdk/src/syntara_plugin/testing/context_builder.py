@@ -1,4 +1,4 @@
-"""Construction of locally approved execution contexts for step tests."""
+"""Construction of locally approved execution contexts for step type tests."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def build_execution_context(
             supplied it must be a Syntara identity (letters, digits,
             ``. _ : -``, at most 256 characters) so both execution paths
             accept it.
-        runtime_context: Optional non-secret runtime data surfaced to the step.
+        runtime_context: Optional non-secret runtime data surfaced to the step type.
         cancelled: Pre-set the cooperative cancellation signal when true.
     """
 

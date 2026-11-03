@@ -1,4 +1,4 @@
-"""Pytest plugin distributing the Syntara step-testing fixture suite.
+"""Pytest plugin distributing the Syntara step type-testing fixture suite.
 
 The fixtures are thin wrappers over the importable function core in this
 package, so the same behavior is available with or without pytest. Fixture
@@ -43,11 +43,11 @@ def mock_execution_context() -> Callable[..., ExecutionContext]:
 
 @pytest.fixture
 def step_bindings() -> StepBindingsFactory:
-    """Factory fixture building drift-verified step bindings.
+    """Factory fixture building drift-verified step type bindings.
 
-    Use ``step_bindings.bind(step)`` for any step (a locally installed
+    Use ``step_bindings.bind(step)`` for any step type (a locally installed
     manifest) and ``step_bindings.bind_step(entry_point, workspace=...)``
-    for custom-runner Step types compiled from a real workspace.
+    for custom-runner step types compiled from a real workspace.
     """
 
     return StepBindingsFactory()

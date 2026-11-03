@@ -1,9 +1,9 @@
-"""An example Control step: compose a remediation plan.
+"""An example Control-category step type: compose a remediation plan.
 
-Control steps implement composition inside ``run()``: this example composes
+Control step types implement composition inside ``run()``: this example composes
 normalization and planning into one opaque operation, which is exactly the
-boundary the authoring guide discusses (combine operations inside one step or
-split them across Control steps).
+boundary the authoring guide discusses (combine operations inside one step type or
+split them across Control step types).
 """
 
 from __future__ import annotations

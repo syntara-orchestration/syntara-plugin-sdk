@@ -8,7 +8,7 @@ import pytest
 from syntara_plugin.sdk.cli import main
 from syntara_plugin.sdk.testgen import ScaffoldError, generate_step_tests
 
-STEP_SOURCE = '''"""A custom-runner Action step used by the generated tests."""
+STEP_SOURCE = '''"""A custom-runner Action step type used by the generated tests."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ spec:
 
 
 def _write_workspace_for_kind(root: Path, kind: str) -> Path:
-    """Write the same minimal workspace with a non-Action Step kind."""
+    """Write the same minimal workspace with a non-Action step type kind."""
 
     workspace = _write_workspace(root)
     manifest_path = workspace / "steps/create/manifest.yaml"
@@ -145,7 +145,7 @@ def test_generate_covers_every_custom_runner_step_kind(tmp_path: Path, kind: str
     workspace = _write_workspace_for_kind(tmp_path / kind.lower(), kind)
     generate_step_tests(workspace / "plugin.yaml")
     content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
-    assert f"{kind} Step type" in content
+    assert f"{kind} step type" in content
     assert "step_bindings.bind_step" in content
 
 
@@ -203,7 +203,7 @@ spec:
 """,
         encoding="utf-8",
     )
-    with pytest.raises(ScaffoldError, match="no custom-runner Step targets"):
+    with pytest.raises(ScaffoldError, match="no custom-runner step type targets"):
         generate_step_tests(workspace / "plugin.yaml")
 
 
@@ -491,7 +491,7 @@ spec:
     )
     (pytester.path / "docs/README.md").write_text("# Business\n", encoding="utf-8")
     (pytester.path / "count_report/__init__.py").write_text(
-        '''"""A step whose business rules reject the scaffolded placeholder."""
+        '''"""A step type whose business rules reject the scaffolded placeholder."""
 
 from __future__ import annotations
 

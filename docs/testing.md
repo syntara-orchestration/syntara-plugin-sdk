@@ -1,6 +1,6 @@
 # Testing reference
 
-The SDK's testing harness gives step authors a local pytest suite: validate
+The SDK's testing harness gives step type authors a local pytest suite: validate
 declared contracts and execute Python Action, Control, and Trigger
 implementations through the shared SDK execution boundary, without a cluster
 or platform services.
@@ -35,11 +35,11 @@ Their names are public API.
 | `manifest_validator` | `syntara_plugin.contracts` canonical bundle | `manifest_validator(document, kind=...)` raises `ManifestValidationError` on invalid documents; `.check(...)` returns diagnostics; `bundle=` accepts a step-type owner's canonical bundle. |
 | `compile_manifest` | `syntara_plugin.sdk` compiler | `compile_manifest(path_or_plugin, targets=None, ...)` compiles a workspace (path to `plugin.yaml` or its directory) or an in-memory `Plugin` model; path compiles default to `require_image_bindings=False` because local tests build no images. |
 | `mock_execution_context` | `ExecutionContext` | `mock_execution_context(invocation_id=..., workflow_run_id=..., runtime_context=..., cancelled=False)` builds one locally approved context: valid, free of real credentials, authorized only for local test execution. |
-| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for any step (a locally installed manifest verified with `check_step_contract`); `bind_step(entry_point, workspace=...)` for custom-runner Step types (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
+| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for any step type (a locally installed manifest verified with `check_step_contract`); `bind_step(entry_point, workspace=...)` for custom-runner step types (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
 
-Action steps execute only through an installed manifest: the SDK's
+Action-category step types execute only through an installed manifest: the SDK's
 `require_executable_contract` provenance gate rejects fabricated descriptors,
-so `bind_step` is the only path to an executable custom-runner Step binding. Binding an
+so `bind_step` is the only path to an executable custom-runner step type binding. Binding an
 Action with `bind` is allowed for drift checks but is not executable.
 
 ## Invocation helpers
@@ -66,7 +66,7 @@ outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
   container ABI's inline bound (1 MiB) are externalized only when an object
   store is configured. Test pre-cancelled contexts and oversized outputs with
   the adapter-specific tests.
-- Both accept a `StepBinding`, a step class or instance, or a
+- Both accept a `StepBinding`, a step type class or instance, or a
   `module:Class` entry point, and return a `StepOutcome`.
 
 `StepOutcome` normalizes both paths: `.ok`, `.status`, `.status_message`,
@@ -118,7 +118,7 @@ assert_no_secrets(outcome, [token], caplog=caplog)
 serialized output, raw envelope, and the pytest log capture. When scanning
 logs, wrap the invocation in `caplog.at_level(logging.INFO)` (or higher):
 pytest only captures records that pass the root logger's effective level,
-which defaults to WARNING, and INFO is exactly where a chatty step leaks
+which defaults to WARNING, and INFO is exactly where a chatty step type leaks
 credentials.
 
 Credential values must not appear in outputs, wrapper fields, raised errors,
@@ -152,7 +152,7 @@ explicit output-to-input seams and fails fast naming the broken link.
 same drift engine used for manifests. This is deliberately not a workflow
 engine: no branching, parallelism, fan-in, retries, or persistence. When a
 chain needs control flow, implement it as a `ControlStep.run()` and test the
-step.
+step type.
 
 `schema_without_descriptions(schema)` returns a copy of a JSON Schema with
 every `description` *annotation* dropped, so two schemas that must agree — a
@@ -196,7 +196,7 @@ pytest tests -q
 
 ## A runnable example
 
-[`../examples/python-steps`](../examples/python-steps) contains one step per
+[`../examples/python-steps`](../examples/python-steps) contains one step type per
 category and a test suite using everything above. Run it from the
 repository root:
 

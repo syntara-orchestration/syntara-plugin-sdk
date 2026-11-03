@@ -328,7 +328,7 @@ def _assert_registration_manifest_rejected(descriptor, manifest) -> None:
 
 
 def _assert_missing_workload_rejected(descriptor) -> None:
-    with pytest.raises(ValueError, match="no custom-runner steps"):
+    with pytest.raises(ValueError, match="no custom-runner step types"):
         registration_manifest(descriptor, "missing")
 
 
@@ -357,12 +357,12 @@ def _descriptor_with_stale_step_revision(tmp_path: Path) -> dict[str, object]:
 
 def test_stale_step_revision_is_reported_by_descriptor_validation(tmp_path: Path) -> None:
     descriptor = _descriptor_with_stale_step_revision(tmp_path)
-    assert any("step revision ID" in error for error in validate_plugin_descriptor_semantics(descriptor))
+    assert any("step type revision ID" in error for error in validate_plugin_descriptor_semantics(descriptor))
 
 
 def test_stale_step_revision_is_rejected_by_registration(tmp_path: Path) -> None:
     descriptor = _descriptor_with_stale_step_revision(tmp_path)
-    with pytest.raises(ValueError, match="step revision ID"):
+    with pytest.raises(ValueError, match="step type revision ID"):
         validate_registration_manifest(descriptor, "plugin-workload", {})
 
 

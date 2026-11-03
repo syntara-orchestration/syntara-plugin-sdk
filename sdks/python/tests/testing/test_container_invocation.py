@@ -198,7 +198,7 @@ def test_run_id_echoing_step_is_equivalent_under_a_shared_context() -> None:
 
 
 def test_a_deadlocked_step_returns_its_timeout_without_hanging_the_session() -> None:
-    """A step that ignores cancellation cannot block beyond its timeout."""
+    """A step type that ignores cancellation cannot block beyond its timeout."""
 
     started = time.monotonic()
     outcome = invoke_step_in_container(

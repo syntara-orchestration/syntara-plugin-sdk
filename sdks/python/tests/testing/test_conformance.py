@@ -101,7 +101,7 @@ class _EchoContextStep(ControlStep[_EchoContextInput, _EchoContextOutput]):
 
 
 def test_conformance_without_context_compares_identical_contexts() -> None:
-    """A step echoing invocation identifiers must not false-fail equivalence."""
+    """A step type echoing invocation identifiers must not false-fail equivalence."""
 
     bindings = StepBindings()
     binding = installed_binding(_EchoContextStep(), identity="testing.conformance.echo")

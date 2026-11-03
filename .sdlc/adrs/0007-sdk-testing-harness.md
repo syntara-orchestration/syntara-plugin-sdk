@@ -6,7 +6,7 @@
 
 ## Context
 
-Step authors need a fast local feedback loop for declared contracts and the
+Step type authors need a fast local feedback loop for declared contracts and the
 Python API: manifest validation, model-versus-manifest drift, and execution of
 Action, Control, and Trigger implementations through the shared SDK
 executor, without AO, EP, or a cluster. Before this decision the repository had

@@ -2,7 +2,7 @@
 
 The runner resolves one custom-runner target from a compiled workspace,
 validates supplied input against the compiled manifest schema, and executes
-the Step through ``ContainerClient`` over real gRPC: source mode binds the
+the step type through ``ContainerClient`` over real gRPC: source mode binds the
 implementation and serves an in-process runtime; image mode connects to an
 already-running workload runtime. The module returns data and raises errors
 with author-facing guidance; the CLI renders both.
@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import json
+import os
 import re
 import shutil
 import sys
@@ -28,6 +29,7 @@ from typing import Any
 
 import grpc
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
+from syntara_plugin.contracts import canonical_json_bytes
 from syntara_plugin.runtime.abi import CONTAINER_ABI, FailureCode
 from syntara_plugin.runtime.adapter import container_step_for_binding
 from syntara_plugin.runtime.bindings import StepBinding
@@ -104,6 +106,22 @@ _INSTANCE_EMBEDDING_VALIDATORS = frozenset(
     {"anyOf", "contains", "dependencies", "dependentRequired", "dependentSchemas", "enum",
      "maxProperties", "minProperties", "not", "oneOf", "uniqueItems"}
 )
+# The container ABI's approved secret mount: the only directory a deployed
+# workload ever reads a credential from, and the path image mode mounts into.
+CREDENTIAL_MOUNT_DIRECTORY = "/var/run/syntara/secrets"
+# The file names the ABI's secret mount allows (runtime/container.py); a name
+# outside it can never be delivered as a mounted credential file, so it is
+# refused at parse time instead of failing mid-run on a malformed mount.
+_CREDENTIAL_FILE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+# The common filesystem limit for one filename component (Linux NAME_MAX);
+# the approved secret mount path keeps the credential name, so a longer one
+# cannot be delivered at all.
+_CREDENTIAL_NAME_MAX_BYTES = 255
+_CREDENTIAL_SOURCE_STEPS = (
+    "--credential NAME=- to read one value from standard input",
+    "--credential NAME=file:PATH to read a file outside the workspace",
+    "--credential NAME=env:VAR to read an environment variable",
+)
 
 
 class RunUsageError(ValueError):
@@ -152,6 +170,7 @@ class RunTarget:
     schema_digests: Mapping[str, str]
     workload_image: str | None = None
     step_revision_id: str = ""
+    integration_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +207,9 @@ class RunReport:
     outcome: str | None
     error_detail: str | None = None
     image: str | None = None
+    # The names of the credentials delivered to this invocation. Never a value
+    # and never a path: the report is one of the surfaces secrets must not reach.
+    credentials: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -303,7 +325,7 @@ def _secret_values(
     """Collect the supplied values of sensitive fields for display scrubbing.
 
     Field-level masking keeps secrets out of the input echo; this collects the
-    raw values so anything a step interpolates into an exception message, a
+    raw values so anything a step type interpolates into an exception message, a
     failure message, its output, or a progress update can be scrubbed too.
     Values nested under a sensitive name are collected recursively. String and
     integer values are collected; booleans and floats collide with legitimate
@@ -403,7 +425,9 @@ def _collect_nested_strings(
         candidates.append((value, min_length))
     elif isinstance(value, bool):
         return
-    elif isinstance(value, int):
+    elif isinstance(value, (int, float)):
+        # A number a step type interpolates into text is scrubbed by its string
+        # form; the original-typed match is handled by _scrub_scalar.
         candidates.append((str(value), min_length))
     elif isinstance(value, Mapping):
         for item in value.values():
@@ -415,25 +439,43 @@ def _collect_nested_strings(
 
 def _scrub_text(text: str, secrets: tuple[str, ...]) -> str:
     # Longest first so overlapping secrets cannot leave a suffix behind. Every
-    # secret matches case-insensitively so a step cannot dodge the scrubber by
+    # secret matches case-insensitively so a step type cannot dodge the scrubber by
     # changing the case of the value.
     for secret in sorted(secrets, key=len, reverse=True):
         text = re.sub(re.escape(secret), _REDACTED, text, flags=re.IGNORECASE)
     return text
 
 
-def _scrub_structure(value: Any, secrets: tuple[str, ...]) -> Any:
+def _scrub_structure(
+    value: Any, secrets: tuple[str, ...], scalars: tuple[Any, ...] = ()
+) -> Any:
     if isinstance(value, str):
         return _scrub_text(value, secrets)
     if isinstance(value, Mapping):
         return {
             (_scrub_text(key, secrets) if isinstance(key, str) else key): _scrub_structure(
-                item, secrets
+                item, secrets, scalars
             )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_scrub_structure(item, secrets) for item in value]
+        return [_scrub_structure(item, secrets, scalars) for item in value]
+    return _scrub_scalar(value, scalars)
+
+
+def _scrub_scalar(value: Any, scalars: tuple[Any, ...]) -> Any:
+    """Replace a scalar that equals a supplied credential value, exactly.
+
+    Matching is by strict type as well as value, so the boolean ``True`` is
+    never treated as the integer ``1`` (``bool`` subclasses ``int`` and the
+    two compare equal) and the integer ``1`` never matches the float ``1.0``.
+    Numbers are never matched inside longer text: that would redact unrelated
+    output, so textual scrubbing stays string-for-string.
+    """
+
+    for scalar in scalars:
+        if type(value) is type(scalar) and value == scalar:
+            return _REDACTED
     return value
 
 
@@ -587,7 +629,7 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
     if requested is None:
         if not runnable:
             raise RunUsageError(
-                "this workspace declares no custom-runner Step target that can run locally",
+                "this workspace declares no custom-runner step type target that can run locally",
                 detail=_target_lines(result.descriptor["spec"]["targets"]),
                 next_steps=("run syntara-plugin inspect to review the declared targets",),
             )
@@ -609,6 +651,7 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         schema_digests=selected["schemaDigests"],
         workload_image=selected.get("runtime", {}).get("workload"),
         step_revision_id=str(selected["step_revision_id"]),
+        integration_type=selected.get("integrationType"),
     )
 
 
@@ -775,8 +818,465 @@ def _capped_validation_lines(lines: list[str]) -> list[str]:
     return lines[:_MAX_VALIDATION_ERRORS] + [f"and {remaining} more"]
 
 
+@dataclass(frozen=True)
+class CredentialSpec:
+    """One parsed ``--credential NAME=SOURCE`` request, before it is read."""
+
+    name: str
+    kind: str
+    locator: str
+
+
+@dataclass(frozen=True)
+class CredentialRecipe:
+    """One credential recipe the selected target can reach."""
+
+    name: str
+    schema: Mapping[str, Any]
+    secret_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LoadedCredential:
+    """One supplied credential, shaped and validated, held in memory only."""
+
+    name: str
+    document: Mapping[str, Any]
+    secret_values: tuple[str, ...]
+    # Credential scalars in their original types, so a step type returning the
+    # integer or boolean it was handed gets it masked like any string secret.
+    secret_scalars: tuple[Any, ...] = ()
+
+
+def parse_credential_options(raw: Sequence[str] | None) -> tuple[CredentialSpec, ...]:
+    """Parse every ``--credential NAME=SOURCE`` option into a source request.
+
+    An inline value is refused rather than read: it would be visible in the
+    shell history and in other local users' view of ``/proc/<pid>/cmdline``,
+    the same reason ``--input-file`` and ``--password-stdin`` exist. No
+    message here echoes the supplied text, because a refused inline value is
+    exactly the case where that text is a secret.
+    """
+
+    specs: list[CredentialSpec] = []
+    seen: set[str] = set()
+    for item in raw or ():
+        name, separator, source = item.partition("=")
+        if not separator or not name:
+            raise RunUsageError(
+                "--credential expects NAME=SOURCE",
+                next_steps=_CREDENTIAL_SOURCE_STEPS,
+            )
+        if name in seen:
+            raise RunUsageError(f"--credential {name} was supplied more than once")
+        seen.add(name)
+        specs.append(_credential_spec(name, source))
+    stdin_names = [spec.name for spec in specs if spec.kind == "stdin"]
+    if len(stdin_names) > 1:
+        raise RunUsageError(
+            "only one credential can be read from standard input",
+            detail=tuple(f"{name}=-" for name in stdin_names),
+            next_steps=("supply the others with file: or env:",),
+        )
+    return tuple(specs)
+
+
+def _credential_spec(name: str, source: str) -> CredentialSpec:
+    """Classify one credential source, refusing an inline value."""
+
+    if not _CREDENTIAL_FILE_NAME.fullmatch(name):
+        raise RunUsageError(
+            f"--credential {name} cannot be delivered as a credential file",
+            detail=(
+                "A credential name may contain only letters, digits, '.', '_', and '-':",
+                "the ABI's secret mount has no path for anything else.",
+            ),
+            next_steps=("rename the CredentialRecipe, or supply a mount-safe name",),
+        )
+    if len(name.encode("utf-8")) > _CREDENTIAL_NAME_MAX_BYTES:
+        raise RunUsageError(
+            f"--credential {name} cannot be delivered as a credential file",
+            detail=(
+                f"A credential name longer than {_CREDENTIAL_NAME_MAX_BYTES} bytes cannot be "
+                "represented as one filename component:",
+                "the delivery filesystem rejects it with ENAMETOOLONG.",
+            ),
+            next_steps=("rename the CredentialRecipe, or supply a mount-safe name",),
+        )
+    if source == "-":
+        return CredentialSpec(name, "stdin", "")
+    for prefix, kind in (("file:", "file"), ("env:", "env")):
+        if source.startswith(prefix):
+            locator = source[len(prefix):]
+            if not locator:
+                raise RunUsageError(f"--credential {name}={prefix} names no {kind}")
+            return CredentialSpec(name, kind, locator)
+    raise RunUsageError(
+        f"--credential {name} does not accept an inline value",
+        detail=(
+            "An inline value is visible in the shell history and to other",
+            "local users through /proc/<pid>/cmdline.",
+        ),
+        next_steps=_CREDENTIAL_SOURCE_STEPS,
+    )
+
+
+def reachable_credential_recipes(
+    result: CompilationResult, target: RunTarget
+) -> dict[str, CredentialRecipe]:
+    """Return the credential recipes reachable through the target's integration.
+
+    A step type reaches a recipe only through the integration type it declares, so
+    the lookup is integration -> ``credentialTypes`` -> recipe. The compiler
+    has already rejected a broken link in either direction, so an empty result
+    means the target declares no integration type, not a malformed workspace.
+    """
+
+    if not target.integration_type:
+        return {}
+    targets = list(result.descriptor["spec"]["targets"])
+    declared: set[str] = set()
+    for candidate in targets:
+        if candidate.get("kind") == "IntegrationType" and (
+            candidate.get("id") == target.integration_type
+        ):
+            declared = {str(name) for name in candidate.get("credentialTypes", ())}
+    recipes: dict[str, CredentialRecipe] = {}
+    for candidate in targets:
+        identifier = str(candidate.get("id", ""))
+        if candidate.get("kind") != "CredentialRecipe" or identifier not in declared:
+            continue
+        schema = candidate.get("credentialSchema") or {}
+        recipes[identifier] = CredentialRecipe(
+            name=identifier,
+            schema=schema if isinstance(schema, Mapping) else {},
+            secret_fields=tuple(str(field) for field in candidate.get("secretFields", ())),
+        )
+    return recipes
+
+
+def load_credentials(
+    specs: Sequence[CredentialSpec],
+    recipes: Mapping[str, CredentialRecipe],
+    target: RunTarget,
+    *,
+    workspace: Path,
+) -> tuple[tuple[LoadedCredential, ...], tuple[str, ...]]:
+    """Read, shape, and validate every supplied credential before execution.
+
+    Returns the loaded credentials and any warnings for the CLI to render.
+    Values are held in memory: nothing is written until the delivery file is
+    created for the invocation itself.
+    """
+
+    loaded: list[LoadedCredential] = []
+    warnings: list[str] = []
+    for spec in specs:
+        recipe = _credential_recipe_for(spec, recipes, target)
+        raw, source_warnings = _read_credential_source(spec, workspace)
+        warnings.extend(source_warnings)
+        document = _credential_document(spec.name, raw, recipe)
+        errors = _credential_validation_lines(recipe, document)
+        if errors:
+            raise RunUsageError(
+                f"the value supplied for {spec.name} does not satisfy its credential schema",
+                detail=tuple(errors),
+                next_steps=(f"correct the value and rerun --credential {spec.name}=...",),
+            )
+        loaded.append(
+            LoadedCredential(
+                name=spec.name,
+                document=document,
+                secret_values=_credential_secret_values(document, raw),
+                secret_scalars=_credential_secret_scalars(document),
+            )
+        )
+    return tuple(loaded), tuple(warnings)
+
+
+def _credential_recipe_for(
+    spec: CredentialSpec, recipes: Mapping[str, CredentialRecipe], target: RunTarget
+) -> CredentialRecipe:
+    """Resolve one credential name to a recipe the target can reach."""
+
+    recipe = recipes.get(spec.name)
+    if recipe is not None:
+        return recipe
+    if not target.integration_type:
+        raise RunUsageError(
+            f"{target.identity} declares no integrationType, so it reaches no credential",
+            next_steps=("add spec.integrationType to the target, or drop --credential",),
+        )
+    reachable = ", ".join(sorted(recipes)) or "none"
+    raise RunUsageError(
+        f"{spec.name} is not a credential recipe reachable from {target.identity}",
+        detail=(f"Reachable through {target.integration_type}: {reachable}",),
+        next_steps=("declare the recipe in this workspace, or name a reachable one",),
+    )
+
+
+def _read_credential_source(spec: CredentialSpec, workspace: Path) -> tuple[str, tuple[str, ...]]:
+    """Read one credential value from stdin, a file, or the environment."""
+
+    if spec.kind == "stdin":
+        return _read_credential_stdin(spec), ()
+    if spec.kind == "env":
+        value = os.environ.get(spec.locator)
+        if value is None:
+            raise RunUsageError(f"the environment variable {spec.locator} is not set")
+        if not value.strip():
+            raise RunUsageError(f"the environment variable {spec.locator} is empty")
+        return value.rstrip("\r\n"), ()
+    return _read_credential_file(spec, workspace)
+
+
+def _read_credential_stdin(spec: CredentialSpec) -> str:
+    """Read one credential value from standard input, as --password-stdin does."""
+
+    try:
+        value = sys.stdin.read()
+    except (OSError, UnicodeDecodeError) as error:
+        raise RunUsageError(f"--credential {spec.name}=- could not read standard input") from error
+    if not value.strip():
+        raise RunUsageError(f"--credential {spec.name}=- received no value")
+    return value.rstrip("\r\n")
+
+
+def _read_credential_file(spec: CredentialSpec, workspace: Path) -> tuple[str, tuple[str, ...]]:
+    """Read one credential value from a file outside the plugin workspace."""
+
+    path = Path(spec.locator).expanduser()
+    resolved = path.resolve()
+    if resolved.is_relative_to(workspace.resolve()):
+        raise RunUsageError(
+            f"the credential file for {spec.name} is inside the plugin workspace",
+            detail=("A secret inside the workspace can reach the artifact or version control.",),
+            next_steps=("move the file outside the workspace and rerun",),
+        )
+    try:
+        # The author named this path themselves; it is read, never executed.
+        value = resolved.read_text(encoding="utf-8-sig")  # NOSONAR
+    except (OSError, UnicodeDecodeError) as error:
+        raise RunUsageError(f"the credential file {path} could not be read") from error
+    if not value.strip():
+        raise RunUsageError(f"the credential file {path} is empty")
+    warnings: list[str] = []
+    if _is_group_or_world_readable(resolved):
+        warnings.append(f"warning: {path} is readable by other local users")
+    return value.rstrip("\r\n"), tuple(warnings)
+
+
+def _is_group_or_world_readable(path: Path) -> bool:
+    """Whether a credential file grants read access beyond its owner."""
+
+    try:
+        return bool(path.stat().st_mode & 0o044)
+    except OSError:
+        return False
+
+
+def _credential_document(
+    name: str, raw: str, recipe: CredentialRecipe
+) -> Mapping[str, Any]:
+    """Shape one supplied value into the recipe's declared document.
+
+    A JSON object is taken as the complete document. Any other text is a raw
+    value, wrapped into the single field the recipe declares; a recipe with
+    several fields has no unambiguous wrapping, so the full document is
+    required instead.
+    """
+
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, Mapping):
+        return parsed
+    field_name = _sole_credential_field(recipe)
+    if field_name is not None:
+        return {field_name: raw}
+    declared = ", ".join(sorted(_declared_properties(recipe.schema))) or "none"
+    raise RunUsageError(
+        f"{name} declares more than one field, so a raw value cannot be wrapped",
+        detail=(f"Declared fields: {declared}",),
+        next_steps=(f"supply the complete JSON document for {name}",),
+    )
+
+
+def _sole_credential_field(recipe: CredentialRecipe) -> str | None:
+    """Return the only field a raw value can be wrapped into, when there is one.
+
+    The count that decides is the declared property set, never ``required``:
+    a recipe declaring ``username`` and an optional ``password`` has no
+    unambiguous field to wrap a raw value into, so it requires the complete
+    document even though exactly one property is required.
+    """
+
+    properties = _declared_properties(recipe.schema)
+    if len(properties) == 1:
+        return str(next(iter(properties)))
+    return None
+
+
+def _credential_validation_lines(
+    recipe: CredentialRecipe, document: Mapping[str, Any]
+) -> list[str]:
+    """Validate one credential document, naming fields and never values.
+
+    Every field of a credential is secret by construction, so no line here
+    carries the instance: a violated constraint is reported by name only.
+    """
+
+    try:
+        validator = Draft202012Validator(recipe.schema, format_checker=FormatChecker())
+        errors = sorted(
+            validator.iter_errors(document),
+            key=lambda error: (_pointer(error.path), str(error.validator)),
+        )
+    except Exception as error:
+        raise RunUsageError(
+            f"the credential schema declared for {recipe.name} could not be evaluated"
+        ) from error
+    lines: list[str] = []
+    for error in errors:
+        if error.validator == "required" and isinstance(error.validator_value, list):
+            instance = error.instance if isinstance(error.instance, dict) else {}
+            lines.extend(
+                f"{recipe.name}{_join_pointer(error.path, str(name))}: "
+                "required property is missing"
+                for name in error.validator_value
+                if name not in instance
+            )
+            continue
+        lines.append(
+            f"{recipe.name}{_pointer(error.path)}: "
+            f"{error.validator} constraint is not satisfied"
+        )
+    return _capped_validation_lines(lines)
+
+
+def _credential_secret_values(document: Mapping[str, Any], raw: str) -> tuple[str, ...]:
+    """Collect everything about one credential that must never be displayed.
+
+    The supplied text and every value in the delivered document join the run's
+    scrub set, so a step that interpolates any of them into output, an error,
+    or a traceback has it masked before anything is printed. Every field is
+    collected, not just the recipe's declared ``secretFields``: a declaration
+    that is missing or partial must not decide what leaks.
+    """
+
+    candidates: list[tuple[str, int]] = [(raw, _MIN_DECLARED_SECRET_LENGTH)]
+    for value in document.values():
+        _collect_nested_strings(value, candidates, _MIN_DECLARED_SECRET_LENGTH)
+    picked: list[str] = []
+    for value, min_length in candidates:
+        if len(value) >= min_length and value not in picked:
+            picked.append(value)
+    return tuple(picked)
+
+
+def _credential_secret_scalars(document: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Collect every non-string credential scalar in its original type.
+
+    Strings are handled by ``_credential_secret_values``; booleans, integers,
+    and floats are matched structurally instead, because a step type can return a
+    supplied number exactly as it received it and no string representation
+    would catch it. ``None`` is skipped: scrubbing it would redact every
+    legitimate null in a step type's output.
+    """
+
+    picked: list[Any] = []
+    _collect_nested_scalars(document, picked)
+    return tuple(picked)
+
+
+def _collect_nested_scalars(value: Any, picked: list[Any]) -> None:
+    if isinstance(value, (bool, int, float)):
+        if not any(scalar == value and type(scalar) is type(value) for scalar in picked):
+            picked.append(value)
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            _collect_nested_scalars(item, picked)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_nested_scalars(item, picked)
+
+
+@contextlib.contextmanager
+def credential_files(
+    credentials: Sequence[LoadedCredential], *, container_readable: bool
+) -> Iterator[tuple[Path | None, dict[str, str]]]:
+    """Deliver every credential as a read-only file for one invocation.
+
+    ``mkdtemp`` creates the directory readable only by its owner, which is
+    what protects the values on this machine; the files inside it must still
+    be readable by the container's runtime user in image mode, exactly as the
+    managed container's TLS material is. The directory is removed when the
+    invocation ends, so nothing outlives the run.
+
+    A run without credentials creates no directory and so grants no local
+    path exception at all.
+    """
+
+    if not credentials:
+        yield None, {}
+        return
+    directory = Path(tempfile.mkdtemp(prefix="syntara-run-secrets-"))
+    try:
+        paths: dict[str, str] = {}
+        for credential in credentials:
+            path = directory / credential.name
+            try:
+                path.write_bytes(canonical_json_bytes(dict(credential.document)))
+                path.chmod(0o644 if container_readable else 0o600)
+            except OSError as error:
+                # Name and failure category only: the value that failed to be
+                # written is the one that must never reach the error surface.
+                raise RunExecutionError(
+                    f"the credential file for {credential.name} could not be created",
+                    next_steps=(
+                        "check the permissions and available space in the temporary directory",
+                    ),
+                ) from error
+            paths[credential.name] = str(path)
+        yield directory, paths
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def mounted_credential_paths(credentials: Sequence[LoadedCredential]) -> dict[str, str]:
+    """Return the in-container path each credential is mounted at."""
+
+    return {
+        credential.name: f"{CREDENTIAL_MOUNT_DIRECTORY}/{credential.name}"
+        for credential in credentials
+    }
+
+
+def credential_secret_values(credentials: Sequence[LoadedCredential]) -> tuple[str, ...]:
+    """Return every value across the supplied credentials that must be scrubbed."""
+
+    picked: list[str] = []
+    for credential in credentials:
+        for value in credential.secret_values:
+            if value not in picked:
+                picked.append(value)
+    return tuple(picked)
+
+
+def credential_secret_scalars(credentials: Sequence[LoadedCredential]) -> tuple[Any, ...]:
+    """Return every non-string credential scalar that must be scrubbed."""
+
+    picked: list[Any] = []
+    for credential in credentials:
+        for value in credential.secret_scalars:
+            if not any(scalar == value and type(scalar) is type(value) for scalar in picked):
+                picked.append(value)
+    return tuple(picked)
+
+
 class _ScrubbingWriter:
-    """A stdout stand-in that scrubs supplied secrets from everything a Step prints."""
+    """A stdout stand-in that scrubs supplied secrets from everything a step type prints."""
 
     def __init__(self, stream: Any, secrets: tuple[str, ...]) -> None:
         self._stream = stream
@@ -801,16 +1301,27 @@ def run_source(
     *,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     on_progress: ProgressCallback | None = None,
+    credentials: Sequence[LoadedCredential] = (),
 ) -> RunReport:
     """Execute one target from source through an in-process gRPC runtime.
 
     The workspace root becomes importable, the implementation is bound through
-    the harness's compile-install-drift path, and the Step executes through
+    the harness's compile-install-drift path, and the step type executes through
     ``ContainerClient`` against a runtime owned by this process. The runtime
     listens on a unix domain socket inside a private temporary directory, so
     only this user's processes can reach it while it runs. Unexpected
     exceptions are captured locally (the ABI never carries exception text)
     and attached to the report as its error detail.
+
+    Credentials are delivered as read-only files in a second private directory
+    and reach the step type through ``invocation.credential_file_paths``. Those are
+    temporary host paths, not the production mount: this process cannot create
+    ``/var/run/syntara/secrets`` without privileges, so step type code that
+    hardcodes the mount path instead of reading the invocation finds no
+    credential here. Nothing here can write under the approved secret mount,
+    so this one loopback transport (client and runtime are the same process)
+    is told to accept that directory as well; every other client and runtime
+    keeps the production rule.
     """
 
     _make_importable(manifest.parent)
@@ -820,43 +1331,56 @@ def run_source(
         _LocalErrorCapture(container_step_for_binding(binding), captured), timeout_seconds
     )
     registry = StepRegistry({target.identity: handler})
-    runtime_directory = tempfile.mkdtemp(prefix="syntara-run-runtime-")
-    socket_path = Path(runtime_directory) / "runtime.sock"
-    server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, registry)
-    if server.add_insecure_port(f"unix:{socket_path}") == 0:
-        server.stop(None)
-        shutil.rmtree(runtime_directory, ignore_errors=True)
-        raise RunExecutionError("could not start the local runtime server")
-    server.start()
-    channel = grpc.insecure_channel(f"unix:{socket_path}")
-    scrubbing_stderr = _ScrubbingWriter(
-        sys.stderr, _secret_values(target.input_schema, inputs)
-    )
-    try:
-        # The Step runs in this process; anything it prints belongs on stderr,
-        # scrubbed of supplied secrets, so stdout keeps carrying only the
-        # report (or the --json document).
-        with contextlib.redirect_stdout(scrubbing_stderr):
-            return _execute_over_channel(
-                channel,
-                target,
-                inputs,
-                input_source,
-                mode="source",
-                address=f"unix:{socket_path}",
-                timeout_seconds=timeout_seconds,
-                on_progress=on_progress,
-                captured_detail=captured,
-            )
-    finally:
-        channel.close()
-        server.stop(None)
-        shutil.rmtree(runtime_directory, ignore_errors=True)
+    with credential_files(credentials, container_readable=False) as (secrets_directory, paths):
+        runtime_directory = tempfile.mkdtemp(prefix="syntara-run-runtime-")
+        socket_path = Path(runtime_directory) / "runtime.sock"
+        server = grpc.server(ThreadPoolExecutor(max_workers=2))
+        add_container_runtime_service(server, registry, secrets_directory)
+        if server.add_insecure_port(f"unix:{socket_path}") == 0:
+            server.stop(None)
+            shutil.rmtree(runtime_directory, ignore_errors=True)
+            raise RunExecutionError("could not start the local runtime server")
+        server.start()
+        channel = grpc.insecure_channel(f"unix:{socket_path}")
+        scrubbing_stderr = _ScrubbingWriter(
+            sys.stderr,
+            _secret_values(target.input_schema, inputs) + credential_secret_values(credentials),
+        )
+        try:
+            # The step type runs in this process; anything it prints belongs on
+            # stderr, scrubbed of supplied secrets, so stdout keeps carrying only the
+            # report (or the --json document). Both streams are redirected:
+            # wrapping only stdout would let a step type that writes to sys.stderr
+            # directly — print(..., file=sys.stderr), logging — print a supplied
+            # secret verbatim.
+            with (
+                contextlib.redirect_stdout(scrubbing_stderr),
+                contextlib.redirect_stderr(scrubbing_stderr),
+            ):
+                return _execute_over_channel(
+                    _ChannelExecution(
+                        channel=channel,
+                        target=target,
+                        inputs=inputs,
+                        input_source=input_source,
+                        mode="source",
+                        address=f"unix:{socket_path}",
+                        timeout_seconds=timeout_seconds,
+                        on_progress=on_progress,
+                        captured_detail=captured,
+                        credentials=credentials,
+                        credential_file_paths=paths,
+                        local_credential_directory=secrets_directory,
+                    )
+                )
+        finally:
+            channel.close()
+            server.stop(None)
+            shutil.rmtree(runtime_directory, ignore_errors=True)
 
 
 class _LocalErrorCapture:
-    """Capture unexpected step exceptions locally for the run report.
+    """Capture unexpected step type exceptions locally for the run report.
 
     The container ABI deliberately never carries exception text (it may hold
     secrets), so a remote runtime discards it. Source mode executes in this
@@ -900,6 +1424,7 @@ def run_image(
     image: str | None = None,
     startup_seconds: float = 10.0,
     liveness: Callable[[], None] | None = None,
+    credentials: Sequence[LoadedCredential] = (),
 ) -> RunReport:
     """Execute one target against an already-running workload runtime.
 
@@ -910,50 +1435,85 @@ def run_image(
     attempt; it raises when the target is known to be gone, so a managed
     container that exited is reported with its own failure instead of
     consuming the whole window.
+
+    ``credentials`` names what the caller has already mounted into the
+    container: the paths sent here are the approved in-container mount paths,
+    so this path needs no exception to the ABI rule.
     """
 
     channel = _channel(address, tls)
     try:
         return _execute_over_channel(
-            channel,
-            target,
-            inputs,
-            input_source,
-            mode="image",
-            address=address,
-            timeout_seconds=timeout_seconds,
-            on_progress=on_progress,
-            image=image,
-            startup_seconds=startup_seconds,
-            liveness=liveness,
+            _ChannelExecution(
+                channel=channel,
+                target=target,
+                inputs=inputs,
+                input_source=input_source,
+                mode="image",
+                address=address,
+                timeout_seconds=timeout_seconds,
+                on_progress=on_progress,
+                image=image,
+                startup_seconds=startup_seconds,
+                liveness=liveness,
+                credentials=credentials,
+                credential_file_paths=mounted_credential_paths(credentials),
+            )
         )
     finally:
         channel.close()
 
 
-def _execute_over_channel(
-    channel: grpc.Channel,
-    target: RunTarget,
-    inputs: Mapping[str, Any],
-    input_source: str,
-    *,
-    mode: str,
-    address: str,
-    timeout_seconds: int,
-    on_progress: ProgressCallback | None,
-    captured_detail: list[str] | None = None,
-    image: str | None = None,
-    startup_seconds: float = 10.0,
-    liveness: Callable[[], None] | None = None,
-) -> RunReport:
-    client = ContainerClient(channel)
-    advertised = _health(client, address, startup_seconds=startup_seconds, liveness=liveness)
-    dispatch_id = target.step_revision_id if mode == "image" else target.identity
+@dataclass(frozen=True)
+class _ChannelExecution:
+    """One target invocation against an already-open runtime channel.
+
+    Source and image mode share this path. The fields that only one mode
+    fills keep defaults so each caller passes the transport and report
+    details it actually has.
+    """
+
+    channel: grpc.Channel
+    target: RunTarget
+    inputs: Mapping[str, Any]
+    input_source: str
+    mode: str
+    address: str
+    timeout_seconds: int
+    on_progress: ProgressCallback | None
+    captured_detail: list[str] | None = None
+    image: str | None = None
+    startup_seconds: float = 10.0
+    liveness: Callable[[], None] | None = None
+    credentials: Sequence[LoadedCredential] = ()
+    credential_file_paths: Mapping[str, str] | None = None
+    local_credential_directory: Path | None = None
+
+
+def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
+    client = ContainerClient(execution.channel, execution.local_credential_directory)
+    target = execution.target
+    inputs = execution.inputs
+    # The scrub set exists before the health check, not after it: a managed
+    # container that exits while booting has its log lines copied into the
+    # failure detail, and those lines may carry a credential the workload
+    # read from its mount before it died.
+    secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(
+        execution.credentials
+    )
+    scalars = credential_secret_scalars(execution.credentials)
+    advertised = _health(
+        client,
+        execution.address,
+        startup_seconds=execution.startup_seconds,
+        liveness=_scrubbing_liveness(execution.liveness, secrets),
+    )
+    dispatch_id = target.step_revision_id if execution.mode == "image" else target.identity
     if dispatch_id not in advertised:
         listed = ", ".join(sorted(advertised)) or "none"
         raise RunExecutionError(
-            f"the runtime at {address} does not advertise {dispatch_id!r}",
-            detail=(f"Advertised steps: {listed}",),
+            f"the runtime at {execution.address} does not advertise {dispatch_id!r}",
+            detail=(f"Advertised step types: {listed}",),
             next_steps=(
                 "check that the runtime was built from this workspace",
                 "or select an advertised target",
@@ -965,25 +1525,27 @@ def _execute_over_channel(
         workflow_run_id=workflow_run_id,
         step_revision_id=dispatch_id,
         inputs=inputs,
-        credential_file_paths={},
-        timeout_seconds=timeout_seconds,
+        credential_file_paths=execution.credential_file_paths or {},
+        timeout_seconds=execution.timeout_seconds,
         runtime_context={},
     )
-    secrets = _secret_values(target.input_schema, inputs)
-    redacted_inputs = _scrub_structure(redact_inputs(target.input_schema, inputs), secrets)
-    terminal = _consume(client, invocation, _scrubbing_progress(on_progress, secrets))
+    credential_names = tuple(credential.name for credential in execution.credentials)
+    redacted_inputs = _scrub_structure(
+        redact_inputs(target.input_schema, inputs), secrets, scalars
+    )
+    terminal = _consume(client, invocation, _scrubbing_progress(execution.on_progress, secrets))
     detail = (
-        _scrub_text("\n\n".join(captured_detail).rstrip(), secrets)
-        if captured_detail
+        _scrub_text("\n\n".join(execution.captured_detail).rstrip(), secrets)
+        if execution.captured_detail
         else None
     )
     if detail is not None and len(detail) > _MAX_ERROR_DETAIL_LENGTH:
         detail = detail[:_MAX_ERROR_DETAIL_LENGTH].rstrip() + "\n... (truncated)"
     if isinstance(terminal, _WorkloadFailure):
         return RunReport(
-            mode=mode,
+            mode=execution.mode,
             target=target.identity,
-            input_source=input_source,
+            input_source=execution.input_source,
             input_values=redacted_inputs,
             ok=False,
             invocation_id=invocation_id,
@@ -1000,7 +1562,8 @@ def _execute_over_channel(
             ),
             outcome=terminal.outcome,
             error_detail=detail,
-            image=image,
+            image=execution.image,
+            credentials=credential_names,
         )
     result = terminal
     error: RunErrorDetail | None = None
@@ -1012,16 +1575,18 @@ def _execute_over_channel(
             retryable=bool(error_result["retryable"]),
         )
     return RunReport(
-        mode=mode,
+        mode=execution.mode,
         target=target.identity,
-        input_source=input_source,
+        input_source=execution.input_source,
         input_values=redacted_inputs,
         ok=result.status_code == 0 and error is None,
         invocation_id=invocation_id,
         workflow_run_id=workflow_run_id,
         status=result.status_code,
         status_message=_scrub_text(result.status_message, secrets),
-        output=_scrub_structure(result.output, secrets) if result.output is not None else None,
+        output=_scrub_structure(result.output, secrets, scalars)
+        if result.output is not None
+        else None,
         object_reference=(
             _scrub_text(result.object_reference, secrets)
             if result.object_reference is not None
@@ -1031,7 +1596,8 @@ def _execute_over_channel(
         error=error,
         outcome=None,
         error_detail=detail,
-        image=image,
+        image=execution.image,
+        credentials=credential_names,
     )
 
 
@@ -1081,7 +1647,7 @@ def _health(
             failure_code=last_remote_error.code,
             next_steps=(
                 "check the container log for the startup failure",
-                "or rerun with --mode source to execute the Step from the workspace",
+                "or rerun with --mode source to execute the step type from the workspace",
             ),
         ) from last_remote_error
     raise RunExecutionError(
@@ -1097,7 +1663,7 @@ def _health(
 def _scrubbing_progress(
     on_progress: ProgressCallback | None, secrets: tuple[str, ...]
 ) -> ProgressCallback | None:
-    """Wrap the progress callback so step messages are scrubbed of secrets."""
+    """Wrap the progress callback so step type messages are scrubbed of secrets."""
 
     if on_progress is None:
         return None
@@ -1116,12 +1682,57 @@ def _scrubbing_progress(
     return wrapped
 
 
+def _scrubbing_liveness(
+    liveness: Callable[[], None] | None, secrets: tuple[str, ...]
+) -> Callable[[], None] | None:
+    """Wrap the liveness probe so a pre-health failure cannot leak a secret.
+
+    The probe raises with the container's log lines when a managed container
+    exits before becoming healthy. The engine already scrubs those lines as
+    it reads them; this second layer covers any other probe, so no detail
+    reaches the author unscrubbed regardless of who built the failure.
+    """
+
+    if liveness is None:
+        return None
+
+    def probe() -> None:
+        try:
+            liveness()
+        except RunExecutionError as error:
+            raise RunExecutionError(
+                _scrub_text(error.message, secrets),
+                failure_code=error.failure_code,
+                detail=tuple(_scrub_text(line, secrets) for line in error.detail),
+                next_steps=error.next_steps,
+            ) from error
+
+    return probe
+
+
+def run_secret_scrubber(
+    input_schema: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    credentials: Sequence[LoadedCredential],
+) -> Callable[[str], str]:
+    """Return a one-argument scrubber for every secret this run supplies.
+
+    The engine reads a dead container's logs before the runner's health check
+    exists, so the caller hands this scrubber down to the engine: log lines
+    are redacted as they are read, before any truncation could cut a secret
+    into a recognizable fragment.
+    """
+
+    secrets = _secret_values(input_schema, inputs) + credential_secret_values(credentials)
+    return lambda text: _scrub_text(text, secrets)
+
+
 def _consume(
     client: ContainerClient, invocation: ContainerInvocation, on_progress: ProgressCallback | None
 ) -> ContainerResult | _WorkloadFailure:
     """Consume the event stream, returning the terminal outcome.
 
-    A workload failure event is a terminal outcome of the Step, not a
+    A workload failure event is a terminal outcome of the step type execution, not a
     transport failure, so it is returned as a failed completion; protocol and
     transport failures raise :class:`RunExecutionError`.
     """
@@ -1149,7 +1760,7 @@ def _consume(
                 failure_code=error.code,
                 detail=(f"outcome: {error.outcome}",),
                 next_steps=(
-                    "make the Step finish within the timeout",
+                    "make the step type finish within the timeout",
                     "or split the work into smaller invocations",
                 ),
             ) from error
@@ -1176,7 +1787,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
         return factory.bind_step(target.entry_point, workspace=manifest, identity=target.identity)
     except SchemaDriftError as error:
         raise RunExecutionError(
-            "the Step implementation drifted from the compiled manifest",
+            "the step type implementation drifted from the compiled manifest",
             detail=(str(error),),
             next_steps=(
                 "fix the implementation or the manifest, then rerun",
@@ -1185,7 +1796,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
         ) from error
     except HarnessUsageError as error:
         raise RunExecutionError(
-            f"the Step implementation could not be bound: {error}",
+            f"the step type implementation could not be bound: {error}",
             next_steps=(
                 "check that the entry point module imports and its dependencies are installed",
                 _VALIDATE_NEXT_STEP,
@@ -1195,7 +1806,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
         # import-time failure of any shape must become guidance, not a traceback
         location = _raise_location(error)
         raise RunExecutionError(
-            f"the Step implementation could not be loaded: {type(error).__name__}: {error}",
+            f"the step type implementation could not be loaded: {type(error).__name__}: {error}",
             detail=(location,) if location is not None else (),
             next_steps=(
                 "fix the error above; the entry point module must import cleanly",
@@ -1229,7 +1840,7 @@ def _select_requested(
             raise RunUsageError(
                 f"target {requested!r} matches more than one runnable target",
                 detail=_target_lines(matches),
-                next_steps=("use the full Step identity to select one",),
+                next_steps=("use the full step type identity to select one",),
             )
     declarative = [
         target
@@ -1250,7 +1861,7 @@ def _select_requested(
             detail=("only custom-runner targets can be executed by this command",),
             next_steps=("run syntara-plugin inspect to review the target",),
         )
-    detail = _target_lines(runnable) or ("the workspace declares no custom-runner Step targets",)
+    detail = _target_lines(runnable) or ("the workspace declares no custom-runner step type targets",)
     raise RunUsageError(
         f"no runnable target matches {requested!r} in the compiled workspace",
         detail=detail,

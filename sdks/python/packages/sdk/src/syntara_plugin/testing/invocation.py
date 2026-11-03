@@ -59,7 +59,7 @@ def _json_round_trip(value: Mapping[str, Any], field: str) -> dict[str, Any]:
     values: tuples arrive as lists and non-string mapping keys as strings,
     exactly as the container ABI decodes them, instead of the direct path
     observing the original Python objects. It also hands each path its own
-    copy, so a step mutating nested runtime-context data on one path cannot
+    copy, so a step type mutating nested runtime-context data on one path cannot
     leak into the other.
     """
 
@@ -142,7 +142,7 @@ class StepOutcome:
 
 
 def _resolve_binding(target: StepTargetOrBinding) -> StepBinding:
-    """Resolve a binding, step, class, or entry point into one executable binding."""
+    """Resolve a binding, step type, class, or entry point into one executable binding."""
 
     if isinstance(target, StepBinding):
         return target
@@ -157,8 +157,8 @@ def _require_executable(binding: StepBinding) -> None:
         validate_executable_step_binding(binding.descriptor, binding.step)
     except StepBindingError as error:
         message = (
-            "custom-runner steps execute only through an installed manifest. Bind the "
-            "step with step_bindings.bind(step) or, for a compiled workspace, "
+            "custom-runner step types execute only through an installed manifest. Bind the "
+            "step type with step_bindings.bind(step) or, for a compiled workspace, "
             "step_bindings.bind_step(entry_point, workspace=...) so the installed "
             "contract supplies the executable binding; see examples/python-steps."
         )
@@ -167,10 +167,10 @@ def _require_executable(binding: StepBinding) -> None:
 
 @contextmanager
 def _counting_run(step: BaseStep[Any, Any]) -> Iterator[MagicMock]:
-    """Count business-hook invocations without changing step behavior.
+    """Count business-hook invocations without changing step type behavior.
 
     The spy patches the instance attribute, so concurrent invocations of the
-    same step instance from multiple threads interfere; the helpers are
+    same step type instance from multiple threads interfere; the helpers are
     sequential by contract.
     """
 
@@ -199,7 +199,7 @@ def _raised_outcome(
 class BoundedStepHandler:
     """Run one container handler on a daemon thread with a bounded wait.
 
-    grpc joins its worker pool at interpreter exit, so a step that ignores
+    grpc joins its worker pool at interpreter exit, so a step type that ignores
     cooperative cancellation and never returns would keep the whole test
     session alive after its timeout outcome. The handler body runs on a daemon
     thread and the grpc worker waits only until the invocation timeout (plus a
@@ -241,12 +241,12 @@ class BoundedStepHandler:
             # failure event is sent promptly.
             raise ContainerInvocationError(
                 FailureCode.OUTCOME_UNKNOWN,
-                "The plugin step did not complete.",
+                "The step did not complete.",
                 outcome="unknown",
             ) from error
         raise ContainerInvocationError(
             FailureCode.TIMEOUT,
-            "The plugin step did not complete within the invocation timeout.",
+                "The step did not complete within the invocation timeout.",
             outcome="unknown",
         )
 
@@ -257,7 +257,7 @@ def invoke_step(
     *,
     context: ExecutionContext | None = None,
 ) -> StepOutcome:
-    """Execute one bound step in-process through the shared ``StepExecutor``.
+    """Execute one bound step type in-process through the shared ``StepExecutor``.
 
     The direct path performs the same input validation, typed business-hook
     invocation, output-schema validation, and ``StandardOutputWrapper``
@@ -267,8 +267,8 @@ def invoke_step(
     outcomes compare uniformly.
 
     Args:
-        target: A ``StepBinding``, a step class or instance, or a ``module:Class``
-            entry point. Custom-runner Step types must arrive as bindings
+        target: A ``StepBinding``, a step type class or instance, or a ``module:Class``
+            entry point. Custom-runner step types must arrive as bindings
             produced by ``StepBindingsFactory.bind_step``.
         inputs: Raw input mapping; must be a JSON object encodable within the
             container ABI's 1 MiB limit. Both paths deliver the JSON-normalized
@@ -316,7 +316,7 @@ def invoke_step_in_container(
     context: ExecutionContext | None = None,
     timeout_seconds: int = 60,
 ) -> StepOutcome:
-    """Execute one bound step over a real in-process container-adapter server.
+    """Execute one bound step type over a real in-process container-adapter server.
 
     The adapter path runs the same registered implementation, validation, and
     result wrapping as the direct path, then carries the terminal result over
@@ -334,14 +334,14 @@ def invoke_step_in_container(
     ``ABI_VIOLATION``. Test large outputs with :func:`invoke_step`.
 
     Args:
-        target: A ``StepBinding``, a step class or instance, or a ``module:Class``
+        target: A ``StepBinding``, a step type class or instance, or a ``module:Class``
             entry point, with the same Action rule as :func:`invoke_step`.
         inputs: Raw input mapping; must be a JSON object encodable within the
             container ABI's 1 MiB limit. Both paths deliver the JSON-normalized
             form, each through its own copy.
         context: Execution context supplying identifiers and runtime context.
         timeout_seconds: Container invocation timeout in seconds, within the
-            ABI's supported 1..86400 range; a step that ignores cancellation
+            ABI's supported 1..86400 range; a step type that ignores cancellation
             cannot block the test session beyond this timeout plus a short
             grace.
     """
