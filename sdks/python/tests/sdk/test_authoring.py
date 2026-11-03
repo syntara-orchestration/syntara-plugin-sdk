@@ -1143,3 +1143,47 @@ def test_document_depth_limit_is_enforced_after_a_clean_parse(tmp_path: Path) ->
         compile_workspace(request)
     assert error.value.diagnostics[0].code == "DOCUMENT_LIMIT_EXCEEDED"
     assert "exceeds 100 nesting levels" in error.value.diagnostics[0].message
+
+
+def test_rejects_asset_with_complex_yaml_mapping_keys(tmp_path: Path) -> None:
+    root = _workspace(
+        tmp_path / "complex-keys", action=_action({"kind": "asset", "path": "schemas/input.yaml"})
+    )
+    asset = root.parent / "schemas/input.yaml"
+    asset.parent.mkdir()
+    asset.write_text("? [a, b]\n: value\n")
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+    assert "ASSET_INVALID" in {item.code for item in error.value.diagnostics}
+    assert any("unhashable mapping key" in item.message for item in error.value.diagnostics)
+
+
+def test_deeply_nested_yaml_asset_reports_a_bounded_diagnostic(tmp_path: Path) -> None:
+    root = _workspace(
+        tmp_path / "deep", action=_action({"kind": "asset", "path": "schemas/input.yaml"})
+    )
+    asset = root.parent / "schemas/input.yaml"
+    asset.parent.mkdir()
+    asset.write_text("[" * 2000 + "1" + "]" * 2000)
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+    assert "ASSET_INVALID" in {item.code for item in error.value.diagnostics}
+    assert any("nested too deeply to parse" in item.message for item in error.value.diagnostics)
+
+
+def test_deeply_nested_json_asset_reports_a_bounded_diagnostic(tmp_path: Path) -> None:
+    root = _workspace(
+        tmp_path / "deep-json", action=_action({"kind": "asset", "path": "schemas/input.json"})
+    )
+    asset = root.parent / "schemas/input.json"
+    asset.parent.mkdir()
+    asset.write_text("[" * 2000 + "1" + "]" * 2000)
+
+    # The JSON branch has no parse-time depth bound, so the recursion guard
+    # fires in the caller's cycle walk rather than in the parser itself.
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+    assert "ASSET_INVALID" in {item.code for item in error.value.diagnostics}
+    assert any("nested too deeply to parse" in item.message for item in error.value.diagnostics)

@@ -749,6 +749,19 @@ def _document_source(
     except CompilationError as error:
         diagnostics.extend(error.diagnostics)
         return None
+    except RecursionError:
+        # Deep JSON assets reach _contains_cycle without a parse-time depth
+        # bound, so the interpreter stack can overflow here rather than in
+        # _parse_asset's guarded YAML branch.
+        diagnostics.append(
+            _diagnostic(
+                "ASSET_INVALID",
+                f"Cannot load asset {asset_path!r}: it is nested too deeply to parse.",
+                target_path,
+                "Use a contained JSON or YAML document within the size limit.",
+            )
+        )
+        return None
     except (OSError, ValueError, yaml.YAMLError) as error:
         diagnostics.append(
             _diagnostic(
