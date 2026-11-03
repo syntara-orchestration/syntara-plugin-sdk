@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from syntara_plugin.sdk.cli import main
 
-_STEP_SOURCE = '''"""A custom-runner Action step used by the run command tests."""
+_STEP_SOURCE = '''"""A custom-runner Action step type used by the run command tests."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class EchoStep(ActionStep[EchoInput, EchoOutput]):
         return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))
 '''
 
-_FAILING_SOURCE = '''"""A custom-runner Action step that fails deliberately."""
+_FAILING_SOURCE = '''"""A custom-runner Action step type that fails deliberately."""
 
 from __future__ import annotations
 
@@ -353,7 +353,7 @@ def _report_field(stdout: str, label: str) -> str:
     return line.split(":", 1)[1].strip()
 
 
-_RAISING_SOURCE = '''"""A custom-runner Action step that raises an unexpected exception."""
+_RAISING_SOURCE = '''"""A custom-runner Action step type that raises an unexpected exception."""
 
 from __future__ import annotations
 
@@ -376,7 +376,7 @@ class CrashStep(ActionStep[CrashInput, CrashOutput]):
         raise RuntimeError(f"unexpected kaboom with {inputs.api_token}")
 '''
 
-_LEAKING_SOURCE = '''"""A custom-runner Action step that echoes its token into the output."""
+_LEAKING_SOURCE = '''"""A custom-runner Action step type that echoes its token into the output."""
 
 from __future__ import annotations
 
@@ -414,7 +414,7 @@ def _write_custom_workspace(
     input_schema: dict[str, Any],
     output_schema: dict[str, Any],
 ) -> Path:
-    """Write one compilable workspace around a fully custom step module."""
+    """Write one compilable workspace around a fully custom step type module."""
 
     suffix = uuid.uuid4().hex[:8]
     package = f"run_pkg_{suffix}"
@@ -461,7 +461,7 @@ _ECHO_STRING_OUTPUT: dict[str, Any] = {
     "required": ["echo"],
 }
 
-_ITEMS_SOURCE = '''"""A step that echoes the first item of a sensitive array."""
+_ITEMS_SOURCE = '''"""A step type that echoes the first item of a sensitive array."""
 
 from __future__ import annotations
 
@@ -483,7 +483,7 @@ class ItemsStep(ActionStep[ItemsInput, ItemsOutput]):
         return ItemsOutput(echo=f"item={inputs.values[0]}")
 '''
 
-_PREFIX_ITEMS_SOURCE = '''"""A step that reports whether its secret row arrived masked."""
+_PREFIX_ITEMS_SOURCE = '''"""A step type that reports whether its secret row arrived masked."""
 
 from __future__ import annotations
 
@@ -510,7 +510,7 @@ _MASK_PROBE_OUTPUT: dict[str, Any] = {
     "required": ["first_is_mask"],
 }
 
-_NOTE_SOURCE = '''"""A step with a plain note field and a token field."""
+_NOTE_SOURCE = '''"""A step type with a plain note field and a token field."""
 
 from __future__ import annotations
 
@@ -533,7 +533,7 @@ class NoteStep(ActionStep[NoteInput, NoteOutput]):
         return NoteOutput(echo=inputs.title)
 '''
 
-_OVERLAP_SOURCE = '''"""A step that echoes two overlapping secrets."""
+_OVERLAP_SOURCE = '''"""A step type that echoes two overlapping secrets."""
 
 from __future__ import annotations
 
@@ -555,7 +555,7 @@ class OverlapStep(ActionStep[OverlapInput, OverlapOutput]):
         return OverlapOutput(echo=f"{inputs.short}-{inputs.long}")
 '''
 
-_OUTPUT_KEY_SOURCE = '''"""A step that uses the token as an output mapping key."""
+_OUTPUT_KEY_SOURCE = '''"""A step type that uses the token as an output mapping key."""
 
 from __future__ import annotations
 
@@ -830,7 +830,7 @@ def test_overlapping_secrets_are_scrubbed_longest_first(tmp_path: Path, capsys) 
 
 
 def test_output_mapping_keys_are_scrubbed(tmp_path: Path, capsys) -> None:
-    """A step using the token as an output key gets the key masked."""
+    """A step type using the token as an output key gets the key masked."""
 
     workspace = _write_custom_workspace(
         tmp_path / "ws",
@@ -1801,7 +1801,7 @@ def test_image_mode_without_a_declared_workload_image_reports_guidance(
     assert "syntara-plugin validate" in captured.err
 
 
-_ESCAPING_SOURCE = '''"""A step whose failure message carries terminal escapes."""
+_ESCAPING_SOURCE = '''"""A step type whose failure message carries terminal escapes."""
 
 from __future__ import annotations
 
@@ -1938,7 +1938,7 @@ def test_terminal_control_characters_are_stripped_from_failure_messages(
 def test_broken_step_module_produces_guidance_not_a_traceback(
     tmp_path: Path, capsys
 ) -> None:
-    """A syntax error in the step module becomes guidance, not a traceback."""
+    """A syntax error in the step type module becomes guidance, not a traceback."""
 
     workspace = _write_custom_workspace(
         tmp_path / "ws",
@@ -1999,7 +1999,7 @@ def test_manifest_path_may_reference_a_parent_directory(
     assert _report_field(capsys.readouterr().out, "Status") == "0"
 
 
-_SETTINGS_SOURCE = '''"""A step that echoes one value from a settings map."""
+_SETTINGS_SOURCE = '''"""A step type that echoes one value from a settings map."""
 
 from __future__ import annotations
 
@@ -2192,7 +2192,7 @@ def test_root_level_declared_secret_masks_the_whole_input(
     assert json.loads(captured.out.split("Output:\n", 1)[1]) == {"slug": "secret-ish"}
 
 
-_COMPOSITION_SOURCE = '''"""A step whose input is only schema-governed extra keys."""
+_COMPOSITION_SOURCE = '''"""A step type whose input is only schema-governed extra keys."""
 
 from __future__ import annotations
 
@@ -2356,7 +2356,7 @@ def test_json_failures_emit_one_document_on_stdout(tmp_path: Path, capsys) -> No
     assert document["error"]["kind"] == "RunUsageError"
 
 
-_SHORT_SECRET_SOURCE = '''"""A step echoing a very short declared secret."""
+_SHORT_SECRET_SOURCE = '''"""A step type echoing a very short declared secret."""
 
 from __future__ import annotations
 
@@ -2420,7 +2420,7 @@ def test_short_declared_secrets_are_scrubbed_everywhere(tmp_path: Path, capsys) 
     assert "k3" not in captured.out
 
 
-_ROOT_COMPOSITION_SOURCE = '''"""A step for root-composition schema tests."""
+_ROOT_COMPOSITION_SOURCE = '''"""A step type for root-composition schema tests."""
 
 from __future__ import annotations
 

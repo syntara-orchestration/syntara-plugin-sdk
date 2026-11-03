@@ -303,7 +303,7 @@ def _secret_values(
     """Collect the supplied values of sensitive fields for display scrubbing.
 
     Field-level masking keeps secrets out of the input echo; this collects the
-    raw values so anything a step interpolates into an exception message, a
+    raw values so anything a step type interpolates into an exception message, a
     failure message, its output, or a progress update can be scrubbed too.
     Values nested under a sensitive name are collected recursively. String and
     integer values are collected; booleans and floats collide with legitimate
@@ -415,7 +415,7 @@ def _collect_nested_strings(
 
 def _scrub_text(text: str, secrets: tuple[str, ...]) -> str:
     # Longest first so overlapping secrets cannot leave a suffix behind. Every
-    # secret matches case-insensitively so a step cannot dodge the scrubber by
+    # secret matches case-insensitively so a step type cannot dodge the scrubber by
     # changing the case of the value.
     for secret in sorted(secrets, key=len, reverse=True):
         text = re.sub(re.escape(secret), _REDACTED, text, flags=re.IGNORECASE)
@@ -856,7 +856,7 @@ def run_source(
 
 
 class _LocalErrorCapture:
-    """Capture unexpected step exceptions locally for the run report.
+    """Capture unexpected step type exceptions locally for the run report.
 
     The container ABI deliberately never carries exception text (it may hold
     secrets), so a remote runtime discards it. Source mode executes in this
@@ -953,7 +953,7 @@ def _execute_over_channel(
         listed = ", ".join(sorted(advertised)) or "none"
         raise RunExecutionError(
             f"the runtime at {address} does not advertise {dispatch_id!r}",
-            detail=(f"Advertised steps: {listed}",),
+            detail=(f"Advertised step types: {listed}",),
             next_steps=(
                 "check that the runtime was built from this workspace",
                 "or select an advertised target",
@@ -1097,7 +1097,7 @@ def _health(
 def _scrubbing_progress(
     on_progress: ProgressCallback | None, secrets: tuple[str, ...]
 ) -> ProgressCallback | None:
-    """Wrap the progress callback so step messages are scrubbed of secrets."""
+    """Wrap the progress callback so step type messages are scrubbed of secrets."""
 
     if on_progress is None:
         return None

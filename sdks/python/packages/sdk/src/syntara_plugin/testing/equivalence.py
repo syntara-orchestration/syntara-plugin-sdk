@@ -17,7 +17,7 @@ def _failure_category(outcome: StepOutcome) -> FailureCode | None:
     ``ContainerInvocationError`` keeps its category, an executor output
     violation becomes an ABI violation on the container path, and any other
     exception becomes OUTCOME_UNKNOWN, exactly as the container service
-    reports unhandled step failures.
+    reports unhandled step type failures.
     """
 
     raised = outcome.raised

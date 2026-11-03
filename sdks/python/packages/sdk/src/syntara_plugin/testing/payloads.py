@@ -66,7 +66,7 @@ class ReferenceControlStep(ControlStep[ReferenceInput, ReferenceOutput]):
 
 
 class FailingReferenceStep(ControlStep[ReferenceInput, ReferenceOutput]):
-    """A Control step that deliberately fails with a safe, retryable error."""
+    """A Control step type that deliberately fails with a safe, retryable error."""
 
     def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
         raise ContainerInvocationError(
@@ -90,7 +90,7 @@ _INVALID_OUTPUT_SCHEMA: dict[str, Any] = {
 def schema_violating_binding(
     identity: str = "syntara.testing.schema-violating-control",
 ) -> StepBinding:
-    """Bind the reference Control step with an output schema its result violates.
+    """Bind the reference Control step type with an output schema its result violates.
 
     The declared output schema is deliberately stricter than the
     implementation's model, so a successful ``run()`` result fails the

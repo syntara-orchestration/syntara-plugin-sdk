@@ -922,7 +922,7 @@ def test_step_registry_from_bindings_advertises_exact_identities() -> None:
 def test_step_registry_from_bindings_rejects_an_empty_registry() -> None:
     bindings = StepBindings()
 
-    with pytest.raises(ValueError, match="at least one typed step"):
+    with pytest.raises(ValueError, match="at least one step type"):
         step_registry_from_bindings(bindings)
 
 

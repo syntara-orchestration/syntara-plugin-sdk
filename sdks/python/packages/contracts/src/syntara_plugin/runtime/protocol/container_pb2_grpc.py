@@ -33,8 +33,8 @@ class ContainerServiceStub(object):
     if it implements this service and the message semantics below.
 
     The container ABI is the application-data channel. It deliberately carries
-    step identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step revision
+    step type identity and bounded JSON objects, never a container command or
+    plaintext credential. Health negotiates the ABI and supported step type revision
     before the Execution Plane sends Execute or Cancel.
     """
 
@@ -69,8 +69,8 @@ class ContainerServiceServicer(object):
     if it implements this service and the message semantics below.
 
     The container ABI is the application-data channel. It deliberately carries
-    step identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step revision
+    step type identity and bounded JSON objects, never a container command or
+    plaintext credential. Health negotiates the ABI and supported step type revision
     before the Execution Plane sends Execute or Cancel.
     """
 
@@ -126,8 +126,8 @@ class ContainerService(object):
     if it implements this service and the message semantics below.
 
     The container ABI is the application-data channel. It deliberately carries
-    step identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step revision
+    step type identity and bounded JSON objects, never a container command or
+    plaintext credential. Health negotiates the ABI and supported step type revision
     before the Execution Plane sends Execute or Cancel.
     """
 

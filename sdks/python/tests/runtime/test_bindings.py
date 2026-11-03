@@ -1,4 +1,4 @@
-"""Tests for the transport-independent typed step bindings."""
+"""Tests for the transport-independent step type bindings."""
 
 from __future__ import annotations
 

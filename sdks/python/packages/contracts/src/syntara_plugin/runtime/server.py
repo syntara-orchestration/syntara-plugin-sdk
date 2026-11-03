@@ -223,7 +223,7 @@ def load_runtime_bindings(specification: str) -> StepBindings:
         message = "the runtime bindings factory must return StepBindings"
         raise RuntimeServerError(message)
     if not bindings.step_identities:
-        message = "the runtime bindings factory must register at least one step"
+        message = "the runtime bindings factory must register at least one step type"
         raise RuntimeServerError(message)
     return bindings
 
@@ -334,7 +334,7 @@ def _load_typed_step(entry_point: str) -> type[BaseStep[Any, Any]]:
     except Exception as error:
         raise RuntimeServerError("resolved entry point could not be loaded") from error
     if not isinstance(implementation, type) or not issubclass(implementation, BaseStep):
-        raise RuntimeServerError("resolved entry point must name a typed Step class")
+        raise RuntimeServerError("resolved entry point must name a step type class")
     return implementation
 
 
@@ -346,7 +346,7 @@ def _installed_binding_for_step(
     try:
         installed_binding = bindings.binding(step_identity)
     except StepBindingError as error:
-        raise RuntimeServerError("resolved step identity has no installed binding") from error
+        raise RuntimeServerError("resolved step type identity has no installed binding") from error
     if type(installed_binding.step) is not implementation:
         raise RuntimeServerError("resolved entry point does not match the installed binding")
     return installed_binding
@@ -379,7 +379,7 @@ def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) 
     manifest_steps: Mapping[str, Any] | None = None
     for binding in _resolved_execution_bindings(config):
         if binding.revision in handlers:
-            raise RuntimeServerError("resolved execution data contains a duplicate step revision")
+            raise RuntimeServerError("resolved execution data contains a duplicate step type revision")
         manifest_steps = _validate_custom_runner_mapping(
             binding, manifest_steps, config.registration_manifest_path
         )

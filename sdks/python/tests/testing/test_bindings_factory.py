@@ -1,4 +1,4 @@
-"""Tests for the drift-verified step-bindings factory."""
+"""Tests for the drift-verified step type bindings factory."""
 
 from __future__ import annotations
 

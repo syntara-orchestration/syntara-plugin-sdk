@@ -120,7 +120,7 @@ invocation that produced no valid outcome. In that case the runtime emits a
 execution began and is known not to have completed; `unknown` means the runtime
 cannot determine whether execution completed. These values describe execution
 completion knowledge, not retryability. A `ContainerFailure` is not a deliberate
-step result and carries no `StandardOutputWrapper`.
+step type result and carries no `StandardOutputWrapper`.
 
 The wrapper schema does not redefine protobuf transport fields. The
 `ContainerService` ABI remains the protocol contract for transporting runtime

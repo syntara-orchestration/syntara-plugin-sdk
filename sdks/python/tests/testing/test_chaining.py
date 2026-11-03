@@ -144,7 +144,7 @@ def test_chain_fails_fast_naming_the_broken_link() -> None:
 
 
 def test_chain_rejects_empty_bindings() -> None:
-    with pytest.raises(ValueError, match="at least one step binding"):
+    with pytest.raises(ValueError, match="at least one step type binding"):
         chain_steps([], {"text": "x"})
 
 

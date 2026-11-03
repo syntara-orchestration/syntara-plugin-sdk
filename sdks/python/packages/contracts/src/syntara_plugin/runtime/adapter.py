@@ -142,7 +142,7 @@ def _container_result(
     ``ContainerResult`` is the transport representation of a valid SDK
     outcome: status, status message, optional output, and optional error
     metadata all survive the mapping. Inline versus object-reference placement
-    applies to any business output, regardless of whether the step deliberately
+    applies to any business output, regardless of whether the step type deliberately
     returned a nonzero status. Exceptions that cannot produce a valid wrapper
     are mapped separately to the container ``Failure`` event.
     """
@@ -187,7 +187,7 @@ def container_step_for_binding(
     object_store: ResultObjectStore | None = None,
     step_revision_id: str | None = None,
 ) -> ContainerStepHandler:
-    """Wrap one typed step as a container handler.
+    """Wrap one step type as a container handler.
 
     The handler validates the invocation's raw JSON inputs against the installed
     manifest schema for a custom-runner Step, invokes the public
@@ -209,7 +209,7 @@ def container_step_for_binding(
         if invocation.step_revision_id != (step_revision_id or binding.descriptor.step_identity):
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
-                "The requested step is not available in this container image.",
+                "The requested step type is not available in this container image.",
                 outcome="not_started",
             )
         context = _execution_context(invocation)
@@ -248,7 +248,7 @@ def container_step_for_bindings(
     *,
     object_store: ResultObjectStore | None = None,
 ) -> ContainerStepHandler:
-    """Wrap typed step bindings as a handler resolving by step identity.
+    """Wrap step type bindings as a handler resolving by step type identity.
 
     This helper uses declared identities and is intended for local invocation.
     Server startup uses resolved revisions with :func:`container_step_for_binding`.
@@ -259,7 +259,7 @@ def container_step_for_bindings(
             binding = bindings.binding(invocation.step_revision_id)
             return container_step_for_binding(binding, object_store=object_store)(invocation)
         except StepBindingError:
-            message = "The requested step is not available in this container image."
+            message = "The requested step type is not available in this container image."
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
                 message,
@@ -274,7 +274,7 @@ def step_registry_from_bindings(
     *,
     object_store: ResultObjectStore | None = None,
 ) -> StepRegistry:
-    """Build a container step registry with one handler per typed step.
+    """Build a container type registry with one handler per step type.
 
     This local helper uses declared identities. Server startup supplies exact
     resolved revision IDs separately from their installed descriptors.
@@ -287,6 +287,6 @@ def step_registry_from_bindings(
         for step_identity in bindings.step_identities
     }
     if not handlers:
-        message = "at least one typed step must be registered"
+        message = "at least one step type must be registered"
         raise ValueError(message)
     return StepRegistry(handlers)

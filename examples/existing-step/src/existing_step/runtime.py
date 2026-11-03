@@ -142,11 +142,11 @@ def _identifier(value: object, label: str) -> str:
 def _load_step(entry_point: str) -> type[BaseStep[Any, Any]]:
     module_name, separator, class_name = entry_point.partition(":")
     if not module_name or not separator or not class_name:
-        raise RuntimeError(f"invalid step entry point {entry_point!r}")
+        raise RuntimeError(f"invalid step type entry point {entry_point!r}")
     try:
         step_class = getattr(importlib.import_module(module_name), class_name, None)
     except ImportError as error:
-        raise RuntimeError(f"could not import step entry point {entry_point!r}") from error
+        raise RuntimeError(f"could not import step type entry point {entry_point!r}") from error
     if not isinstance(step_class, type) or not issubclass(step_class, BaseStep):
-        raise RuntimeError(f"step entry point {entry_point!r} must name a BaseStep subclass")
+        raise RuntimeError(f"step type entry point {entry_point!r} must name a BaseStep subclass")
     return cast(type[BaseStep[Any, Any]], step_class)

@@ -8,7 +8,7 @@ import pytest
 from syntara_plugin.sdk.cli import main
 from syntara_plugin.sdk.testgen import ScaffoldError, generate_step_tests
 
-STEP_SOURCE = '''"""A custom-runner Action step used by the generated tests."""
+STEP_SOURCE = '''"""A custom-runner Action step type used by the generated tests."""
 
 from __future__ import annotations
 
@@ -491,7 +491,7 @@ spec:
     )
     (pytester.path / "docs/README.md").write_text("# Business\n", encoding="utf-8")
     (pytester.path / "count_report/__init__.py").write_text(
-        '''"""A step whose business rules reject the scaffolded placeholder."""
+        '''"""A step type whose business rules reject the scaffolded placeholder."""
 
 from __future__ import annotations
 

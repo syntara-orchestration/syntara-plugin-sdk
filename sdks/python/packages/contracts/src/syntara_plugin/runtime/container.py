@@ -1,6 +1,6 @@
 """The generic container runtime API for Syntara plugin workloads.
 
-One container image may register many immutable step revisions.  The Execution
+One container image may register many immutable step type revisions.  The Execution
 Plane selects the revision in an :class:`ContainerInvocation`; the runtime
 dispatches to the matching Python callable. The protocol deliberately carries
 only JSON input data, bounded non-secret runtime context, and paths to
@@ -44,7 +44,7 @@ _MAX_STATUS_CODE = 4_294_967_295
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
 INCOMPLETE_STEP_MESSAGE = "The step did not complete."
 
-# A platform-owned runner can handle any installed step that the control
+# A platform-owned runner can handle any installed step type that the control
 # plane has already resolved to that runner. It is a health-advertisement
 # capability only, never a valid ``step_revision_id`` in an Execute request.
 ANY_STEP_REVISION = "*"
@@ -62,7 +62,7 @@ def _thaw_json_document(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class ContainerInvocation:
-    """The selected step and the safe data supplied to it."""
+    """The selected type and the safe data supplied to it."""
 
     invocation_id: str
     workflow_run_id: str
@@ -93,7 +93,7 @@ class ContainerProgress:
 
 @dataclass(frozen=True)
 class ContainerResult:
-    """The terminal SDK output envelope of one step invocation.
+    """The terminal SDK output envelope of one step type invocation.
 
     This is the transport mapping for a valid ``StandardOutputWrapper``:
     status, status message, optional business output, and optional error
@@ -102,9 +102,9 @@ class ContainerResult:
     cannot produce a valid SDK outcome. Output may be inline or represented by
     an object-store reference; that choice does not change the outcome.
 
-    A step returns either an inline JSON object or an object-store reference for
+    A step type returns either an inline JSON object or an object-store reference for
     its business result, never both. ``status_code`` zero is success; a nonzero
-    value is a deliberate step failure that remains a valid outcome and must
+    value is a deliberate step type failure that remains a valid outcome and must
     carry the complete ``error_result`` and its effective ``error_schema_digest``.
     The schema digests let the control plane interpret the result without
     importing plugin Python code.
@@ -231,7 +231,7 @@ def _error_from_container_result(
     result: ContainerResult,
     error_schema: Mapping[str, Any] | None,
 ) -> ErrorResult | None:
-    """Validate and reconstruct deliberate step-failure metadata."""
+    """Validate and reconstruct deliberate step type-failure metadata."""
 
     try:
         if result.status_code == 0:
@@ -291,7 +291,7 @@ def standard_output_from_container_result(
 
 
 class ContainerInvocationError(Exception):
-    """A user-safe terminal failure a step may deliberately return."""
+    """A user-safe terminal failure a step type may deliberately return."""
 
     def __init__(
         self,
@@ -349,7 +349,7 @@ ContainerStepHandler = Callable[[ContainerInvocation], ContainerResult]
 
 
 class StepRegistry:
-    """Maps exact step revision IDs to handlers."""
+    """Maps exact type revision IDs to handlers."""
 
     def __init__(
         self,
@@ -357,12 +357,12 @@ class StepRegistry:
     ) -> None:
         self._steps = dict(steps)
         if not self._steps:
-            raise ValueError("at least one step revision must be registered")
+            raise ValueError("at least one step type revision must be registered")
         for step_revision_id, handler in self._steps.items():
             if not _IDENTITY.fullmatch(step_revision_id):
-                raise ValueError("step revision IDs must be Syntara identities")
+                raise ValueError("step type revision IDs must be Syntara identities")
             if not callable(handler):
-                raise TypeError("registered step handlers must be callable")
+                raise TypeError("registered step type handlers must be callable")
 
     @property
     def step_revision_ids(self) -> tuple[str, ...]:
@@ -376,7 +376,7 @@ class StepRegistry:
             return handler
         raise ContainerInvocationError(
             FailureCode.NOT_FOUND,
-            "The requested step is not available in this container image.",
+            "The requested step type is not available in this container image.",
             outcome="not_started",
         )
 
@@ -517,7 +517,7 @@ class ContainerClient:
         self._stub = container_pb2_grpc.ContainerServiceStub(channel)
 
     def health(self, *, timeout_seconds: float | None = None) -> tuple[str, ...]:
-        """Confirm the container ABI and return the advertised step identities."""
+        """Confirm the container ABI and return the advertised step type identities."""
 
         rpc_failure: ContainerRemoteError | None = None
         try:
@@ -538,7 +538,7 @@ class ContainerClient:
     def execute(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None
     ) -> ContainerResult:
-        """Invoke a step and return its sole terminal result."""
+        """Invoke a step type and return its sole terminal result."""
 
         for event in self.stream(invocation, timeout_seconds=timeout_seconds):
             if isinstance(event, ContainerResult):
@@ -559,7 +559,7 @@ class ContainerClient:
         timeout_seconds: float | None = None,
         resolve_object_reference: Callable[[str], Mapping[str, Any]] | None = None,
     ) -> StandardOutputWrapper:
-        """Invoke a step and reconstruct its SDK-owned output wrapper.
+        """Invoke a step type and reconstruct its SDK-owned output wrapper.
 
         ``output_schema`` and an optional ``error_schema`` must be trusted
         schemas associated with this invocation. Their canonical digests are
@@ -580,7 +580,7 @@ class ContainerClient:
     def stream(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None
     ) -> Iterator[ContainerProgress | ContainerResult]:
-        """Invoke a step and yield progress followed by exactly one result."""
+        """Invoke a step type and yield progress followed by exactly one result."""
 
         request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)

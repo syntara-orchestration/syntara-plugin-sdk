@@ -1,4 +1,4 @@
-"""Sentinel-based secret-leak assertions for step test outcomes."""
+"""Sentinel-based secret-leak assertions for step type test outcomes."""
 
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def assert_no_secrets(
     When scanning logs, raise the capture level around the invocation first:
     pytest captures only records that pass the root logger's effective level,
     which defaults to WARNING. Use ``with caplog.at_level(logging.INFO):``
-    around the step invocation so INFO-level leaks are captured.
+    around the step type invocation so INFO-level leaks are captured.
 
     The failure message never repeats the sentinel value: it names the
     sentinel by position and length and the location it leaked into, so CI
@@ -133,5 +133,5 @@ def assert_no_secrets(
             for sentinel_index, location in leaks
         )
         raise SecretLeakError(
-            f"secret sentinel leaked into the step outcome or logs: {locations}"
+            f"secret sentinel leaked into the step type outcome or logs: {locations}"
         )

@@ -86,7 +86,7 @@ If you have not created a plugin before, complete
 | Plugin | A versioned release that declares step types, integration types, credential recipes, and documentation. Its inventory is `plugin.yaml`. |
 | Step type | One catalog capability, such as **Create issue**, declared by a manifest under `steps/`. |
 | Category | The role of a step type: `action`, `control`, or `trigger`. The manifest `kind` is `Action`, `Control`, or `Trigger`. |
-| Runner | What executes the Step: the Syntara `platform-runner` or your own `custom-runner`. |
+| Runner | What executes the step type: the Syntara `platform-runner` or your own `custom-runner`. |
 | Entry point | The `module:Class` handle of a custom-runner implementation, such as `python_steps.create_issue:CreateIssueStep`. |
 | Workload image | The container image that holds your custom-runner code. A plugin has at most one. |
 | Step type identity | The stable name `namespace.plugin.step`, such as `example.python-steps.create-issue`. |
@@ -94,7 +94,7 @@ If you have not created a plugin before, complete
 For the complete vocabulary, see
 [Terms and execution model](plugin-language.md#terms-and-execution-model).
 
-## Plan your Step type
+## Plan your step type
 
 **Stage 1 of 6: Plan.** Next: [Declare](#declare-the-contract).
 
@@ -109,7 +109,7 @@ flowchart LR
 
 Before you write any YAML, decide what role the step type plays, who runs it, and
 where its boundaries are. These decisions are hard to change after users
-build workflows around that Step.
+build workflows around that step type.
 
 ### Choose a category
 
@@ -131,7 +131,7 @@ not as a general label for every capability.
 | Question | `platform-runner` | `custom-runner` |
 | --- | --- | --- |
 | Can one HTTP call to a provider do the job? | Yes: declare it with the `http.v1` driver. | Use a custom runner when it cannot. |
-| Do you write code? | No. The manifest is the whole Step type. | Yes: a typed Python class. |
+| Do you write code? | No. The manifest is the whole step type. | Yes: a typed Python class. |
 | Who owns the runtime image? | Syntara. | You do; the build pins its digest. |
 | Can you run it with `syntara-plugin run`? | No. Use `validate` and `inspect`. | Yes. |
 
@@ -149,7 +149,7 @@ and then to [Package](#package-the-plugin).
 
 Decide whether a capability is one step type or several step types now, because the
 decision shapes your contracts. For guidance, see
-[One opaque step type or several workflow Steps](#one-opaque-step-or-several-workflow-steps).
+[One opaque step type or several workflow Steps](#one-opaque-step-type-or-several-workflow-steps).
 
 ## Declare the contract
 
@@ -165,7 +165,7 @@ flowchart LR
     classDef todo fill:#f5f5f5,stroke:#8a8d90,color:#151515
 ```
 
-The manifest is the public contract of your Step type: its input schema defines
+The manifest is the public contract of your step type: its input schema defines
 the form and the validation rules, and its output schema defines what
 downstream Steps receive. Write the manifest before the code. The code must
 conform to the manifest, never the reverse.
@@ -277,7 +277,7 @@ spec:
 ### Declare a Trigger
 
 A Trigger combines a platform ingress driver with the runner that implements
-the Step. The `spec.configuration` schema describes driver setup, and the
+the step type. The `spec.configuration` schema describes driver setup, and the
 `spec.input` schema describes the event that the step type receives. The following
 excerpt is from `examples/python-steps/steps/record-opened/manifest.yaml`:
 
@@ -515,7 +515,7 @@ Follow these rules in every implementation:
 
 - **Mirror the manifest.** The Pydantic models must accept every value that
   the input schema allows and emit only values that the output schema allows.
-  [Run one Step](#run-one-step) checks this.
+  [Run one Step type](#run-one-step-type) checks this.
 - **Override `run()`, not `execute()`.** The SDK calls `execute()`, which
   calls `run()`.
 - **Return the output model.** Do not return a dictionary or a wrapper; the
@@ -574,7 +574,7 @@ owns retry policy. For every code, see `FailureCode` in
 > dependencies.
 
 For the typed API in depth, see
-[Typed Python steps](runtime-and-oci.md#typed-python-steps).
+[Typed Python step types](runtime-and-oci.md#typed-python-step-types).
 
 ## Verify locally
 
@@ -692,7 +692,7 @@ steps:
 
 For secret values, use `--input-file` instead of `--input`, so that secrets
 stay out of your shell history. For image mode, exit codes, and
-troubleshooting, see [Run a step locally](running-locally.md).
+troubleshooting, see [Run a step type locally](running-locally.md).
 
 ### Generate a test suite
 
@@ -892,12 +892,12 @@ To stage a release without making it discoverable, set
 recovery, see the [User guide](user-guide.md) and the
 [Build settings reference](build-settings.md).
 
-## Compose Steps into workflows
+## Compose step types into workflows
 
 The hardest authoring decisions are about boundaries: what goes inside one
-Step, and what belongs in the workflow between Steps.
+step type, and what belongs in the workflow between step types.
 
-### One opaque step type or several workflow Steps
+### One opaque step type or several workflow step types
 
 Suppose that, when an alert fires, the team wants to create an issue, label
 it, and assign it to the on-call engineer. You can build an opaque **Open
@@ -906,13 +906,13 @@ the workflow connects:
 
 ```mermaid
 flowchart TB
-    accTitle: One opaque Action compared with three workflow Steps
-    accDescr: Option A runs create, label, and assign inside one Open incident Action. Option B runs Create issue, Add labels, and Assign owner as separate Steps connected by a visible issue ID.
+    accTitle: One opaque Action compared with three workflow step types
+    accDescr: Option A runs create, label, and assign inside one Open incident Action. Option B runs Create issue, Add labels, and Assign owner as separate step types connected by a visible issue ID.
     subgraph A["Option A: one opaque Action"]
         direction LR
         a_in([alert]) --> open["Open incident<br/>create + label + assign inside run()"] --> a_out([issue_url])
     end
-    subgraph B["Option B: three workflow Steps"]
+    subgraph B["Option B: three workflow step types"]
         direction LR
         b_in([alert]) --> create[Create issue] -->|issue_id| label[Add labels] -->|issue_id| assign[Assign owner] --> b_out([issue_url])
     end
@@ -932,7 +932,7 @@ In this example, retry behavior decides. If labeling fails in Option A, a
 retry runs `run()` again and creates a second issue. In Option B, the
 platform can retry Add labels without touching Create issue. As a rule of
 thumb, if a workflow author would ever ask "which part failed?", the parts
-are separate Steps.
+are separate step types.
 
 The example workspace contains a runnable pair that shows both shapes:
 [`ComposeRemediationStep`](../examples/python-steps/python_steps/compose_remediation.py)
@@ -947,9 +947,9 @@ Actions.
 A step type is observable only through its declared output and its terminal
 status. The typed SDK gives `run()` no progress API, so nothing that happens
 inside `run()` is visible to the workflow. Design the output for the next
-Step:
+step type:
 
-- Return the identifiers and URLs that downstream Steps need, such as
+- Return the identifiers and URLs that downstream step types need, such as
   `issue_url`.
 - Keep output field names and types stable. A change breaks every workflow
   that reads them, so treat it as a breaking change and release it as a new
@@ -977,11 +977,11 @@ does not replace the SDK-owned failure envelope.
 A workflow is a directed acyclic graph (DAG) that people read, review, and
 debug. To keep it readable, follow these practices:
 
-- Name Steps by outcome, such as **Create issue**, not by mechanism, such as
+- Name step types by outcome, such as **Create issue**, not by mechanism, such as
   **POST to API**.
 - Give each step type one responsibility that fits in its `description`.
 - Fold glue logic into the step type that owns the data instead of adding chains
-  of trivial transformation Steps.
+  of trivial transformation step types.
 - Put branching and fan-out in Control step types, so that the graph shows them.
 - Keep the internal operations of an opaque step type private. Do not expose their
   names as step type identities or as output fields that workflows depend on, and
@@ -991,9 +991,9 @@ debug. To keep it readable, follow these practices:
 
 ### Test a composition locally
 
-The `chain_steps` helper runs Steps in sequence with explicit seams between
-them, and `check_seam_compatible` checks whether one Step's output fits the
-next Step's input. The following excerpt is from
+The `chain_steps` helper runs step types in sequence with explicit seams between
+them, and `check_seam_compatible` checks whether one step type's output fits the
+next step type's input. The following excerpt is from
 `examples/python-steps/tests/test_normalize_records_step.py`:
 
 ```python
@@ -1015,7 +1015,7 @@ assert outcome.ok
 
 The `chain_steps` helper is not a workflow engine: it has no branching,
 parallelism, retries, or persistence. When you need control flow, implement
-it in a `ControlStep.run()` method and test that Step. For more information,
+it in a `ControlStep.run()` method and test that step type. For more information,
 see [Chaining steps](testing.md#chaining-steps).
 
 ## Identity and execution boundaries

@@ -21,7 +21,7 @@ Every plugin inventory and target document starts with this envelope.
 
 A **step type** is a concrete catalog capability such as **HTTP Request**,
 **Create GitHub Issue**, or **Launch AAP Job Template**. Every step type has
-one lowercase **category**: `action`, `control`, or `trigger`. Action Step
+one lowercase **category**: `action`, `control`, or `trigger`. `Action` category step
 types cover domain integrations, API calls, scripts, and data manipulation;
 `Control` maps to `control`; and `Trigger` maps to `trigger`. Category states
 the capability's architectural role; it does not choose its execution owner.
@@ -76,7 +76,7 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.error` | Optional JSON Schema source for failure details, separate from the successful business result schema in `spec.output`. |
 
 Custom-runner step types implement `spec.runtime.entryPoint` with the typed
-Python API; see [Typed Python steps](runtime-and-oci.md#typed-python-steps).
+Python API; see [Typed Python step types](runtime-and-oci.md#typed-python-step-types).
 Platform-runner references identify a step type in any registered plugin. Compilation
 preserves the reference; the AO Plugin Registry resolves its image, entry point,
 and ABI during registration. Example references are placeholders and must name
@@ -196,7 +196,7 @@ The runtime also enforces the SDK base fields; without `spec.error`, the SDK
 base schema is used. Neither schema describes the runtime wrapper itself.
 The same category also represents a child-workflow entry in reference-mode
 composition; its declared public output is the result consumed by the parent
-`Control` step type, not the results of the child's internal Steps.
+`Control` step type, not the results of the child's internal step type.
 `TriggerDriver.transport` is one of
 `webhook`, `schedule`, `event-source`, or `poll`.
 
@@ -232,7 +232,7 @@ The plugin projection contains `projection`, `kind: "plugin"`, and the complete
 compiled descriptor without generated IDs. It excludes every workload binding
 referenced by a custom-runner target because that image embeds the registration
 manifest containing these IDs. Provider-only and unreferenced workload bindings
-remain in the projection. The step projection contains `projection`,
+remain in the projection. The step type projection contains `projection`,
 `kind: "step"`, the plugin's namespace/name/version, `sdkVersion`,
 `contractBundleDigest`, and the complete compiled target without its generated
 ID.

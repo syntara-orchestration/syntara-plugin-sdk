@@ -231,7 +231,7 @@ def test_archive_reader_rejects_a_custom_runner_without_a_workload_entry(
 def test_archive_reader_rejects_a_trigger_with_an_invalid_implementation(
     tmp_path: Path,
 ) -> None:
-    """A published Trigger must name a registered step identity."""
+    """A published Trigger must name a registered step type identity."""
 
     artifact = _artifact(tmp_path)
 

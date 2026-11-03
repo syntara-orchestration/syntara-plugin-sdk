@@ -1,4 +1,4 @@
-"""Tests for entry-point parsing, loading, and step resolution."""
+"""Tests for entry-point parsing, loading, and step type resolution."""
 
 from __future__ import annotations
 

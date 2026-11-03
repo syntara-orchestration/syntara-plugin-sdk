@@ -1,4 +1,4 @@
-"""Factory building drift-verified step bindings for local tests."""
+"""Factory building drift-verified step type bindings for local tests."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def installed_binding(
     input_schema: Mapping[str, Any] | None = None,
     output_schema: Mapping[str, Any] | None = None,
 ) -> StepBinding:
-    """Build one locally installed, executable binding for a step implementation.
+    """Build one locally installed, executable binding for a step type implementation.
 
     The manifest is synthetic but flows through the trusted
     ``InstalledStepManifest.from_manifest`` and ``StepDescriptor.for_installed_step``
@@ -109,8 +109,8 @@ def installed_binding(
     step_class = type(step)
     if "<locals>" in step_class.__qualname__:
         message = (
-            f"{step_class.__qualname__} is defined inside a function. The installed-step "
-            "contract requires an importable module:Class entry point, so step classes "
+            f"{step_class.__qualname__} is defined inside a function. The installed-step type "
+            "contract requires an importable module:Class entry point, so step type classes "
             "must be defined at module level; move the class out of the enclosing function."
         )
         raise HarnessUsageError(message)
@@ -168,7 +168,7 @@ class StepBindingsFactory:
 
     ``bind`` installs a local manifest derived from the implementation's own
     schemas (or explicitly supplied ones) and verifies it with
-    ``check_step_contract``; every bound step is executable through
+    ``check_step_contract``; every bound step type is executable through
     :func:`~syntara_plugin.testing.invoke_step`. ``bind_step`` compiles a
     plugin workspace, installs the compiled step type manifest through the same
     trusted factory, and verifies the target with ``check_target_binding``.
@@ -200,7 +200,7 @@ class StepBindingsFactory:
             return self._bindings.binding(key)
         except StepBindingError as error:
             if ":" not in key:
-                message = f"step identity {key!r} has not been bound yet"
+                message = f"step type identity {key!r} has not been bound yet"
                 raise HarnessUsageError(message) from error
             message = f"entry point {key!r} has not been bound yet"
             raise HarnessUsageError(message) from error
@@ -213,14 +213,14 @@ class StepBindingsFactory:
         input_schema: Mapping[str, Any] | None = None,
         output_schema: Mapping[str, Any] | None = None,
     ) -> StepBinding:
-        """Bind one step through a locally installed, drift-verified manifest.
+        """Bind one step type through a locally installed, drift-verified manifest.
 
         The binding is executable through
         :func:`~syntara_plugin.testing.invoke_step`. For compiled workspaces
             prefer :meth:`bind_step`, which installs the real manifest.
 
         Args:
-            step: A step class or instance, or a ``module:Class`` entry point.
+            step: A step type class or instance, or a ``module:Class`` entry point.
             identity: step type identity; derived from the class when omitted.
             input_schema: Optional declared input schema to install and verify
                 against (defaults to the implementation's own model schema).
@@ -272,7 +272,7 @@ class StepBindingsFactory:
                 (``pkg:Class`` resolving to ``pkg.steps:Class``) match the
                 manifest as written.
             workspace: Path to the root ``plugin.yaml`` or its directory.
-            identity: Full step identity; located by entry point when omitted.
+            identity: Full step type identity; located by entry point when omitted.
         """
 
         root = Path(workspace)

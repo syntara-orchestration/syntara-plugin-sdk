@@ -1,6 +1,6 @@
 # python-steps example
 
-One example step per Syntara kind, tested locally through the
+One example step type per Syntara kind, tested locally through the
 SDK test harness without AO, EP, or a cluster.
 
 | Step type | Taxonomy | Source manifest? | Tested through |

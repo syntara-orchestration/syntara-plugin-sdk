@@ -310,7 +310,7 @@ def test_runtime_context_mutation_does_not_leak_between_paths() -> None:
 
 
 def test_system_exit_is_normalized_on_both_paths() -> None:
-    """A step calling sys.exit becomes a raised outcome on each path."""
+    """A step type calling sys.exit becomes a raised outcome on each path."""
 
     from syntara_plugin.testing import assert_outcomes_equivalent, invoke_step_in_container
 

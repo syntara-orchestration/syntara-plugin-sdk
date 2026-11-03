@@ -178,7 +178,7 @@ def _parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser(
         "run",
-        help="Validate inputs and run one custom-runner Step locally.",
+        help="Validate inputs and run one custom-runner step type locally.",
         description="Validate invocation inputs and run one custom-runner step type locally.",
         epilog=textwrap.dedent(
             """\

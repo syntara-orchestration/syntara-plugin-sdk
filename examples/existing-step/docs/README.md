@@ -4,7 +4,7 @@ This plugin is the checked-in end-to-end prototype. It contains one Python
 implementation each for Action, Control, and Trigger, and uses the manifest
 entry point as the single source of truth for loading each implementation.
 
-The SDK's end-to-end suite executes every step directly and through the
+The SDK's end-to-end suite executes every step type directly and through the
 in-process container adapter. The repository's opt-in Podman integration test
 packages the same plugin and executes it through the shared container runtime
 image.

@@ -335,7 +335,7 @@ A successful run prints the target identity, mode, the input that executed
 JSON. The `--json` document is pretty-printed and additionally carries the
 input source (`inputSource`) for programmatic consumers. A terminal failure is
 a valid outcome, not a transport error: it keeps its failure code, message,
-retryability, and outcome, and exits `1`. A step signals a deliberate failure
+retryability, and outcome, and exits `1`. A step type signals a deliberate failure
 by raising `ContainerInvocationError`, and its code, message, and
 retryability are preserved:
 
@@ -368,7 +368,7 @@ Error detail:
 
 In image mode the detail cannot be retrieved (the remote runtime discards
 it); the CLI says so and suggests rerunning with `--mode source`. To debug a
-failing step programmatically, the [testing harness](testing.md) also
+failing step type programmatically, the [testing harness](testing.md) also
 captures the raised exception in `StepOutcome.raised`.
 
 | Exit status | Meaning |

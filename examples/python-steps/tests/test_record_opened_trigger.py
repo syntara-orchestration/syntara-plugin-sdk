@@ -1,4 +1,4 @@
-"""Example tests for the Python-bound Trigger step."""
+"""Example tests for the Python-bound Trigger-category step type."""
 
 from __future__ import annotations
 
