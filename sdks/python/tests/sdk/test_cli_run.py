@@ -3734,6 +3734,21 @@ def test_an_overlong_credential_name_is_refused_as_usage(
     assert "ENAMETOOLONG" in captured.err
 
 
+def test_loaded_credential_repr_hides_document_and_secret_values() -> None:
+    from syntara_plugin.sdk.runner import LoadedCredential
+
+    credential = LoadedCredential(
+        name=_RECIPE,
+        document={"token": _TOKEN, "pin": 739251},
+        secret_values=(_TOKEN,),
+        secret_scalars=(739251,),
+    )
+    rendered = repr(credential)
+    assert _TOKEN not in rendered
+    assert "739251" not in rendered
+    assert _RECIPE in rendered
+
+
 def test_a_credential_file_write_failure_is_a_structured_error(monkeypatch) -> None:
     """An unexpected delivery failure names the credential, never its value."""
 

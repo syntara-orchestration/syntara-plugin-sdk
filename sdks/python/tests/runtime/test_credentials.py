@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import pickle
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -25,6 +26,8 @@ from syntara_plugin.runtime import (
     StepBinding,
     StepBindingError,
     StepDescriptor,
+    StepExecutionError,
+    StepExecutor,
     StepFailure,
     invoke,
 )
@@ -41,7 +44,7 @@ class CredentialInput(BaseModel):
 
 
 class CredentialOutput(BaseModel):
-    result: str
+    result: str | int
 
 
 class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
@@ -50,6 +53,10 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
 
     def run(self, inputs: CredentialInput, context: ExecutionContext) -> CredentialOutput:
         try:
+            if inputs.mode == "system_exit_before":
+                raise SystemExit("pre-read")
+            if inputs.mode == "keyboard_interrupt_before":
+                raise KeyboardInterrupt("pre-read")
             scope = context._credential_scope
             assert scope is not None
             if inputs.mode == "scope_read":
@@ -77,8 +84,14 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                 credential = handle.read()
             if inputs.mode == "exception":
                 raise ValueError(str(credential["token"]))
+            if inputs.mode == "system_exit":
+                raise SystemExit(credential["token"])
+            if inputs.mode == "keyboard_interrupt":
+                raise KeyboardInterrupt(credential["token"])
             if inputs.mode in {"leak", "provider_allowed_leak", "inner_allowed_leak"}:
                 return CredentialOutput(result=f"token={credential['token']}")
+            if inputs.mode == "number_raw_leak":
+                return CredentialOutput(result=credential["pin"])
             if inputs.mode in {"number_leak", "boolean_leak", "key_leak"}:
                 value = {
                     "number_leak": lambda: str(credential["pin"]),
@@ -86,6 +99,8 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                     "key_leak": lambda: next(iter(credential["nested"])),
                 }[inputs.mode]()
                 return CredentialOutput(result=value)
+            if inputs.mode == "status_code_leak":
+                raise StepFailure(credential["pin"], "Failed", "Safe failure")
             if inputs.mode in {"number_failure", "boolean_failure"}:
                 value = credential["pin"] if inputs.mode == "number_failure" else credential["flag"]
                 raise StepFailure(1, "Failed", f"credential: {value}")
@@ -268,7 +283,7 @@ def test_direct_scoped_provider_reads_are_tracked_and_revoked(tmp_path: Path) ->
                 CredentialStep.saved_provider.read(_NAME)
 
 
-@pytest.mark.parametrize("mode", ["number_leak", "boolean_leak", "key_leak", "number_failure", "boolean_failure"])
+@pytest.mark.parametrize("mode", ["number_leak", "boolean_leak", "key_leak", "number_failure", "boolean_failure", "status_code_leak"])
 def test_stringified_scalar_and_mapping_key_secrets_do_not_reach_wrapper(
     tmp_path: Path, mode: str
 ) -> None:
@@ -282,6 +297,82 @@ def test_stringified_scalar_and_mapping_key_secrets_do_not_reach_wrapper(
         assert not outcome.ok and outcome.raw is None
         assert "739251" not in repr(outcome)
         assert _KEY_SECRET not in repr(outcome)
+
+
+def test_zero_credential_allows_success_but_not_business_output(tmp_path: Path) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"pin": 0}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    for call in (invoke_step, invoke_step_in_container):
+        outcome = call(_binding(), {"mode": "use"}, context=context)
+        assert outcome.ok and outcome.output == {"result": "accepted"}
+        for mode in ("number_leak", "number_raw_leak"):
+            outcome = call(_binding(), {"mode": mode}, context=context)
+            assert not outcome.ok and outcome.raw is None
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_execution_error_after_read_discards_exception_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool
+) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+
+    def fail_after_read(
+        self: StepExecutor, inputs: Mapping[str, Any], scoped_context: ExecutionContext
+    ) -> Any:
+        token = scoped_context.credential(_NAME).read()["token"]
+        try:
+            raise ValueError(token)
+        except ValueError as error:
+            if explicit:
+                raise StepExecutionError("safe failure", detail=token) from error
+            raise StepExecutionError(token, detail=token)  # noqa: B904 - exercise implicit context
+
+    monkeypatch.setattr(StepExecutor, "execute", fail_after_read)
+    with pytest.raises(StepExecutionError) as raised:
+        invoke(_binding(), {"mode": "use"}, context)
+    error = raised.value
+    assert error.detail is None
+    assert error.__cause__ is None and error.__context__ is None
+    assert _SECRET not in "".join(traceback.format_exception(error))
+
+
+@pytest.mark.parametrize("mode", ["system_exit", "keyboard_interrupt"])
+def test_control_flow_exception_after_read_is_sanitized(tmp_path: Path, mode: str) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    binding = _binding()
+    with pytest.raises(StepExecutionError) as raised:
+        invoke(binding, {"mode": mode}, context)
+    error = raised.value
+    assert error.detail is None
+    assert error.__cause__ is None and error.__context__ is None
+    assert _SECRET not in "".join(traceback.format_exception(error))
+
+    outcome = invoke_step(binding, {"mode": mode}, context=context)
+    assert not outcome.ok and isinstance(outcome.raised, StepExecutionError)
+    assert _SECRET not in repr(outcome)
+    assert _SECRET not in "".join(traceback.format_exception(outcome.raised))
+
+
+@pytest.mark.parametrize(
+    "mode,error_type",
+    [("system_exit_before", SystemExit), ("keyboard_interrupt_before", KeyboardInterrupt)],
+)
+def test_control_flow_exception_before_read_is_preserved(
+    mode: str, error_type: type[BaseException]
+) -> None:
+    with pytest.raises(error_type, match="pre-read"):
+        invoke(_binding(), {"mode": mode}, build_execution_context())
 
 
 def test_sdk_diagnostics_do_not_log_read_credentials(tmp_path: Path, caplog: Any) -> None:

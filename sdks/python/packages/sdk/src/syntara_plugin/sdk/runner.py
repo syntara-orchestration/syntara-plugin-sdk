@@ -23,7 +23,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -841,11 +841,11 @@ class LoadedCredential:
     """One supplied credential, shaped and validated, held in memory only."""
 
     name: str
-    document: Mapping[str, Any]
-    secret_values: tuple[str, ...]
+    document: Mapping[str, Any] = field(repr=False)
+    secret_values: tuple[str, ...] = field(repr=False)
     # Credential scalars in their original types, so a Step returning the
     # integer or boolean it was handed gets it masked like any string secret.
-    secret_scalars: tuple[Any, ...] = ()
+    secret_scalars: tuple[Any, ...] = field(default=(), repr=False)
 
 
 def parse_credential_options(raw: Sequence[str] | None) -> tuple[CredentialSpec, ...]:
