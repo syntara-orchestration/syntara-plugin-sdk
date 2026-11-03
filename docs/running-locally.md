@@ -133,7 +133,7 @@ violation is reported with its RFC 6901 JSON Pointer, and no server is started:
 ```text
 error: input does not satisfy the declared schema for example.python-steps.create-issue
   inputs/title: required property is missing
-  inputs/priority: 'urgent' is not one of ['low', 'medium', 'high']
+  inputs/priority: enum constraint is not satisfied
 
 Nothing was executed. Next:
   fix --input and rerun
@@ -390,10 +390,15 @@ obtain such a runtime:
      PYTHONPATH=. syntara-plugin-runtime-server
    ```
 
-   The factory returns `StepBindings` that install your steps through
-   `InstalledStepManifest.from_manifest`; the
+   The factory is a one-line delegation to `load_plugin_bindings`, which
+   returns `StepBindings` that install your step types through
+   `InstalledStepManifest.from_manifest`, deriving every step type identity as
+   `namespace.plugin.step` from the packaged `plugin.yaml` and each target's
+   `metadata.name`; identities are never hard-coded. For one complete,
+   copy-pasteable factory, copy the [Existing step types](../examples/existing-step)
+   example; the
    [runtime image integration test](../sdks/python/tests/integration/test_runtime_image.py)
-   contains one complete, copy-pasteable factory, and
+   shows the same pattern in a full image build, and
    [the runtime and OCI model](runtime-and-oci.md) describes the adapter
    contract and the format of the trusted resolved execution file. Its revision
    and installed step type identity must match the local compiled target, and custom
@@ -437,32 +442,39 @@ owns its loopback transport.
 A successful run prints the target identity, mode, the input that executed
 (with sensitive fields masked), the invocation identifier, status, and output
 JSON. The `--json` document is pretty-printed and additionally carries the
-input source (`inputSource`) for programmatic consumers. A terminal failure is
-a valid outcome, not a transport error: it keeps its failure code, message,
-retryability, and outcome, and exits `1`. A step type signals a deliberate failure
-by raising `ContainerInvocationError`, and its code, message, and
-retryability are preserved:
+input source (`inputSource`) for programmatic consumers. A deliberate failure
+is a valid result, not a transport error: a step type signals it by raising
+`StepFailure` from `run()`, and the run exits `1` with a nonzero status, the
+status message, and the structured error's code, message, and retryability
+preserved:
 
 ```text
-Target:      demo.tracker.submit
-Mode:        source
-Input:       {"message": "hello"}
-Invocation:  run-3527941430244a87b9f046a21ce4279f
-Error:       REMOTE_REJECTED (retryable: true)
-Message:     The tracker rejected the request.
-Outcome:     not_completed
+Target:         example.python-steps.create-issue
+Mode:           source
+Input:          {"title": "Broken build"}
+Invocation:     run-3527941430244a87b9f046a21ce4279f
+Status:         1
+Status message: The tracker rejected the request.
+Error:          REMOTE_REJECTED (retryable: true)
+Message:        The tracker rejected the request.
 ```
 
 A step type that raises an unexpected exception is caught and reported as a safe
-`OUTCOME_UNKNOWN` failure: the container ABI never carries exception text,
-because it may contain secrets or internal details. In source mode the
-exception happened in your own process, so the CLI captures the traceback
-locally and attaches it:
+terminal `OUTCOME_UNKNOWN` failure instead of a result: the container ABI
+never carries exception text, because it may contain secrets or internal
+details. Any exception other than `StepFailure` counts as unexpected,
+including `ContainerInvocationError`. In source mode the exception happened
+in your own process, so the CLI captures the traceback locally and attaches
+it:
 
 ```text
-Error:       OUTCOME_UNKNOWN (retryable: false)
-Message:     The step did not complete.
-Outcome:     unknown
+Target:     example.python-steps.create-issue
+Mode:       source
+Input:      {"title": "Broken build"}
+Invocation: run-9a4f2e6b8d0c4a7f1e3b5d7c9a2f4e6b
+Error:      OUTCOME_UNKNOWN (retryable: false)
+Message:    The step did not complete.
+Outcome:    unknown
 
 Error detail:
   Traceback (most recent call last):
@@ -478,7 +490,7 @@ captures the raised exception in `StepOutcome.raised`.
 | Exit status | Meaning |
 | --- | --- |
 | `0` | The step type completed with status `0`. |
-| `1` | The workspace did not compile, the step type completed with a nonzero status, or the transport failed. |
+| `1` | The workspace did not compile, the step type completed with a nonzero status or was reported as a terminal failure, or the transport failed. |
 | `2` | Usage error: missing or invalid input, unknown or ambiguous target, unreadable input file, or an option used in the wrong mode. |
 
 With `--json`, stdout carries exactly one pretty-printed JSON document on

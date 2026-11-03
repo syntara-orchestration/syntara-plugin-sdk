@@ -431,6 +431,12 @@ To convert the generated Action to a custom runner, follow these steps:
    [Implement the step type](#implement-the-step-type). The input model must include
    both `resource` and `title`, matching `schemas/request.input.yaml`.
 
+Building this workspace into a workload image additionally needs a runtime
+config naming a bindings factory, a `Containerfile` that starts the SDK
+runtime server, and the packaged plugin manifests. See
+[Running locally](running-locally.md#image-mode) and
+[the runtime and OCI model](runtime-and-oci.md#runtime-adapters-and-workload-images).
+
 ## Implement the step type
 
 **Stage 3 of 6: Implement** (custom runner only). Next: [Verify](#verify-locally).
@@ -540,19 +546,22 @@ when it is `True`.
 ### Signal a deliberate failure
 
 When a step type cannot complete for a reason that the workflow user needs to
-know, raise `ContainerInvocationError` with a `FailureCode`:
+know, raise `StepFailure` from `run()`:
 
 ```python
-from syntara_plugin.runtime import ContainerInvocationError, FailureCode
+from syntara_plugin.runtime import ErrorCategory, FailureCode, StepFailure
 
 
 class CreateIssueStep(ActionStep[CreateIssueInput, CreateIssueOutput]):
     def run(self, inputs, context):
         response = tracker.create(inputs.title)  # your provider client
         if response.status == 429:
-            raise ContainerInvocationError(
-                FailureCode.RATE_LIMITED,
-                "The tracker rate limit was reached.",
+            raise StepFailure(
+                1,
+                "The tracker rate limit was reached.",  # the result's status message
+                "The tracker rate limit was reached.",  # the structured error message
+                code=FailureCode.RATE_LIMITED.value,
+                category=ErrorCategory.DEPENDENCY,
                 retryable=True,
             )
         # Build and return CreateIssueOutput from the response.
@@ -566,16 +575,18 @@ class CreateIssueStep(ActionStep[CreateIssueInput, CreateIssueOutput]):
 | The target does not exist | `NOT_FOUND` | `False` |
 | Cancellation was requested | `CANCELLED` | `False` |
 
-The optional `outcome` argument states how far the operation got:
-`not_started`, `not_completed` (the default), or `unknown`. Write the message
-for the workflow user: short, actionable, and free of secrets. The failure
-code, message, retryability, and outcome are handed to the platform, which
+The first two arguments are the result's status code and status message; the
+third is the structured error message delivered to the workflow user. The
+status code can be any nonzero unsigned 32-bit integer you choose; retry
+behavior is driven by the failure code and `retryable`, not the status code.
+Keep both messages short, actionable, and free of secrets. `code` defaults to
+`STEP_FAILED`, `category` to `business`, and `retryable` to `False`.
+`StepFailure` carries no `outcome` argument: a deliberate failure completes
+as a nonzero-status result, while an unexpected exception becomes a terminal
+`OUTCOME_UNKNOWN` failure. The
+failure code, message, and retryability are handed to the platform, which
 owns retry policy. For every code, see `FailureCode` in
 [`abi.py`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/abi.py).
-
-> **Note:** `syntara_plugin.runtime` exports `ContainerInvocationError`
-> lazily from the container transport, so importing it loads the gRPC
-> dependencies.
 
 For the typed API in depth, see
 [Typed Python step types](runtime-and-oci.md#typed-python-step-types).
@@ -962,15 +973,15 @@ step type:
 
 ### Handle errors at the right boundary
 
-- Fail deliberately with `ContainerInvocationError` and a precise
-  `FailureCode`, as described in
-  [Signal a deliberate failure](#signal-a-deliberate-failure).
+- Fail deliberately with `StepFailure` and a precise `FailureCode`, as
+  described in [Signal a deliberate failure](#signal-a-deliberate-failure).
 - Set `retryable=True` only when retrying the whole step type is safe.
 - Design for retries. Create issue is a classic non-idempotent call: a retry
   after a timeout can open a duplicate issue. When the provider supports
   idempotency keys, derive the key from input values that stay the same
   across retries. When you cannot tell whether the operation happened, use
-  `outcome="unknown"` and `retryable=False`.
+  `retryable=False`; the runtime reports unexpected exceptions as
+  `OUTCOME_UNKNOWN`.
 - Split workflow step types at retry boundaries, as in Option B.
 
 A manifest `error` schema is optional. It documents a domain error shape and
@@ -1103,7 +1114,7 @@ The two paths report outcomes differently:
 | --- | --- | --- |
 | Success | `StandardOutputWrapper` with `status` `0`, `status_message` `Completed`, and `output` | Terminal result with the same fields |
 | Invalid input; `run()` is not called | Wrapper with a nonzero `status` and an `error` of code `INVALID_INPUT` | Terminal result with a nonzero status and the same error |
-| Deliberate failure (`ContainerInvocationError`) | The exception is raised | Terminal failure with the code, message, retryability, and outcome |
+| Deliberate failure (`StepFailure`) | Wrapper with a nonzero `status` and the structured error | Terminal result with a nonzero status and the same error |
 | Unexpected exception | The exception is raised, with its original text | Terminal failure `OUTCOME_UNKNOWN`; the exception text does not leave the container |
 | Output that violates the output schema | `StepExecutionError` is raised | Terminal failure `ABI_VIOLATION` |
 

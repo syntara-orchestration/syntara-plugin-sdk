@@ -48,7 +48,8 @@ my-plugin/
 ├── plugin.yaml                 # plugin inventory
 ├── syntara-plugin.yaml         # non-secret build defaults
 ├── steps/request/manifest.yaml # one action declaration
-└── schemas/request.input.yaml  # the action input schema
+├── schemas/request.input.yaml  # the action input schema
+└── docs/README.md              # the plugin documentation page
 ```
 
 The manifest selects the files that form the release. The settings file does

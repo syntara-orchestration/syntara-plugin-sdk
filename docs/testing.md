@@ -177,10 +177,14 @@ returns the same diagnostics as a tuple when a test needs to assert on them.
 
 ## Generated tests
 
-`syntara-plugin test-init` scaffolds a test module per custom-runner Action
-target from the compiled manifest and its schemas: the entry point, one valid
-case, derived invalid cases, and the standard property tests. Generated files
-refuse silent overwrite (`--force` to regenerate) and are deterministic.
+`syntara-plugin test-init` scaffolds a test module per custom-runner step type
+target of every kind (Action, Control, and Trigger) from the compiled
+manifest and its schemas: the entry point, one valid case, derived invalid
+cases, and the standard property tests. It also writes a shared
+`tests/conftest.py` import shim, only when absent, so generated tests can
+import the workspace and author-owned conftest content is never overwritten.
+Generated files refuse silent overwrite
+(`--force` to regenerate) and are deterministic.
 
 A generated suite never fails on first run: the derived invalid-input test
 runs immediately, while the valid-input and equivalence tests are skipped

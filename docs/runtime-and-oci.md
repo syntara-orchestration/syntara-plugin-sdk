@@ -145,7 +145,7 @@ resolved execution data as a read-only JSON file, named by
 {
   "bindings": [{
     "stepRevisionId": "sha256:<64 lowercase hex digits>",
-    "stepIdentity": "acme.echo.v1",
+    "stepIdentity": "acme.plugin.echo",
     "runtimeKind": "custom-runner",
     "entryPoint": "acme_plugin.steps:EchoStep",
     "abi": "syntara.container/v1alpha1",
@@ -197,6 +197,28 @@ until that service adopts `syntara.container/v1alpha1`, this repository proves
 the SDK adapter path but does not claim end-to-end Execution Plane dispatch.
 Automation Orchestrator's workflow selection and platform-owned runners remain
 separate platform responsibilities.
+
+The workload image starts the SDK runtime server as its entry point:
+
+```sh
+python -m syntara_plugin.runtime.server
+```
+
+The `syntara-plugin-runtime-server` console script runs the same `main()`. The
+server reads its runtime config from `SYNTARA_RUNTIME_CONFIG` and its listener
+settings from the `SYNTARA_RUNTIME_GRPC_*` variables. Authors never write or
+start their own gRPC server: the SDK runtime server is the only server in the
+image, and it owns input validation, execution dispatch, and the container
+ABI. [Existing step types](../examples/existing-step) shows the base image recipe:
+the `Containerfile` entry point and the mounted TLS material.
+`syntara-plugin build --with-workload` adds the registration manifest the
+server requires at startup (see
+[Installed revision mapping](#installed-revision-mapping)).
+
+> **Warning:** Do not start your own gRPC server or open a port in the image,
+> and do not hard-code step type identities. A hand-written server bypasses the
+> runtime's validation and its mutual TLS requirement, and a hard-coded
+> identity drifts from the packaged manifest contract.
 
 The server listens on `127.0.0.1:50051` by default. Override the address with
 `SYNTARA_RUNTIME_GRPC_ADDRESS`; every non-loopback listener requires mutual
@@ -405,6 +427,8 @@ from syntara_plugin.runtime import (
 )
 
 bindings = StepBindings()
+# ... obtain the step, its installed manifest, and its assets from the
+# packaged plugin, as `load_plugin_bindings` does.
 step = EchoStep()
 installed_step = InstalledStepManifest.from_manifest(
     "acme.plugin.echo", installed_manifest, installed_assets
@@ -420,9 +444,12 @@ result = invoke(
 
 `from_manifest()` is the installation/bootstrap handoff for an installed
 custom-runner step type. The component loading the installed plugin metadata must supply an
-authorized document. The SDK runtime cannot independently verify remote or
-cryptographic provenance, but it records opaque provenance for the exact
-factory-created manifest and descriptor objects. `StepBindings` accepts
+authorized document. For the complete factory that supplies the installed
+manifest and its assets, see `load_plugin_bindings` and the
+[Existing step types](../examples/existing-step) example. The SDK runtime cannot
+independently verify remote or cryptographic provenance, but it records
+opaque provenance for the exact factory-created manifest and descriptor
+objects. `StepBindings` accepts
 implementation-derived descriptors for authoring validation, while
 `runtime.invoke` and container dispatch reject them for execution. All three
 supported custom-runner step type kinds execute only through the factory-created
@@ -487,10 +514,13 @@ keyed by binding identity. The server startup path instead keys the handlers by
 the resolved revisions. The adapter converts each
 `ContainerInvocation` into an `ExecutionContext` (sharing the same cooperative
 cancellation event), calls `runtime.invoke`, and maps the returned wrapper to a
-`ContainerResult`. Valid input-validation errors and deliberate `StepFailure` values produce
-nonzero-status results; valid output produces a zero-status result. Invalid
-output, serialization errors, and unexpected step type exceptions produce no
-wrapper and become `ContainerFailure` outcomes. Each `ContainerResult` carries
+`ContainerResult`. Valid input-validation errors and deliberate `StepFailure`
+values raised from `run()` produce nonzero-status results; valid output
+produces a zero-status result. Any other exception raised from `run()`,
+including `ContainerInvocationError`, produces no wrapper and becomes a
+terminal `ContainerFailure` with the code `OUTCOME_UNKNOWN`. Invalid output
+and serialization errors also produce no wrapper and become `ContainerFailure`
+outcomes. Each `ContainerResult` carries
 the canonical digest of the declared output schema; successful business results
 are validated against that schema. An `outputSchemaDigest` in runtime context
 is accepted only when it matches that schema; a mismatch is an ABI violation.
