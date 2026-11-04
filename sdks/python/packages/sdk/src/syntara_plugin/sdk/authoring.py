@@ -1289,7 +1289,7 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
                 )
             ]
         ) from error
-    except (yaml.YAMLError, ConstructorError) as error:
+    except yaml.YAMLError as error:
         recursive = "recursive" in str(error).lower()
         code = "DOCUMENT_RECURSIVE" if recursive else "YAML_INVALID"
         remediation = (
