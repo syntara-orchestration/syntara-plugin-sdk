@@ -288,12 +288,16 @@ The returned document contains sensitive values. Use them only for the intended
 operation; never put them in logs, inputs, results, or error messages. SDK-generated
 errors and diagnostics do not include values read through the handle. The SDK
 rejects wrapper fields containing those values and suppresses business traceback
-details after a read. The wrapper check has bounded work and fails closed if it
-cannot complete its scan. The SDK cannot redact logs emitted by step code, so
+details after a read when they contain credential values. Safety scans are bounded:
+credential documents are limited to 1 MiB, 10,000 nodes, and 256 tracked
+fingerprints; output scans are limited to 10,000 nodes and 4,000,000 scan-work
+units. If a scan cannot finish within those bounds, the SDK reports
+`CREDENTIAL_SCAN_LIMIT`, distinct from a detected leak. Reduce credential document
+size or output complexity to stay within the limits. The SDK cannot redact logs emitted by step code, so
 step authors must not log returned values. The SDK does not provision production
-files or implement a vault. A Python step is not sandboxed by this accessor;
-the host must provision only files authorized for the invocation and enforce
-its own process isolation.
+files or implement a vault. A Python step is not sandboxed by this accessor; the
+host must provision only files authorized for the invocation and enforce its own
+process isolation.
 
 `CredentialRecipe` and `IntegrationType` Pydantic views validate and serialize
 the existing v1alpha1 authoring documents; the canonical JSON Schemas remain

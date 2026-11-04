@@ -20,7 +20,7 @@ from .bindings import (
     validate_executable_step_binding,
 )
 from .context import ExecutionContext
-from .credentials import _CredentialScope
+from .credentials import _CredentialScanStatus, _CredentialScope
 from .outcome import (
     ErrorCategory,
     ErrorResult,
@@ -33,6 +33,10 @@ from .validation import StepInputValidationError, validate_step_inputs
 _INVALID_STEP_RESPONSE = "The step returned an invalid response."
 _UNEXPECTED_STEP_FAILURE = "The step did not complete."
 _UNTRUSTED_BINDING = "The step is not bound to a trusted installed descriptor."
+_CREDENTIAL_SCAN_LIMIT = (
+    "Credential safety scan exceeded its configured limits; reduce credential document "
+    "size or step output complexity."
+)
 _SCHEMA_DIGEST_MISMATCH = (
     "The runtime context output schema digest does not match the declared schema."
 )
@@ -337,22 +341,21 @@ def _execute_scoped(
     scope: _CredentialScope,
 ) -> StandardOutputWrapper[Mapping[str, Any]]:
     execution_error: StepExecutionError | None = None
-    unexpected_error = False
+    unexpected_error: BaseException | None = None
     wrapper: StandardOutputWrapper[Mapping[str, Any]] | None = None
     try:
         _validate_context_output_digest(step, context)
         wrapper = executor.execute(input, context)
     except StepExecutionError as error:
         execution_error = error
-    except Exception:
-        unexpected_error = True
-    except BaseException:
+    except Exception as error:
+        unexpected_error = error
+    except BaseException as error:
         if not scope.has_read:
             raise
-        unexpected_error = True
-    if unexpected_error:
-        # Raise outside the handler so the original exception is not retained.
-        raise StepExecutionError(_UNEXPECTED_STEP_FAILURE) from None
+        unexpected_error = error
+    if unexpected_error is not None:
+        _raise_unexpected_scoped_error(unexpected_error, scope)
     if execution_error is not None:
         _raise_scoped_execution_error(execution_error, scope)
     if wrapper is None:
@@ -367,10 +370,45 @@ def _raise_scoped_execution_error(
         raise error
     # A safe-looking error can retain credential values in its cause or context.
     safe_message = error.safe_message
-    if scope.contains_secret(safe_message):
+    message_status = scope.scan(safe_message)
+    if message_status is _CredentialScanStatus.LIMIT_EXCEEDED:
+        _raise_credential_scan_limit()
+    if message_status is _CredentialScanStatus.SECRET_FOUND:
         safe_message = _UNEXPECTED_STEP_FAILURE
+    safe_detail = error.detail
+    if safe_detail is not None:
+        detail_status = scope.scan(safe_detail)
+        if detail_status is _CredentialScanStatus.LIMIT_EXCEEDED:
+            _raise_credential_scan_limit()
+        if detail_status is _CredentialScanStatus.SECRET_FOUND:
+            safe_detail = None
     raise StepExecutionError(
-        safe_message, failure_code=error.failure_code, outcome=error.outcome,
+        safe_message,
+        failure_code=error.failure_code,
+        detail=safe_detail,
+        outcome=error.outcome,
+    ) from None
+
+
+def _raise_unexpected_scoped_error(error: BaseException, scope: _CredentialScope) -> None:
+    detail = "".join(traceback.format_exception(error)).rstrip()
+    if not scope.has_read:
+        raise StepExecutionError(_UNEXPECTED_STEP_FAILURE, detail=detail) from error
+    scan_status = scope.scan(detail)
+    if scan_status is _CredentialScanStatus.LIMIT_EXCEEDED:
+        _raise_credential_scan_limit()
+    if scan_status is _CredentialScanStatus.SECRET_FOUND:
+        detail = ""
+    raise StepExecutionError(
+        _UNEXPECTED_STEP_FAILURE,
+        detail=detail or None,
+    ) from None
+
+
+def _raise_credential_scan_limit() -> None:
+    raise StepExecutionError(
+        _CREDENTIAL_SCAN_LIMIT,
+        failure_code=FailureCode.CREDENTIAL_SCAN_LIMIT,
     ) from None
 
 
@@ -386,7 +424,10 @@ def _reject_credential_output(
             wrapper.status_message,
             wrapper.error_result.model_dump() if wrapper.error_result is not None else None,
         ))
-    if scope.contains_secret(checked_fields):
+    scan_status = scope.scan(checked_fields)
+    if scan_status is _CredentialScanStatus.LIMIT_EXCEEDED:
+        _raise_credential_scan_limit()
+    if scan_status is _CredentialScanStatus.SECRET_FOUND:
         raise StepExecutionError(_INVALID_STEP_RESPONSE)
 
 

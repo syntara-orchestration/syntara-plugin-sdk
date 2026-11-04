@@ -21,6 +21,7 @@ from syntara_plugin.runtime import (
     CredentialBinding,
     CredentialRecipe,
     ExecutionContext,
+    FailureCode,
     FileCredentialProvider,
     InstalledStepManifest,
     IntegrationType,
@@ -94,6 +95,8 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                 return CredentialOutput(result=f"token={credential['token']}")
             if inputs.mode == "number_raw_leak":
                 return CredentialOutput(result=credential["pin"])
+            if inputs.mode == "large_output":
+                return CredentialOutput(result="x" * 1_000)
             if inputs.mode in {"number_leak", "boolean_leak", "key_leak"}:
                 value = {
                     "number_leak": lambda: str(credential["pin"]),
@@ -409,6 +412,25 @@ def test_execution_error_after_read_discards_exception_chain(
     assert _SECRET not in "".join(traceback.format_exception(error))
 
 
+def test_execution_error_without_credential_read_keeps_debug_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_error = RuntimeError("useful failure detail")
+
+    def fail_before_read(
+        self: StepExecutor, inputs: Mapping[str, Any], context: ExecutionContext
+    ) -> Any:
+        raise source_error
+
+    monkeypatch.setattr(StepExecutor, "execute", fail_before_read)
+    binding = _binding()
+    with pytest.raises(StepExecutionError) as raised:
+        invoke(binding, {"mode": "use"}, build_execution_context())
+
+    assert "useful failure detail" in (raised.value.detail or "")
+    assert raised.value.__cause__ is source_error
+
+
 @pytest.mark.parametrize("mode", ["system_exit", "keyboard_interrupt"])
 def test_control_flow_exception_after_read_is_sanitized(tmp_path: Path, mode: str) -> None:
     path = tmp_path / "credential"
@@ -468,23 +490,76 @@ def test_fingerprint_scan_handles_long_values_and_fails_closed_on_budget(
 
     scope = credentials_module._CredentialScope((_NAME,), _FakeProvider({"password": secret}))
     scope.read(_NAME)
-    assert not scope.contains_secret({"result": "x" * 200_000})
-    assert scope.contains_secret({"result": "prefix" + secret + "suffix"})
+    assert (
+        scope.scan({"result": "x" * 200_000})
+        is credentials_module._CredentialScanStatus.CLEAN
+    )
+    assert (
+        scope.scan({"result": "prefix" + secret + "suffix"})
+        is credentials_module._CredentialScanStatus.SECRET_FOUND
+    )
     monkeypatch.setattr(credentials_module, "_MAX_SCAN_WORK", 100)
-    assert scope.contains_secret({"result": "x" * 200})
+    assert scope.scan({"result": "x" * 200}) is credentials_module._CredentialScanStatus.LIMIT_EXCEEDED
     monkeypatch.setattr(credentials_module, "_MAX_OUTPUT_NODES", 5)
-    assert scope.contains_secret({"result": [None] * 6})
+    assert (
+        scope.scan({"result": [None] * 6})
+        is credentials_module._CredentialScanStatus.LIMIT_EXCEEDED
+    )
     scope.close()
 
 
-def test_fingerprint_count_limit_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fingerprint_count_limit_is_reported_separately_from_leaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(credentials_module, "_MAX_FINGERPRINTS", 2)
     scope = credentials_module._CredentialScope(
         (_NAME,), _FakeProvider({"alpha": "first", "beta": "second"})
     )
     scope.read(_NAME)
+    assert (
+        scope.scan({"result": "safe"})
+        is credentials_module._CredentialScanStatus.LIMIT_EXCEEDED
+    )
     assert scope.contains_secret({"result": "safe"})
     scope.close()
+
+
+def test_large_credential_reports_scan_limit_in_direct_and_container_modes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "credential"
+    document = {"token": "safe-token"}
+    document.update({f"field-{index}": f"value-{index}" for index in range(300)})
+    path.write_text(json.dumps(document))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    for call in (invoke_step, invoke_step_in_container):
+        outcome = call(_binding(), {"mode": "use"}, context=context)
+        assert not outcome.ok
+        assert outcome.raw is None
+        failure = outcome.raised
+        assert failure is not None
+        code = getattr(failure, "failure_code", None) or getattr(failure, "code", None)
+        assert code is FailureCode.CREDENTIAL_SCAN_LIMIT
+        message = getattr(failure, "safe_message", None) or getattr(failure, "message", "")
+        assert "reduce credential document size" in message
+
+
+def test_large_step_output_reports_scan_limit_separately_from_leaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": "private-token"}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    monkeypatch.setattr(credentials_module, "_MAX_SCAN_WORK", 20)
+    with pytest.raises(StepExecutionError) as raised:
+        invoke(_binding(), {"mode": "large_output"}, context)
+
+    assert raised.value.failure_code is FailureCode.CREDENTIAL_SCAN_LIMIT
+    assert "step output complexity" in raised.value.safe_message
 
 
 def test_credential_free_invocations_do_not_apply_scan_limits(

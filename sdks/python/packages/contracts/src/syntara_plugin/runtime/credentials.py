@@ -7,6 +7,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -24,6 +25,12 @@ _MAX_SCAN_WORK = 4_000_000
 _ROLLING_BASE = 257
 _ROLLING_MASK = (1 << 128) - 1
 _PROVIDER_SERIALIZATION_ERROR = "Credential providers cannot be serialized"
+
+
+class _CredentialScanStatus(StrEnum):
+    CLEAN = "clean"
+    SECRET_FOUND = "secret_found"
+    LIMIT_EXCEEDED = "limit_exceeded"
 
 
 class CredentialAccessError(RuntimeError):
@@ -395,10 +402,14 @@ class _CredentialScope:
 
     def contains_secret(self, value: Any) -> bool:
         """Check wrapper data with bounded work; uncertainty fails closed."""
+        return self.scan(value) is not _CredentialScanStatus.CLEAN
+
+    def scan(self, value: Any) -> _CredentialScanStatus:
+        """Distinguish clean data, a detected secret, and an incomplete scan."""
         if self._overflow:
-            return True
+            return _CredentialScanStatus.LIMIT_EXCEEDED
         if not self._strings and not self._scalars:
-            return False
+            return _CredentialScanStatus.CLEAN
         budget = [_MAX_SCAN_WORK]
         pending = [value]
         nodes = 0
@@ -406,21 +417,25 @@ class _CredentialScope:
             current = pending.pop()
             nodes += 1
             if nodes > _MAX_OUTPUT_NODES:
-                return True
+                return _CredentialScanStatus.LIMIT_EXCEEDED
             queued = _enqueue_children(current, pending, _MAX_OUTPUT_NODES - nodes)
             if queued is True:
-                return True
-            if queued is None and self._contains_leaf(current, budget):
-                return True
-        return False
+                return _CredentialScanStatus.LIMIT_EXCEEDED
+            if queued is None:
+                status = self._scan_leaf(current, budget)
+                if status is not _CredentialScanStatus.CLEAN:
+                    return status
+        return _CredentialScanStatus.CLEAN
 
-    def _contains_leaf(self, value: Any, budget: list[int]) -> bool:
+    def _scan_leaf(self, value: Any, budget: list[int]) -> _CredentialScanStatus:
         if isinstance(value, str):
-            return self._contains_text(value, budget)
+            return self._scan_text(value, budget)
         fingerprint = _scalar_fingerprint(value)
-        return fingerprint is not None and fingerprint in self._scalars
+        if fingerprint is not None and fingerprint in self._scalars:
+            return _CredentialScanStatus.SECRET_FOUND
+        return _CredentialScanStatus.CLEAN
 
-    def _contains_text(self, value: str, budget: list[int]) -> bool:
+    def _scan_text(self, value: str, budget: list[int]) -> _CredentialScanStatus:
         for length, fingerprints in self._strings.items():
             if length > len(value):
                 continue
@@ -429,11 +444,11 @@ class _CredentialScope:
             # in the output length, independent of the credential length.
             work = length + windows
             if work > budget[0]:
-                return True
+                return _CredentialScanStatus.LIMIT_EXCEEDED
             budget[0] -= work
             rolling = _rolling_hash(value[:length])
             if _rolling_digest(rolling) in fingerprints:
-                return True
+                return _CredentialScanStatus.SECRET_FOUND
             power = pow(_ROLLING_BASE, length - 1, 1 << 128)
             for index in range(length, len(value)):
                 rolling = (
@@ -441,8 +456,8 @@ class _CredentialScope:
                     * _ROLLING_BASE + ord(value[index]) + 1
                 ) & _ROLLING_MASK
                 if _rolling_digest(rolling) in fingerprints:
-                    return True
-        return False
+                    return _CredentialScanStatus.SECRET_FOUND
+        return _CredentialScanStatus.CLEAN
 
     def close(self) -> None:
         self._active = False
