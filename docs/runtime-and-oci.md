@@ -215,10 +215,11 @@ the `Containerfile` entry point and the mounted TLS material.
 server requires at startup (see
 [Installed revision mapping](#installed-revision-mapping)).
 
-> **Warning:** Do not start your own gRPC server or open a port in the image,
-> and do not hard-code step type identities. A hand-written server bypasses the
-> runtime's validation and its mutual TLS requirement, and a hard-coded
-> identity drifts from the packaged manifest contract.
+> **Warning:** Do not start a separate gRPC server or write your own listener
+> code: the SDK runtime server opens and configures the image's listener
+> itself. Do not hard-code step type identities. A hand-written server
+> bypasses the runtime's validation and its mutual TLS requirement, and a
+> hard-coded identity drifts from the packaged manifest contract.
 
 The server listens on `127.0.0.1:50051` by default. Override the address with
 `SYNTARA_RUNTIME_GRPC_ADDRESS`; every non-loopback listener requires mutual
@@ -428,7 +429,8 @@ from syntara_plugin.runtime import (
 
 bindings = StepBindings()
 # ... obtain the step, its installed manifest, and its assets from the
-# packaged plugin, as `load_plugin_bindings` does.
+# packaged plugin, as `load_plugin_bindings` does. The identity passed
+# below is that derived namespace.plugin.step value, never hand-written.
 step = EchoStep()
 installed_step = InstalledStepManifest.from_manifest(
     "acme.plugin.echo", installed_manifest, installed_assets

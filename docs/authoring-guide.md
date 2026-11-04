@@ -1115,12 +1115,14 @@ The two paths report outcomes differently:
 | Success | `StandardOutputWrapper` with `status` `0`, `status_message` `Completed`, and `output` | Terminal result with the same fields |
 | Invalid input; `run()` is not called | Wrapper with a nonzero `status` and an `error` of code `INVALID_INPUT` | Terminal result with a nonzero status and the same error |
 | Deliberate failure (`StepFailure`) | Wrapper with a nonzero `status` and the structured error | Terminal result with a nonzero status and the same error |
-| Unexpected exception | The exception is raised, with its original text | Terminal failure `OUTCOME_UNKNOWN`; the exception text does not leave the container |
+| Unexpected exception | `StepExecutionError` is raised with a safe message; the original traceback is kept as `detail` | Terminal failure `OUTCOME_UNKNOWN`; the exception text does not leave the container |
 | Output that violates the output schema | `StepExecutionError` is raised | Terminal failure `ABI_VIOLATION` |
 
-In tests, a deliberate failure leaves `outcome.error` empty on both paths
-and stores the exception in `outcome.raised`, so assert
-`outcome.raised.code`. Assert through `StepOutcome` accessors rather than raw
+In tests, a deliberate failure produces a nonzero-status wrapper on both
+paths: `outcome.error` carries the structured error and `outcome.raised` is
+`None`, so assert `outcome.error.code`. An unexpected exception is stored in
+`outcome.raised`, so assert `outcome.raised.code`. Assert through
+`StepOutcome` accessors rather than raw
 fields, because the container mapping is provisional and the canonical
 wrapper is tracked separately. For more information, see
 [Container adapter](runtime-and-oci.md#container-adapter).
