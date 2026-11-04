@@ -77,7 +77,6 @@ file. Relative paths are resolved from the settings file.
 | `runtimeBindingOutput` | Optional path for the built RuntimeBinding OCI archive. |
 | `imageBindings` | Existing immutable image references, keyed by logical image ID. Each value must be `repository@sha256:digest`. |
 | `workloads` | Container build settings keyed by the `buildTarget` identifiers used in `runtime-bindings.yaml`. |
-| `workload` | Legacy single-workload settings. Prefer `runtimeBindings` and `workloads` for independent image releases. |
 
 Each `build.workloads.<buildTarget>` entry accepts:
 

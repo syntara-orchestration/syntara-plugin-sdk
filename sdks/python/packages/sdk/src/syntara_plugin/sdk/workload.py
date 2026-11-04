@@ -23,6 +23,9 @@ from syntara_plugin.contracts import (
 
 _SHA256_DIGEST_PREFIX = "sha256:"
 REGISTRATION_MANIFEST_PATH = "/opt/syntara/registration-manifest.json"
+_MAX_OCI_ARCHIVE_MEMBERS = 100_000
+_MAX_OCI_INDEX_BYTES = 1024 * 1024
+_MAX_OCI_MANIFEST_BYTES = 16 * 1024 * 1024
 
 
 class WorkloadBuildError(RuntimeError):
@@ -119,6 +122,9 @@ def build_workload_archive(
     except (OSError, tarfile.TarError, json.JSONDecodeError, KeyError, TypeError) as error:
         destination.unlink(missing_ok=True)
         raise WorkloadBuildError(f"could not inspect the local OCI workload archive: {error}") from error
+    except WorkloadBuildError:
+        destination.unlink(missing_ok=True)
+        raise
     finally:
         _remove_local_image(request.engine, registered_reference, verbose=verbose)
         _remove_local_image(request.engine, staging_reference, verbose=verbose)
@@ -162,23 +168,50 @@ def _oci_archive_manifest_digest(archive_path: Path) -> str:
     """Read and hash the single image manifest referenced by an OCI archive."""
 
     with tarfile.open(archive_path, mode="r:") as archive:
-        members = {member.name: member for member in archive.getmembers()}
+        members: dict[str, tarfile.TarInfo] = {}
+        for count, member in enumerate(archive, start=1):
+            if count > _MAX_OCI_ARCHIVE_MEMBERS:
+                raise WorkloadBuildError("OCI image archive has too many entries")
+            if member.name in members:
+                raise WorkloadBuildError("OCI image archive contains duplicate paths")
+            members[member.name] = member
         index_member = members.get("index.json")
-        if index_member is None or not index_member.isfile() or index_member.size > 1024 * 1024:
+        if (
+            index_member is None
+            or not index_member.isfile()
+            or index_member.size > _MAX_OCI_INDEX_BYTES
+        ):
             raise WorkloadBuildError("OCI image archive has no bounded index.json")
         index_handle = archive.extractfile(index_member)
         if index_handle is None:
             raise WorkloadBuildError("OCI image archive index.json cannot be read")
         index_document = json.loads(index_handle.read())
+        if not isinstance(index_document, Mapping) or index_document.get("schemaVersion") != 2:
+            raise WorkloadBuildError("OCI image archive index has an unsupported schema version")
         manifests = index_document.get("manifests")
         if not isinstance(manifests, list) or len(manifests) != 1:
             raise WorkloadBuildError("workload OCI archive must contain exactly one image manifest")
-        descriptor = manifests[0]
+        descriptor = _mapping(manifests[0], "OCI image manifest descriptor")
         digest = descriptor.get("digest")
         if not isinstance(digest, str) or not _is_sha256_digest(digest):
             raise WorkloadBuildError("OCI image archive manifest digest is invalid")
+        if descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json":
+            raise WorkloadBuildError("OCI image archive references an unsupported manifest type")
+        manifest_size = descriptor.get("size")
+        if (
+            not isinstance(manifest_size, int)
+            or isinstance(manifest_size, bool)
+            or manifest_size <= 0
+            or manifest_size > _MAX_OCI_MANIFEST_BYTES
+        ):
+            raise WorkloadBuildError("OCI image archive manifest descriptor size is invalid")
         member = members.get(f"blobs/sha256/{digest.removeprefix('sha256:')}")
-        if member is None or not member.isfile() or member.size > 16 * 1024 * 1024:
+        if (
+            member is None
+            or not member.isfile()
+            or member.size != manifest_size
+            or member.size > _MAX_OCI_MANIFEST_BYTES
+        ):
             raise WorkloadBuildError("OCI image archive manifest blob is missing or oversized")
         handle = archive.extractfile(member)
         if handle is None:
@@ -186,6 +219,12 @@ def _oci_archive_manifest_digest(archive_path: Path) -> str:
         content = handle.read()
         if f"sha256:{sha256(content).hexdigest()}" != digest:
             raise WorkloadBuildError("OCI image archive manifest digest does not match its bytes")
+        manifest_document = _json_mapping(content, "OCI image manifest")
+        if (
+            manifest_document.get("schemaVersion") != 2
+            or manifest_document.get("mediaType") != "application/vnd.oci.image.manifest.v1+json"
+        ):
+            raise WorkloadBuildError("OCI image archive manifest has an unsupported schema")
         return digest
 
 

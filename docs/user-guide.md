@@ -83,11 +83,11 @@ in an explicit dependency order. A plugin artifact (P), RuntimeBinding artifact
 image-only security update can publish a new I and B without changing P or the
 plugin catalog entry.
 
-The older single-workload `build.workload` and `--with-workload` options are
-retained only as a compatibility path. They do not publish: `build` rejects the
-legacy `--with-workload` and `--publish` flags and directs authors to the
-separate build and publish commands. For the current behavior and migration
-examples, see [RuntimeBindings](runtime-bindings.md).
+Custom-runner image builds use `runtime-bindings.yaml` and
+`build.workloads.<buildTarget>`. `build` creates local OCI archives and a
+release inventory; it never publishes. Use the separate `publish` command to
+upload the inspected files. For the complete flow, see
+[RuntimeBindings](runtime-bindings.md).
 
 ## Administer or recover a catalog
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from syntara_plugin.contracts import schema_digests
+from syntara_plugin.contracts import plugin_revision_id, schema_digests
 from syntara_plugin.sdk import (
     ArtifactArchiveError,
     BuildRequest,
@@ -182,9 +182,15 @@ def test_archive_reader_rejects_duplicate_compiled_target_identities(tmp_path: P
         read_plugin_artifact_archive(archive)
 
 
-@pytest.mark.parametrize("image", ["quay.io/acme/runner:latest", None])
+@pytest.mark.parametrize(
+    ("image", "diagnostic"),
+    [
+        ("quay.io/acme/runner:latest", "pinned to a sha256 digest"),
+        (None, "supported contract"),
+    ],
+)
 def test_archive_reader_rejects_unpinned_workload_images(
-    tmp_path: Path, image: str | None
+    tmp_path: Path, image: str | None, diagnostic: str
 ) -> None:
     """Published workload descriptors cannot use tags or null image references."""
 
@@ -192,14 +198,15 @@ def test_archive_reader_rejects_unpinned_workload_images(
 
     def add_invalid_workload(document: dict[str, Any]) -> None:
         document["spec"]["workloads"] = {
-        "runner": {"abi": "syntara.container/v1alpha1", "image": image}
+            "runner": {"abi": "syntara.container/v1alpha1", "image": image}
         }
+        document["spec"]["plugin_revision_id"] = plugin_revision_id(document)
 
     archive = _archive_with_descriptor_mutation(
         artifact, tmp_path, "unpinned-workload.oci.tar", add_invalid_workload
     )
 
-    with pytest.raises(ArtifactArchiveError, match="pinned to a sha256 digest"):
+    with pytest.raises(ArtifactArchiveError, match=diagnostic):
         read_plugin_artifact_archive(archive)
 
 

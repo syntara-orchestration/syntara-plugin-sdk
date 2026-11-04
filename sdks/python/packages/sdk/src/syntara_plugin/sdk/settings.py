@@ -60,7 +60,6 @@ class BuildSettings:
     runtime_binding_output: Path | None = None
     image_bindings: Mapping[str, str] = field(default_factory=dict)
     workloads: Mapping[str, WorkloadBuildSettings] = field(default_factory=dict)
-    workload: WorkloadBuildSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -238,7 +237,6 @@ def _parse_build(value: object, source: Path) -> BuildSettings:
             "runtimeBindingOutput",
             "imageBindings",
             "workloads",
-            "workload",
         },
         "build",
     )
@@ -269,7 +267,6 @@ def _parse_build(value: object, source: Path) -> BuildSettings:
         ),
         image_bindings=parsed_bindings,
         workloads=parsed_workloads,
-        workload=_parse_workload(document.get("workload"), source),
     )
 
 
@@ -277,7 +274,7 @@ def _parse_workload(
     value: object,
     source: Path,
     *,
-    path: str = "build.workload",
+    path: str,
 ) -> WorkloadBuildSettings | None:
     if value is None:
         return None

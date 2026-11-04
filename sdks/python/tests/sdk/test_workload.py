@@ -23,6 +23,7 @@ from syntara_plugin.sdk.workload import (
     build_and_push_workload,
     build_workload_archive,
     publish_workload_archive,
+    workload_archive_digest,
 )
 
 
@@ -98,6 +99,18 @@ def test_build_workload_archive_is_local_only_and_uses_oci_manifest_digest(
     assert reference == f"{request.repository}@{expected_digest}"
     assert [command[1] for command in commands] == ["build", "build", "save", "rmi", "rmi"]
     assert commands[2][2:5] == ["--format", "oci-archive", "--output"]
+
+
+def test_workload_archive_digest_rejects_duplicate_tar_paths(tmp_path: Path) -> None:
+    archive_path = tmp_path / "duplicate.oci.tar"
+    with tarfile.open(archive_path, mode="w:") as archive:
+        for payload in (b"{}", b"{}"):
+            member = tarfile.TarInfo("index.json")
+            member.size = len(payload)
+            archive.addfile(member, BytesIO(payload))
+
+    with pytest.raises(WorkloadBuildError, match="duplicate paths"):
+        workload_archive_digest(archive_path)
 
 
 def test_publish_workload_archive_requires_registry_digest_preservation(

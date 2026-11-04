@@ -30,8 +30,6 @@ import yaml
 from jsonschema import Draft202012Validator, SchemaError
 from syntara_plugin.contracts import (
     load_bundle,
-    registration_manifest,
-    validate_registration_manifest,
     validate_runtime_binding,
 )
 
@@ -73,11 +71,8 @@ from .runtime_binding_index import (
 )
 from .settings import (
     SETTINGS_FILENAME,
-    BuildSettings,
     PluginBuildSettings,
-    RegistrySettings,
     SettingsError,
-    WorkloadBuildSettings,
     load_settings,
 )
 from .signing import CosignError, sign_oci_reference, verify_oci_reference
@@ -85,7 +80,6 @@ from .testgen import ScaffoldError, generate_step_tests
 from .workload import (
     WorkloadBuildError,
     WorkloadBuildRequest,
-    build_and_push_workload,
     build_workload_archive,
     inspect_workload_archive,
     publish_workload_archive,
@@ -99,6 +93,11 @@ _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _FIELD_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,127}$")
 _VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DIGEST_REFERENCE = re.compile(
+    r"^(?:[a-z0-9.-]+(?::[0-9]+)?/)?"
+    r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"
+    r"@sha256:[0-9a-f]{64}$"
+)
 _MACHINE_READABLE_OUTPUT_HELP = "Print machine-readable output."
 _DEFAULT_MANIFEST_NAME = "plugin.yaml"
 _RUN_COMMAND_PREFIX = "syntara-plugin run "
@@ -391,42 +390,23 @@ def _parser() -> argparse.ArgumentParser:
                 help="Existing plugin OCI archive for an image-only binding update.",
             )
             compile_command.add_argument(
-                "--with-workload",
-                action="store_true",
-                help="Deprecated legacy flag; build is local-only and rejects registry publication options.",
-            )
-            compile_command.add_argument(
-                "--publish",
-                action="store_true",
-                help="Deprecated legacy flag; use the explicit publish command after inspecting the release inventory.",
-            )
-            compile_command.add_argument(
-                "--workload-engine", help="Container engine for --with-workload (Podman only)."
-            )
-            compile_command.add_argument(
-                "--workload-context", type=Path, help="Container build context for --with-workload."
-            )
-            compile_command.add_argument(
-                "--workload-containerfile",
-                type=Path,
-                help="Containerfile path for --with-workload.",
+                "--registry-origin", help="Registry origin used to pull private workload bases."
             )
             compile_command.add_argument(
                 "--workload-repository",
-                help="Full workload-image repository for --with-workload; overrides registry.workloadRepository.",
+                help="Default repository for workload image targets without a per-target repository.",
             )
             compile_command.add_argument(
-                "--workload-tag", help="Workload-image tag to build and push."
+                "--registry-auth-file",
+                type=Path,
+                help="Docker- or Podman-compatible auth.json used only while building workload images.",
             )
             compile_command.add_argument(
-                "--workload-platform", help="Explicit target platform, for example linux/amd64."
+                "--allow-insecure-loopback-http",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Allow HTTP only for localhost or 127.0.0.1 developer registries.",
             )
-            compile_command.add_argument(
-                "--workload-image-id",
-                help="Logical manifest workload ID to bind to the pushed image digest.",
-            )
-            _add_publication_arguments(compile_command)
-            _add_catalog_publication_arguments(compile_command)
             compile_command.add_argument(
                 "--verbose",
                 action="store_true",
@@ -675,10 +655,6 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
             arguments.binding_output or settings.build.runtime_binding_output
         )
         arguments.workload_targets = settings.build.workloads
-        arguments.workload_repository = _registry_workload_reference(
-            settings.registry.origin,
-            settings.registry.workload_repository,
-        )
 
     if hasattr(arguments, "verbose"):
         arguments.verbose = _boolean_option(
@@ -706,12 +682,13 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
             "artifact",
         )
 
-    if arguments.command in {"build", "publish"}:
+    if arguments.command == "publish":
         _resolve_publication_arguments(arguments, settings)
         _resolve_catalog_publication_arguments(arguments, settings)
     if arguments.command == "catalog" and arguments.catalog_command in {"update", "recover"}:
         _resolve_catalog_arguments(arguments, settings)
     if arguments.command == "build":
+        _resolve_build_arguments(arguments, settings)
         if arguments.plugin_artifact_archive is None:
             arguments.output = _required_path(
                 arguments.output or settings.build.artifact_output,
@@ -723,11 +700,24 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
             arguments.binding_output = arguments.binding_output.expanduser()
         if arguments.plugin_artifact_archive is not None:
             arguments.plugin_artifact_archive = arguments.plugin_artifact_archive.expanduser()
-        arguments.workload_settings = _resolve_workload_settings(
-            arguments,
-            settings.build,
-            registry=settings.registry,
-        )
+
+
+def _resolve_build_arguments(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
+    """Resolve registry coordinates needed to build local workload image archives."""
+    registry = settings.registry
+    arguments.registry_origin = arguments.registry_origin or registry.origin
+    arguments.artifact_repository = registry.artifact_repository
+    arguments.workload_repository = (
+        arguments.workload_repository or registry.workload_repository
+    )
+    arguments.registry_auth_file = arguments.registry_auth_file or registry.auth_file
+    if arguments.registry_auth_file is not None:
+        arguments.registry_auth_file = arguments.registry_auth_file.expanduser()
+    arguments.allow_insecure_loopback_http = _boolean_option(
+        arguments.allow_insecure_loopback_http,
+        registry.allow_insecure_loopback_http,
+        default=False,
+    )
 
 
 def _resolve_compile_arguments(
@@ -816,7 +806,7 @@ def _resolve_publication_arguments(
 def _resolve_catalog_publication_arguments(
     arguments: argparse.Namespace, settings: PluginBuildSettings
 ) -> None:
-    """Resolve catalog release controls for a build or publish invocation."""
+    """Resolve catalog release controls for a publish invocation."""
 
     catalog = settings.catalog
     arguments.update_catalog = _boolean_option(
@@ -861,51 +851,6 @@ def _resolve_catalog_arguments(
         raise SettingsError("--expires-in-hours must be a positive integer")
 
 
-def _resolve_workload_settings(
-    arguments: argparse.Namespace, build: BuildSettings, *, registry: RegistrySettings
-) -> WorkloadBuildSettings | None:
-    configured = build.workload
-    if not arguments.with_workload:
-        _reject_workload_overrides(arguments)
-        return configured
-    return WorkloadBuildSettings(
-        engine=_workload_value(arguments.workload_engine, configured, "engine"),
-        context=_workload_value(arguments.workload_context, configured, "context"),
-        containerfile=_workload_value(
-            arguments.workload_containerfile, configured, "containerfile"
-        ),
-        repository=arguments.workload_repository
-        or _registry_workload_reference(arguments.registry_origin, registry.workload_repository),
-        tag=_workload_value(arguments.workload_tag, configured, "tag"),
-        platform=_workload_value(arguments.workload_platform, configured, "platform"),
-        image_id=_workload_value(arguments.workload_image_id, configured, "image_id"),
-    )
-
-
-def _reject_workload_overrides(arguments: argparse.Namespace) -> None:
-    overrides = (
-        arguments.workload_engine,
-        arguments.workload_context,
-        arguments.workload_containerfile,
-        arguments.workload_repository,
-        arguments.workload_tag,
-        arguments.workload_platform,
-        arguments.workload_image_id,
-    )
-    if any(value is not None for value in overrides):
-        raise SettingsError("--workload-* options require --with-workload")
-
-
-def _workload_value(
-    command_line: str | Path | None,
-    configured: WorkloadBuildSettings | None,
-    attribute: str,
-) -> str | Path | None:
-    if command_line is not None:
-        return command_line
-    return getattr(configured, attribute) if configured is not None else None
-
-
 def _registry_workload_reference(origin: str | None, repository: str | None) -> str | None:
     """Turn a settings repository path into Podman's full pull/push reference."""
 
@@ -913,7 +858,7 @@ def _registry_workload_reference(origin: str | None, repository: str | None) -> 
         return None
     if origin is None:
         raise SettingsError(
-            "registry.origin is required when settings provide registry.workloadRepository"
+            "registry.origin is required when registry.workloadRepository is configured"
         )
     parsed = urlparse(origin)
     if (
@@ -1197,10 +1142,10 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
     input_path = Path("schemas") / f"{arguments.action}.input.yaml"
     directory.mkdir(parents=True)
     (directory / action_path).parent.mkdir(parents=True)
-    if arguments.template == "platform":
+    custom_workload = arguments.template == "custom-workload"
+    if not custom_workload:
         (directory / input_path).parent.mkdir(parents=True)
     (directory / "docs").mkdir()
-    custom_workload = arguments.template == "custom-workload"
     package_name = name.replace("-", "_")
     (directory / _DEFAULT_MANIFEST_NAME).write_text(
         _plugin_template(
@@ -2029,13 +1974,6 @@ def _progress_printer(arguments: argparse.Namespace) -> Callable[[Any], None] | 
 
 def _build_artifact(arguments: argparse.Namespace) -> int:
     """Build local immutable metadata archives without publishing registry content."""
-    if arguments.with_workload or arguments.publish:
-        print(
-            "error: build is local-only; build workload images separately, then use publish "
-            "for explicit registry writes",
-            file=sys.stderr,
-        )
-        return 2
     if arguments.plugin_artifact_archive is not None and arguments.runtime_bindings is None:
         print("error: --plugin-artifact-archive requires --runtime-bindings", file=sys.stderr)
         return 2
@@ -2045,7 +1983,7 @@ def _build_artifact(arguments: argparse.Namespace) -> int:
     if arguments.runtime_bindings is not None:
         return _build_runtime_binding_release(arguments)
     try:
-        result, artifact, output, workload_image, workload_request = _build_archive(arguments)
+        result, artifact, output = _build_archive(arguments)
     except SettingsError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -2060,18 +1998,13 @@ def _build_artifact(arguments: argparse.Namespace) -> int:
         return 1
 
     payload = {**_artifact_payload(result.digest, artifact), "archive": str(output)}
-    _add_workload_payload(payload, workload_image, workload_request)
-    publication_status = _publish_built_archive(arguments, output, payload)
-    if publication_status is not None:
-        return publication_status
-    _print_build_result(
-        arguments, result.digest, artifact, output, workload_image, workload_request, payload
-    )
+    _print_build_result(arguments, result.digest, artifact, output, payload)
     return 0
 
 
 def _build_runtime_binding_release(arguments: argparse.Namespace) -> int:
     """Build P when requested, resolve a RuntimeBinding source, and package B locally."""
+    image_archives: list[dict[str, str]] = []
     try:
         if arguments.plugin_artifact_archive is not None:
             plugin_artifact = read_plugin_artifact_archive(arguments.plugin_artifact_archive)
@@ -2155,6 +2088,49 @@ def _build_runtime_binding_release(arguments: argparse.Namespace) -> int:
         dist_directory = workspace / "dist"
         if dist_directory.is_symlink():
             raise SettingsError("refusing to write generated files through a dist symlink")
+        dist_directory.mkdir(parents=True, exist_ok=True)
+        if output is not None:
+            output = _release_output_path(output, dist_directory, "plugin archive")
+        if arguments.plugin_artifact_archive is not None:
+            arguments.plugin_artifact_archive = _release_output_path(
+                arguments.plugin_artifact_archive, dist_directory, "plugin archive"
+            )
+        if arguments.binding_output is not None:
+            arguments.binding_output = _release_output_path(
+                arguments.binding_output, dist_directory, "RuntimeBinding archive"
+            )
+        release_path = _release_output_path(
+            dist_directory / "release.json", dist_directory, "release inventory"
+        )
+        resolved_path = _release_output_path(
+            dist_directory / "runtime-bindings.yaml", dist_directory, "resolved RuntimeBinding"
+        )
+        if arguments.runtime_bindings.resolve() == (dist_directory / "runtime-bindings.yaml").resolve():
+            raise SettingsError(
+                "the source RuntimeBinding cannot be dist/runtime-bindings.yaml because build writes the resolved manifest there"
+            )
+        if release_path.exists():
+            _read_release_inventory(release_path)
+        known_outputs = [
+            path
+            for path in (
+                output,
+                arguments.plugin_artifact_archive,
+                arguments.binding_output,
+                resolved_path,
+                release_path,
+            )
+            if path is not None
+        ]
+        if len({path.resolve() for path in known_outputs}) != len(known_outputs):
+            raise SettingsError("release inventory, manifests, and archives must use different paths")
+        if output is not None and output.exists():
+            existing_plugin = read_plugin_artifact_archive(output)
+            if existing_plugin.digest != plugin_artifact.digest:
+                raise ArtifactArchiveError(
+                    f"refusing to replace a different plugin artifact at {output}; "
+                    "choose a new build.artifactOutput path"
+                )
         image_archives = _build_runtime_binding_images(
             binding_source,
             descriptor,
@@ -2173,29 +2149,54 @@ def _build_runtime_binding_release(arguments: argparse.Namespace) -> int:
         binding_artifact = build_runtime_binding_artifact(
             resolved_document, descriptor, plugin_artifact.manifest.descriptor
         )
-        resolved_path = dist_directory / "runtime-bindings.yaml"
         binding_output = arguments.binding_output or (
-            dist_directory / f"runtime-bindings-{binding_artifact.digest.removeprefix('sha256:')[:16]}.oci.tar"
+            dist_directory
+            / f"runtime-bindings-{binding_artifact.digest.removeprefix('sha256:')}.oci.tar"
         )
-        release_path = dist_directory / "release.json"
+        binding_output = _release_output_path(
+            binding_output, dist_directory, "RuntimeBinding archive"
+        )
 
         # Check every requested output before writing any of them. The source
         # manifest is never rewritten; only generated outputs under dist are
         # replaced atomically.
-        outputs = [path for path in (output, binding_output) if path is not None]
-        if len({path.resolve() for path in outputs}) != len(outputs):
-            raise SettingsError("plugin and runtime-binding archives must use different paths")
-        if output is not None and output.exists():
-            raise ArtifactArchiveError(f"refusing to overwrite existing artifact archive: {output}")
-        if binding_output.exists():
-            raise ArtifactArchiveError(
-                f"refusing to overwrite existing RuntimeBinding archive: {binding_output}"
+        outputs = [
+            path
+            for path in (
+                output,
+                arguments.plugin_artifact_archive,
+                binding_output,
+                resolved_path,
+                release_path,
+                *(Path(item["archive"]) for item in image_archives),
             )
-        if release_path.exists():
-            raise ArtifactArchiveError(f"refusing to overwrite release inventory: {release_path}")
+            if path is not None
+        ]
+        if len({path.resolve() for path in outputs}) != len(outputs):
+            raise SettingsError("release inventory, manifests, and archives must use different paths")
         if output is not None:
-            write_plugin_artifact_archive(plugin_artifact, output)
-        write_runtime_binding_archive(binding_artifact, binding_output)
+            if output.exists():
+                existing_plugin = read_plugin_artifact_archive(output)
+                if existing_plugin.digest != plugin_artifact.digest:
+                    raise ArtifactArchiveError(
+                        f"refusing to replace a different plugin artifact at {output}; "
+                        "choose a new build.artifactOutput path"
+                    )
+            else:
+                write_plugin_artifact_archive(plugin_artifact, output)
+        if binding_output.exists():
+            existing_binding = read_runtime_binding_archive(
+                binding_output,
+                plugin_descriptor=descriptor,
+                plugin_manifest_descriptor=plugin_artifact.manifest.descriptor,
+            )
+            if existing_binding.digest != binding_artifact.digest:
+                raise ArtifactArchiveError(
+                    f"refusing to replace a different RuntimeBinding archive at {binding_output}; "
+                    "choose a new --binding-output path"
+                )
+        else:
+            write_runtime_binding_archive(binding_artifact, binding_output)
         _write_generated_yaml(resolved_path, resolved_document)
         _write_release_inventory(
             release_path,
@@ -2230,6 +2231,7 @@ def _build_runtime_binding_release(arguments: argparse.Namespace) -> int:
         SettingsError,
         ValueError,
         OSError,
+        WorkloadBuildError,
     ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -2286,7 +2288,9 @@ def _build_runtime_binding_images(
     image_directory = dist_directory / "images"
     if image_directory.is_symlink():
         raise SettingsError("refusing to write generated files through an images symlink")
+    image_directory.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, str]] = []
+    selected: list[tuple[str, str, Any, str]] = []
     for build_target, workload_id in sorted(targets.items()):
         settings = configured.get(build_target)
         if settings is None:
@@ -2315,9 +2319,9 @@ def _build_runtime_binding_images(
             )
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", build_target):
             raise SettingsError(f"buildTarget {build_target!r} is not a safe archive filename")
-        destination = image_directory / f"{build_target}.oci.tar"
-        if destination.exists():
-            raise ArtifactArchiveError(f"refusing to overwrite workload archive: {destination}")
+        selected.append((build_target, workload_id, settings, repository))
+
+    for build_target, workload_id, settings, repository in selected:
         request = WorkloadBuildRequest(
             engine=settings.engine or "podman",
             context=settings.context,
@@ -2325,23 +2329,51 @@ def _build_runtime_binding_images(
             repository=repository,
             tag=settings.tag,
             platform=settings.platform,
+            allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
             auth_file=arguments.registry_auth_file,
             registration_descriptor=descriptor,
             workload_id=workload_id,
         )
-        reference = build_workload_archive(request, destination, verbose=arguments.verbose)
-        results.append(
-            {
-                "archive": str(destination),
-                "buildTarget": build_target,
-                "digest": reference.rsplit("@", 1)[1],
-                "platform": settings.platform,
-                "reference": reference,
-                "repository": repository,
-                "tag": settings.tag,
-                "workload": workload_id,
-            }
-        )
+        with tempfile.TemporaryDirectory(
+            prefix=f".{build_target}-", dir=image_directory
+        ) as temporary_directory:
+            temporary_archive = Path(temporary_directory) / "image.oci.tar"
+            reference = build_workload_archive(
+                request, temporary_archive, verbose=arguments.verbose
+            )
+            if not temporary_archive.is_file():
+                raise WorkloadBuildError(
+                    f"container engine did not create workload archive for {build_target!r}"
+                )
+            digest = workload_archive_digest(temporary_archive)
+            if reference != f"{repository}@{digest}":
+                raise WorkloadBuildError(
+                    f"container engine returned an inconsistent digest for {build_target!r}"
+                )
+            destination = image_directory / f"{build_target}-{digest.removeprefix('sha256:')}.oci.tar"
+            if destination.is_symlink():
+                raise SettingsError(
+                    f"refusing to reuse a workload archive through a symlink: {destination}"
+                )
+            if destination.exists():
+                if workload_archive_digest(destination) != digest:
+                    raise WorkloadBuildError(
+                        f"content-addressed workload archive has the wrong digest: {destination}"
+                    )
+            else:
+                os.replace(temporary_archive, destination)
+            results.append(
+                {
+                    "archive": str(destination),
+                    "buildTarget": build_target,
+                    "digest": digest,
+                    "platform": settings.platform,
+                    "reference": reference,
+                    "repository": repository,
+                    "tag": settings.tag,
+                    "workload": workload_id,
+                }
+            )
     return results
 
 
@@ -2358,29 +2390,34 @@ def _write_release_inventory(
     publish_plugin: bool,
 ) -> None:
     """Write a local-only inventory that records the exact publication order."""
+    root = path.parent.resolve()
+
+    def relative_archive(archive: Path | None) -> str | None:
+        if archive is None:
+            return None
+        resolved = _release_output_path(archive, root, "release archive")
+        return resolved.relative_to(root).as_posix()
+
     value = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "PluginReleaseInventory",
         "images": [dict(item) for item in images],
         "plugin": {
-            "archive": str(plugin_archive) if plugin_archive is not None else None,
+            "archive": relative_archive(plugin_archive),
             "digest": plugin_digest,
             "publish": publish_plugin,
             "repository": plugin_repository,
         },
         "runtimeBinding": {
-            "archive": str(binding_archive),
+            "archive": relative_archive(binding_archive),
             "digest": binding_digest,
             "repository": binding_repository,
         },
     }
+    for image in value["images"]:
+        image["archive"] = relative_archive(Path(image["archive"]))
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _atomic_write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
 def _read_runtime_binding_source(path: Path) -> dict[str, Any]:
@@ -2411,108 +2448,17 @@ def _decode_json_object(content: bytes, label: str) -> dict[str, Any]:
 def _write_generated_yaml(path: Path, document: Mapping[str, Any]) -> None:
     """Atomically replace one generated resolved manifest below dist."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        temporary.write_text(yaml.safe_dump(dict(document), sort_keys=False), encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _atomic_write_text(path, yaml.safe_dump(dict(document), sort_keys=False))
 
 
 def _build_archive(
     arguments: argparse.Namespace,
-) -> tuple[CompilationResult, PluginArtifact, Path, str | None, WorkloadBuildRequest | None]:
+) -> tuple[CompilationResult, PluginArtifact, Path]:
     image_bindings = dict(arguments.image_bindings)
-    # Validate the complete authoring workspace before any remote side effect.
-    # A custom runner binding is intentionally deferred until Podman returns
-    # its registry digest, so preflight checks every other source contract.
-    preflight: CompilationResult | None = None
-    if arguments.with_workload:
-        preflight = compile_workspace(
-            BuildRequest(
-                arguments.manifest,
-                image_bindings=image_bindings,
-                require_image_bindings=False,
-            )
-        )
-    workload_image, workload_request = _build_workload(arguments, image_bindings, preflight)
     result = compile_workspace(BuildRequest(arguments.manifest, image_bindings=image_bindings))
-    if preflight is not None and (
-        result.descriptor["spec"]["plugin_revision_id"]
-        != preflight.descriptor["spec"]["plugin_revision_id"]
-    ):
-        raise WorkloadBuildError("workspace changed during workload build; rebuild the image")
     artifact = build_plugin_artifact(result)
     output = write_plugin_artifact_archive(artifact, arguments.output)
-    return result, artifact, output, workload_image, workload_request
-
-
-def _build_workload(
-    arguments: argparse.Namespace, image_bindings: dict[str, str], preflight: CompilationResult | None
-) -> tuple[str | None, WorkloadBuildRequest | None]:
-    if not arguments.with_workload:
-        return None, None
-    request, image_id = _workload_request(
-        arguments.workload_settings,
-        allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
-        auth_file=arguments.registry_auth_file,
-    )
-    assert preflight is not None
-    missing = set(preflight.deferred_image_bindings) - {image_id}
-    if missing:
-        raise WorkloadBuildError(
-            "missing image bindings before workload build: " + ", ".join(sorted(missing))
-        )
-    manifest = registration_manifest(preflight.descriptor, image_id)
-    validate_registration_manifest(preflight.descriptor, image_id, manifest)
-    request = replace(request, registration_descriptor=preflight.descriptor, workload_id=image_id)
-    _phase(arguments, "Building and pushing the custom runner image")
-    image = build_and_push_workload(request, verbose=arguments.verbose)
-    image_bindings[image_id] = image
-    return image, request
-
-
-def _add_workload_payload(
-    payload: dict[str, object],
-    workload_image: str | None,
-    workload_request: WorkloadBuildRequest | None,
-) -> None:
-    if workload_image is None:
-        return
-    assert workload_request is not None
-    payload["workloadImage"] = workload_image
-    payload["workloadPlatform"] = workload_request.platform
-    payload["workloadRepository"] = workload_request.repository
-
-
-def _publish_built_archive(
-    arguments: argparse.Namespace, output: Path, payload: dict[str, object]
-) -> int | None:
-    if not arguments.publish:
-        return None
-    try:
-        _phase(arguments, "Publishing the metadata artifact")
-        payload["publication"] = _publish_archive(arguments, output)
-        if arguments.update_catalog:
-            _phase(arguments, "Updating the catalog index")
-            payload["catalog"] = _run_catalog_update(arguments, artifact_path=output)
-    except SettingsError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 2
-    except (
-        ArtifactArchiveError,
-        CatalogIndexArtifactBuildError,
-        CatalogIndexPublicationError,
-        CatalogIndexUpdateError,
-        RuntimeBindingIndexError,
-        ValueError,
-        WorkloadBuildError,
-        OSError,
-    ) as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
-    payload["ok"] = True
-    return None
+    return result, artifact, output
 
 
 def _print_build_result(
@@ -2520,8 +2466,6 @@ def _print_build_result(
     digest: str,
     artifact: PluginArtifact,
     output: Path,
-    workload_image: str | None,
-    workload_request: WorkloadBuildRequest | None,
     payload: Mapping[str, object],
 ) -> None:
     if arguments.json:
@@ -2536,18 +2480,6 @@ def _print_build_result(
     ):
         descriptor = blob.descriptor
         print(f"  {name}: {descriptor.digest} ({descriptor.media_type}, {descriptor.size} bytes)")
-    if workload_image is not None:
-        assert workload_request is not None
-        print(f"Workload image: {workload_image}")
-        print(f"Workload platform: {workload_request.platform}")
-    if arguments.publish:
-        publication = payload["publication"]
-        assert isinstance(publication, Mapping)
-        print(f"Published: {publication['immutableReference']}")
-        print(f"Channel: {publication['repository']}:{publication['channel']}")
-        catalog = payload.get("catalog")
-        if isinstance(catalog, Mapping):
-            print(f"Catalog index: {catalog['immutableReference']}")
 
 
 def _publish_artifact(arguments: argparse.Namespace) -> int:
@@ -2904,12 +2836,18 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
 def _read_release_inventory(path: Path) -> Mapping[str, Any]:
     """Read a bounded, strict local release inventory document."""
     try:
-        content = path.expanduser().read_bytes()
-        value = json.loads(content)
-    except (OSError, json.JSONDecodeError) as error:
+        with path.expanduser().open("rb") as stream:
+            if os.fstat(stream.fileno()).st_size > 1_048_576:
+                raise SettingsError("release inventory exceeds the 1 MiB safety limit")
+            content = stream.read(1_048_577)
+    except OSError as error:
         raise SettingsError(f"could not read release inventory: {error}") from error
     if len(content) > 1_048_576:
         raise SettingsError("release inventory exceeds the 1 MiB safety limit")
+    try:
+        value = json.loads(content.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SettingsError(f"release inventory is not valid JSON: {error}") from error
     inventory = _mapping(value, "release inventory")
     if set(inventory) != {"apiVersion", "kind", "images", "plugin", "runtimeBinding"}:
         raise SettingsError("release inventory has unknown or missing top-level fields")
@@ -2918,23 +2856,80 @@ def _read_release_inventory(path: Path) -> Mapping[str, Any]:
     return inventory
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate keys instead of silently accepting the last value."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise SettingsError("release inventory contains a duplicate JSON object key")
+        result[key] = value
+    return result
+
+
 def _release_inventory_path(inventory_path: Path, raw_path: object, label: str) -> Path:
     """Resolve an inventory archive path and keep reads inside the inventory directory."""
     if not isinstance(raw_path, str) or not raw_path:
         raise SettingsError(f"release inventory {label} path must be a non-empty string")
     root = inventory_path.expanduser().resolve().parent
     candidate = Path(raw_path).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise SettingsError(f"release inventory {label} path must be relative and stay under {root}")
+    candidate = root / candidate
+    current = root
+    for part in candidate.relative_to(root).parts:
+        current = current / part
+        if current.is_symlink():
+            raise SettingsError(f"release inventory {label} must not traverse symlinks")
     try:
         resolved = candidate.resolve(strict=True)
     except OSError as error:
         raise SettingsError(f"release inventory {label} does not exist") from error
-    if os.path.commonpath((str(root), str(resolved))) != str(root) or candidate.is_symlink():
+    if os.path.commonpath((str(root), str(resolved))) != str(root):
         raise SettingsError(f"release inventory {label} must be a regular path under {root}")
     if not resolved.is_file():
         raise SettingsError(f"release inventory {label} is not a regular file")
     return resolved
+
+
+def _release_output_path(path: Path, dist_directory: Path, label: str) -> Path:
+    """Require release outputs and their inputs to remain portable beneath dist."""
+    root = dist_directory.expanduser().resolve()
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        lexical = Path(os.path.abspath(candidate))
+        relative = lexical.relative_to(root)
+    except ValueError as error:
+        raise SettingsError(f"{label} must be under {root} so the release inventory stays portable") from error
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise SettingsError(f"refusing {label} path through a symlink: {current}")
+    resolved = lexical.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise SettingsError(f"{label} resolves outside {root}") from error
+    return resolved
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write text through a unique same-directory file, then atomically replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _runtime_binding_index_channel(plugin_digest: str) -> str:
@@ -2945,12 +2940,7 @@ def _runtime_binding_index_channel(plugin_digest: str) -> str:
 
 def _write_release_publication_receipt(path: Path, value: Mapping[str, Any]) -> None:
     """Atomically record completed release publication phases outside the inventory."""
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        temporary.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _atomic_write_text(path, json.dumps(value, sort_keys=True, indent=2) + "\n")
 
 
 @contextmanager
@@ -3468,53 +3458,6 @@ def _required_string(value: object, label: str) -> str:
     return value
 
 
-def _workload_request(
-    settings: WorkloadBuildSettings | None,
-    *,
-    allow_insecure_loopback_http: bool,
-    auth_file: Path | None,
-) -> tuple[WorkloadBuildRequest, str]:
-    """Turn selected non-secret CLI settings into one complete Podman request."""
-
-    if settings is None:
-        raise SettingsError("--with-workload requires workload settings")
-    missing = [
-        label
-        for label, value in (
-            ("engine", settings.engine),
-            ("context", settings.context),
-            ("containerfile", settings.containerfile),
-            ("repository", settings.repository),
-            ("tag", settings.tag),
-            ("platform", settings.platform),
-            ("imageId", settings.image_id),
-        )
-        if value is None
-    ]
-    if missing:
-        raise SettingsError("--with-workload requires: " + ", ".join(missing))
-    assert settings.context is not None
-    assert settings.containerfile is not None
-    assert settings.engine is not None
-    assert settings.repository is not None
-    assert settings.tag is not None
-    assert settings.platform is not None
-    assert settings.image_id is not None
-    return (
-        WorkloadBuildRequest(
-            engine=settings.engine,
-            context=settings.context.expanduser(),
-            containerfile=settings.containerfile.expanduser(),
-            repository=settings.repository,
-            tag=settings.tag,
-            platform=settings.platform,
-            allow_insecure_loopback_http=allow_insecure_loopback_http,
-            auth_file=auth_file,
-        ),
-        settings.image_id,
-    )
-
-
 def _publish_archive(
     arguments: argparse.Namespace,
     archive: Path,
@@ -3963,6 +3906,9 @@ def _write_custom_workload_scaffold(
     action_manifest: str,
 ) -> None:
     """Write a small Python runtime, image recipe, and binding source manifest."""
+    from .custom_scaffold import DEFAULT_RUNTIME_BASE_IMAGE
+
+    binding_name = f"{name[:54].rstrip('-')}-runtime"
     package = directory / "src" / package_name
     manifests = package / "manifests"
     (manifests / action_path.parent).mkdir(parents=True)
@@ -4015,7 +3961,7 @@ class ExampleAction(ActionStep[ExampleInput, ExampleOutput]):
         "apiVersion: syntara.io/v1alpha1\n"
         "kind: RuntimeBinding\n"
         "metadata:\n"
-        f"  namespace: {namespace}\n  name: {name}-runtime\n"
+        f"  namespace: {namespace}\n  name: {binding_name}\n"
         "spec:\n"
         "  plugin:\n    source: plugin.yaml\n"
         "  workloads:\n"
@@ -4044,7 +3990,8 @@ class ExampleAction(ActionStep[ExampleInput, ExampleOutput]):
         encoding="utf-8",
     )
     (directory / "Containerfile").write_text(
-        "FROM registry.access.redhat.com/ubi9/python-312:latest\n"
+        f"ARG SYNTARA_RUNTIME_BASE_IMAGE={DEFAULT_RUNTIME_BASE_IMAGE}\n"
+        "FROM ${SYNTARA_RUNTIME_BASE_IMAGE}\n"
         "WORKDIR /opt/app\n"
         "USER 0\nRUN mkdir -p /etc/syntara\n"
         "COPY pyproject.toml ./\n"

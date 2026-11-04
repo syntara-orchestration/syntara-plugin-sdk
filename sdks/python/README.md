@@ -128,6 +128,5 @@ the existing plugin archive and publish a new image, RuntimeBinding, and
 per-plugin RuntimeBinding index without changing the plugin catalog entry.
 See the [RuntimeBindings guide](../../docs/runtime-bindings.md) and
 [build settings reference](../../docs/build-settings.md) for commands and
-non-secret `syntara-plugin.yaml` settings. The legacy `--with-workload` and
-`--publish` build flags are rejected; use the separate `build` and `publish`
-commands.
+non-secret `syntara-plugin.yaml` settings. `build` writes local OCI archives;
+`publish` uploads those exact files after inspection.

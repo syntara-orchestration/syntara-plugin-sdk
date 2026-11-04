@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from .testgen import generate_step_tests
 
-_BASE_IMAGE = (
+DEFAULT_RUNTIME_BASE_IMAGE = (
     "registry.access.redhat.com/ubi9/python-312@sha256:"
     "e6a10c3150624fbfd33dbd7721ef99ce7a1001b417d64427ad58515ab8044121"
 )
@@ -36,6 +36,7 @@ def write_custom_workspace(
     target_path = f"steps/{action}/manifest.yaml"
     input_path = f"schemas/{action}.input.yaml"
     image = f"{name[:54].rstrip('-')}-workload"
+    binding_name = f"{name[:54].rstrip('-')}-runtime"
     plugin = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Plugin",
@@ -48,7 +49,7 @@ def write_custom_workspace(
         },
         "spec": {
             "documentation": {"path": "docs/README.md"},
-            "workload": {"image": image},
+            "workloads": {image: {"image": image}},
             "targets": [target_path],
         },
     }
@@ -63,6 +64,7 @@ def write_custom_workspace(
         "spec": {
             "runtime": {
                 "kind": "custom-runner",
+                "workload": image,
                 "entryPoint": f"{package}.step:ActionImplementation",
             },
             "input": {"kind": "asset", "path": input_path},
@@ -86,9 +88,39 @@ def write_custom_workspace(
         f"{package}/manifests/{input_path}": _json(schema),
         "syntara-plugin.yaml": (
             "apiVersion: syntara.io/v1alpha1\nkind: PluginBuildSettings\nmanifest: plugin.yaml\n"
-            f"build:\n  artifactOutput: dist/{name}.oci.tar\n  workload:\n"
-            f"    engine: podman\n    context: .\n    containerfile: Containerfile\n"
-            f"    imageId: {image}\n    tag: {version}\n"
+            "registry:\n"
+            "  origin: https://quay.io\n"
+            f"  artifactRepository: {namespace}/{name}\n"
+            f"  workloadRepository: {namespace}/{name}-runtime\n"
+            "build:\n"
+            f"  artifactOutput: dist/{name}.oci.tar\n"
+            "  runtimeBindings: runtime-bindings.yaml\n"
+            "  workloads:\n"
+            "    custom-runtime:\n"
+            "      engine: podman\n"
+            "      context: .\n"
+            "      containerfile: Containerfile\n"
+            f"      repository: quay.io/{namespace}/{name}-runtime\n"
+            f"      tag: {version}\n"
+            "      platform: linux/amd64\n"
+            "publish:\n"
+            f"  channel: {name}-{version}\n"
+        ),
+        "runtime-bindings.yaml": (
+            "apiVersion: syntara.io/v1alpha1\n"
+            "kind: RuntimeBinding\n"
+            "metadata:\n"
+            f"  namespace: {namespace}\n  name: {binding_name}\n"
+            "spec:\n"
+            "  plugin:\n    source: plugin.yaml\n"
+            "  workloads:\n"
+            f"    {image}:\n"
+            "      default: default\n"
+            "      options:\n"
+            "        - name: default\n"
+            "          displayName: Default runtime\n"
+            "          image:\n"
+            "            buildTarget: custom-runtime\n"
         ),
         "runtime.json": _json(
             {
@@ -424,7 +456,7 @@ packages = ["{package}"]
 
 
 def _containerfile() -> str:
-    return f"""ARG SYNTARA_RUNTIME_BASE_IMAGE={_BASE_IMAGE}
+    return f"""ARG SYNTARA_RUNTIME_BASE_IMAGE={DEFAULT_RUNTIME_BASE_IMAGE}
 FROM ${{SYNTARA_RUNTIME_BASE_IMAGE}}
 WORKDIR /app
 COPY wheels /wheels
@@ -464,8 +496,11 @@ pytest tests -q
 ```
 
 Before building the image, prepare `wheels/` with this package and its runtime
-dependencies, for example `python -m pip wheel --wheel-dir wheels .`. Configure a
-workload registry in `syntara-plugin.yaml` before using `build --with-workload`.
+dependencies, for example `python -m pip wheel --wheel-dir wheels .`. The
+generated RuntimeBinding maps this plugin's workload to a named image option.
+`syntara-plugin build` creates local OCI archives and a release inventory;
+inspect them before `syntara-plugin publish dist/release.json --artifact-kind
+release` uploads the exact files.
 
 The generated runtime loads the packaged plugin manifests through the SDK's
 packaged-manifest binding helper. Update the generated manifests and schemas

@@ -131,8 +131,11 @@ syntara-plugin run create-report --mode source --input '{"title":"Quarterly repo
 ```
 
 Build creates local images, the plugin archive, the resolved binding manifest,
-the binding archive, and `dist/release.json`. It does not publish to a
-registry. Inspect the release files, then run the selected option through the
+the binding archive, and `dist/release.json`. Release-inventory archive paths
+are relative to `dist`, so the complete directory can be moved to another
+publisher machine. The SDK requires release archives to stay under `dist` and
+rejects symlinked or parent-traversing archive paths. Build does not publish to
+a registry. Inspect the release files, then run the selected option through the
 container gRPC runtime:
 
 ```sh
@@ -145,6 +148,15 @@ syntara-plugin inspect dist/runtime-bindings.yaml
 syntara-plugin run create-report --mode image --image-option python-pdf \
   --release dist/release.json --input '{"title":"Quarterly report"}'
 ```
+
+Workload archive filenames include the full image digest, and the default
+RuntimeBinding archive filename includes its full artifact digest. Rebuilding
+in the same workspace keeps older immutable outputs and adds new ones. The
+generated `dist/release.json` is the latest build's inventory and is refreshed
+by a later successful build. A plugin archive path is never replaced with
+different bytes: when its contract changes, choose a new `--output` (or
+`build.artifactOutput`) path. An identical rebuild can reuse the existing
+archive.
 
 Publish the prepared release inventory. The CLI verifies the local files and
 digests, publishes in dependency order, and prints the immutable references:
@@ -169,8 +181,7 @@ supplies the plugin digest; the source manifest does not need a digest edit:
 ```sh
 syntara-plugin build \
   --runtime-bindings runtime-bindings.yaml \
-  --plugin-artifact-archive dist/report-tools.oci.tar \
-  --binding-output dist/report-tools-runtime-update.oci.tar
+  --plugin-artifact-archive dist/report-tools.oci.tar
 syntara-plugin inspect dist/release.json
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish dist/release.json \
   --artifact-kind release --password-stdin --cosign-key cosign.key

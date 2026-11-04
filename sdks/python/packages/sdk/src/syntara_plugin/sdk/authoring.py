@@ -981,7 +981,7 @@ def _validate_bindings(
         diagnostics.append(
             _diagnostic(
                 "WORKLOAD_MISSING",
-                "A custom-runner Step type must reference a declared root workload.",
+                "A custom-runner Step type must reference workload metadata in spec.workload.image or spec.workloads.",
                 PLUGIN_MANIFEST_FILENAME,
                 "Declare spec.workload for one runtime or spec.workloads for named runtimes.",
             )

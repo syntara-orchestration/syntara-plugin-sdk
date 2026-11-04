@@ -311,7 +311,10 @@ def test_managed_runtime_mounts_selected_resolved_revision(monkeypatch, tmp_path
     revision = "sha256:" + "a" * 64
     target = RunTarget(
         "identity", "Action", "example:Echo", "echo", {},
-        {"input": revision, "output": revision}, "image", revision,
+        {"input": revision, "output": revision},
+        workload_image="image",
+        workload_id="python",
+        step_revision_id=revision,
     )
     mounted: list[Path] = []
 

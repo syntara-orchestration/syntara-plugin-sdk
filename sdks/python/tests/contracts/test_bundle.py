@@ -101,9 +101,11 @@ def test_plugin_build_settings_schema_is_descriptive_and_strict() -> None:
 
     assert schema["properties"]["registry"]["properties"]["artifactRepository"]["description"]
     assert schema["properties"]["build"]["properties"]["artifactOutput"]["description"]
-    assert schema["properties"]["build"]["properties"]["workload"]["properties"]["context"][
-        "description"
+    workload_build = schema["properties"]["build"]["properties"]["workloads"][
+        "additionalProperties"
     ]
+    assert workload_build["properties"]["containerfile"]["description"]
+    assert "workload" not in schema["properties"]["build"]["properties"]
     assert (
         validate_document(
             bundle,
