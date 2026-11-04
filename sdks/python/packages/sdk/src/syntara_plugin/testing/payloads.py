@@ -1,4 +1,4 @@
-"""Sample payload cases and reference steps for the seven contract categories."""
+"""Sample payload cases and reference steps for contract tests."""
 
 from __future__ import annotations
 
@@ -9,16 +9,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
+    ActionStep,
     ControlStep,
+    ErrorCategory,
     ExecutionContext,
-    FailureCode,
     StepBinding,
+    StepFailure,
+    TriggerStep,
 )
-from syntara_plugin.runtime.container import ContainerInvocationError
 
 from .bindings_factory import installed_binding
 
-#: Fixed sentinel for the credential-reference payload case. Use
+#: Fixed synthetic sentinel for leak assertions. Use
 #: :func:`syntara_plugin.testing.secret_sentinel` for dynamic, unique values.
 FIXED_SECRET_SENTINEL = "syntara-test-secret-fixed"
 
@@ -42,7 +44,10 @@ class PayloadCase:
 
 
 class ReferenceInput(BaseModel):
-    """A representative typed input: required, enum, numeric, list, secret-like fields."""
+    """Typed input with required, enum, numeric, and list fields.
+
+    ``api_token`` supports synthetic leak tests; it is not a credential accessor.
+    """
 
     title: str
     priority: Literal["low", "medium", "high"] = "low"
@@ -58,6 +63,13 @@ class ReferenceOutput(BaseModel):
     priority: str
 
 
+class ReferenceActionStep(ActionStep[ReferenceInput, ReferenceOutput]):
+    """A minimal Action implementation for local contract tests."""
+
+    def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
+        return ReferenceOutput(summary=f"processed {inputs.title}", priority=inputs.priority)
+
+
 class ReferenceControlStep(ControlStep[ReferenceInput, ReferenceOutput]):
     """A representative Control implementation used by harness tests and examples."""
 
@@ -65,13 +77,23 @@ class ReferenceControlStep(ControlStep[ReferenceInput, ReferenceOutput]):
         return ReferenceOutput(summary=f"processed {inputs.title}", priority=inputs.priority)
 
 
-class FailingReferenceStep(ControlStep[ReferenceInput, ReferenceOutput]):
-    """A Control step that deliberately fails with a safe, retryable error."""
+class ReferenceTriggerStep(TriggerStep[ReferenceInput, ReferenceOutput]):
+    """A minimal Trigger implementation for local contract tests."""
 
     def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
-        raise ContainerInvocationError(
-            FailureCode.UPSTREAM_TRANSIENT,
+        return ReferenceOutput(summary=f"processed {inputs.title}", priority=inputs.priority)
+
+
+class FailingReferenceStep(ControlStep[ReferenceInput, ReferenceOutput]):
+    """A Control step type that deliberately fails with a safe, retryable error."""
+
+    def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
+        raise StepFailure(
+            17,
             "The upstream service rejected the request.",
+            "The upstream service rejected the request.",
+            code="UPSTREAM_TRANSIENT",
+            category=ErrorCategory.DEPENDENCY,
             retryable=True,
         )
 
@@ -90,7 +112,7 @@ _INVALID_OUTPUT_SCHEMA: dict[str, Any] = {
 def schema_violating_binding(
     identity: str = "syntara.testing.schema-violating-control",
 ) -> StepBinding:
-    """Bind the reference Control step with an output schema its result violates.
+    """Bind the reference Control step type with an output schema its result violates.
 
     The declared output schema is deliberately stricter than the
     implementation's model, so a successful ``run()`` result fails the
@@ -110,6 +132,8 @@ VALID_INPUT_CASES: tuple[PayloadCase, ...] = (
         {"title": "Deploy failed", "priority": "high", "count": 2, "tags": ["production"]},
         Expectation.VALID,
     ),
+    # Preserve the historical public fixture name. This is an ordinary
+    # synthetic input, not credential-reference delivery coverage.
     PayloadCase(
         "valid_credential_reference",
         {"title": "Deploy failed", "api_token": FIXED_SECRET_SENTINEL},
@@ -137,8 +161,7 @@ INVALID_OUTPUT_CASES: tuple[PayloadCase, ...] = (
     PayloadCase("schema_invalid_output", {"title": "Deploy failed"}, Expectation.INVALID_OUTPUT),
 )
 
-#: The seven ticket categories: valid, missing-required, wrong-type, invalid-enum,
-#: schema-invalid output, deliberate failure, and sensitive credential references.
+#: Input, deliberate-failure, and invalid-output cases for the reference steps.
 #: Pair the cases with the matching reference step: input cases with
 #: :class:`ReferenceControlStep`, the deliberate-failure case with
 #: :class:`FailingReferenceStep`, and the schema-invalid-output case with

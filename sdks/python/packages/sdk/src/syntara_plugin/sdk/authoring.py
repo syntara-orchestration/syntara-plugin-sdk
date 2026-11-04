@@ -591,13 +591,13 @@ def _normalize_trigger(
 
 
 def _normalize_step_runtime(raw_runtime: object, plugin: Mapping[str, Any]) -> dict[str, Any]:
-    """Materialize the shared runner metadata for non-Action Step types."""
+    """Materialize the shared runner metadata for non-Action step types."""
 
     return _normalize_runner_runtime(raw_runtime, plugin)
 
 
 def _normalize_runner_runtime(raw_runtime: object, plugin: Mapping[str, Any]) -> dict[str, Any]:
-    """Materialize runner metadata shared by every executable Step type."""
+    """Materialize runner metadata shared by every executable step type."""
 
     runtime = dict(raw_runtime) if isinstance(raw_runtime, Mapping) else {}
     if runtime.get("kind") == "custom-runner":
@@ -660,7 +660,7 @@ def _validate_unique_target_identities(
                     "COMPILED_IDENTITY_DUPLICATE",
                     f"Compiled identity {identity!r} is declared by both {previous!r} and {path!r}.",
                     path,
-                    "Give every target a unique metadata.name, regardless of its Step type.",
+                    "Give every target a unique metadata.name, regardless of its step type.",
                 )
             )
 
@@ -933,7 +933,7 @@ def _validate_bindings(
         diagnostics.append(
             _diagnostic(
                 "WORKLOAD_MISSING",
-                "A custom-runner step requires one root workload binding.",
+                "A custom-runner step type requires one root workload binding.",
                 PLUGIN_MANIFEST_FILENAME,
                 "Add spec.workload.image to the root manifest.",
             )

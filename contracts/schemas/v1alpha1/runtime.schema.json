@@ -17,7 +17,7 @@
     "digestReference": {"type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$"},
     "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "errorResultBase": {
-      "description": "Required SDK fields for a deliberate failure; runtime validates step-specific fields against the declared error schema.",
+      "description": "Required SDK fields for a deliberate failure; runtime validates step type-specific fields against the declared error schema.",
       "type": "object",
       "required": ["category", "code", "message", "retryable"],
       "properties": {
@@ -31,7 +31,7 @@
       }
     },
     "errorResult": {
-      "description": "SDK fallback ErrorResult when no step-specific error schema is declared.",
+      "description": "SDK fallback ErrorResult when no step type-specific error schema is declared.",
       "type": "object",
       "additionalProperties": false,
       "required": ["category", "code", "message", "retryable"],

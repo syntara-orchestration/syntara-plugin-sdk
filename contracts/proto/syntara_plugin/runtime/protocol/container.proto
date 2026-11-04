@@ -9,8 +9,8 @@ package syntara.container.v1alpha1;
 // if it implements this service and the message semantics below.
 //
 // The container ABI is the application-data channel. It deliberately carries
-// step identity and bounded JSON objects, never a container command or
-// plaintext credential. Health negotiates the ABI and supported step revision
+// step type identity and bounded JSON objects, never a container command or
+// plaintext credential. Health negotiates the ABI and supported step type revision
 // before the Execution Plane sends Execute or Cancel.
 service ContainerService {
   rpc Execute(ExecuteRequest) returns (stream ExecutionEvent);
@@ -52,10 +52,10 @@ message Result {
   bytes output_json = 2;
   // Object-store reference to the serialized business result when it exceeds
   // the inline JSON bound. A successful result carries exactly one of
-  // output_json/object_reference; a deliberate step failure may omit both.
+  // output_json/object_reference; a deliberate step type failure may omit both.
   string object_reference = 3;
   // The SDK wrapper's StatusCode: 0 is success and any nonzero value is a
-  // deliberate step failure that remains a valid terminal outcome.
+  // deliberate step type failure that remains a valid terminal outcome.
   uint32 status_code = 4;
   // Safe, bounded wrapper StatusMessage.
   string status_message = 5;

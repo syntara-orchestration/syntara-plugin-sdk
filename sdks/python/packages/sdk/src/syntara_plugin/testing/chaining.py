@@ -1,4 +1,4 @@
-"""Sequential step chaining with explicit seams for composed-operation tests."""
+"""Sequential step type chaining with explicit seams for composed-operation tests."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ Seam = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
 def identity_seam(output: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Pass one step's output through as the next step's input unchanged."""
+    """Pass one step type's output through as the next step type's input unchanged."""
 
     return output
 
@@ -111,10 +111,10 @@ def chain_steps(
     workflow engine: no branching, parallelism, fan-in, retries, or
     persistence. Orchestration belongs to the platform and to
     ``ControlStep.run`` implementations; when a chain needs control flow,
-    implement it as a Control step and test the step.
+    implement it as a Control step type and test the step type.
 
     Args:
-        bindings: The step bindings to execute, in order.
+        bindings: The step type bindings to execute, in order.
         inputs: The first link's raw inputs.
         context: Base context; each link receives its own invocation id and
             shares the workflow-run id.
@@ -125,7 +125,7 @@ def chain_steps(
     """
 
     if not bindings:
-        message = "chain_steps requires at least one step binding"
+        message = "chain_steps requires at least one step type binding"
         raise ValueError(message)
     resolved_seams = list(seams) if seams is not None else [identity_seam] * (
         len(bindings) - 1

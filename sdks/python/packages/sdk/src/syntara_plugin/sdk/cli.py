@@ -137,13 +137,17 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     init = commands.add_parser(
-        "init", help="Create one safe, compilable HTTP-action plugin workspace."
+        "init", help="Create one safe, compilable Action plugin workspace."
     )
     init.add_argument("directory", type=Path, help="New empty directory for the plugin workspace.")
     init.add_argument("--namespace", default="example", help="Plugin namespace (default: example).")
     init.add_argument("--name", help="Plugin name (default: final directory name).")
     init.add_argument("--version", default="0.1.0", help="Plugin SemVer version (default: 0.1.0).")
     init.add_argument("--action", default="request", help="Initial action name (default: request).")
+    init.add_argument(
+        "--runner", choices=("platform-runner", "custom-runner"), default="platform-runner",
+        help="Action runner (default: platform-runner).",
+    )
     init.add_argument(
         "--fields",
         metavar="FIELDS",
@@ -155,7 +159,7 @@ def _parser() -> argparse.ArgumentParser:
 
     test_init = commands.add_parser(
         "test-init",
-        help="Generate local pytest tests for custom-runner Step types.",
+        help="Generate local pytest tests for custom-runner step types.",
     )
     test_init.add_argument(
         "manifest",
@@ -178,11 +182,11 @@ def _parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser(
         "run",
-        help="Validate inputs and run one custom-runner Step locally.",
-        description="Validate invocation inputs and run one custom-runner Step locally.",
+        help="Validate inputs and run one custom-runner step type locally.",
+        description="Validate invocation inputs and run one custom-runner step type locally.",
         epilog=textwrap.dedent(
             """\
-            The target is the full Step identity, the module:Class entry point,
+            The target is the full step type identity, the module:Class entry point,
             or a unique short name; it is inferred when the workspace declares
             exactly one runnable target. Inputs come from --input (inline JSON)
             or --input-file (a JSON file, - reads stdin). Without inputs the
@@ -190,7 +194,7 @@ def _parser() -> argparse.ArgumentParser:
             exits 2: the template is schema-shaped, not business-valid.
 
             source mode (the default) compiles the workspace and executes the
-            Step through an in-process runtime. image mode runs the
+            step type through an in-process runtime. image mode runs the
             workspace's declared workload image through Podman or Docker and
             removes it afterwards; pass --address (and --tls-* for mutual
             TLS) to use a runtime you started yourself instead.
@@ -213,7 +217,7 @@ def _parser() -> argparse.ArgumentParser:
         "target",
         nargs="?",
         default=None,
-        help="Step identity, module:Class entry point, or unique short name.",
+        help="Step type identity, module:Class entry point, or unique short name.",
     )
     run.add_argument(
         "--manifest",
@@ -274,7 +278,7 @@ def _parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         default=None,
-        help="Show execution phases and step progress on stderr.",
+        help="Show execution phases and step type progress on stderr.",
     )
 
     for command, help_text in (
@@ -791,7 +795,7 @@ def _boolean_option(command_line: bool | None, settings: bool | None, *, default
 
 
 def _init_tests(arguments: argparse.Namespace) -> int:
-    """Generate local pytest tests for custom-runner Step targets."""
+    """Generate local pytest tests for custom-runner step type targets."""
     try:
         written = generate_step_tests(
             arguments.manifest,
@@ -828,6 +832,9 @@ def _init_workspace(arguments: argparse.Namespace) -> int:
         return 2
     try:
         _write_workspace(directory, arguments, name)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     except OSError as error:
         print(f"error: could not create workspace: {error}", file=sys.stderr)
         return 1
@@ -955,7 +962,8 @@ def _schema_from_field_map(document: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"field is not valid: {name!r}")
         normalized = dict(specification)
         normalized.pop("name", None)
-        normalized.pop("required", None)
+        if isinstance(specification.get("required"), bool):
+            normalized.pop("required", None)
         properties[name] = normalized
         if specification.get("required") is True:
             required.append(name)
@@ -1025,6 +1033,14 @@ def _validate_resource_property(resource: object) -> None:
 
 
 def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) -> None:
+    if arguments.runner == "custom-runner":
+        from .custom_scaffold import write_custom_workspace
+
+        payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
+        schema = payload if isinstance(payload, dict) else _input_schema(payload)
+        write_custom_workspace(directory, arguments.namespace, name, arguments.version,
+                               arguments.action, schema)
+        return
     action_path = Path("steps") / arguments.action / "manifest.yaml"
     input_path = Path("schemas") / f"{arguments.action}.input.yaml"
     directory.mkdir(parents=True)
@@ -1113,9 +1129,9 @@ def _print_compilation_failure(
 
 
 def _run_command(arguments: argparse.Namespace) -> int:
-    """Validate inputs and run one custom-runner Step locally."""
+    """Validate inputs and run one custom-runner step type locally."""
     # The execution engine pulls gRPC; importing it here keeps every command
-    # that never executes a Step free of that import cost. The template
+    # that never executes a step type free of that import cost. The template
     # helpers are grpc-free and stay at module scope.
     from .runner import (
         RunExecutionError,
@@ -2372,6 +2388,25 @@ def _input_template(field_names: Sequence[str]) -> str:
         f"required:\n{required}"
         f"properties:\n{properties}"
     )
+
+
+def _input_schema(field_names: Sequence[str]) -> dict[str, Any]:
+    """Construct the scaffold schema without interpreting field names as YAML scalars."""
+    return {
+        "type": "object",
+        "description": "Inputs accepted by this action.",
+        "additionalProperties": False,
+        "required": ["resource"],
+        "properties": {
+            field: {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": f"{'Required' if field == 'resource' else 'Optional'} input field.",
+            }
+            for field in ("resource", *field_names)
+        },
+    }
 
 
 def _readme_template(name: str, action: str) -> str:

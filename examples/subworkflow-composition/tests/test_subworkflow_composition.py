@@ -85,7 +85,7 @@ def test_parent_output_payload_validates_against_the_call_contract() -> None:
 
 
 def test_child_workflow_seam_accepts_the_trigger_event(step_bindings) -> None:
-    """The trigger's event payload satisfies the terminal step's input."""
+    """The trigger's event payload satisfies the terminal step type's input."""
 
     trigger = step_bindings.bind_step(TRIGGER, workspace=WORKSPACE)
     terminal = step_bindings.bind_step(TERMINAL, workspace=WORKSPACE)
@@ -124,7 +124,7 @@ def test_running_the_child_workflow_reaches_the_parent_declared_result(
 def test_direct_and_container_paths_are_equivalent(
     entry_point, mock_execution_context, step_bindings
 ) -> None:
-    """Every step in the composition behaves the same in both run paths."""
+    """Every step type in the composition behaves the same in both run paths."""
 
     binding = step_bindings.bind_step(entry_point, workspace=WORKSPACE)
     context = mock_execution_context(

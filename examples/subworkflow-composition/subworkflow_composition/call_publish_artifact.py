@@ -39,7 +39,7 @@ class CallPublishArtifactStep(
 ):
     """Invoke the child workflow and return its declared result.
 
-    The stand-in runs the child's trigger and terminal step in process. It
+    The stand-in runs the child's trigger and terminal step type in process. It
     deliberately does not resolve a published workflow version, evaluate a
     Used-By dependency guard, or start a durable child run: those belong to
     the control plane and are what the platform runner would provide.

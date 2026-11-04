@@ -1,4 +1,4 @@
-"""Transport-independent execution context for typed plugin steps."""
+"""Transport-independent execution context for step types."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .credentials import (
 
 @dataclass(frozen=True)
 class ExecutionContext:
-    """Invocation-scoped data passed to a step without transport types.
+    """Invocation-scoped data passed to a step type without transport types.
 
     The context deliberately excludes protobuf messages, gRPC objects, container
     invocation types, and raw credential values. A trusted host supplies a

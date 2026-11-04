@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.syntara.io/v1alpha1/resolved-execution.schema.json",
   "title": "Syntara Resolved Execution Data",
-  "description": "Trusted, read-only platform bootstrap data that maps immutable Step revisions to image-local container implementations.",
+  "description": "Trusted, read-only platform bootstrap data that maps immutable step type revisions to image-local container implementations.",
   "type": "object",
   "additionalProperties": false,
   "required": ["bindings"],

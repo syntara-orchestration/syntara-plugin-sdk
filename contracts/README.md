@@ -79,7 +79,7 @@ checkout of this repository.
 
 The JSON Schema documents remain the normative durable artifact and work-item
 contracts. The protobuf file is the normative in-container application-data
-protocol: it selects a step revision, carries bounded JSON input, bounded
+protocol: it selects a step type revision, carries bounded JSON input, bounded
 non-secret runtime context, and mounted credential-file paths, and returns
 progress or one terminal result/failure. It does not select an image, command,
 execution pool, endpoint, or credential value. A credential-file path must be
@@ -100,7 +100,7 @@ HTTP status. These field names and meanings are independent of the container
 protocol's wire encoding.
 
 A zero `statusCode` is success: `result` must be present and non-null,
-`errorResult` must be `null`, and `result` is validated against the step's
+`errorResult` must be `null`, and `result` is validated against the step type's
 `spec.output` schema. A nonzero `statusCode` is a deliberate failure that is
 still a valid completed outcome. It requires a structured `errorResult` and
 may have a `null` result. `errorResult` requires `category`, stable uppercase `code`, a
@@ -112,9 +112,9 @@ machine-readable reason. `retryable` communicates whether retrying may succeed.
 `spec.output` remains the schema for the successful business result, never for
 the wrapper. The separate `spec.error` schema is optional. When present, the
 runtime validates the entire error object against that schema and the SDK base
-schema, and the declared schema may add step-specific fields. When absent, the
+schema, and the declared schema may add step type-specific fields. When absent, the
 SDK uses a closed fallback schema that accepts only the base fields; custom
-step-specific fields require a declared `spec.error`. A failed container result
+step type-specific fields require a declared `spec.error`. A failed container result
 carries the complete error object and the canonical digest of the effective
 error schema. If an error, including an input-validation error, does not satisfy
 the effective schema, no valid wrapper exists. A wrapper cannot represent an
@@ -124,7 +124,7 @@ invocation that produced no valid outcome. In that case the runtime emits a
 execution began and is known not to have completed; `unknown` means the runtime
 cannot determine whether execution completed. These values describe execution
 completion knowledge, not retryability. A `ContainerFailure` is not a deliberate
-step result and carries no `StandardOutputWrapper`.
+step type result and carries no `StandardOutputWrapper`.
 
 The wrapper schema does not redefine protobuf transport fields. The
 `ContainerService` ABI remains the protocol contract for transporting runtime

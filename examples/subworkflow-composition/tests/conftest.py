@@ -1,4 +1,4 @@
-"""Make the example's step package importable from its tests."""
+"""Make the example's type package importable from its tests."""
 
 from __future__ import annotations
 

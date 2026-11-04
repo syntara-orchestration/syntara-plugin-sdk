@@ -1,7 +1,7 @@
-# Run a Step locally
+# Run a step type locally
 
 This page explains the `syntara-plugin run` command: how to validate an
-invocation's inputs and execute one custom-runner Step on your own machine,
+invocation's inputs and execute one custom-runner step type on your own machine,
 either from your workspace source or against a running workload runtime,
 without a cluster or a full end-to-end test suite.
 
@@ -9,15 +9,15 @@ without a cluster or a full end-to-end test suite.
 
 After this page you can:
 
-- print the input contract of one Step and a schema-shaped template for it;
+- print the input contract of one step type and a schema-shaped template for it;
 - validate inputs before anything executes;
-- run the Step from source and read its result;
-- run the same Step against an already-running workload runtime.
+- run the step type from source and read its result;
+- run the same step type against an already-running workload runtime.
 
 ## Prerequisites
 
 - A plugin workspace with a `plugin.yaml` that declares at least one
-  custom-runner Step target. The
+  custom-runner step type target. The
   [python-steps example](../examples/python-steps) is used throughout; clone
   this repository to follow along.
 - The CLI installed: see [Installation](installation.md).
@@ -82,13 +82,13 @@ Output:
 Labels align into a column and are bold on an interactive terminal; output is
 plain when piped or redirected, and `NO_COLOR` disables the bolding.
 
-The exit status is `0` when the Step completes with status `0`.
+The exit status is `0` when the step type completes with status `0`.
 
 ## Selecting the target
 
 The command resolves the target to run in this order:
 
-1. the full Step identity, for example `example.python-steps.create-issue`;
+1. the full step type identity, for example `example.python-steps.create-issue`;
 2. the `module:Class` entry point, for example `python_steps.create_issue:CreateIssueStep`;
 3. a unique short name, for example `create-issue`.
 
@@ -172,7 +172,7 @@ the summary, and their values are redacted everywhere they could surface:
 - validation errors name the field and the constraint only, never the value,
   and a secret value pasted into a non-sensitive field is scrubbed from the
   error message;
-- a step that interpolates a sensitive value into an exception message, a
+- a step type that interpolates a sensitive value into an exception message, a
   deliberate failure message, its output (values and mapping keys), an
   object reference, an error code, or a progress update gets that value
   scrubbed to `***` before anything is printed, including the
@@ -189,7 +189,7 @@ handed gets it masked — not only its text form. See
 
 Scrubbing matches the value case-insensitively. Redaction is driven by the
 declared schema and the values you supplied, so it cannot catch everything:
-a secret hard-coded in step source, transformed before it is echoed (for
+a secret hard-coded in step type source, transformed before it is echoed (for
 example JSON-escaped or otherwise re-encoded), or placed in an undeclared
 field with an innocent name may still appear. In image mode the scrub set
 comes from the local workspace's schema, per the documented same-workspace
@@ -205,7 +205,7 @@ else the image printed is carried through.
 
 ## Supplying credentials
 
-A Step that declares an `integrationType` reaches the credential recipes that
+A step type that declares an `integrationType` reaches the credential recipes that
 integration type lists in `credentialTypes`. `--credential NAME=SOURCE`
 supplies one of them for this run; repeat the option for several. `NAME` is
 the recipe's full identifier, and the recipe must be declared in this
@@ -215,7 +215,7 @@ workspace, because a local run compiles nothing else.
 | --- | --- | --- |
 | Standard input | `--credential NAME=-` | The primary path: the value never reaches disk or your shell history. One credential per run can use it. |
 | File | `--credential NAME=file:PATH` | Several per run. Refused when the path is inside the workspace; warns when other local users can read it. |
-| Environment | `--credential NAME=env:VAR` | Convenient in a local shell or CI. The CLI reads the variable; the Step never sees one. |
+| Environment | `--credential NAME=env:VAR` | Convenient in a local shell or CI. The CLI reads the variable; the step type implementation never sees one. |
 | Inline | — | Refused. A value on the command line is visible in your shell history and in `/proc/<pid>/cmdline`, the same reason `--input-file` exists. |
 
 ```sh
@@ -247,13 +247,14 @@ and the violated constraint and never the value.
 
 Both modes deliver the credential the way production will: as a **read-only
 file**, with only its path crossing the container ABI. The value is never an
-environment variable inside the Step or the container, and never travels on
-the wire, so Step code behaves the same locally and in production.
+environment variable inside the step type implementation or the container,
+and never travels on the wire, so step type code behaves the same locally and
+in production.
 
 - **image mode** writes the document into a private per-invocation directory
   and bind-mounts it read-only at `/var/run/syntara/secrets/<name>`, the
   ABI's approved secret mount. Nothing is copied into the image.
-- **source mode** runs the Step in this process, which cannot write under
+- **source mode** runs the step type in this process, which cannot write under
   `/var/run` without privilege, so the file stays in that private directory
   and its real path crosses the loopback ABI. The Step uses
   `context.credential(name).read()` in both modes; it does not need to know
@@ -293,8 +294,8 @@ that runtime is yours, and the command cannot mount anything into it.
 
 Both modes execute through the SDK's `ContainerClient` over real gRPC, call
 `Health` first to verify the container ABI and that the runtime advertises the
-requested Step, and use a 60 second invocation timeout with an empty runtime
-context and the credential file paths described above (none unless
+requested step type, and use a 60 second invocation timeout with an empty
+runtime context and the credential file paths described above (none unless
 `--credential` is supplied).
 
 ### Source mode (default)
@@ -307,7 +308,7 @@ Source mode compiles the workspace with the same compiler as `validate`,
 makes the workspace importable, binds the implementation through the trusted
 installed-manifest path (the same compile, install, and drift-check used by
 the [testing harness](testing.md)), and serves an in-process gRPC runtime on
-loopback. The Step executes over the container ABI exactly as the platform
+loopback. The step type executes over the container ABI exactly as the platform
 would invoke it, and the runtime stops when the result arrives.
 
 Making the workspace importable means its root directory is inserted at the
@@ -389,7 +390,7 @@ obtain such a runtime:
    contains one complete, copy-pasteable factory, and
    [the runtime and OCI model](runtime-and-oci.md) describes the adapter
    contract and the format of the trusted resolved execution file. Its revision
-   and installed Step identity must match the local compiled target, and custom
+   and installed step type identity must match the local compiled target, and custom
    runners must match the image's packaged registration manifest. This bootstrap
    file identifies installed bindings only; the gRPC request supplies the
    invocation/run IDs, input, timeout, credential file paths, and runtime
@@ -432,7 +433,7 @@ A successful run prints the target identity, mode, the input that executed
 JSON. The `--json` document is pretty-printed and additionally carries the
 input source (`inputSource`) for programmatic consumers. A terminal failure is
 a valid outcome, not a transport error: it keeps its failure code, message,
-retryability, and outcome, and exits `1`. A step signals a deliberate failure
+retryability, and outcome, and exits `1`. A step type signals a deliberate failure
 by raising `ContainerInvocationError`, and its code, message, and
 retryability are preserved:
 
@@ -446,7 +447,7 @@ Message:     The tracker rejected the request.
 Outcome:     not_completed
 ```
 
-A step that raises an unexpected exception is caught and reported as a safe
+A step type that raises an unexpected exception is caught and reported as a safe
 `OUTCOME_UNKNOWN` failure: the container ABI never carries exception text,
 because it may contain secrets or internal details. In source mode the
 exception happened in your own process, so the CLI captures the traceback
@@ -454,7 +455,7 @@ locally and attaches it:
 
 ```text
 Error:       OUTCOME_UNKNOWN (retryable: false)
-Message:     The plugin step did not complete.
+Message:     The step did not complete.
 Outcome:     unknown
 
 Error detail:
@@ -465,21 +466,21 @@ Error detail:
 
 In image mode the detail cannot be retrieved (the remote runtime discards
 it); the CLI says so and suggests rerunning with `--mode source`. To debug a
-failing step programmatically, the [testing harness](testing.md) also
+failing step type programmatically, the [testing harness](testing.md) also
 captures the raised exception in `StepOutcome.raised`.
 
 | Exit status | Meaning |
 | --- | --- |
-| `0` | The Step completed with status `0`. |
-| `1` | The workspace did not compile, the Step completed with a nonzero status, or the transport failed. |
+| `0` | The step type completed with status `0`. |
+| `1` | The workspace did not compile, the step type completed with a nonzero status, or the transport failed. |
 | `2` | Usage error: missing or invalid input, unknown or ambiguous target, unreadable input file, or an option used in the wrong mode. |
 
 With `--json`, stdout carries exactly one pretty-printed JSON document on
 every exit path; parse stdout only. Stderr keeps the human channels: the
-template-mode field summary, anything a Step prints in source mode, progress
+template-mode field summary, anything a step type prints in source mode, progress
 under `--verbose`, and warnings. The document has three shapes:
 
-- **Completed invocation** (exit 0, or exit 1 when the Step completed with a
+- **Completed invocation** (exit 0, or exit 1 when the step type completed with a
   failure): `ok`, `mode`, `target`, `image`, `inputSource`, `input` with
   sensitive fields masked, `invocationId`, `workflowRunId`, `status`,
   `statusMessage`, `output`, `objectReference`, `outcome`, `errorDetail`,
@@ -517,12 +518,12 @@ Every failure prints the problem and the next command. The complete map:
 | Partial TLS material | The three options must be supplied together. | 2 |
 | `--credential` with `--address`/`--tls-*` | The CLI cannot mount into a runtime you manage. | 2 |
 | Inline credential value | The three sources, and why an inline value is refused. | 2 |
-| Unknown credential name | The recipes reachable through the Step's integration type. | 2 |
+| Unknown credential name | The recipes reachable through the step type's integration type. | 2 |
 | Credential fails its schema | Each violated field and constraint, never the value. | 2 |
 | Credential file unreadable, empty, or inside the workspace | The path and what to do about it. | 2 |
 | Two sources reading standard input | Which options collided, and the alternatives. | 2 |
 | Target is platform-runner | Declarative targets cannot run locally; see `inspect`. | 2 |
-| Step module fails to import | The exception with its file and line, then `validate`. | 1 |
+| Step type module fails to import | The exception with its file and line, then `validate`. | 1 |
 | openssl missing for the managed container | Install openssl, or pass `--address` to a runtime you started. | 1 |
 | Workload container exits before health | Its exit status and last log lines, then `--mode source`. | 1 |
 | Image address unreachable | The address, then start-the-image or `--address`. | 1 |

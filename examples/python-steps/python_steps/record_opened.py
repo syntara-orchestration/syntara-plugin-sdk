@@ -1,4 +1,4 @@
-"""An example Python-bound Trigger step for opened records."""
+"""An example Python-bound Trigger step type for opened records."""
 
 from __future__ import annotations
 

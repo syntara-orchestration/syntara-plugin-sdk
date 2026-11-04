@@ -1,7 +1,7 @@
 """In-repo end-to-end checks for ``syntara-plugin run`` in both modes.
 
 The image-mode cases follow the SDK's own client-test pattern: a real
-in-process gRPC runtime on loopback serving step handlers, never a mock of
+in-process gRPC runtime on loopback serving step type handlers, never a mock of
 gRPC. Source mode executes the real ``examples/python-steps`` workspace
 shipped with this repository.
 """
@@ -250,7 +250,7 @@ def test_image_mode_reports_a_deliberate_failure(capsys) -> None:
 
 
 def test_image_mode_reports_an_unexpected_exception_safely(capsys) -> None:
-    """A crashing step maps to OUTCOME_UNKNOWN without leaking its error text."""
+    """A crashing step type maps to OUTCOME_UNKNOWN without leaking its error text."""
 
     port, server = _start_server({CREATE_ISSUE: _crashed})
     try:
@@ -274,7 +274,7 @@ def test_image_mode_reports_an_unexpected_exception_safely(capsys) -> None:
     assert status == 1
     captured = capsys.readouterr()
     assert _report_field(captured.out, "Error") == "OUTCOME_UNKNOWN (retryable: false)"
-    assert _report_field(captured.out, "Message") == "The plugin step did not complete."
+    assert _report_field(captured.out, "Message") == "The step did not complete."
     assert _report_field(captured.out, "Outcome") == "unknown"
     assert "Error detail:" in captured.out
     assert "not captured" in captured.out
@@ -309,7 +309,7 @@ def test_image_mode_rejects_an_unadvertised_identity(capsys) -> None:
     captured = capsys.readouterr()
     revisions = {str(t["identity"]): str(t["step_revision_id"]) for t in _compiled_targets(PYTHON_STEPS)}
     assert f"does not advertise '{revisions[RECORD_OPENED]}'" in captured.err
-    assert f"Advertised steps: {revisions[CREATE_ISSUE]}" in captured.err
+    assert f"Advertised step types: {revisions[CREATE_ISSUE]}" in captured.err
 
 
 def test_image_mode_rejects_an_abi_mismatch(capsys) -> None:
@@ -396,7 +396,7 @@ def test_image_mode_scrubs_a_remote_error_code(capsys) -> None:
     assert _report_field(captured.out, "Error").startswith("***")
 
 
-_E2E_STEPS_SOURCE = '''"""Real step implementations served over gRPC for image-mode e2e."""
+_E2E_STEPS_SOURCE = '''"""Real step type implementations served over gRPC for image-mode e2e."""
 
 from __future__ import annotations
 
@@ -453,7 +453,7 @@ _E2E_OUTPUT_SCHEMA = {
 
 
 def _write_real_step_workspace(root: Path) -> tuple[Path, str, str]:
-    """One workspace whose ok/fail/crash targets are real step classes."""
+    """One workspace whose ok/fail/crash targets are real step type classes."""
 
     suffix = uuid.uuid4().hex[:8]
     package = f"e2e_pkg_{suffix}"
@@ -469,7 +469,7 @@ kind: Action
 metadata:
   name: {name}
   displayName: {name}
-  description: Real-step e2e fixture.
+  description: Real-step type e2e fixture.
 spec:
   runtime:
     kind: custom-runner
@@ -496,7 +496,7 @@ metadata:
   name: {plugin_name}
   version: 0.1.0
   displayName: E2E steps
-  description: Real-step e2e fixture.
+  description: Real-step type e2e fixture.
 spec:
   documentation:
     path: docs/README.md
@@ -561,7 +561,7 @@ def _run_real_step(
 
 
 def test_image_mode_runs_a_real_step_implementation(tmp_path: Path, capsys) -> None:
-    """A real step class executes end to end over gRPC in image mode."""
+    """A real step type class executes end to end over gRPC in image mode."""
 
     workspace, package, plugin_name = _write_real_step_workspace(tmp_path / "ws")
     port, server = _serve_real_steps(workspace, package, plugin_name)
@@ -578,7 +578,7 @@ def test_image_mode_runs_a_real_step_implementation(tmp_path: Path, capsys) -> N
 def test_image_mode_reports_a_real_steps_deliberate_failure(
     tmp_path: Path, capsys
 ) -> None:
-    """A real step's deliberate failure keeps its code and retryability."""
+    """A real step type's deliberate failure keeps its code and retryability."""
 
     workspace, package, plugin_name = _write_real_step_workspace(tmp_path / "ws")
     port, server = _serve_real_steps(workspace, package, plugin_name)
@@ -596,7 +596,7 @@ def test_image_mode_reports_a_real_steps_deliberate_failure(
 def test_image_mode_reports_a_real_steps_unexpected_exception(
     tmp_path: Path, capsys
 ) -> None:
-    """A real step crashing maps to OUTCOME_UNKNOWN with the image-mode hint."""
+    """A real step type crashing maps to OUTCOME_UNKNOWN with the image-mode hint."""
 
     workspace, package, plugin_name = _write_real_step_workspace(tmp_path / "ws")
     port, server = _serve_real_steps(workspace, package, plugin_name)
@@ -607,7 +607,7 @@ def test_image_mode_reports_a_real_steps_unexpected_exception(
 
     assert status == 1
     assert _report_field(captured.out, "Error") == "OUTCOME_UNKNOWN (retryable: false)"
-    assert _report_field(captured.out, "Message") == "The plugin step did not complete."
+    assert _report_field(captured.out, "Message") == "The step did not complete."
     assert "Error detail:" in captured.out
     assert "not captured" in captured.out
     assert "unexpected crash" not in captured.out

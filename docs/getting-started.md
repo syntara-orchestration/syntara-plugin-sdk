@@ -54,6 +54,32 @@ my-plugin/
 The manifest selects the files that form the release. The settings file does
 not duplicate that inventory; it only supplies build and release defaults.
 
+### Create a Python custom runner
+
+Use `--runner custom-runner` to generate a Python Action instead of the default
+platform-runner Action. All the same identity and `--fields` options apply:
+
+```sh
+syntara-plugin init ./my-runner --namespace acme --runner custom-runner --fields title
+cd ./my-runner
+syntara-plugin validate
+syntara-plugin run --input '{"resource":"example","title":"hello"}'
+pytest tests -q
+```
+
+The workspace also contains a Python package, `pyproject.toml`, `runtime.json`,
+`Containerfile`, workload build settings, and generated tests. The generated
+tests skip the placeholder-dependent cases until you review their input and
+remove the skips. The model covers common object, array, and scalar field types;
+review complex JSON Schema constructs and defaults with the drift check before
+using them. The manifest remains the authoritative input validator.
+
+Before building an image, prepare `wheels/` with the plugin and its runtime
+dependencies, for example with `python -m pip wheel --wheel-dir wheels .`, and
+configure a workload registry. The generated `runtime.py` loads custom-runner
+bindings through the packaged-manifest binding helper. Update the generated
+manifests and schemas together when adding targets or changing their paths.
+
 ## Validate, inspect, and build
 
 ```sh
@@ -83,8 +109,8 @@ syntara-plugin build ../examples/hello-world/plugin.yaml \
 
 ## Next steps
 
-- Follow the [Step authoring and composition guide](authoring-guide.md) to take a Step from plan to publication.
+- Follow the [step type authoring and composition guide](authoring-guide.md) to take a step type from plan to publication.
 - Read the [plugin language reference](plugin-language.md) before changing a manifest.
 - Read the [build settings reference](build-settings.md) before configuring a registry or workload image.
-- Run one Step locally with [Running locally](running-locally.md) before writing a test suite.
+- Run one step type locally with [Running locally](running-locally.md) before writing a test suite.
 - Use the [user guide](user-guide.md) when you are ready to publish an artifact or update a catalog.

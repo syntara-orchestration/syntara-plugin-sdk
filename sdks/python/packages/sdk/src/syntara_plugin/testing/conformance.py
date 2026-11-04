@@ -1,4 +1,4 @@
-"""Composable conformance checks for bound plugin steps."""
+"""Composable conformance checks for bound steps."""
 
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def check_step_conformance(
     context: ExecutionContext | None = None,
     include_equivalence: bool = True,
 ) -> ConformanceReport:
-    """Run the standard conformance properties for one bound step.
+    """Run the standard conformance properties for one bound step type.
 
     Checks that invalid input blocks the business hook, valid input reaches it
     exactly once, and (unless ``include_equivalence=False``) that the direct

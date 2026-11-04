@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 from syntara_plugin.runtime import ActionStep, ExecutionContext
 
-# A real step would record the publication time. The example keeps the value
+# A real step type would record the publication time. The example keeps the value
 # fixed so both execution paths produce byte-identical results.
 PUBLISHED_AT = "2026-01-01T00:00:00Z"
 

@@ -692,7 +692,7 @@ def test_runtime_bindings_factory_must_return_step_bindings() -> None:
 
 
 def test_runtime_bindings_factory_must_register_a_step() -> None:
-    with pytest.raises(RuntimeServerError, match="at least one step"):
+    with pytest.raises(RuntimeServerError, match="at least one step type"):
         load_runtime_bindings(f"{__name__}:empty_bindings")
 
 
@@ -783,7 +783,7 @@ def test_server_requires_resolved_execution_data() -> None:
         ({"abi": "syntara.container/v0"}, "contract"),
         ({"entryPoint": "bad-entry"}, "contract"),
         ({"entryPoint": "missing.module:Step"}, "could not be loaded"),
-        ({"entryPoint": f"{__name__}:EchoInput"}, "typed Step"),
+        ({"entryPoint": f"{__name__}:EchoInput"}, "step type"),
         ({"entryPoint": f"{__name__}:BarrierStep"}, "does not match"),
         ({"entryPoint": f"{__name__}:EchoAlias"}, "invalid installed binding"),
         ({"extra": "field"}, "contract"),
@@ -803,7 +803,7 @@ def test_duplicate_resolved_revision_fails_startup(tmp_path: Path) -> None:
     record = _resolved_record("platform-runner")
     config = _resolved_config(tmp_path, [record, record])
     bindings = create_bindings()
-    with pytest.raises(RuntimeServerError, match="duplicate step revision"):
+    with pytest.raises(RuntimeServerError, match="duplicate step type revision"):
         resolved_step_registry(config, bindings)
 
 

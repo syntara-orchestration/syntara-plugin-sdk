@@ -76,6 +76,6 @@ class RecordOpenedStep(TriggerStep[RecordOpenedInput, RecordOpenedOutput]):
 
 
 def create_bindings() -> StepBindings:
-    """Bind every packaged custom-runner Step this plugin declares."""
+    """Bind every packaged custom-runner step type this plugin declares."""
 
     return load_plugin_bindings("existing_step")

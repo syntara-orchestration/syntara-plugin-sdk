@@ -5,7 +5,7 @@
     "namespace": "example",
     "name": "existing-step",
     "version": "0.1.0",
-    "displayName": "Existing Step",
+    "displayName": "Existing step types",
     "description": "Reproducible Action, Control, and Trigger execution paths."
   },
   "spec": {

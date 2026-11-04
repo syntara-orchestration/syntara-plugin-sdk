@@ -84,25 +84,46 @@ def _inferred_kind(document: Mapping[str, Any]) -> str:
     raise ValueError(message)
 
 
+_SCHEMA_MAP_KEYWORDS = frozenset(
+    {"properties", "patternProperties", "definitions", "$defs"}
+)
+
+
 def schema_without_descriptions(schema: Any) -> Any:
     """Return a copy of a JSON Schema with every ``description`` key dropped.
 
     Descriptions differ by perspective (parent versus child, caller versus
     callee), so they are excluded when two declared schemas must agree.
-    Everything else — types, formats, nested schemas, defaults, enums,
-    ``required`` — is kept, so an equality check on the result compares the
-    full contract shape and not just property names.
+    Only the ``description`` *annotation* is dropped: a property named
+    ``description`` (a key under ``properties`` and sibling schema-map
+    keywords) is kept, together with its subschema. Everything else —
+    types, formats, nested schemas, defaults, enums, ``required`` — is
+    kept, so an equality check on the result compares the full contract
+    shape and not just property names.
     """
 
     if isinstance(schema, Mapping):
         return {
-            key: schema_without_descriptions(value)
+            key: _properties_without_descriptions(value)
+            if key in _SCHEMA_MAP_KEYWORDS
+            else schema_without_descriptions(value)
             for key, value in schema.items()
             if key != "description"
         }
     if isinstance(schema, list):
         return [schema_without_descriptions(item) for item in schema]
     return schema
+
+
+def _properties_without_descriptions(properties: Any) -> Any:
+    """Strip descriptions from each subschema while keeping property names."""
+
+    if isinstance(properties, Mapping):
+        return {
+            name: schema_without_descriptions(subschema)
+            for name, subschema in properties.items()
+        }
+    return schema_without_descriptions(properties)
 
 
 class ManifestValidator:

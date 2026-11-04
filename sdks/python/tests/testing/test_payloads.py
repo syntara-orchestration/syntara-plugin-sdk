@@ -28,12 +28,13 @@ from syntara_plugin.testing import (
     secret_sentinel,
 )
 from syntara_plugin.testing.payloads import (
+    FailingReferenceStep,
     ReferenceControlStep,
     schema_violating_binding,
 )
 
 
-def test_payload_cases_cover_every_ticket_category() -> None:
+def test_payload_cases_cover_the_declared_outcomes() -> None:
     expectations = {case.expectation for case in PAYLOAD_CASES}
     assert expectations == {
         Expectation.VALID,
@@ -47,11 +48,7 @@ def test_payload_cases_cover_every_ticket_category() -> None:
         + len(DELIBERATE_FAILURE_CASES)
         + len(INVALID_OUTPUT_CASES)
     )
-    assert FIXED_SECRET_SENTINEL in {
-        case.inputs.get("api_token")
-        for case in VALID_INPUT_CASES
-        if "api_token" in case.inputs
-    }
+    assert "valid_credential_reference" in {case.name for case in VALID_INPUT_CASES}
 
 
 def test_valid_cases_succeed_against_the_reference_step() -> None:
@@ -70,7 +67,7 @@ def test_invalid_cases_fail_validation_against_the_reference_step() -> None:
 
 def test_deliberate_failure_case_matches_the_failing_reference_step() -> None:
     for case in DELIBERATE_FAILURE_CASES:
-        outcome = invoke_step(_TypedFailureReferenceStep(), case.inputs)
+        outcome = invoke_step(FailingReferenceStep(), case.inputs)
         assert not outcome.ok, case.name
         assert outcome.raised is None, case.name
         assert outcome.error is not None, case.name
@@ -83,20 +80,6 @@ def test_invalid_output_case_matches_the_schema_violating_binding() -> None:
     for case in INVALID_OUTPUT_CASES:
         outcome = invoke_step(schema_violating_binding(), case.inputs)
         assert isinstance(outcome.raised, StepExecutionError), case.name
-
-
-class _TypedFailureReferenceStep(ReferenceControlStep):
-    """Reference input/output with an author-raised typed failure."""
-
-    def run(self, inputs: object, context: object) -> object:
-        raise StepFailure(
-            17,
-            "The upstream service rejected the request.",
-            "The upstream service rejected the request.",
-            code="UPSTREAM_TRANSIENT",
-            category=ErrorCategory.DEPENDENCY,
-            retryable=True,
-        )
 
 
 def test_secret_sentinels_are_unique() -> None:
@@ -232,7 +215,7 @@ class _OpaqueArgsStep(ControlStep[_ChainInput, _ChainOutput]):
 
 
 def test_normalized_step_failures_do_not_retain_secret_exception_chains() -> None:
-    """Normalized SDK failures do not expose step exception payloads."""
+    """Normalized SDK failures do not expose step type exception payloads."""
 
     token = secret_sentinel()
     context = build_execution_context(invocation_id="chain-redaction")
@@ -244,7 +227,7 @@ def test_normalized_step_failures_do_not_retain_secret_exception_chains() -> Non
 
 
 def test_function_local_step_classes_are_rejected_with_guidance() -> None:
-    """The installed-step contract requires importable entry points."""
+    """The installed-step type contract requires importable entry points."""
 
     class LocalStep(ControlStep[_ChainInput, _ChainOutput]):
         def run(self, inputs: _ChainInput, context: ExecutionContext) -> _ChainOutput:

@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 import pytest
 from pydantic import BaseModel
-from syntara_plugin.runtime import ControlStep, ExecutionContext, StepFailure
+from syntara_plugin.runtime import ControlStep, ExecutionContext, FailureCode, StepExecutionError
+from syntara_plugin.runtime.container import ContainerInvocationError, ContainerRemoteError
 from syntara_plugin.testing import (
     INVALID_INPUT_CASES,
+    assert_no_secrets,
     assert_outcomes_equivalent,
     build_execution_context,
     invoke_step,
     invoke_step_in_container,
+    secret_sentinel,
 )
 from syntara_plugin.testing.payloads import (
+    FailingReferenceStep,
     ReferenceControlStep,
     schema_violating_binding,
 )
@@ -26,14 +31,13 @@ class CrashingStep(ReferenceControlStep):
         raise RuntimeError("the business logic crashed")
 
 
-class TypedFailureStep(ReferenceControlStep):
+class TerminalFailureStep(ReferenceControlStep):
+    """Raises a safe terminal failure instead of returning a wrapper."""
+
     def run(self, inputs: Any, context: Any) -> Any:
-        raise StepFailure(
-            17,
-            "The dependency rejected this operation.",
-            "The remote service rejected the request.",
-            category="dependency",
-            code="REMOTE_REJECTED",
+        raise ContainerInvocationError(
+            FailureCode.UPSTREAM_TRANSIENT,
+            "The upstream service is temporarily unavailable.",
             retryable=True,
         )
 
@@ -146,8 +150,8 @@ def test_valid_outcomes_are_equivalent_across_paths() -> None:
 
 def test_deliberate_failures_are_equivalent_with_matching_codes() -> None:
     context = build_execution_context(invocation_id="equiv-failure")
-    direct = invoke_step(TypedFailureStep(), {"title": "x"}, context=context)
-    container = invoke_step_in_container(TypedFailureStep(), {"title": "x"}, context=context)
+    direct = invoke_step(FailingReferenceStep(), {"title": "x"}, context=context)
+    container = invoke_step_in_container(FailingReferenceStep(), {"title": "x"}, context=context)
 
     # The container ABI carries the complete safe error metadata needed by the
     # public wrapper, including category, code, message, and retryability.
@@ -155,6 +159,7 @@ def test_deliberate_failures_are_equivalent_with_matching_codes() -> None:
     assert not container.ok
     assert direct.raised is None
     assert container.raised is None
+    assert_outcomes_equivalent(direct, container)
     assert direct.status == container.status == 17
     assert direct.status_message == container.status_message
     assert direct.output is container.output is None
@@ -162,9 +167,23 @@ def test_deliberate_failures_are_equivalent_with_matching_codes() -> None:
     assert container.error is not None
     assert direct.error.category == "dependency"
     assert container.error.category == "dependency"
-    assert direct.error.code == container.error.code == "REMOTE_REJECTED"
-    assert direct.error.message == container.error.message == "The remote service rejected the request."
+    assert direct.error.code == container.error.code == "UPSTREAM_TRANSIENT"
+    assert direct.error.message == container.error.message == "The upstream service rejected the request."
     assert direct.error.retryable is container.error.retryable is True
+
+
+def test_terminal_failures_are_equivalent_as_raised_failures() -> None:
+    context = build_execution_context(invocation_id="equiv-terminal-failure")
+    direct = invoke_step(TerminalFailureStep(), {"title": "x"}, context=context)
+    container = invoke_step_in_container(TerminalFailureStep(), {"title": "x"}, context=context)
+
+    assert_outcomes_equivalent(direct, container)
+    assert isinstance(direct.raised, StepExecutionError)
+    assert direct.raised.failure_code is FailureCode.OUTCOME_UNKNOWN
+    assert isinstance(container.raised, ContainerRemoteError)
+    assert container.raised.code is FailureCode.OUTCOME_UNKNOWN
+    assert direct.raw is None
+    assert container.raw is None
 
 
 def test_schema_invalid_outputs_are_equivalent_as_raised_failures() -> None:
@@ -175,15 +194,33 @@ def test_schema_invalid_outputs_are_equivalent_as_raised_failures() -> None:
         binding, {"title": "a-title-longer-than-three"}, context=context
     )
     assert_outcomes_equivalent(direct, container)
-    assert direct.raised is not None
-    assert container.raised is not None
+    assert isinstance(direct.raised, StepExecutionError)
+    assert direct.raised.failure_code is FailureCode.ABI_VIOLATION
+    assert isinstance(container.raised, ContainerRemoteError)
+    assert container.raised.code is FailureCode.ABI_VIOLATION
+    assert direct.raw is container.raw is None
+    assert direct.run_calls == container.run_calls == 1
 
 
-def test_business_crashes_are_equivalent_as_raised_failures() -> None:
+def test_business_crashes_are_equivalent_as_raised_failures(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     context = build_execution_context(invocation_id="equiv-crash")
-    direct = invoke_step(CrashingStep(), {"title": "x"}, context=context)
-    container = invoke_step_in_container(CrashingStep(), {"title": "x"}, context=context)
+    with caplog.at_level(logging.INFO):
+        direct = invoke_step(CrashingStep(), {"title": "x"}, context=context)
+        container = invoke_step_in_container(CrashingStep(), {"title": "x"}, context=context)
     assert_outcomes_equivalent(direct, container)
+    assert isinstance(direct.raised, StepExecutionError)
+    assert direct.raised.failure_code is FailureCode.OUTCOME_UNKNOWN
+    assert direct.raised.safe_message == "The step did not complete."
+    assert isinstance(container.raised, ContainerRemoteError)
+    assert container.raised.code is FailureCode.OUTCOME_UNKNOWN
+    assert "the business logic crashed" not in container.raised.message
+    assert direct.raw is container.raw is None
+    assert direct.run_calls == container.run_calls == 1
+    # Caller-visible messages and captured logs omit the internal exception.
+    for outcome in (direct, container):
+        assert_no_secrets(outcome, ["the business logic crashed"], caplog=caplog)
 
 
 def test_run_id_echoing_step_is_equivalent_under_a_shared_context() -> None:
@@ -198,7 +235,7 @@ def test_run_id_echoing_step_is_equivalent_under_a_shared_context() -> None:
 
 
 def test_a_deadlocked_step_returns_its_timeout_without_hanging_the_session() -> None:
-    """A step that ignores cancellation cannot block beyond its timeout."""
+    """A step type that ignores cancellation cannot block beyond its timeout."""
 
     started = time.monotonic()
     outcome = invoke_step_in_container(
@@ -350,6 +387,20 @@ def test_equivalence_assertion_requires_direct_first() -> None:
     container = invoke_step_in_container(ReferenceControlStep(), {"title": "x"})
     with pytest.raises(AssertionError, match="direct outcome first"):
         assert_outcomes_equivalent(container, direct)
+
+
+def test_synthetic_sensitive_input_does_not_leak_on_either_invocation_path() -> None:
+    sentinel = secret_sentinel()
+    inputs = {"title": "deploy", "api_token": sentinel}
+    context = build_execution_context(invocation_id="sensitive-input-redaction")
+    direct = invoke_step(ReferenceControlStep(), inputs, context=context)
+    container = invoke_step_in_container(ReferenceControlStep(), inputs, context=context)
+
+    assert_outcomes_equivalent(direct, container)
+    assert direct.ok
+    assert container.ok
+    assert_no_secrets(direct, [sentinel])
+    assert_no_secrets(container, [sentinel])
 
 
 def test_equivalence_assertion_detects_different_outcomes() -> None:

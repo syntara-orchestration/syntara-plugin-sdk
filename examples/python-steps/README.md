@@ -1,9 +1,9 @@
 # python-steps example
 
-One example step per Syntara kind, tested locally through the
+One example step type per Syntara kind, tested locally through the
 SDK test harness without AO, EP, or a cluster.
 
-| Step | Taxonomy | Source manifest? | Tested through |
+| Step type | Taxonomy | Source manifest? | Tested through |
 |---|---|---|---|
 | `create_issue.CreateIssueStep` | Action | `steps/create-issue/manifest.yaml` (custom-runner) | `step_bindings.bind_step` (compile, install, drift-check, execute) |
 | `record_opened.RecordOpenedStep` | Trigger | `steps/record-opened/manifest.yaml` (driver + Python binding) | `manifest_validator` + `step_bindings.bind` |

@@ -1,4 +1,4 @@
-"""Contract drift validation between declared schemas and typed Python steps."""
+"""Contract drift validation between declared schemas and Python step types."""
 
 from __future__ import annotations
 
@@ -114,10 +114,10 @@ class DriftIssue:
 
 @dataclass(frozen=True)
 class DriftReport:
-    """The validation outcome for one step identity.
+    """The validation outcome for one step type identity.
 
     The schema digests record which declared schemas were checked so a report
-    can later be tied to an installed step revision without re-reading them.
+    can later be tied to an installed step type revision without re-reading them.
     Issues are deduplicated and sorted deterministically at construction.
     """
 
@@ -166,7 +166,7 @@ class DriftReport:
 
 
 class SchemaDriftError(Exception):
-    """Raised when typed Python steps are incompatible with their declared schemas.
+    """Raised when Python step types are incompatible with their declared schemas.
 
     ``report`` carries one :class:`DriftReport` or a tuple of them when several
     steps were checked together. The rendered message lists one bounded line
@@ -1481,7 +1481,7 @@ _TARGET_CATEGORY: Mapping[str, StepCategory] = {
 
 
 def _target_category(target: Mapping[str, Any]) -> StepCategory | None:
-    """Return the step category derived from a target's concrete kind.
+    """Return the step type category derived from a target's concrete kind.
 
     Unknown or malformed kinds return ``None`` so the caller can produce a
     stable diagnostic.
@@ -1492,21 +1492,21 @@ def _target_category(target: Mapping[str, Any]) -> StepCategory | None:
 
 
 def _step_class(step: type[BaseStep[Any, Any]] | BaseStep[Any, Any]) -> type[BaseStep[Any, Any]]:
-    """Return the class of a step argument given as a class or an instance."""
+    """Return the class of a step type argument given as a class or an instance."""
 
     if isinstance(step, type):
         if not issubclass(step, BaseStep):
-            message = "step must be a BaseStep implementation or subclass"
+            message = "step type must be a BaseStep implementation or subclass"
             raise TypeError(message)
         return step
     if not isinstance(step, BaseStep):
-        message = "step must be a BaseStep implementation or subclass"
+        message = "step type must be a BaseStep implementation or subclass"
         raise TypeError(message)
     return type(step)
 
 
 def _model_unresolved_issue(step_class: type[BaseStep[Any, Any]], error: TypeError) -> DriftIssue:
-    """Build the issue for a step whose generic models could not be resolved."""
+    """Build the issue for a step type whose generic models could not be resolved."""
 
     return DriftIssue(
         DriftCode.MODEL_UNRESOLVED,
@@ -1526,7 +1526,7 @@ def check_step_contract(
     output_schema: Mapping[str, Any],
     step_identity: str | None = None,
 ) -> DriftReport:
-    """Validate one typed step directly against declared schemas.
+    """Validate one step type directly against declared schemas.
 
     Control and Trigger owners that author their own declared schemas
     call this instead of going through a compiled descriptor. The report
@@ -1590,7 +1590,7 @@ def _entry_point_issues(
     binding: StepBinding,
     entry_point_resolver: EntryPointResolver | None,
 ) -> list[DriftIssue]:
-    """Check the compiled target's entry point against the bound step class."""
+    """Check the compiled target's entry point against the bound step type class."""
 
     runtime = target.get("runtime")
     runtime = runtime if isinstance(runtime, Mapping) else {}
@@ -1656,7 +1656,7 @@ def _entry_point_issues(
                 DriftSeverity.ERROR,
                 "binding",
                 "",
-                f"the resolver for {entry_point} returned a non-step object",
+                f"the resolver for {entry_point} returned an object that is not a step type",
                 "make the resolver return the BaseStep subclass for the entry point.",
             )
         ]
@@ -1685,8 +1685,8 @@ def _identity_issues(identity: str | None, binding: StepBinding) -> list[DriftIs
                 DriftSeverity.ERROR,
                 "binding",
                 "",
-                "the compiled target declares no usable step identity",
-                "compile the target so it carries its step identity.",
+                "the compiled target declares no usable step type identity",
+                "compile the target so it carries its step type identity.",
             )
         ]
     if binding.descriptor.step_identity != identity:
@@ -1696,9 +1696,9 @@ def _identity_issues(identity: str | None, binding: StepBinding) -> list[DriftIs
                 DriftSeverity.ERROR,
                 "binding",
                 "",
-                f"target identity {identity} does not match the bound step identity"
+                f"target identity {identity} does not match the bound step type identity"
                 f" {binding.descriptor.step_identity}",
-                "bind the step registered for this target identity.",
+                "bind the step type registered for this target identity.",
             )
         ]
     return []
@@ -1765,8 +1765,8 @@ def _target_kind_issues(
                 "binding",
                 "",
                 f"target kind {target.get('kind')} does not match the bound"
-                f" {binding.descriptor.category.value} step",
-                "bind a step of the category the target manifest declares.",
+                f" {binding.descriptor.category.value} step type",
+                "bind a step type of the category the target manifest declares.",
             )
         )
     target_kind = target.get("kind")
@@ -1778,8 +1778,8 @@ def _target_kind_issues(
                 "binding",
                 "",
                 f"target kind {target_kind} does not match the bound"
-                f" {binding.descriptor.kind.value} Step type",
-                "bind an implementation of the concrete Step type the target declares.",
+                f" {binding.descriptor.kind.value} step type",
+                "bind an implementation of the concrete step type the target declares.",
             )
         )
     return issues
@@ -1847,7 +1847,7 @@ def check_target_binding(
 def _collect_step_targets(
     descriptor: Mapping[str, Any],
 ) -> tuple[dict[str, Mapping[str, Any]], dict[str, Mapping[str, Any]]]:
-    """Return every declared step target and the subset checked against bindings.
+    """Return every declared step type target and the subset checked against bindings.
 
     Execution is classified by the target's runtime shape, never by its
     manifest kind name: any target whose runtime is ``custom-runner`` is a
@@ -1907,7 +1907,7 @@ def _missing_binding_report(identity: str, target: Mapping[str, Any]) -> DriftRe
                 "binding",
                 "",
                 "the descriptor declares an executable target with no binding",
-                f"bind a BaseStep implementation for step identity {identity}.",
+                f"bind a BaseStep implementation for step type identity {identity}.",
             ),
         ),
     )
@@ -1993,7 +1993,7 @@ def validate_plugin_bindings(
     """Raise :class:`SchemaDriftError` when any checked target fails validation.
 
     With ``strict=True``, intended for CI, warnings fail as well. Reports for
-    every failing step are attached to the raised error.
+    every failing step type are attached to the raised error.
     """
 
     reports = check_plugin_bindings(descriptor, bindings, entry_point_resolver=entry_point_resolver)

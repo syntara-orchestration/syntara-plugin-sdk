@@ -1,9 +1,9 @@
-# Step authoring and composition guide
+# Step type authoring and composition guide
 
 This guide takes you through the complete workflow for authoring Syntara
-plugin Steps: planning a Step, declaring its contract, implementing it,
+step types: planning a step type, declaring its contract, implementing it,
 verifying it locally, packaging it, and publishing it. It also explains how to
-compose Steps into readable, reliable workflows. The guide connects the
+compose step types into readable, reliable workflows. The guide connects the
 reference pages into one path; when a topic has a canonical page, the guide
 covers the essentials and links to that page for the details.
 
@@ -20,11 +20,11 @@ CI:
 
 In this guide, you learn how to:
 
-- Choose a Step category and a runner.
-- Declare a Step contract in YAML and implement it in typed Python.
-- Verify a Step locally, from a single run to a full test suite.
+- Choose a step type category and a runner.
+- Declare a step type contract in YAML and implement it in typed Python.
+- Verify a step type locally, from a single run to a full test suite.
 - Package and publish a plugin release.
-- Decide between one Step and several Steps in a workflow.
+- Decide between one step type and several step types in a workflow.
 
 Statements in this guide about what Syntara does describe the platform
 contract that the SDK targets. The SDK does not implement the platform side.
@@ -48,14 +48,14 @@ flowchart LR
 
 | Stage | You decide or produce | Main command |
 | --- | --- | --- |
-| [Plan](#plan-your-step) | The Step category, the runner, and the Step boundaries | None |
+| [Plan](#plan-your-step-type) | The step type category, the runner, and the step type boundaries | None |
 | [Declare](#declare-the-contract) | Manifests and JSON Schemas | `syntara-plugin init` |
 | [Implement](#implement-the-step) | A typed Python class (custom runner only) | None |
-| [Verify](#verify-locally) | Evidence that the Step behaves as declared | `validate`, `run`, `pytest` |
+| [Verify](#verify-locally) | Evidence that the step type behaves as declared | `validate`, `run`, `pytest` |
 | [Package](#package-the-plugin) | A deterministic OCI archive | `syntara-plugin build` |
 | [Publish](#publish-the-release) | A discoverable catalog release | `syntara-plugin publish` |
 
-After the journey, [Compose Steps into workflows](#compose-steps-into-workflows)
+After the journey, [Compose step types into workflows](#compose-step-types-into-workflows)
 gives design guidance, and
 [Identity and execution boundaries](#identity-and-execution-boundaries)
 explains what the SDK enforces between your code and the platform.
@@ -83,18 +83,18 @@ If you have not created a plugin before, complete
 
 | Term | Meaning |
 | --- | --- |
-| Plugin | A versioned release that declares Step types, integration types, credential recipes, and documentation. Its inventory is `plugin.yaml`. |
+| Plugin | A versioned release that declares step types, integration types, credential recipes, and documentation. Its inventory is `plugin.yaml`. |
 | Step type | One catalog capability, such as **Create issue**, declared by a manifest under `steps/`. |
-| Category | The role of a Step type: `action`, `control`, or `trigger`. The manifest `kind` is `Action`, `Control`, or `Trigger`. |
-| Runner | What executes the Step: the Syntara `platform-runner` or your own `custom-runner`. |
+| Category | The role of a step type: `action`, `control`, or `trigger`. The manifest `kind` is `Action`, `Control`, or `Trigger`. |
+| Runner | What executes the step type: the Syntara `platform-runner` or your own `custom-runner`. |
 | Entry point | The `module:Class` handle of a custom-runner implementation, such as `python_steps.create_issue:CreateIssueStep`. |
 | Workload image | The container image that holds your custom-runner code. A plugin has at most one. |
-| Step identity | The stable name `namespace.plugin.step`, such as `example.python-steps.create-issue`. |
+| Step type identity | The stable name `namespace.plugin.step`, such as `example.python-steps.create-issue`. |
 
 For the complete vocabulary, see
 [Terms and execution model](plugin-language.md#terms-and-execution-model).
 
-## Plan your Step
+## Plan your step type
 
 **Stage 1 of 6: Plan.** Next: [Declare](#declare-the-contract).
 
@@ -107,19 +107,19 @@ flowchart LR
     classDef todo fill:#f5f5f5,stroke:#8a8d90,color:#151515
 ```
 
-Before you write any YAML, decide what role the Step plays, who runs it, and
+Before you write any YAML, decide what role the step type plays, who runs it, and
 where its boundaries are. These decisions are hard to change after users
-build workflows on your Step.
+build workflows around that step type.
 
 ### Choose a category
 
-| Category | Use it when the Step | Example |
+| Category | Use it when the step type | Example |
 | --- | --- | --- |
 | `action` | Performs a domain operation: an API call, a script, or a data change. | Create issue, Launch job template, HTTP request |
 | `control` | Shapes the flow of a workflow, or invokes another workflow. | Invoke a deploy workflow |
 | `trigger` | Starts a workflow from an external event. | Record opened (webhook) |
 
-Most Steps are Actions. Choose `control` only for orchestration behavior,
+Most step types are Actions. Choose `control` only for orchestration behavior,
 not as a general label for every capability.
 
 > **Note:** The example implements Normalize records as a `ControlStep` so
@@ -131,7 +131,7 @@ not as a general label for every capability.
 | Question | `platform-runner` | `custom-runner` |
 | --- | --- | --- |
 | Can one HTTP call to a provider do the job? | Yes: declare it with the `http.v1` driver. | Use a custom runner when it cannot. |
-| Do you write code? | No. The manifest is the whole Step. | Yes: a typed Python class. |
+| Do you write code? | No. The manifest is the whole step type. | Yes: a typed Python class. |
 | Who owns the runtime image? | Syntara. | You do; the build pins its digest. |
 | Can you run it with `syntara-plugin run`? | No. Use `validate` and `inspect`. | Yes. |
 
@@ -141,15 +141,15 @@ installation. The SDK defines the operation contract for the `http.v1`
 driver. Other driver names, such as `webhook.v1` in the example, pass syntax
 validation, but the SDK does not define their contracts.
 
-A platform-runner Step has no Implement stage. Go from
+A platform-runner step type has no Implement stage. Go from
 [Declare](#declare-the-contract) to [Validate and inspect](#validate-and-inspect),
 and then to [Package](#package-the-plugin).
 
-### Decide the Step boundaries
+### Decide the step type boundaries
 
-Decide whether a capability is one Step or several Steps now, because the
+Decide whether a capability is one step type or several step types now, because the
 decision shapes your contracts. For guidance, see
-[One opaque Step or several workflow Steps](#one-opaque-step-or-several-workflow-steps).
+[One opaque step type or several workflow steps](#one-opaque-step-type-or-several-workflow-steps).
 
 ## Declare the contract
 
@@ -165,9 +165,9 @@ flowchart LR
     classDef todo fill:#f5f5f5,stroke:#8a8d90,color:#151515
 ```
 
-The manifest is the public contract of your Step: its input schema defines
+The manifest is the public contract of your step type: its input schema defines
 the form and the validation rules, and its output schema defines what
-downstream Steps receive. Write the manifest before the code. The code must
+downstream workflow steps receive. Write the manifest before the code. The code must
 conform to the manifest, never the reverse.
 
 ### Read the example workspace
@@ -180,12 +180,12 @@ examples/python-steps/
 ├── docs/README.md                       # documentation published with the plugin
 ├── steps/create-issue/manifest.yaml     # Action declaration
 ├── steps/record-opened/manifest.yaml    # Trigger declaration
-├── python_steps/                        # Step implementations
+├── python_steps/                        # Step type implementations
 └── tests/                               # pytest suite
 ```
 
 The `plugin.yaml` file names the plugin, declares the workload image that all
-custom-runner Steps share, and lists the Step manifests:
+custom-runner step types share, and lists the step type manifests:
 
 ```yaml
 apiVersion: syntara.io/v1alpha1
@@ -195,7 +195,7 @@ metadata:
   name: python-steps
   version: 0.1.0
   displayName: Python steps
-  description: One example step for each Syntara kind.
+  description: One example step type for each Syntara kind.
 spec:
   documentation:
     path: docs/README.md
@@ -206,8 +206,8 @@ spec:
     - steps/record-opened/manifest.yaml
 ```
 
-The `namespace`, the plugin `name`, and each Step `name` form the Step
-identity. Renaming any of them creates a different Step type, so choose
+The `namespace`, the plugin `name`, and each step type `name` form the step type's
+identity. Renaming any of them creates a different step type, so choose
 stable, lowercase names. Increase the semantic `version` for every release.
 
 ### Declare an Action
@@ -277,8 +277,8 @@ spec:
 ### Declare a Trigger
 
 A Trigger combines a platform ingress driver with the runner that implements
-the Step. The `spec.configuration` schema describes driver setup, and the
-`spec.input` schema describes the event that the Step receives. The following
+the step type. The `spec.configuration` schema describes driver setup, and the
+`spec.input` schema describes the event that the step type receives. The following
 excerpt is from `examples/python-steps/steps/record-opened/manifest.yaml`:
 
 ```yaml
@@ -366,12 +366,12 @@ practices:
 
 - Add a `description` to the root object and to every user-facing property.
   Descriptions become form help and output documentation.
-- Use `asset` for schemas that are long or shared between Steps.
+- Use `asset` for schemas that are long or shared between step types.
 - Constrain inputs with `required`, `enum`, `minLength`, and
   `additionalProperties: false`, so that invalid input fails before your code
   runs.
 - Declare the output precisely. The output schema is all that downstream
-  Steps can rely on.
+  step types can rely on.
 - Mark secret input fields with `writeOnly: true` or `format: password`.
 
 > **Important:** Marking a field as secret controls local redaction in
@@ -383,8 +383,8 @@ practices:
 > `syntara-plugin run --credential` delivers one of those locally as a
 > read-only file; see
 > [Supplying credentials](running-locally.md#supplying-credentials).
-> Production delivery by the Execution Plane, and the typed accessor a Step
-> would read the file through, are still follow-on work. Either way, do not
+> Production delivery by the Execution Plane, and the typed accessor a step
+> type would use to read the file, are still follow-on work. Either way, do not
 > copy the example's `api_token` input for real credentials.
 
 For every manifest field, see the
@@ -400,38 +400,26 @@ syntara-plugin init ./incident-tracker --namespace acme --fields title
 
 The command creates `plugin.yaml`, `syntara-plugin.yaml`, `docs/README.md`,
 `steps/request/manifest.yaml`, and `schemas/request.input.yaml`. The
-generated Step is a platform-runner `http.v1` Action whose input schema has
+generated step type is a platform-runner `http.v1` Action whose input schema has
 a required `resource` field plus the optional `title` field that `--fields`
 adds. For every `init`
 option, see [Getting started](getting-started.md#create-your-first-plugin).
 
-To convert the generated Action to a custom runner, follow these steps:
+For a Python custom-runner Action, choose the runner when scaffolding:
 
-1. In `steps/request/manifest.yaml`, replace `driver` and `operation` with an
-   entry point:
+```sh
+syntara-plugin init ./incident-tracker --namespace acme \
+  --runner custom-runner --fields title
+```
 
-   ```yaml
-   spec:
-     runtime:
-       kind: custom-runner
-       entryPoint: incident_tracker.request:RequestStep
-   ```
+This adds the workload declaration and build settings, a typed Python Action,
+ runtime configuration, a Containerfile, and local tests. Its runtime loads
+ the packaged manifests through the packaged-manifest binding helper. See
+ [Getting started](getting-started.md#create-a-python-custom-runner)
+for running the scaffold and preparing its image. Review generated models and
+schemas together, particularly when using complex JSON Schema constructs.
 
-2. Give the output schema explicit `properties` and `required` fields.
-3. In `plugin.yaml`, declare the workload image under `spec`:
-
-   ```yaml
-   spec:
-     workload:
-       image: incident-tracker-workload
-   ```
-
-4. Create the `incident_tracker` package at the workspace root, with a
-   `request.py` module that defines `RequestStep`, as described in
-   [Implement the Step](#implement-the-step). The input model must include
-   both `resource` and `title`, matching `schemas/request.input.yaml`.
-
-## Implement the Step
+## Implement the step type
 
 **Stage 3 of 6: Implement** (custom runner only). Next: [Verify](#verify-locally).
 
@@ -445,7 +433,7 @@ flowchart LR
     classDef todo fill:#f5f5f5,stroke:#8a8d90,color:#151515
 ```
 
-A custom-runner Step is a Python class that subclasses `ActionStep`,
+A custom-runner step type is a Python class that subclasses `ActionStep`,
 `ControlStep`, or `TriggerStep` from `syntara_plugin.runtime`. All three
 share one lifecycle: the SDK validates the raw input against the manifest
 schema, builds your Pydantic input model, calls your `run()` method once, and
@@ -519,7 +507,7 @@ Follow these rules in every implementation:
 
 - **Mirror the manifest.** The Pydantic models must accept every value that
   the input schema allows and emit only values that the output schema allows.
-  [Run one Step](#run-one-step) checks this.
+  [Run one step type](#run-one-step-type) checks this.
 - **Override `run()`, not `execute()`.** The SDK calls `execute()`, which
   calls `run()`.
 - **Return the output model.** Do not return a dictionary or a wrapper; the
@@ -541,7 +529,7 @@ when it is `True`.
 
 ### Signal a deliberate failure
 
-When a Step cannot complete for a reason that the workflow user needs to
+When a step type cannot complete for a reason that the workflow user needs to
 know, raise `ContainerInvocationError` with a `FailureCode`:
 
 ```python
@@ -580,7 +568,7 @@ owns retry policy. For every code, see `FailureCode` in
 > dependencies.
 
 For the typed API in depth, see
-[Typed Python steps](runtime-and-oci.md#typed-python-steps).
+[Typed Python step types](runtime-and-oci.md#typed-python-step-types).
 
 ## Verify locally
 
@@ -608,7 +596,7 @@ something that the previous one cannot:
 
 > **Important:** `validate` and `build` never import your Python code. A
 > misspelled entry point or a model that drifts from the manifest passes both.
-> For custom-runner Steps, run `syntara-plugin run` or `pytest` before you
+> For custom-runner step types, run `syntara-plugin run` or `pytest` before you
 > package.
 
 ### Validate and inspect
@@ -638,10 +626,10 @@ syntara-plugin inspect examples/hello-world/plugin.yaml
 The command prints the compiled `PluginDescriptor` as JSON. Check the
 `identity`, `runtime`, and resolved schemas of each target.
 
-### Run one Step
+### Run one step type
 
-The `run` command executes one custom-runner Step from your source, through
-the same container ABI that the platform uses. To run a Step, follow these
+The `run` command executes one custom-runner step type from your source, through
+the same container ABI that the platform uses. To run a step type, follow these
 steps:
 
 1. Print an input template:
@@ -654,7 +642,7 @@ steps:
    standard output, a field summary on standard error, and exits with status
    `2`. The template is not business-valid; fill in real values.
 
-2. Run the Step with real input:
+2. Run the step type with real input:
 
    ```sh
    syntara-plugin run --manifest examples/python-steps/plugin.yaml create-issue \
@@ -698,7 +686,7 @@ steps:
 
 For secret values, use `--input-file` instead of `--input`, so that secrets
 stay out of your shell history. For image mode, exit codes, and
-troubleshooting, see [Run a Step locally](running-locally.md).
+troubleshooting, see [Run a step type locally](running-locally.md).
 
 ### Generate a test suite
 
@@ -749,7 +737,7 @@ The tests use the harness fixtures, which pytest loads automatically when the
 
 ### Prove both execution paths agree
 
-The harness runs a Step two ways: directly in Python with `invoke_step`, and
+The harness runs a step type two ways: directly in Python with `invoke_step`, and
 over a loopback gRPC server with `invoke_step_in_container`. The
 `check_step_conformance` helper checks the core guarantees in one call. The
 following test is from
@@ -769,12 +757,12 @@ def test_conformance_in_one_call(mock_execution_context, step_bindings) -> None:
     assert report.passed, report.failures
 ```
 
-Use `step_bindings.bind_step` for a Step that has a manifest: it compiles the
+Use `step_bindings.bind_step` for a step type that has a manifest: it compiles the
 workspace, installs the manifest, and checks the Pydantic models against the
 schemas. Use `step_bindings.bind` for a class without a manifest; it installs
 a manifest derived from the models.
 
-The harness does not redact anything. To prove that a Step never leaks a
+The harness does not redact anything. To prove that a step type never leaks a
 secret, pass a `secret_sentinel()` value as input and call
 `assert_no_secrets` on the outcome.
 
@@ -850,7 +838,7 @@ and for the image pattern, see [Image mode](running-locally.md#image-mode).
 
 ## Publish the release
 
-**Stage 6 of 6: Publish.** Next: [Compose Steps into workflows](#compose-steps-into-workflows).
+**Stage 6 of 6: Publish.** Next: [Compose step types into workflows](#compose-step-types-into-workflows).
 
 ```mermaid
 flowchart LR
@@ -898,12 +886,12 @@ To stage a release without making it discoverable, set
 recovery, see the [User guide](user-guide.md) and the
 [Build settings reference](build-settings.md).
 
-## Compose Steps into workflows
+## Compose step types into workflows
 
 The hardest authoring decisions are about boundaries: what goes inside one
-Step, and what belongs in the workflow between Steps.
+step type, and what belongs in the workflow between step types.
 
-### One opaque Step or several workflow Steps
+### One opaque step type or several workflow step types
 
 Suppose that, when an alert fires, the team wants to create an issue, label
 it, and assign it to the on-call engineer. You can build an opaque **Open
@@ -912,13 +900,13 @@ the workflow connects:
 
 ```mermaid
 flowchart TB
-    accTitle: One opaque Action compared with three workflow Steps
-    accDescr: Option A runs create, label, and assign inside one Open incident Action. Option B runs Create issue, Add labels, and Assign owner as separate Steps connected by a visible issue ID.
+    accTitle: One opaque Action compared with three workflow step types
+    accDescr: Option A runs create, label, and assign inside one Open incident Action. Option B runs Create issue, Add labels, and Assign owner as separate step types connected by a visible issue ID.
     subgraph A["Option A: one opaque Action"]
         direction LR
         a_in([alert]) --> open["Open incident<br/>create + label + assign inside run()"] --> a_out([issue_url])
     end
-    subgraph B["Option B: three workflow Steps"]
+    subgraph B["Option B: three workflow step types"]
         direction LR
         b_in([alert]) --> create[Create issue] -->|issue_id| label[Add labels] -->|issue_id| assign[Assign owner] --> b_out([issue_url])
     end
@@ -927,35 +915,35 @@ flowchart TB
 
 Use this table to choose:
 
-| Prefer one opaque Step when | Prefer several Steps when |
+| Prefer one opaque step type when | Prefer several step types when |
 | --- | --- |
 | The operations always run together and fail together. | Someone needs to see, approve, or branch on an intermediate result. |
 | Intermediate data is an implementation detail or is sensitive. | A part is reusable on its own, such as Add labels. |
 | Retrying the whole operation is safe. | Parts have different retry or idempotency behavior. |
-| Splitting creates Steps that nobody uses alone. | Parts need different runners, integrations, or permissions. |
+| Splitting creates step types that nobody uses alone. | Parts need different runners, integrations, or permissions. |
 
 In this example, retry behavior decides. If labeling fails in Option A, a
 retry runs `run()` again and creates a second issue. In Option B, the
 platform can retry Add labels without touching Create issue. As a rule of
 thumb, if a workflow author would ever ask "which part failed?", the parts
-are separate Steps.
+are separate step types.
 
 The example workspace contains a runnable pair that shows both shapes:
 [`ComposeRemediationStep`](../examples/python-steps/python_steps/compose_remediation.py)
 normalizes and plans inside one `run()`, while
 [`NormalizeRecordsStep`](../examples/python-steps/python_steps/normalize_records.py)
-is a reusable Step that a chain connects to the next one. Both use
+is a reusable step type that a chain connects to the next one. Both use
 `ControlStep` for test coverage; the composition principles are the same for
 Actions.
 
 ### Keep boundaries observable
 
-A Step is observable only through its declared output and its terminal
+A step type is observable only through its declared output and its terminal
 status. The typed SDK gives `run()` no progress API, so nothing that happens
 inside `run()` is visible to the workflow. Design the output for the next
-Step:
+step type:
 
-- Return the identifiers and URLs that downstream Steps need, such as
+- Return the identifiers and URLs that downstream step types need, such as
   `issue_url`.
 - Keep output field names and types stable. A change breaks every workflow
   that reads them, so treat it as a breaking change and release it as a new
@@ -967,13 +955,13 @@ Step:
 - Fail deliberately with `ContainerInvocationError` and a precise
   `FailureCode`, as described in
   [Signal a deliberate failure](#signal-a-deliberate-failure).
-- Set `retryable=True` only when retrying the whole Step is safe.
+- Set `retryable=True` only when retrying the whole step type is safe.
 - Design for retries. Create issue is a classic non-idempotent call: a retry
   after a timeout can open a duplicate issue. When the provider supports
   idempotency keys, derive the key from input values that stay the same
   across retries. When you cannot tell whether the operation happened, use
   `outcome="unknown"` and `retryable=False`.
-- Split Steps at retry boundaries, as in Option B.
+- Split workflow step types at retry boundaries, as in Option B.
 
 A manifest `error` schema is optional. It documents a domain error shape and
 does not replace the SDK-owned failure envelope.
@@ -983,23 +971,23 @@ does not replace the SDK-owned failure envelope.
 A workflow is a directed acyclic graph (DAG) that people read, review, and
 debug. To keep it readable, follow these practices:
 
-- Name Steps by outcome, such as **Create issue**, not by mechanism, such as
+- Name step types by outcome, such as **Create issue**, not by mechanism, such as
   **POST to API**.
-- Give each Step one responsibility that fits in its `description`.
-- Fold glue logic into the Step that owns the data instead of adding chains
-  of trivial transformation Steps.
-- Put branching and fan-out in Control Steps, so that the graph shows them.
-- Keep the internal operations of an opaque Step private. Do not expose their
-  names as Step identities or as output fields that workflows depend on, and
+- Give each step type one responsibility that fits in its `description`.
+- Fold glue logic into the step type that owns the data instead of adding chains
+  of trivial transformation step types.
+- Put branching and fan-out in Control step types, so that the graph shows them.
+- Keep the internal operations of an opaque step type private. Do not expose their
+  names as step type identities or as output fields that workflows depend on, and
   report a `FailureCode` instead of the name of the internal operation that
   failed. If workflow authors need to address a part directly, promote it to
-  its own Step type with its own manifest.
+  its own step type with its own manifest.
 
 ### Test a composition locally
 
-The `chain_steps` helper runs Steps in sequence with explicit seams between
-them, and `check_seam_compatible` checks whether one Step's output fits the
-next Step's input. The following excerpt is from
+The `chain_steps` helper runs step types in sequence with explicit seams between
+them, and `check_seam_compatible` checks whether one step type's output fits the
+next step type's input. The following excerpt is from
 `examples/python-steps/tests/test_normalize_records_step.py`:
 
 ```python
@@ -1019,9 +1007,16 @@ outcome = chain_steps(
 assert outcome.ok
 ```
 
+For composition seams the contracts do not enforce — a parent Control's
+declared input against a child Trigger's event payload, or a child workflow's
+terminal result against the parent's declared output — `assert_schemas_agree`
+compares the two declared schemas field by field and names every diverging
+field on failure. The subworkflow-composition example uses it for exactly
+those obligations.
+
 The `chain_steps` helper is not a workflow engine: it has no branching,
 parallelism, retries, or persistence. When you need control flow, implement
-it in a `ControlStep.run()` method and test that Step. For more information,
+it in a `ControlStep.run()` method and test that step type. For more information,
 see [Chaining steps](testing.md#chaining-steps).
 
 ## Identity and execution boundaries
@@ -1051,7 +1046,7 @@ flowchart TB
 
 ### Installed revision identity
 
-When a plugin is installed, each Step becomes an immutable installed
+When a plugin is installed, each step type becomes an immutable installed
 revision. Its identity comes from the compiled descriptor
 (`namespace.plugin.step`), never from a source file name. Do not hard-code
 build-generated revision IDs. For more information, see
@@ -1063,9 +1058,9 @@ The `entryPoint` value names your implementation inside the workload image.
 The build binds the plugin's logical image ID to an immutable
 `repository@sha256:<digest>` reference, never a mutable tag. Inside the
 image, a bindings factory delegates to `load_plugin_bindings`, which reads
-the packaged `plugin.yaml` and registers each custom-runner Step through its
-installed manifest, so that the manifest schema stays the execution contract.
-The SDK publishes
+the packaged `plugin.yaml` and registers each custom-runner step type through
+its installed manifest, so that the manifest schema stays the execution
+contract. The SDK publishes
 no universal base image; each language adapter provides its own image recipe
 on top of the shared container ABI. The Python adapter is
 `syntara_plugin.runtime` in the `syntara-plugin-contracts` distribution. For
@@ -1075,14 +1070,14 @@ more information, see
 ### Execution placement
 
 The entry point is an implementation identity, not a placement decision:
-platform policy can run the Step in the selected host execution path or
+platform policy can run the step type in the selected host execution path or
 delegate it to the Execution Plane. The category does not choose placement
 either. Do not write code that depends on the host, network location, or
 process that runs it.
 
 ### Direct execution and the container path
 
-The SDK runs a Step through two paths with the same input validation and the
+The SDK runs a step type through two paths with the same input validation and the
 same single call to `run()`:
 
 - **Direct execution** (`StepExecutor`, `invoke_step`) runs the typed
@@ -1126,7 +1121,7 @@ wrapper is tracked separately. For more information, see
 | Goal | Document |
 | --- | --- |
 | Look up every manifest field | [Plugin language reference](plugin-language.md) |
-| Run a Step in image mode or troubleshoot `run` | [Run a Step locally](running-locally.md) |
+| Run a step type in image mode or troubleshoot `run` | [Run a step type locally](running-locally.md) |
 | Use every fixture and testing helper | [Testing reference](testing.md) |
 | Configure `syntara-plugin.yaml` | [Build settings reference](build-settings.md) |
 | Publish, stage, or recover a catalog release | [User guide](user-guide.md) |

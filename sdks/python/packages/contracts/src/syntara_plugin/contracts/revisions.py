@@ -14,7 +14,7 @@ _EXECUTABLE_SCHEMA_NAMES = frozenset({"input", "output", "error"})
 
 
 def step_revision_id(descriptor: Mapping[str, Any], target: Mapping[str, Any]) -> str:
-    """Identify one step contract, scoped to the declared plugin release."""
+    """Identify one step type contract, scoped to the declared plugin release."""
 
     metadata = descriptor["metadata"]
     spec = descriptor["spec"]
@@ -39,7 +39,7 @@ def plugin_revision_id(descriptor: Mapping[str, Any]) -> str:
         {key: value for key, value in target.items() if key != "step_revision_id"}
         for target in spec["targets"]
     ]
-    # Runner workload IDs and ABIs are carried in the step runtime contract.
+    # Runner workload IDs and ABIs are carried in the step type runtime contract.
     # Their image bindings may not exist until after this projection is hashed.
     runner_workloads = {
         runtime["workload"]
@@ -72,7 +72,7 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
         if runtime.get("kind") == "custom-runner" and runtime.get("workload") == workload_id:
             revision = target["step_revision_id"]
             if revision in steps:
-                raise ValueError("duplicate step revision in registration manifest")
+                raise ValueError("duplicate step type revision in registration manifest")
             steps[revision] = {
                 "stepIdentity": target["identity"],
                 "entryPoint": runtime["entryPoint"],
@@ -80,7 +80,7 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
                 "schemaDigests": _executable_schema_digests(target),
             }
     if not steps:
-        raise ValueError(f"workload {workload_id!r} has no custom-runner steps")
+        raise ValueError(f"workload {workload_id!r} has no custom-runner step types")
     return {
         "apiVersion": "syntara.registration/v1alpha1",
         "kind": "RegistrationManifest",
@@ -92,7 +92,7 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
 
 
 def _executable_schema_digests(target: Mapping[str, Any]) -> dict[str, str]:
-    """Return schema digests consumed by a container step implementation.
+    """Return schema digests consumed by a container type implementation.
 
     A compiled target can include authoring or workflow configuration schemas.
     Those remain part of the descriptor and revision identity, but are not
@@ -146,10 +146,10 @@ def revision_errors(descriptor: Mapping[str, Any]) -> tuple[str, ...]:
             if target.get("kind") in STEP_KINDS:
                 if target.get("step_revision_id") != step_revision_id(descriptor, target):
                     errors.append(
-                        f"target {target.get('identity', '<unknown>')!r} step revision ID does not match its contract"
+                        f"target {target.get('identity', '<unknown>')!r} step type revision ID does not match its contract"
                     )
             elif "step_revision_id" in target:
-                errors.append("non-step target has a step revision ID")
+                errors.append("target that is not a step type has a step type revision ID")
         if spec.get("plugin_revision_id") != plugin_revision_id(descriptor):
             errors.append("plugin revision ID does not match its contract")
         return tuple(errors)

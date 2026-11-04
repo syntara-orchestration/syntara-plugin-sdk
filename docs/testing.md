@@ -1,6 +1,6 @@
 # Testing reference
 
-The SDK's testing harness gives step authors a local pytest suite: validate
+The SDK's testing harness gives step type authors a local pytest suite: validate
 declared contracts and execute Python Action, Control, and Trigger
 implementations through the shared SDK execution boundary, without a cluster
 or platform services.
@@ -35,11 +35,11 @@ Their names are public API.
 | `manifest_validator` | `syntara_plugin.contracts` canonical bundle | `manifest_validator(document, kind=...)` raises `ManifestValidationError` on invalid documents; `.check(...)` returns diagnostics; `bundle=` accepts a step-type owner's canonical bundle. |
 | `compile_manifest` | `syntara_plugin.sdk` compiler | `compile_manifest(path_or_plugin, targets=None, ...)` compiles a workspace (path to `plugin.yaml` or its directory) or an in-memory `Plugin` model; path compiles default to `require_image_bindings=False` because local tests build no images. |
 | `mock_execution_context` | `ExecutionContext` | `mock_execution_context(invocation_id=..., workflow_run_id=..., runtime_context=..., cancelled=False)` builds one locally approved context: valid, free of real credentials, authorized only for local test execution. |
-| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for any step (a locally installed manifest verified with `check_step_contract`); `bind_step(entry_point, workspace=...)` for custom-runner Step types (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
+| `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for any step type (a locally installed manifest verified with `check_step_contract`); `bind_step(entry_point, workspace=...)` for custom-runner step types (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
 
-Action steps execute only through an installed manifest: the SDK's
+Action-category step types execute only through an installed manifest: the SDK's
 `require_executable_contract` provenance gate rejects fabricated descriptors,
-so `bind_step` is the only path to an executable custom-runner Step binding. Binding an
+so `bind_step` is the only path to an executable custom-runner step type binding. Binding an
 Action with `bind` is allowed for drift checks but is not executable.
 
 ## Testing credentials
@@ -79,7 +79,7 @@ outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
   container ABI's inline bound (1 MiB) are externalized only when an object
   store is configured. Test pre-cancelled contexts and oversized outputs with
   the adapter-specific tests.
-- Both accept a `StepBinding`, a step class or instance, or a
+- Both accept a `StepBinding`, a step type class or instance, or a
   `module:Class` entry point, and return a `StepOutcome`.
 
 `StepOutcome` normalizes both paths: `.ok`, `.status`, `.status_message`,
@@ -99,39 +99,78 @@ path; neither produces a wrapper.
 
 Runtime contract tests cover inline and asset-resolved output and error schemas,
 trusted schema digest matching, structured error round trips, inline and
-object-reference reconstruction, and rejection of invalid error results. Transport and object-store
-errors are checked for safe normalization without retaining backend exceptions.
+object-reference reconstruction, and rejection of invalid error results.
+Transport-error normalization is covered in
+[`test_container_protocol.py`](../sdks/python/tests/runtime/test_container_protocol.py);
+object-store failure normalization is covered in
+[`test_adapter.py`](../sdks/python/tests/runtime/test_adapter.py).
 
 `assert_outcomes_equivalent(direct, container)` asserts the two SDK paths
-agree on success, status, output, and error envelope (digests deliberately
-excluded; raised failures compare their failure codes when both carry one).
+agree on success, status, status message, output, and error envelope (digests
+are excluded; raised failures compare their failure codes). The reference
+suite checks input and output schema validation, the typed hook and its
+short-circuiting, and valid wrappers through the SDK. Its container assertions
+check that the ABI carries the same wrapper fields and the applied output
+schema digest, and maps failures without a wrapper to `ContainerFailure`.
 
 ## Sample payloads and secret redaction
 
-`syntara_plugin.testing.payloads` ships the seven contract categories as
-`PayloadCase` data: valid, missing-required, wrong-type, invalid-enum,
-schema-invalid output, a raised exception, and sensitive credential
-references, with `ReferenceControlStep`, `FailingReferenceStep`, and
-`schema_violating_binding()` as the matching stand-ins. The failure payload
-currently exercises the no-valid-outcome exception path. Use `StepFailure` to
-test a valid nonzero wrapper.
+`syntara_plugin.testing.payloads` provides valid, missing-required, wrong-type,
+invalid-enum, schema-invalid output, and deliberate-failure `PayloadCase` data.
+`ReferenceActionStep`, `ReferenceControlStep`, and `ReferenceTriggerStep` use
+the same Pydantic models and are importable through `module:Class` entry points.
+`FailingReferenceStep` raises `StepFailure` to produce a valid nonzero wrapper;
+`schema_violating_binding()` exercises invalid output without a valid wrapper.
+The container-invocation tests also cover safe terminal failures and unexpected
+exceptions that produce a container failure.
+
+`VALID_INPUT_CASES` retains the historical `valid_credential_reference` entry
+for compatibility. Despite its legacy name, it passes a fixed synthetic value
+through the ordinary `api_token` input field; it does not test credential
+delivery or access. That coverage belongs to AAP-95450.
 
 ```python
 import logging
+from unittest.mock import Mock
 
-from syntara_plugin.testing import secret_sentinel, assert_no_secrets
+import pytest
+from syntara_plugin.runtime import ControlStep, ExecutionContext
+from syntara_plugin.testing import assert_no_secrets, invoke_step, secret_sentinel
+from syntara_plugin.testing.payloads import ReferenceInput, ReferenceOutput
 
-token = secret_sentinel()
-with caplog.at_level(logging.INFO):
-    outcome = invoke_step(binding, {"title": "x", "api_token": token}, context=ctx)
-assert_no_secrets(outcome, [token], caplog=caplog)
+
+class ExampleStep(ControlStep[ReferenceInput, ReferenceOutput]):
+    def __init__(self, synthetic_value: str, dependency: Mock) -> None:
+        self.synthetic_value = synthetic_value
+        self.dependency = dependency
+
+    def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
+        logging.getLogger(__name__).info("Calling dependency")
+        return ReferenceOutput(
+            summary=self.dependency(self.synthetic_value), priority=inputs.priority
+        )
+
+
+def test_no_secret_leaks(caplog: pytest.LogCaptureFixture) -> None:
+    synthetic_value = secret_sentinel()
+    dependency = Mock(return_value="accepted")
+    step = ExampleStep(synthetic_value, dependency)
+    with caplog.at_level(logging.INFO):
+        outcome = invoke_step(step, {"title": "test"})
+
+    assert outcome.ok
+    dependency.assert_called_once_with(synthetic_value)
+    assert_no_secrets(outcome, [synthetic_value], caplog=caplog)
 ```
+
+The test injects a synthetic value and a mocked dependency solely to exercise
+leak detection; it does not model credential delivery.
 
 `assert_no_secrets` scans the status message, error message, raised exception,
 serialized output, raw envelope, and the pytest log capture. When scanning
 logs, wrap the invocation in `caplog.at_level(logging.INFO)` (or higher):
 pytest only captures records that pass the root logger's effective level,
-which defaults to WARNING, and INFO is exactly where a chatty step leaks
+which defaults to WARNING, and INFO is exactly where a chatty step type leaks
 credentials.
 
 Credential values must not appear in outputs, wrapper fields, raised errors,
@@ -139,6 +178,12 @@ or logs. `assert_no_secrets` detects leaks in both outcomes and captured logs;
 it does not sanitize them. SDK-generated diagnostics avoid credential values, but
 the SDK does not redact records emitted by step code. Authors must keep returned
 credentials out of their exception text and log messages on both invocation paths.
+
+Use `secret_sentinel()` to create a synthetic value for a leak assertion. This
+is separate from credential delivery. The current step-facing `ExecutionContext`
+has no credential accessor; approved credential file paths are tested at the
+[container ABI boundary](runtime-and-oci.md#container-abi), including rejection
+of unapproved paths. Do not put credential values in inputs or runtime context.
 
 ## Conformance in one call
 
@@ -166,14 +211,28 @@ explicit output-to-input seams and fails fast naming the broken link.
 same drift engine used for manifests. This is deliberately not a workflow
 engine: no branching, parallelism, fan-in, retries, or persistence. When a
 chain needs control flow, implement it as a `ControlStep.run()` and test the
-step.
+step type.
 
 `schema_without_descriptions(schema)` returns a copy of a JSON Schema with
-every `description` key dropped, so two schemas that must agree — a parent
-Control's declared input and a child Trigger's event payload, for example —
-can be compared for their full shape (types, formats, nested schemas,
-defaults, enums, `required`) rather than just property names. Descriptions
-differ by perspective, so they are the one part excluded.
+every `description` *annotation* dropped, so two schemas that must agree — a
+parent Control's declared input and a child Trigger's event payload, for
+example — can be compared for their full shape (types, formats, nested
+schemas, defaults, enums, `required`) rather than just property names.
+Descriptions differ by perspective, so the annotation is the one part
+excluded; a property *named* `description` is kept and compared like any
+other.
+
+`assert_schemas_agree(source, target, source_label=..., target_label=...)`
+turns that comparison into an opt-in authoring check: it raises
+`SchemaAgreementError` naming every diverging field — location plus both
+values — instead of a bare inequality. Booleans are distinguished from
+numbers (`const: true` and `const: 1` disagree), and the unordered keywords
+`required`, `enum`, and list-form `type` compare members without regard to
+order, including object and array members of `enum`. Use it for the composition seams the
+contracts do not enforce, such as a parent Control's declared input against a
+child Trigger's event payload, or a child workflow's terminal result against
+the parent's declared output. `schema_agreement_issues(source, target)`
+returns the same diagnostics as a tuple when a test needs to assert on them.
 
 ## Generated tests
 
@@ -196,7 +255,7 @@ pytest tests -q
 
 ## A runnable example
 
-[`../examples/python-steps`](../examples/python-steps) contains one step per
+[`../examples/python-steps`](../examples/python-steps) contains one step type per
 category and a test suite using everything above. Run it from the
 repository root:
 

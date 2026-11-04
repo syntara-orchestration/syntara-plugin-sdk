@@ -6,12 +6,12 @@ Choose the guide that matches what you are doing.
 | --- | --- |
 | Install the CLI or prepare a source checkout | [Installation](installation.md) |
 | Create and package a first plugin | [Getting started](getting-started.md) |
-| Follow the whole authoring workflow, from planning a Step to composing workflows | [Step authoring and composition guide](authoring-guide.md) |
+| Follow the whole authoring workflow, from planning a step type to composing workflows | [Step type authoring and composition guide](authoring-guide.md) |
 | Configure a plugin, publish an artifact, or update a catalog | [User guide](user-guide.md) |
 | Understand every YAML manifest field | [Plugin language reference](plugin-language.md) |
 | Configure `syntara-plugin.yaml` | [Build settings reference](build-settings.md) |
-| Test step implementations locally | [Testing reference](testing.md) |
-| Run one Step locally from source or a running image | [Running locally](running-locally.md) |
+| Test step type implementations locally | [Testing reference](testing.md) |
+| Run one step type locally from source or a running image | [Running locally](running-locally.md) |
 | Contribute to the SDK or change a contract | [Developer guide](developer-guide.md) |
 | Prepare or approve a Python package release | [Release guide](releasing.md) |
 | Understand the OCI artifact and container ABI boundaries | [Runtime and OCI model](runtime-and-oci.md) |

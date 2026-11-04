@@ -443,7 +443,7 @@ def _container_exit_error(
         detail=tuple(detail),
         next_steps=(
             "check the container log above",
-            "or rerun with --mode source to execute the Step from the workspace",
+            "or rerun with --mode source to execute the step type from the workspace",
         ),
     )
 

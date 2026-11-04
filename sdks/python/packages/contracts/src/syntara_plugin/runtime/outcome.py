@@ -18,7 +18,7 @@ _DEFAULT_FAILURE_MESSAGE = "The step failed."
 
 
 class ErrorCategory(StrEnum):
-    """Broad category for a deliberate step failure."""
+    """Broad category for a deliberate step type failure."""
 
     VALIDATION = "validation"
     AUTHENTICATION = "authentication"

@@ -1,4 +1,4 @@
-"""Entry-point loading for locally executable plugin steps."""
+"""Entry-point loading for locally executable steps."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ StepTarget = str | type[BaseStep[Any, Any]] | BaseStep[Any, Any]
 
 
 def default_step_identity(step: BaseStep[Any, Any]) -> str:
-    """Return a stable fallback identity derived from one step's class.
+    """Return a stable fallback identity derived from one step type's class.
 
     Classes defined inside functions carry ``<locals>`` qualifiers, which are
     not valid identity characters; those characters are replaced with dashes
-    so locally defined test steps remain bindable.
+    so locally defined test step types remain bindable.
     """
 
     step_class = type(step)
@@ -43,7 +43,7 @@ def parse_entry_point(entry_point: str) -> tuple[str, str]:
 
 
 def entry_point_of(step_class: type[BaseStep[Any, Any]]) -> str:
-    """Return the ``module:Class`` entry point string for one step class."""
+    """Return the ``module:Class`` entry point string for one step type class."""
 
     return f"{step_class.__module__}:{step_class.__qualname__}"
 
@@ -68,7 +68,7 @@ def load_step_class(entry_point: str) -> type[BaseStep[Any, Any]]:
 
 
 def resolve_step(target: StepTarget) -> BaseStep[Any, Any]:
-    """Resolve an entry point, step class, or step instance into one instance."""
+    """Resolve an entry point, step type class, or step type instance into one instance."""
 
     step: Any = target
     if isinstance(target, str):

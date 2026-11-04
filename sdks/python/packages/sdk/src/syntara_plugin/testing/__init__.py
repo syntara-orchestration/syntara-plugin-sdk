@@ -1,4 +1,4 @@
-"""Local pytest harness and fixtures for Syntara plugin step authors.
+"""Local pytest harness and fixtures for Syntara step type authors.
 
 The function core is importable without pytest; the ``pytest11`` entry point
 additionally distributes four fixtures (``manifest_validator``,
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from .bindings_factory import StepBindingsFactory
 from .chaining import ChainOutcome, chain_steps, check_seam_compatible, identity_seam
+from .check_schema import SchemaAgreementError, assert_schemas_agree, schema_agreement_issues
 from .conformance import (
     ConformanceFailure,
     ConformanceReport,
@@ -50,9 +51,11 @@ from .payloads import (
     Expectation,
     FailingReferenceStep,
     PayloadCase,
+    ReferenceActionStep,
     ReferenceControlStep,
     ReferenceInput,
     ReferenceOutput,
+    ReferenceTriggerStep,
     schema_violating_binding,
 )
 from .redaction import SecretLeakError, assert_no_secrets, secret_sentinel
@@ -73,14 +76,19 @@ __all__ = [
     "ManifestValidator",
     "PAYLOAD_CASES",
     "PayloadCase",
+    "ReferenceActionStep",
+    "ReferenceControlStep",
     "ReferenceInput",
     "ReferenceOutput",
-    "ReferenceControlStep",
+    "ReferenceTriggerStep",
     "StepBindingsFactory",
     "StepOutcome",
     "VALID_INPUT_CASES",
     "assert_no_secrets",
     "assert_outcomes_equivalent",
+    "assert_schemas_agree",
+    "SchemaAgreementError",
+    "schema_agreement_issues",
     "build_execution_context",
     "chain_steps",
     "check_invalid_blocks_hook",

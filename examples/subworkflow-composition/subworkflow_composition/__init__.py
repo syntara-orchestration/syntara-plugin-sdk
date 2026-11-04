@@ -1,1 +1,1 @@
-"""Parent-side and child-side Step types for synchronous subworkflow composition."""
+"""Parent-side and child-side step types for synchronous subworkflow composition."""

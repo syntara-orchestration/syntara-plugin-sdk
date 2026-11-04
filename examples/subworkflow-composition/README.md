@@ -1,9 +1,14 @@
 # Subworkflow composition example
 
 This workspace is the local confirmation evidence for subworkflow composition
-step types (AAP-95476 / ANSTRAT-2347). It shows that both sides of a
-parent-child workflow call are expressible with the existing `v1alpha1`
-contracts, with no new Step category and no schema change.
+step types (AAP-95476 / ANSTRAT-2347). Both sides of a parent-child workflow
+call are expressible with the existing `v1alpha1` contracts — no new Step
+category and no schema change — but that shape is **not yet a confirmed fit**
+for AO's ANSTRAT-2347 implementation; the recorded gaps are listed in the
+[language guide](../../docs/plugin-language.md#subworkflow-composition)
+(`spec.invocation` has no trigger selector, the workflow identifier matches no
+AO `workflow_id`, and the parent's output is the child's business result where
+AO's is execution metadata).
 
 | Target | Kind | Role |
 | --- | --- | --- |
@@ -48,6 +53,12 @@ uv run --no-sync pytest examples/subworkflow-composition -q
 ```
 
 The tests validate all three manifests against the canonical contract bundle,
-execute each step on the direct and container paths, prove the trigger's event
+execute each type on the direct and container paths, prove the trigger's event
 payload satisfies the terminal step's declared input, and chain the child's
-steps to show the parent receives exactly the result it declares.
+step types to show the parent receives exactly the result it declares.
+
+The pass-through checks use `assert_schemas_agree` from the SDK testing
+harness, which compares two declared schemas field by field (ignoring
+`description`s, which differ by perspective) and names every diverging field
+on failure — the contracts do not enforce these agreements, so the tests
+carry them as authoring obligations.
