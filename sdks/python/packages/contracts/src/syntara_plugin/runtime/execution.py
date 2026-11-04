@@ -313,11 +313,11 @@ def _invoke_with_error_schema(
 
     Invalid inputs and author-raised ``StepFailure`` values produce wrappers.
     An author-raised ``ContainerInvocationError`` propagates unchanged as a
-    deliberate terminal failure, unless its message contains a credential
-    value the step type read; that leak degrades to a safe execution error.
-    SDK failures, including invalid output, an
-    untrusted binding, digest mismatch, or unexpected exceptions, raise
-    ``StepExecutionError`` and therefore have no wrapper.
+    deliberate terminal failure. After a credential read it is sanitized:
+    a leaking message or provider code degrades to a safe execution error,
+    and a leaking detail is dropped. SDK failures, including invalid
+    output, an untrusted binding, digest mismatch, or unexpected
+    exceptions, raise ``StepExecutionError`` and therefore have no wrapper.
     """
 
     untrusted_binding = False
@@ -425,19 +425,39 @@ def _raise_credential_scan_limit() -> None:
 def _raise_scoped_terminal_failure(
     error: ContainerInvocationError, scope: _CredentialScope
 ) -> None:
-    """Propagate a deliberate terminal failure unless its message leaks.
+    """Propagate a deliberate terminal failure without credential exposure.
 
-    The failure message is the one field a terminal failure carries across
-    the container ABI, so a step type that read credentials gets it scanned;
-    a leak degrades to a safe execution error exactly like a leaking wrapper.
+    The message and the provider code are the free-text fields a terminal
+    failure carries across the container ABI; the detail and the original
+    exception chain stay reachable to in-process callers and are not
+    scanned. After a read, both ABI fields are checked and a leak in either
+    degrades to a safe execution error exactly like a leaking wrapper, a
+    leaking detail is dropped, and the propagated failure is reconstructed
+    without the unsafe chain.
     """
-    if scope.has_read:
-        scan_status = scope.scan(error.safe_message)
+    if not scope.has_read:
+        raise error
+    for abi_field in (error.safe_message, error.provider_code):
+        scan_status = scope.scan(abi_field)
         if scan_status is _CredentialScanStatus.LIMIT_EXCEEDED:
             _raise_credential_scan_limit()
         if scan_status is _CredentialScanStatus.SECRET_FOUND:
             raise StepExecutionError(_INVALID_STEP_RESPONSE) from None
-    raise error
+    safe_detail = error.detail
+    if safe_detail is not None:
+        scan_status = scope.scan(safe_detail)
+        if scan_status is _CredentialScanStatus.LIMIT_EXCEEDED:
+            _raise_credential_scan_limit()
+        if scan_status is _CredentialScanStatus.SECRET_FOUND:
+            safe_detail = None
+    raise ContainerInvocationError(
+        error.code,
+        error.safe_message,
+        retryable=error.retryable,
+        outcome=error.outcome,
+        provider_code=error.provider_code,
+        detail=safe_detail,
+    ) from None
 
 
 def _reject_credential_output(
