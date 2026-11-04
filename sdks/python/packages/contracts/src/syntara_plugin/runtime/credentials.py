@@ -23,6 +23,7 @@ _MAX_OUTPUT_NODES = 10_000
 _MAX_SCAN_WORK = 4_000_000
 _ROLLING_BASE = 257
 _ROLLING_MASK = (1 << 128) - 1
+_PROVIDER_SERIALIZATION_ERROR = "Credential providers cannot be serialized"
 
 
 class CredentialAccessError(RuntimeError):
@@ -103,7 +104,7 @@ class FileCredentialProvider:
         return "FileCredentialProvider(<opaque>)"
 
     def __reduce__(self) -> Any:
-        raise TypeError("Credential providers cannot be serialized")
+        raise TypeError(_PROVIDER_SERIALIZATION_ERROR)
 
     def _container_arguments(self) -> tuple[dict[str, str], Path | None]:
         return dict(self._paths), self._local_directory
@@ -140,7 +141,7 @@ def _read_credential_file(path: str, local_directory: Path | None) -> dict[str, 
         if not isinstance(document, dict):
             raise ValueError
         canonical_json_bytes(document)
-    except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+    except (OSError, ValueError, TypeError, RecursionError):
         raise CredentialAccessError("unavailable") from None
     return document
 
@@ -168,7 +169,7 @@ class _ScopedFileCredentialProvider:
         return self
 
     def __reduce__(self) -> Any:
-        raise TypeError("Credential providers cannot be serialized")
+        raise TypeError(_PROVIDER_SERIALIZATION_ERROR)
 
     def read(self, name: str) -> Mapping[str, Any]:
         if not self.__active:
@@ -211,6 +212,23 @@ def _scalar_fingerprint(value: Any) -> bytes | None:
     return None
 
 
+def _enqueue_children(value: Any, pending: list[Any], remaining: int) -> bool | None:
+    """Queue container members; return true if the traversal budget is exceeded."""
+
+    if isinstance(value, Mapping):
+        if 2 * len(value) > remaining - len(pending):
+            return True
+        pending.extend(value.keys())
+        pending.extend(value.values())
+        return False
+    if isinstance(value, (list, tuple)):
+        if len(value) > remaining - len(pending):
+            return True
+        pending.extend(value)
+        return False
+    return None
+
+
 class _ScopedCredentialProvider:
     """Restrict provider reads and track every successful read in the scope."""
 
@@ -234,7 +252,7 @@ class _ScopedCredentialProvider:
         return self
 
     def __reduce__(self) -> Any:
-        raise TypeError("Credential providers cannot be serialized")
+        raise TypeError(_PROVIDER_SERIALIZATION_ERROR)
 
     def read(self, name: str) -> dict[str, Any]:
         if not self.__active:
@@ -348,28 +366,28 @@ class _CredentialScope:
             if nodes > _MAX_CREDENTIAL_NODES:
                 self._overflow = True
                 break
-            if isinstance(value, Mapping):
-                if 2 * len(value) > _MAX_CREDENTIAL_NODES - nodes - len(pending):
-                    self._overflow = True
-                    break
-                pending.extend(value.keys())
-                pending.extend(value.values())
-            elif isinstance(value, (list, tuple)):
-                if len(value) > _MAX_CREDENTIAL_NODES - nodes - len(pending):
-                    self._overflow = True
-                    break
-                pending.extend(value)
-            elif isinstance(value, str):
-                self._add_text(value)
-            elif (fingerprint := _scalar_fingerprint(value)) is not None:
-                if fingerprint not in self._scalars:
-                    self._scalars.add(fingerprint)
-                    self._fingerprint_count += 1
-                    if self._fingerprint_count > _MAX_FINGERPRINTS:
-                        self._overflow = True
-                # Python string conversion and JSON conversion differ for bools.
-                self._add_text(str(value))
-                self._add_text(canonical_json_bytes(value).decode("utf-8"))
+            queued = _enqueue_children(value, pending, _MAX_CREDENTIAL_NODES - nodes)
+            if queued is True:
+                self._overflow = True
+                break
+            if queued is None:
+                self._record_leaf(value)
+
+    def _record_leaf(self, value: Any) -> None:
+        if isinstance(value, str):
+            self._add_text(value)
+            return
+        fingerprint = _scalar_fingerprint(value)
+        if fingerprint is None:
+            return
+        if fingerprint not in self._scalars:
+            self._scalars.add(fingerprint)
+            self._fingerprint_count += 1
+            if self._fingerprint_count > _MAX_FINGERPRINTS:
+                self._overflow = True
+        # Python string conversion and JSON conversion differ for bools.
+        self._add_text(str(value))
+        self._add_text(canonical_json_bytes(value).decode("utf-8"))
 
     @property
     def has_read(self) -> bool:
@@ -389,22 +407,18 @@ class _CredentialScope:
             nodes += 1
             if nodes > _MAX_OUTPUT_NODES:
                 return True
-            if isinstance(current, Mapping):
-                if 2 * len(current) > _MAX_OUTPUT_NODES - nodes - len(pending):
-                    return True
-                pending.extend(current.keys())
-                pending.extend(current.values())
-            elif isinstance(current, (tuple, list)):
-                if len(current) > _MAX_OUTPUT_NODES - nodes - len(pending):
-                    return True
-                pending.extend(current)
-            elif isinstance(current, str):
-                if self._contains_text(current, budget):
-                    return True
-            elif (fingerprint := _scalar_fingerprint(current)) is not None:
-                if fingerprint in self._scalars:
-                    return True
+            queued = _enqueue_children(current, pending, _MAX_OUTPUT_NODES - nodes)
+            if queued is True:
+                return True
+            if queued is None and self._contains_leaf(current, budget):
+                return True
         return False
+
+    def _contains_leaf(self, value: Any, budget: list[int]) -> bool:
+        if isinstance(value, str):
+            return self._contains_text(value, budget)
+        fingerprint = _scalar_fingerprint(value)
+        return fingerprint is not None and fingerprint in self._scalars
 
     def _contains_text(self, value: str, budget: list[int]) -> bool:
         for length, fingerprints in self._strings.items():

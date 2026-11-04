@@ -657,10 +657,11 @@ def test_compiler_binds_control_and_trigger_to_declared_integration(kind: str) -
         "documentation": {"path": "docs/README.md"}, "workload": {"image": "plugin-workload"},
         "targets": [path],
     }
+    typed_missing_plugin = _typed_plugin(missing_plugin)
+    missing_target = Target(path, document)
     with pytest.raises(CompilationError) as error:
         compile_model(
-            _typed_plugin(missing_plugin), [Target(path, document)],
-            image_bindings={"plugin-workload": DIGEST},
+            typed_missing_plugin, [missing_target], image_bindings={"plugin-workload": DIGEST},
         )
     assert "STEP_INTEGRATION_UNDECLARED" in {item.code for item in error.value.diagnostics}
 

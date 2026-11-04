@@ -191,7 +191,8 @@ def test_control_and_trigger_read_declared_credentials(
     )
     for call in (invoke_step, invoke_step_in_container):
         outcome = call(binding, {"mode": "use"}, context=context)
-        assert outcome.ok and outcome.output == {"result": "accepted"}
+        assert outcome.ok
+        assert outcome.output == {"result": "accepted"}
 
 
 def test_canonical_models_round_trip_and_reject_unversioned_extensions() -> None:
@@ -232,14 +233,16 @@ def test_approved_file_capability_has_direct_and_container_parity(tmp_path: Path
     binding = _binding()
     for call in (invoke_step, invoke_step_in_container):
         outcome = call(binding, {"mode": "use"}, context=context)
-        assert outcome.ok and outcome.output == {"result": "accepted"}
+        assert outcome.ok
+        assert outcome.output == {"result": "accepted"}
         assert _SECRET not in repr(outcome)
         assert _SECRET not in repr(context)
         with pytest.raises(TypeError) as serialization_error:
             asdict(context)
         assert _SECRET not in str(serialization_error.value)
         handle = CredentialStep.saved
-        assert handle is not None and _SECRET not in repr(handle)
+        assert handle is not None
+        assert _SECRET not in repr(handle)
         with pytest.raises(TypeError):
             pickle.dumps(handle)
         with pytest.raises(CredentialAccessError, match="expired"):
@@ -280,11 +283,13 @@ def test_denied_missing_file_and_secret_leaks_are_safe(tmp_path: Path) -> None:
     path.write_text(json.dumps({"token": _SECRET}))
     for mode in ("exception", "leak"):
         outcome = invoke_step(_binding(), {"mode": mode}, context=context)
-        assert not outcome.ok and outcome.raw is None
+        assert not outcome.ok
+        assert outcome.raw is None
         assert _SECRET not in repr(outcome.raised)
         assert _SECRET not in str(getattr(outcome.raised, "detail", ""))
-        with pytest.raises(Exception) as error:
-            invoke(_binding(), {"mode": mode}, context)
+        binding = _binding()
+        with pytest.raises(StepExecutionError) as error:
+            invoke(binding, {"mode": mode}, context)
         assert _SECRET not in str(error.value)
 
 
@@ -318,7 +323,8 @@ def test_undeclared_present_provider_entry_cannot_bypass_scope(
     )
     for call in (invoke_step, invoke_step_in_container):
         outcome = call(_binding(), {"mode": mode}, context=context)
-        assert outcome.ok and outcome.output == {"result": expected}
+        assert outcome.ok
+        assert outcome.output == {"result": expected}
         assert "undeclared-secret" not in repr(outcome)
 
 
@@ -331,7 +337,8 @@ def test_direct_scoped_provider_reads_are_tracked_and_revoked(tmp_path: Path) ->
     for call in (invoke_step, invoke_step_in_container):
         for mode in ("provider_allowed_leak", "inner_allowed_leak"):
             outcome = call(_binding(), {"mode": mode}, context=context)
-            assert not outcome.ok and outcome.raw is None
+            assert not outcome.ok
+            assert outcome.raw is None
             assert _SECRET not in repr(outcome)
             with pytest.raises(CredentialAccessError, match="expired"):
                 CredentialStep.saved_provider.read(_NAME)
@@ -348,7 +355,8 @@ def test_stringified_scalar_and_mapping_key_secrets_do_not_reach_wrapper(
     )
     for call in (invoke_step, invoke_step_in_container):
         outcome = call(_binding(), {"mode": mode}, context=context)
-        assert not outcome.ok and outcome.raw is None
+        assert not outcome.ok
+        assert outcome.raw is None
         assert "739251" not in repr(outcome)
         assert _KEY_SECRET not in repr(outcome)
 
@@ -361,10 +369,12 @@ def test_zero_credential_allows_success_but_not_business_output(tmp_path: Path) 
     )
     for call in (invoke_step, invoke_step_in_container):
         outcome = call(_binding(), {"mode": "use"}, context=context)
-        assert outcome.ok and outcome.output == {"result": "accepted"}
+        assert outcome.ok
+        assert outcome.output == {"result": "accepted"}
         for mode in ("number_leak", "number_raw_leak"):
             outcome = call(_binding(), {"mode": mode}, context=context)
-            assert not outcome.ok and outcome.raw is None
+            assert not outcome.ok
+            assert outcome.raw is None
 
 
 @pytest.mark.parametrize("explicit", [False, True])
@@ -389,11 +399,13 @@ def test_execution_error_after_read_discards_exception_chain(
             raise StepExecutionError(token, detail=token)  # noqa: B904 - exercise implicit context
 
     monkeypatch.setattr(StepExecutor, "execute", fail_after_read)
+    binding = _binding()
     with pytest.raises(StepExecutionError) as raised:
-        invoke(_binding(), {"mode": "use"}, context)
+        invoke(binding, {"mode": "use"}, context)
     error = raised.value
     assert error.detail is None
-    assert error.__cause__ is None and error.__context__ is None
+    assert error.__cause__ is None
+    assert error.__context__ is None
     assert _SECRET not in "".join(traceback.format_exception(error))
 
 
@@ -409,11 +421,13 @@ def test_control_flow_exception_after_read_is_sanitized(tmp_path: Path, mode: st
         invoke(binding, {"mode": mode}, context)
     error = raised.value
     assert error.detail is None
-    assert error.__cause__ is None and error.__context__ is None
+    assert error.__cause__ is None
+    assert error.__context__ is None
     assert _SECRET not in "".join(traceback.format_exception(error))
 
     outcome = invoke_step(binding, {"mode": mode}, context=context)
-    assert not outcome.ok and isinstance(outcome.raised, StepExecutionError)
+    assert not outcome.ok
+    assert isinstance(outcome.raised, StepExecutionError)
     assert _SECRET not in repr(outcome)
     assert _SECRET not in "".join(traceback.format_exception(outcome.raised))
 
@@ -425,8 +439,10 @@ def test_control_flow_exception_after_read_is_sanitized(tmp_path: Path, mode: st
 def test_control_flow_exception_before_read_is_preserved(
     mode: str, error_type: type[BaseException]
 ) -> None:
+    binding = _binding()
+    context = build_execution_context()
     with pytest.raises(error_type, match="pre-read"):
-        invoke(_binding(), {"mode": mode}, build_execution_context())
+        invoke(binding, {"mode": mode}, context)
 
 
 def test_sdk_diagnostics_do_not_log_read_credentials(tmp_path: Path, caplog: Any) -> None:
@@ -438,7 +454,8 @@ def test_sdk_diagnostics_do_not_log_read_credentials(tmp_path: Path, caplog: Any
     with caplog.at_level(logging.DEBUG):
         for call in (invoke_step, invoke_step_in_container):
             outcome = call(_binding(), {"mode": "exception"}, context=context)
-            assert not outcome.ok and outcome.raw is None
+            assert not outcome.ok
+            assert outcome.raw is None
             assert _SECRET not in repr(outcome.raised)
             assert _SECRET not in str(getattr(outcome.raised, "detail", ""))
     assert _SECRET not in caplog.text
@@ -546,5 +563,6 @@ def test_unscopable_host_provider_is_denied_safely(mode: str) -> None:
     provider: Any = MissingRestriction() if mode == "missing" else BrokenRestriction()
     context = ExecutionContext(invocation_id="denied", credential_provider=provider)
     outcome = invoke_step(_binding(), {"mode": "use"}, context=context)
-    assert outcome.ok and outcome.output == {"result": "unauthorized"}
+    assert outcome.ok
+    assert outcome.output == {"result": "unauthorized"}
     assert _SECRET not in repr(outcome)

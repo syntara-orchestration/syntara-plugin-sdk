@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
+from enum import Enum
 from threading import Event
 from typing import Any
 
@@ -13,6 +14,10 @@ from .credentials import (
     CredentialProvider,
     _CredentialScope,
 )
+
+
+class _NoCredentialProvider(Enum):
+    VALUE = "not supplied"
 
 
 @dataclass(frozen=True)
@@ -28,16 +33,21 @@ class ExecutionContext:
     workflow_run_id: str | None = None
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
-    credential_provider: InitVar[CredentialProvider | None] = None
+    credential_provider: InitVar[CredentialProvider | None | _NoCredentialProvider] = (
+        _NoCredentialProvider.VALUE
+    )
     _provider: CredentialProvider | None = field(default=None, init=False, compare=False, repr=False)
     _credential_scope: _CredentialScope | None = field(default=None, init=False, compare=False, repr=False)
 
-    def __post_init__(self, credential_provider: CredentialProvider | None) -> None:
+    def __post_init__(
+        self, credential_provider: CredentialProvider | None | _NoCredentialProvider
+    ) -> None:
         """Validate the minimal invariants of an invocation-scoped context."""
 
         if not self.invocation_id:
             raise ValueError("invocation_id must not be empty")
-        object.__setattr__(self, "_provider", credential_provider)
+        provider = None if credential_provider is _NoCredentialProvider.VALUE else credential_provider
+        object.__setattr__(self, "_provider", provider)
 
     def credential(self, name: str) -> CredentialBinding:
         """Request a declared binding during execution; the handle expires on return."""

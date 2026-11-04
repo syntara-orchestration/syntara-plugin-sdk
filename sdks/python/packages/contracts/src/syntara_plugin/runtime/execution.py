@@ -20,6 +20,7 @@ from .bindings import (
     validate_executable_step_binding,
 )
 from .context import ExecutionContext
+from .credentials import _CredentialScope
 from .outcome import (
     ErrorCategory,
     ErrorResult,
@@ -320,54 +321,73 @@ def _invoke_with_error_schema(
     scope = scoped_context._credential_scope
     assert scope is not None
     try:
-        execution_error: StepExecutionError | None = None
-        unexpected_error = False
-        wrapper: StandardOutputWrapper[Mapping[str, Any]] | None = None
-        try:
-            _validate_context_output_digest(step, scoped_context)
-            wrapper = executor.execute(input, scoped_context)
-        except StepExecutionError as error:
-            execution_error = error
-        except Exception:
-            unexpected_error = True
-        except BaseException:
-            if not scope.has_read:
-                raise
-            unexpected_error = True
-        if unexpected_error:
-            # Raise outside the handler so the original exception is not
-            # retained as context after a credential has been read.
-            raise StepExecutionError(_UNEXPECTED_STEP_FAILURE) from None
-        if execution_error is not None:
-            if scope.has_read:
-                # Do not propagate the original exception or its chain: even a
-                # safe-looking error can retain credential values in its cause.
-                safe_message = execution_error.safe_message
-                if scope.contains_secret(safe_message):
-                    safe_message = _UNEXPECTED_STEP_FAILURE
-                raise StepExecutionError(
-                    safe_message,
-                    failure_code=execution_error.failure_code,
-                    outcome=execution_error.outcome,
-                ) from None
-            raise execution_error
-        if wrapper is None:
-            raise StepExecutionError(_UNEXPECTED_STEP_FAILURE)
-        # Successful status metadata is fixed by the protocol, not step output.
-        # Failure metadata can be supplied by the step and must also be checked.
-        checked_fields: list[Any] = [wrapper.result]
-        if wrapper.status_code != 0:
-            checked_fields.extend((
-                wrapper.status_code,
-                wrapper.status_message,
-                wrapper.error_result.model_dump() if wrapper.error_result is not None else None,
-            ))
-        if scope.contains_secret(checked_fields):
-            raise StepExecutionError(_INVALID_STEP_RESPONSE)
+        wrapper = _execute_scoped(executor, step, input, scoped_context, scope)
+        _reject_credential_output(wrapper, scope)
         object.__setattr__(wrapper, "error_schema_digest", executor.last_error_schema_digest)
         return wrapper, executor.last_error_schema_digest
     finally:
         scope.close()
+
+
+def _execute_scoped(
+    executor: StepExecutor,
+    step: StepBinding,
+    input: Mapping[str, Any],
+    context: ExecutionContext,
+    scope: _CredentialScope,
+) -> StandardOutputWrapper[Mapping[str, Any]]:
+    execution_error: StepExecutionError | None = None
+    unexpected_error = False
+    wrapper: StandardOutputWrapper[Mapping[str, Any]] | None = None
+    try:
+        _validate_context_output_digest(step, context)
+        wrapper = executor.execute(input, context)
+    except StepExecutionError as error:
+        execution_error = error
+    except Exception:
+        unexpected_error = True
+    except BaseException:
+        if not scope.has_read:
+            raise
+        unexpected_error = True
+    if unexpected_error:
+        # Raise outside the handler so the original exception is not retained.
+        raise StepExecutionError(_UNEXPECTED_STEP_FAILURE) from None
+    if execution_error is not None:
+        _raise_scoped_execution_error(execution_error, scope)
+    if wrapper is None:
+        raise StepExecutionError(_UNEXPECTED_STEP_FAILURE)
+    return wrapper
+
+
+def _raise_scoped_execution_error(
+    error: StepExecutionError, scope: _CredentialScope
+) -> None:
+    if not scope.has_read:
+        raise error
+    # A safe-looking error can retain credential values in its cause or context.
+    safe_message = error.safe_message
+    if scope.contains_secret(safe_message):
+        safe_message = _UNEXPECTED_STEP_FAILURE
+    raise StepExecutionError(
+        safe_message, failure_code=error.failure_code, outcome=error.outcome,
+    ) from None
+
+
+def _reject_credential_output(
+    wrapper: StandardOutputWrapper[Mapping[str, Any]], scope: _CredentialScope
+) -> None:
+    # Successful status metadata is fixed by the protocol, not step output.
+    # Failure metadata can be supplied by the step and must also be checked.
+    checked_fields: list[Any] = [wrapper.result]
+    if wrapper.status_code != 0:
+        checked_fields.extend((
+            wrapper.status_code,
+            wrapper.status_message,
+            wrapper.error_result.model_dump() if wrapper.error_result is not None else None,
+        ))
+    if scope.contains_secret(checked_fields):
+        raise StepExecutionError(_INVALID_STEP_RESPONSE)
 
 
 def invoke(
