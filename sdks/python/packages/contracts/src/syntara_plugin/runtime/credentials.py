@@ -433,7 +433,18 @@ class _CredentialScope:
         fingerprint = _scalar_fingerprint(value)
         if fingerprint is not None and fingerprint in self._scalars:
             return _CredentialScanStatus.SECRET_FOUND
-        return _CredentialScanStatus.CLEAN
+        if fingerprint is None:
+            return _CredentialScanStatus.CLEAN
+        text = str(value)
+        status = self._scan_text(text, budget)
+        if status is not _CredentialScanStatus.CLEAN:
+            return status
+        json_text = canonical_json_bytes(value).decode("utf-8")
+        return (
+            _CredentialScanStatus.CLEAN
+            if text == json_text
+            else self._scan_text(json_text, budget)
+        )
 
     def _scan_text(self, value: str, budget: list[int]) -> _CredentialScanStatus:
         for length, fingerprints in self._strings.items():

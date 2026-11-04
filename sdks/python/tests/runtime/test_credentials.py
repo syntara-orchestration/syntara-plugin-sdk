@@ -95,6 +95,8 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                 return CredentialOutput(result=f"token={credential['token']}")
             if inputs.mode == "number_raw_leak":
                 return CredentialOutput(result=credential["pin"])
+            if inputs.mode == "numeric_token_leak":
+                return CredentialOutput(result=int(credential["numeric_token"]))
             if inputs.mode == "large_output":
                 return CredentialOutput(result="x" * 1_000)
             if inputs.mode in {"number_leak", "boolean_leak", "key_leak"}:
@@ -106,6 +108,8 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                 return CredentialOutput(result=value)
             if inputs.mode == "status_code_leak":
                 raise StepFailure(credential["pin"], "Failed", "Safe failure")
+            if inputs.mode == "numeric_token_status_code_leak":
+                raise StepFailure(int(credential["numeric_token"]), "Failed", "Safe failure")
             if inputs.mode in {"number_failure", "boolean_failure"}:
                 value = credential["pin"] if inputs.mode == "number_failure" else credential["flag"]
                 raise StepFailure(1, "Failed", f"credential: {value}")
@@ -362,6 +366,22 @@ def test_stringified_scalar_and_mapping_key_secrets_do_not_reach_wrapper(
         assert outcome.raw is None
         assert "739251" not in repr(outcome)
         assert _KEY_SECRET not in repr(outcome)
+
+
+@pytest.mark.parametrize("mode", ["numeric_token_leak", "numeric_token_status_code_leak"])
+def test_string_credentials_converted_to_numbers_do_not_reach_wrapper(
+    tmp_path: Path, mode: str
+) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"numeric_token": "8675309"}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    for call in (invoke_step, invoke_step_in_container):
+        outcome = call(_binding(), {"mode": mode}, context=context)
+        assert not outcome.ok
+        assert outcome.raw is None
+        assert "8675309" not in repr(outcome)
 
 
 def test_zero_credential_allows_success_but_not_business_output(tmp_path: Path) -> None:

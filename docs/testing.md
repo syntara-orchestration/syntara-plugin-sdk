@@ -127,7 +127,11 @@ exceptions that produce a container failure.
 `VALID_INPUT_CASES` retains the historical `valid_credential_reference` entry
 for compatibility. Despite its legacy name, it passes a fixed synthetic value
 through the ordinary `api_token` input field; it does not test credential
-delivery or access. That coverage belongs to AAP-95450.
+delivery or access. `CREDENTIAL_REFERENCE_CASES` separately holds only an
+opaque credential binding name and non-secret step inputs. The reference suite
+installs that binding with a recipe, supplies a synthetic credential through
+the approved local file provider, and compares direct and container outcomes,
+including status, status message, output, and error envelope.
 
 ```python
 import logging

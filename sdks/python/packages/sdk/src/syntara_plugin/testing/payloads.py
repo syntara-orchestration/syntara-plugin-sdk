@@ -43,6 +43,16 @@ class PayloadCase:
     expectation: Expectation
 
 
+@dataclass(frozen=True)
+class CredentialReferenceCase:
+    """One opaque credential binding reference used by the installed-step fixture suite."""
+
+    name: str
+    credential_name: str
+    inputs: Mapping[str, Any]
+    expected_output: Mapping[str, Any]
+
+
 class ReferenceInput(BaseModel):
     """Typed input with required, enum, numeric, and list fields.
 
@@ -82,6 +92,18 @@ class ReferenceTriggerStep(TriggerStep[ReferenceInput, ReferenceOutput]):
 
     def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
         return ReferenceOutput(summary=f"processed {inputs.title}", priority=inputs.priority)
+
+
+REFERENCE_CREDENTIAL_NAME = "syntara.testing.reference-token"
+
+
+class CredentialReferenceStep(ActionStep[ReferenceInput, ReferenceOutput]):
+    """Reference Action that reads an installed credential without returning it."""
+
+    def run(self, inputs: ReferenceInput, context: ExecutionContext) -> ReferenceOutput:
+        credential = context.credential(REFERENCE_CREDENTIAL_NAME).read()
+        summary = "credential consumed" if credential else "credential empty"
+        return ReferenceOutput(summary=summary, priority=inputs.priority)
 
 
 class FailingReferenceStep(ControlStep[ReferenceInput, ReferenceOutput]):
@@ -138,6 +160,17 @@ VALID_INPUT_CASES: tuple[PayloadCase, ...] = (
         "valid_credential_reference",
         {"title": "Deploy failed", "api_token": FIXED_SECRET_SENTINEL},
         Expectation.VALID,
+    ),
+)
+
+# The fixture carries only the opaque installed binding name; credential values
+# are provided separately by the test's local host-approved file provider.
+CREDENTIAL_REFERENCE_CASES: tuple[CredentialReferenceCase, ...] = (
+    CredentialReferenceCase(
+        name="declared_credential_reference",
+        credential_name=REFERENCE_CREDENTIAL_NAME,
+        inputs={"title": "Use the configured credential"},
+        expected_output={"summary": "credential consumed", "priority": "low"},
     ),
 )
 
