@@ -16,6 +16,7 @@ from .abi import (
     PROVIDER_ABI,
     ConformanceHarness,
     ConformanceResult,
+    ContainerInvocationError,
     FailureCode,
     RuntimeBinding,
     RuntimeOwnership,
@@ -100,7 +101,6 @@ if TYPE_CHECKING:
     from .container import (
         ContainerClient,
         ContainerInvocation,
-        ContainerInvocationError,
         ContainerProgress,
         ContainerRemoteError,
         ContainerResult,
@@ -119,7 +119,6 @@ _ADAPTER_MODULE = ".adapter"
 _LAZY_EXPORTS = {
     "ContainerClient": _CONTAINER_MODULE,
     "ContainerInvocation": _CONTAINER_MODULE,
-    "ContainerInvocationError": _CONTAINER_MODULE,
     "ContainerProgress": _CONTAINER_MODULE,
     "ContainerRemoteError": _CONTAINER_MODULE,
     "ContainerResult": _CONTAINER_MODULE,

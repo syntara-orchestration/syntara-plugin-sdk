@@ -11,6 +11,7 @@ from typing import Any, Protocol, runtime_checkable
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, canonical_json_digest
 
 from . import invoke
+from .abi import ContainerInvocationError
 from .bindings import (
     InstalledStepManifest,
     StepBinding,
@@ -22,7 +23,6 @@ from .bindings import (
 )
 from .container import (
     ContainerInvocation,
-    ContainerInvocationError,
     ContainerResult,
     ContainerStepHandler,
     FailureCode,
@@ -207,6 +207,10 @@ def container_step_for_binding(
     onto the terminal ``Result`` envelope. The output schema digest is the
     canonical digest of the declared schema applied by ``runtime.invoke()``;
     that public operation also verifies any digest in the invocation context.
+
+    A ``ContainerInvocationError`` raised from ``run()`` propagates unchanged
+    so the container service reports it as a terminal failure with its code,
+    message, retryability, and outcome preserved.
 
     A successful business result that exceeds the inline limit is externalized
     through ``object_store`` and carried as an ``object_reference``; without a

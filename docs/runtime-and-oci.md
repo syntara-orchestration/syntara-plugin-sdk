@@ -271,7 +271,10 @@ The output must both satisfy the declared schema and serialize as canonical
 JSON before a success wrapper can be constructed. Invalid output or
 serialization raises `StepExecutionError` and produces no wrapper. A
 step type-authored `StepFailure` is different: it produces a valid nonzero wrapper,
-which the container adapter serializes as `ContainerResult`. The adapter
+which the container adapter serializes as `ContainerResult`. A
+step type-authored `ContainerInvocationError` also leaves no wrapper, but is
+preserved as a terminal `ContainerFailure` with its code, message,
+retryability, and outcome. The adapter
 reports `ContainerFailure` for errors that leave no valid wrapper. In the
 current class implementation, `BaseStep.execute()` delegates to the
 author-defined `run()` hook, so examples below implement `run()`.
@@ -311,7 +314,8 @@ The returned document contains sensitive values. Use them only for the intended
 operation; never put them in logs, inputs, results, or error messages. SDK-generated
 errors and diagnostics do not include values read through the handle. The SDK
 rejects wrapper fields containing those values and suppresses business traceback
-details after a read when they contain credential values. Safety scans are bounded:
+details after a read when they contain credential values, and degrades a
+terminal-failure message that carries one. Safety scans are bounded:
 credential documents are limited to 1 MiB, 10,000 nodes, and 256 tracked
 fingerprints; output scans are limited to 10,000 nodes and 4,000,000 scan-work
 units. If a scan cannot finish within those bounds, the SDK reports
@@ -551,9 +555,12 @@ the resolved revisions. The adapter converts each
 cancellation event), calls `runtime.invoke`, and maps the returned wrapper to a
 `ContainerResult`. Valid input-validation errors and deliberate `StepFailure`
 values raised from `run()` produce nonzero-status results; valid output
-produces a zero-status result. Any other exception raised from `run()`,
-including `ContainerInvocationError`, produces no wrapper and becomes a
-terminal `ContainerFailure` with the code `OUTCOME_UNKNOWN`. Invalid output
+produces a zero-status result. A `ContainerInvocationError` raised from
+`run()` is a deliberate terminal failure: it produces no wrapper and becomes
+a terminal `ContainerFailure` that keeps its code, message, retryability, and
+outcome. Any other exception raised from `run()` produces no wrapper and
+becomes a terminal `ContainerFailure` with the code `OUTCOME_UNKNOWN`.
+Invalid output
 and serialization errors also produce no wrapper and become `ContainerFailure`
 outcomes. Each `ContainerResult` carries
 the canonical digest of the declared output schema; successful business results

@@ -453,11 +453,24 @@ Error:          REMOTE_REJECTED (retryable: true)
 Message:        The tracker rejected the request.
 ```
 
-A step type that raises an unexpected exception is caught and reported as a safe
-terminal `OUTCOME_UNKNOWN` failure instead of a result: the container ABI
-never carries exception text, because it may contain secrets or internal
-details. Any exception other than `StepFailure` counts as unexpected,
-including `ContainerInvocationError`. In source mode the exception happened
+A step type can also signal a deliberate terminal failure by raising
+`ContainerInvocationError` from `run()`: its code, message, retryability, and
+outcome are preserved rather than degraded to `OUTCOME_UNKNOWN`:
+
+```text
+Target:     example.python-steps.create-issue
+Mode:       source
+Input:      {"title": "Broken build"}
+Invocation: run-6b1f0d3c9e2a48f5b7d0c1e3a5f7b9d2
+Error:      REMOTE_REJECTED (retryable: true)
+Message:    The tracker rejected the request.
+Outcome:    not_completed
+```
+
+A step type that raises any other unexpected exception is caught and reported
+as a safe terminal `OUTCOME_UNKNOWN` failure instead of a result: the
+container ABI never carries exception text, because it may contain secrets or
+internal details. In source mode the exception happened
 in your own process, so the CLI captures the traceback locally and attaches
 it:
 

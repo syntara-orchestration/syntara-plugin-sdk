@@ -30,13 +30,12 @@ from typing import Any
 import grpc
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
 from syntara_plugin.contracts import canonical_json_bytes
-from syntara_plugin.runtime.abi import CONTAINER_ABI, FailureCode
+from syntara_plugin.runtime.abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from syntara_plugin.runtime.adapter import container_step_for_binding
 from syntara_plugin.runtime.bindings import StepBinding
 from syntara_plugin.runtime.container import (
     ContainerClient,
     ContainerInvocation,
-    ContainerInvocationError,
     ContainerProgress,
     ContainerRemoteError,
     ContainerResult,

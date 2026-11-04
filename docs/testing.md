@@ -84,13 +84,17 @@ outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
 
 `StepOutcome` normalizes both paths: `.ok`, `.status`, `.status_message`,
 `.output`, `.error` (the complete structured error result), `.run_calls` (business-hook spy),
-`.raised` (executor exception or remote failure), `.transport`, and `.raw`.
+`.raised` (executor exception, terminal failure, or remote failure), `.transport`, and `.raw`.
 Invalid output or serialization raises `StepExecutionError` before wrapper
 construction; `invoke_step` stores it in `.raised`, while the container
 adapter emits `ContainerFailure` because there is no valid wrapper to
 serialize. The container helper exposes that event as `ContainerRemoteError`
 in `.raised`. A `StepFailure` produces a nonzero wrapper and appears in
-`.status` and `.error` on both paths. Assert outcomes through these accessors
+`.status` and `.error` on both paths. A `ContainerInvocationError` raised
+from `run()` is a deliberate terminal failure: `invoke_step` stores the
+exception itself in `.raised`, and the container helper exposes the workload
+failure as `ContainerRemoteError` in `.raised`; both keep its code, message,
+retryability, and outcome. Assert outcomes through these accessors
 only; never through raw wrapper fields.
 
 Unexpected exceptions raised by the business hook are sanitized into

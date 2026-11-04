@@ -6,12 +6,15 @@ credential file, contact a broker, or make a network request.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
 from syntara_plugin.contracts import ContractBundle, load_bundle, validate_document
+
+from .outcome import MAX_MESSAGE_LENGTH
 
 # ABI means Application Binary Interface. In this package an ABI value is a
 # compatibility marker for a versioned, language-neutral runtime protocol; it
@@ -43,6 +46,41 @@ class FailureCode(StrEnum):
     ABI_VIOLATION = "ABI_VIOLATION"
     OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
     CREDENTIAL_SCAN_LIMIT = "CREDENTIAL_SCAN_LIMIT"
+
+
+_PROVIDER_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+
+
+class ContainerInvocationError(Exception):
+    """A user-safe terminal failure a step type may deliberately return."""
+
+    def __init__(
+        self,
+        code: FailureCode,
+        message: str,
+        *,
+        retryable: bool = False,
+        outcome: str = "not_completed",
+        provider_code: str = "",
+        detail: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        if not isinstance(code, FailureCode):
+            raise TypeError("code must be a FailureCode")
+        if not message or len(message) > MAX_MESSAGE_LENGTH:
+            raise ValueError(f"message must contain at most {MAX_MESSAGE_LENGTH} characters")
+        if not isinstance(retryable, bool):
+            raise TypeError("retryable must be a boolean")
+        if outcome not in {"not_started", "not_completed", "unknown"}:
+            raise ValueError("outcome must be not_started, not_completed, or unknown")
+        if provider_code and not _PROVIDER_CODE.fullmatch(provider_code):
+            raise ValueError("provider_code must be a lowercase provider identifier")
+        self.code = code
+        self.safe_message = message
+        self.retryable = retryable
+        self.outcome = outcome
+        self.provider_code = provider_code
+        self.detail = detail
 
 
 @dataclass(frozen=True)

@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from syntara_plugin.runtime import ErrorResult, FailureCode, StepExecutionError
-from syntara_plugin.runtime.container import ContainerInvocationError, ContainerRemoteError
+from syntara_plugin.runtime import (
+    ContainerInvocationError,
+    ErrorResult,
+    FailureCode,
+    StepExecutionError,
+)
+from syntara_plugin.runtime.container import ContainerRemoteError
 
 from .invocation import StepOutcome
 

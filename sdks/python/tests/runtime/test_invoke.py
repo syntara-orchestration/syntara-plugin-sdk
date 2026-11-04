@@ -19,6 +19,7 @@ from syntara_plugin.runtime import (
     ConformanceHarness,
     ContainerClient,
     ContainerInvocation,
+    ContainerInvocationError,
     ContainerRemoteError,
     ContainerResult,
     ContainerRuntimeService,
@@ -199,6 +200,23 @@ class UnexpectedStep(ActionStep[InvocationInput, InvocationOutput]):
     def run(self, inputs: InvocationInput, context: ExecutionContext) -> InvocationOutput:
         self.run_calls += 1
         raise RuntimeError("unexpected failure secret sentinel")
+
+
+class TerminalFailureStep(ActionStep[InvocationInput, InvocationOutput]):
+    """Raises a deliberate terminal failure instead of returning a wrapper."""
+
+    def __init__(self) -> None:
+        self.run_calls = 0
+
+    def run(self, inputs: InvocationInput, context: ExecutionContext) -> InvocationOutput:
+        self.run_calls += 1
+        raise ContainerInvocationError(
+            FailureCode.REMOTE_REJECTED,
+            "The remote service rejected the request.",
+            retryable=True,
+            outcome="not_completed",
+            provider_code="tracker",
+        )
 
 
 class ExecuteCountingStep(ActionEchoStep):
@@ -639,6 +657,66 @@ def test_unexpected_exception_is_raised_as_a_safe_execution_error() -> None:
     assert "unexpected failure secret sentinel" not in str(raised.value)
     assert raised.value.__cause__ is None
     assert raised.value.outcome == "unknown"
+    assert step.run_calls == 1
+
+
+def test_terminal_failure_from_run_propagates_with_its_fields() -> None:
+    step = TerminalFailureStep()
+    binding = _binding(step, "tests.runtime.invoke.terminal-failure")
+    context = _context(binding)
+
+    with pytest.raises(ContainerInvocationError) as raised:
+        invoke(binding, {"value": "hello"}, context)
+
+    error = raised.value
+    assert error.code is FailureCode.REMOTE_REJECTED
+    assert error.safe_message == "The remote service rejected the request."
+    assert error.retryable is True
+    assert error.outcome == "not_completed"
+    assert error.provider_code == "tracker"
+    assert step.run_calls == 1
+
+
+def test_terminal_failure_from_run_keeps_its_fields_over_the_container_abi() -> None:
+    step = TerminalFailureStep()
+    binding = _binding(step, "tests.runtime.invoke.terminal-failure")
+
+    event = _terminal_event(binding, {"value": "hello"})
+
+    assert event.WhichOneof("event") == "failure"
+    assert event.failure.code == "REMOTE_REJECTED"
+    assert event.failure.message == "The remote service rejected the request."
+    assert event.failure.retryable is True
+    assert event.failure.outcome == "not_completed"
+    assert event.failure.provider_code == "tracker"
+    assert step.run_calls == 1
+
+
+def test_async_service_preserves_a_terminal_failure_from_run() -> None:
+    step = TerminalFailureStep()
+    binding = _binding(step, "tests.runtime.invoke.async-terminal-failure")
+    service = AsyncContainerRuntimeService(
+        StepRegistry(
+            {binding.descriptor.step_identity: container_step_for_binding(binding)}
+        )
+    )
+    invocation = _invocation(binding, {"value": "hello"})
+
+    async def read_event() -> Any:
+        events = [
+            event
+            async for event in service.Execute(
+                _request_from_invocation(invocation), _AsyncServicerContext()
+            )
+        ]
+        return events[0]
+
+    event = asyncio.run(read_event())
+
+    assert event.WhichOneof("event") == "failure"
+    assert event.failure.code == "REMOTE_REJECTED"
+    assert event.failure.retryable is True
+    assert event.failure.outcome == "not_completed"
     assert step.run_calls == 1
 
 

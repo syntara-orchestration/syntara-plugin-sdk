@@ -22,7 +22,7 @@ import grpc
 from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
-from .abi import CONTAINER_ABI, FailureCode
+from .abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from .credentials import approved_credential_path
 from .execution import StepExecutionError
 from .outcome import (
@@ -38,7 +38,6 @@ from .protocol import container_pb2, container_pb2_grpc
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
-_PROVIDER_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
 _MAX_STATUS_CODE = 4_294_967_295
@@ -290,38 +289,6 @@ def standard_output_from_container_result(
         status_message=result.status_message,
         error_result=error,
     )
-
-
-class ContainerInvocationError(Exception):
-    """A user-safe terminal failure a step type may deliberately return."""
-
-    def __init__(
-        self,
-        code: FailureCode,
-        message: str,
-        *,
-        retryable: bool = False,
-        outcome: str = "not_completed",
-        provider_code: str = "",
-        detail: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        if not isinstance(code, FailureCode):
-            raise TypeError("code must be a FailureCode")
-        if not message or len(message) > MAX_MESSAGE_LENGTH:
-            raise ValueError(f"message must contain at most {MAX_MESSAGE_LENGTH} characters")
-        if not isinstance(retryable, bool):
-            raise TypeError("retryable must be a boolean")
-        if outcome not in {"not_started", "not_completed", "unknown"}:
-            raise ValueError("outcome must be not_started, not_completed, or unknown")
-        if provider_code and not _PROVIDER_CODE.fullmatch(provider_code):
-            raise ValueError("provider_code must be a lowercase provider identifier")
-        self.code = code
-        self.safe_message = message
-        self.retryable = retryable
-        self.outcome = outcome
-        self.provider_code = provider_code
-        self.detail = detail
 
 
 class ContainerRemoteError(RuntimeError):

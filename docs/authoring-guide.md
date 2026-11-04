@@ -573,10 +573,47 @@ Keep both messages short, actionable, and free of secrets. `code` defaults to
 `STEP_FAILED`, `category` to `business`, and `retryable` to `False`.
 `StepFailure` carries no `outcome` argument: a deliberate failure completes
 as a nonzero-status result, while an unexpected exception becomes a terminal
-`OUTCOME_UNKNOWN` failure. The
-failure code, message, and retryability are handed to the platform, which
-owns retry policy. For every code, see `FailureCode` in
+`OUTCOME_UNKNOWN` failure. To signal that the invocation itself did not
+finish, raise `ContainerInvocationError` instead, as the next section shows.
+The failure code, message, and retryability are handed to the platform,
+which owns retry policy. For every code, see `FailureCode` in
 [`abi.py`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/abi.py).
+
+### Signal a terminal failure
+
+`StepFailure` reports a deliberate failure as a valid nonzero result: the
+step type ran and decided it failed. When the invocation itself cannot
+finish, raise `ContainerInvocationError` from `run()`. Its code, message,
+retryability, and outcome are preserved on both execution paths instead of
+degrading to `OUTCOME_UNKNOWN`:
+
+```python
+from syntara_plugin.runtime import (
+    ActionStep,
+    ContainerInvocationError,
+    FailureCode,
+)
+
+
+class CreateIssueStep(ActionStep[CreateIssueInput, CreateIssueOutput]):
+    def run(self, inputs, context):
+        if context.cancelled:
+            raise ContainerInvocationError(
+                FailureCode.CANCELLED,
+                "The step was cancelled before the tracker call.",
+                outcome="not_started",
+            )
+        # Build and return CreateIssueOutput from the tracker response.
+```
+
+`outcome` says what the platform may conclude: `not_started` when nothing
+happened, `not_completed` (the default) when the step type cannot know
+whether its side effects occurred. Never raise it with `unknown`; an
+unexpected exception already becomes a terminal `OUTCOME_UNKNOWN` failure
+without leaking its text. `provider_code` optionally names the provider
+(`tracker`, `github`) for correlation. Prefer `StepFailure` for
+business-level rejections the workflow user should see as a result, and
+reserve `ContainerInvocationError` for terminal invocation outcomes.
 
 For the typed API in depth, see
 [Typed Python step types](runtime-and-oci.md#typed-python-step-types).
@@ -965,6 +1002,8 @@ step type:
 
 - Fail deliberately with `StepFailure` and a precise `FailureCode`, as
   described in [Signal a deliberate failure](#signal-a-deliberate-failure).
+- Stop with `ContainerInvocationError` when the invocation cannot finish, as
+  described in [Signal a terminal failure](#signal-a-terminal-failure).
 - Set `retryable=True` only when retrying the whole step type is safe.
 - Design for retries. Create issue is a classic non-idempotent call: a retry
   after a timeout can open a duplicate issue. When the provider supports
@@ -1105,13 +1144,16 @@ The two paths report outcomes differently:
 | Success | `StandardOutputWrapper` with `status` `0`, `status_message` `Completed`, and `output` | Terminal result with the same fields |
 | Invalid input; `run()` is not called | Wrapper with a nonzero `status` and an `error` of code `INVALID_INPUT` | Terminal result with a nonzero status and the same error |
 | Deliberate failure (`StepFailure`) | Wrapper with a nonzero `status` and the structured error | Terminal result with a nonzero status and the same error |
+| Terminal failure (`ContainerInvocationError`) | The exception is raised with its code, message, retryability, and outcome | Terminal failure with the code, message, retryability, and outcome |
 | Unexpected exception | `StepExecutionError` is raised with a safe message; the original traceback is kept as `detail` | Terminal failure `OUTCOME_UNKNOWN`; the exception text does not leave the container |
 | Output that violates the output schema | `StepExecutionError` is raised | Terminal failure `ABI_VIOLATION` |
 
 In tests, a deliberate failure produces a nonzero-status wrapper on both
 paths: `outcome.error` carries the structured error and `outcome.raised` is
-`None`, so assert `outcome.error.code`. An unexpected exception is stored in
-`outcome.raised`, so assert `outcome.raised.code`. Assert through
+`None`, so assert `outcome.error.code`. A terminal failure and an unexpected
+exception are both stored in `outcome.raised` (the `ContainerInvocationError`
+itself, or a `StepExecutionError`/workload `ContainerRemoteError`), so assert
+`outcome.raised.code`. Assert through
 `StepOutcome` accessors rather than raw
 fields, because the container mapping is provisional and the canonical
 wrapper is tracked separately. For more information, see

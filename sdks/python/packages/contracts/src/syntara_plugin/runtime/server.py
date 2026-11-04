@@ -16,13 +16,12 @@ from typing import Any
 import grpc
 from syntara_plugin.contracts import load_bundle, validate_document
 
-from .abi import CONTAINER_ABI, FailureCode
+from .abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from .adapter import container_step_for_binding
 from .bindings import StepBinding, StepBindingError, StepBindings, validate_executable_step_binding
 from .container import (
     INCOMPLETE_STEP_MESSAGE,
     ContainerInvocation,
-    ContainerInvocationError,
     ContainerResult,
     ContainerStepHandler,
     StepRegistry,

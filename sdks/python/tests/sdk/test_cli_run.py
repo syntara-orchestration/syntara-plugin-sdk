@@ -69,6 +69,38 @@ class BoomStep(ActionStep[BoomInput, BoomOutput]):
         )
 '''
 
+_TERMINAL_SOURCE = '''"""A custom-runner Action step type that raises a terminal failure."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import (
+    ActionStep,
+    ContainerInvocationError,
+    ExecutionContext,
+    FailureCode,
+)
+
+
+class TerminalInput(BaseModel):
+    title: str
+
+
+class TerminalOutput(BaseModel):
+    slug: str
+
+
+class TerminalStep(ActionStep[TerminalInput, TerminalOutput]):
+    def run(self, inputs: TerminalInput, context: ExecutionContext) -> TerminalOutput:
+        raise ContainerInvocationError(
+            FailureCode.REMOTE_REJECTED,
+            "The tracker rejected the request.",
+            retryable=True,
+            outcome="not_completed",
+            provider_code="tracker",
+        )
+'''
+
 _ECHO_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -93,6 +125,7 @@ def _write_echo_workspace(
     failing: bool = False,
     raising: bool = False,
     leaking: bool = False,
+    terminal: bool = False,
     input_schema: dict[str, Any] | None = None,
 ) -> Path:
     """Write one compilable workspace with an importable custom-runner Step."""
@@ -108,6 +141,8 @@ def _write_echo_workspace(
         output_schema = _LEAK_OUTPUT_SCHEMA
     elif failing:
         source, class_name, schema = _FAILING_SOURCE, "BoomStep", _FAILING_SCHEMA
+    elif terminal:
+        source, class_name, schema = _TERMINAL_SOURCE, "TerminalStep", _FAILING_SCHEMA
     else:
         source, class_name, schema = _STEP_SOURCE, "EchoStep", _ECHO_SCHEMA
     if input_schema is not None:
@@ -1492,7 +1527,7 @@ def test_image_mode_unreachable_address_exits_one(tmp_path: Path, capsys) -> Non
 def test_deliberate_step_failure_exits_one_with_structured_error(
     tmp_path: Path, capsys
 ) -> None:
-    """A terminal workload failure keeps its code, message, and retryability."""
+    """A deliberate StepFailure keeps its code, message, and retryability."""
 
     workspace = _write_echo_workspace(tmp_path / "ws", failing=True)
 
@@ -1504,6 +1539,25 @@ def test_deliberate_step_failure_exits_one_with_structured_error(
     captured = capsys.readouterr()
     assert _report_field(captured.out, "Error") == "INVALID_INPUT (retryable: false)"
     assert _report_field(captured.out, "Message") == "The tracker rejected the request."
+    assert "Error detail:" not in captured.out
+
+
+def test_terminal_failure_from_run_keeps_its_fields_in_the_report(
+    tmp_path: Path, capsys
+) -> None:
+    """A ContainerInvocationError from run() keeps its fields, not OUTCOME_UNKNOWN."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws", terminal=True)
+
+    status = main(
+        ["run", "--manifest", str(workspace / "plugin.yaml"), "--input", '{"title": "x"}']
+    )
+
+    assert status == 1
+    captured = capsys.readouterr()
+    assert _report_field(captured.out, "Error") == "REMOTE_REJECTED (retryable: true)"
+    assert _report_field(captured.out, "Message") == "The tracker rejected the request."
+    assert _report_field(captured.out, "Outcome") == "not_completed"
     assert "Error detail:" not in captured.out
 
 
@@ -2014,6 +2068,9 @@ def test_terminal_control_characters_are_stripped_from_failure_messages(
     captured = capsys.readouterr()
     assert "\x1b" not in captured.out
     assert "\x07" not in captured.out
+    # The preserved terminal-failure fields surface scrubbed, not degraded.
+    assert _report_field(captured.out, "Error") == "INVALID_INPUT (retryable: false)"
+    assert _report_field(captured.out, "Outcome") == "not_started"
     assert "PWNED" in captured.out
     assert "rejected" in captured.out
 

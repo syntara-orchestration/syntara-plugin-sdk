@@ -1116,6 +1116,7 @@ def test_importing_the_runtime_does_not_require_grpc() -> None:
             "StepBindings",
             "StepDescriptor",
             "InstalledStepManifest",
+            "ContainerInvocationError",
         ):
             assert getattr(runtime, name) is not None, name
         assert "grpc" not in [m for m in sys.modules if sys.modules[m] is not None]

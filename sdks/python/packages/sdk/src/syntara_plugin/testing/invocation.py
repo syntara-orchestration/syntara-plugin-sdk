@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import grpc
 from syntara_plugin.runtime import (
     BaseStep,
+    ContainerInvocationError,
     ErrorResult,
     ExecutionContext,
     FailureCode,
@@ -28,7 +29,6 @@ from syntara_plugin.runtime.bindings import validate_executable_step_binding
 from syntara_plugin.runtime.container import (
     ContainerClient,
     ContainerInvocation,
-    ContainerInvocationError,
     ContainerRemoteError,
     ContainerResult,
     ContainerStepHandler,

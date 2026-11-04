@@ -12,7 +12,7 @@ from syntara_plugin.contracts import (
     canonical_json_digest,
 )
 
-from .abi import FailureCode
+from .abi import ContainerInvocationError, FailureCode
 from .bindings import (
     StepBinding,
     StepBindingError,
@@ -216,6 +216,11 @@ class StepExecutor:
                 status_code=error.status_code,
                 status_message=error.status_message,
             )
+        except ContainerInvocationError:
+            # A deliberate terminal failure keeps its code, message,
+            # retryability, and outcome; the container service and direct
+            # callers report it unchanged.
+            raise
         except Exception as error:
             unexpected_step_error = "".join(traceback.format_exception(error)).rstrip()
         if unexpected_step_error is not None:
@@ -307,8 +312,11 @@ def _invoke_with_error_schema(
     """Invoke one step type through its trusted descriptor and schema contract.
 
     Invalid inputs and author-raised ``StepFailure`` values produce wrappers.
-    SDK failures, including invalid output, an untrusted binding, digest mismatch,
-    or unexpected exceptions, raise
+    An author-raised ``ContainerInvocationError`` propagates unchanged as a
+    deliberate terminal failure, unless its message contains a credential
+    value the step type read; that leak degrades to a safe execution error.
+    SDK failures, including invalid output, an
+    untrusted binding, digest mismatch, or unexpected exceptions, raise
     ``StepExecutionError`` and therefore have no wrapper.
     """
 
@@ -348,6 +356,8 @@ def _execute_scoped(
         wrapper = executor.execute(input, context)
     except StepExecutionError as error:
         execution_error = error
+    except ContainerInvocationError as error:
+        _raise_scoped_terminal_failure(error, scope)
     except Exception as error:
         unexpected_error = error
     except BaseException as error:
@@ -410,6 +420,24 @@ def _raise_credential_scan_limit() -> None:
         _CREDENTIAL_SCAN_LIMIT,
         failure_code=FailureCode.CREDENTIAL_SCAN_LIMIT,
     ) from None
+
+
+def _raise_scoped_terminal_failure(
+    error: ContainerInvocationError, scope: _CredentialScope
+) -> None:
+    """Propagate a deliberate terminal failure unless its message leaks.
+
+    The failure message is the one field a terminal failure carries across
+    the container ABI, so a step type that read credentials gets it scanned;
+    a leak degrades to a safe execution error exactly like a leaking wrapper.
+    """
+    if scope.has_read:
+        scan_status = scope.scan(error.safe_message)
+        if scan_status is _CredentialScanStatus.LIMIT_EXCEEDED:
+            _raise_credential_scan_limit()
+        if scan_status is _CredentialScanStatus.SECRET_FOUND:
+            raise StepExecutionError(_INVALID_STEP_RESPONSE) from None
+    raise error
 
 
 def _reject_credential_output(
