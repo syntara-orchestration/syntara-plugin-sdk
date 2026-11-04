@@ -350,7 +350,7 @@ def _execute_scoped(
 ) -> StandardOutputWrapper[Mapping[str, Any]]:
     execution_error: StepExecutionError | None = None
     unexpected_error: BaseException | None = None
-    terminal_failure: ContainerInvocationError | StepExecutionError | None = None
+    caught_terminal: ContainerInvocationError | None = None
     wrapper: StandardOutputWrapper[Mapping[str, Any]] | None = None
     try:
         _validate_context_output_digest(step, context)
@@ -358,17 +358,18 @@ def _execute_scoped(
     except StepExecutionError as error:
         execution_error = error
     except ContainerInvocationError as error:
-        terminal_failure = _scoped_terminal_failure(error, scope)
+        caught_terminal = error
     except Exception as error:
         unexpected_error = error
     except BaseException as error:
         if not scope.has_read:
             raise
         unexpected_error = error
-    if terminal_failure is not None:
-        # Raised outside the handler: raising a sanitized failure while the
-        # original is still active would retain it as ``__context__``.
-        raise terminal_failure
+    if caught_terminal is not None:
+        # Sanitized and raised outside the handler: running the sanitizer
+        # while the original is still active would retain it as
+        # ``__context__`` if a mutated field fails reconstruction.
+        raise _scoped_terminal_failure(caught_terminal, scope)
     if unexpected_error is not None:
         _raise_unexpected_scoped_error(unexpected_error, scope)
     if execution_error is not None:
@@ -437,14 +438,15 @@ def _scoped_terminal_failure(
     """Return the sanitized terminal failure to raise for ``error``.
 
     The message and the provider code are the free-text fields a terminal
-    failure carries across the container ABI; the detail and the original
-    exception chain stay reachable to in-process callers and are not
-    scanned. After a read, both ABI fields are checked and a leak in either
-    degrades to a safe execution error exactly like a leaking wrapper, a
-    leaking detail is dropped, and the returned failure is reconstructed
-    without the unsafe chain. The caller raises the result outside the
-    ``except`` handler so the original is never retained as its
-    ``__context__``.
+    failure carries across the container ABI, and the original's detail and
+    exception chain stay reachable to in-process callers; none of them may
+    carry a credential after a read. Both ABI fields are checked and a leak
+    in either degrades to a safe execution error exactly like a leaking
+    wrapper, a leaking detail is dropped, and the returned failure is
+    reconstructed without the original chain. A field mutated after
+    construction fails reconstruction and degrades the same way. The caller
+    sanitizes and raises outside the ``except`` handler so the original is
+    never retained as its ``__context__``.
     """
     if not scope.has_read:
         return error
@@ -461,14 +463,19 @@ def _scoped_terminal_failure(
             return _credential_scan_limit_error()
         if scan_status is _CredentialScanStatus.SECRET_FOUND:
             safe_detail = None
-    return ContainerInvocationError(
-        error.code,
-        error.safe_message,
-        retryable=error.retryable,
-        outcome=error.outcome,
-        provider_code=error.provider_code,
-        detail=safe_detail,
-    )
+    try:
+        return ContainerInvocationError(
+            error.code,
+            error.safe_message,
+            retryable=error.retryable,
+            outcome=error.outcome,
+            provider_code=error.provider_code,
+            detail=safe_detail,
+        )
+    except (TypeError, ValueError):
+        # A field mutated after construction no longer reconstructs; treat
+        # the failure like any other invalid step output.
+        return StepExecutionError(_INVALID_STEP_RESPONSE)
 
 
 def _reject_credential_output(

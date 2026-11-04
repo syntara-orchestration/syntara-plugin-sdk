@@ -125,6 +125,15 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                     outcome="not_completed",
                     detail=f"provider said: {credential['token']}",
                 ) from ValueError(f"upstream failed: {credential['token']}")
+            if inputs.mode == "terminal_failure_mutated":
+                failure = ContainerInvocationError(
+                    FailureCode.REMOTE_REJECTED,
+                    "The tracker rejected the request.",
+                    retryable=True,
+                    outcome="not_completed",
+                )
+                failure.provider_code = "Not A Code!"
+                raise failure from ValueError(f"upstream failed: {credential['token']}")
             if inputs.mode == "system_exit":
                 raise SystemExit(credential["token"])
             if inputs.mode == "keyboard_interrupt":
@@ -468,6 +477,41 @@ def test_a_terminal_failure_detail_and_chain_cannot_leak_a_read_credential(
     )
     assert event.WhichOneof("event") == "failure"
     assert event.failure.code == "REMOTE_REJECTED"
+    assert _SECRET not in str(event)
+
+
+def test_a_mutated_terminal_failure_degrades_safely_after_a_read(
+    tmp_path: Path,
+) -> None:
+    """A field mutated after construction cannot leak through reconstruction.
+
+    The mutated provider code fails the reconstructed failure's validation;
+    the safe degradation must not retain the original, whose cause carries
+    the credential, as its context or formatted traceback.
+    """
+
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    direct = invoke_step(_binding(), {"mode": "terminal_failure_mutated"}, context=context)
+    assert isinstance(direct.raised, StepExecutionError)
+    assert direct.raised.failure_code is FailureCode.ABI_VIOLATION
+    assert direct.raised.__context__ is None
+    assert _SECRET not in str(direct.raised)
+    assert _SECRET not in "".join(traceback.format_exception(direct.raised))
+    container = invoke_step_in_container(
+        _binding(), {"mode": "terminal_failure_mutated"}, context=context
+    )
+    assert isinstance(container.raised, ContainerRemoteError)
+    assert container.raised.code is FailureCode.ABI_VIOLATION
+    assert _SECRET not in repr(container)
+    event = _terminal_failure_event(
+        _binding(), {"mode": "terminal_failure_mutated"}, path, tmp_path
+    )
+    assert event.WhichOneof("event") == "failure"
+    assert event.failure.code == "ABI_VIOLATION"
     assert _SECRET not in str(event)
 
 
