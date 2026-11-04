@@ -45,6 +45,7 @@ class TerminalFailureStep(ReferenceControlStep):
             FailureCode.UPSTREAM_TRANSIENT,
             "The upstream service is temporarily unavailable.",
             retryable=True,
+            provider_code="upstream",
         )
 
 
@@ -190,12 +191,14 @@ def test_terminal_failures_are_equivalent_as_raised_failures() -> None:
     assert direct.raised.code is FailureCode.UPSTREAM_TRANSIENT
     assert direct.raised.retryable is True
     assert direct.raised.safe_message == "The upstream service is temporarily unavailable."
+    assert direct.raised.provider_code == "upstream"
     assert isinstance(container.raised, ContainerRemoteError)
     assert container.raised.source == "workload"
     assert container.raised.code is FailureCode.UPSTREAM_TRANSIENT
     assert container.raised.retryable is True
     assert container.raised.outcome == "not_completed"
     assert container.raised.message == "The upstream service is temporarily unavailable."
+    assert container.raised.provider_code == "upstream"
     assert direct.raw is None
     assert container.raw is None
 

@@ -454,8 +454,9 @@ Message:        The tracker rejected the request.
 ```
 
 A step type can also signal a deliberate terminal failure by raising
-`ContainerInvocationError` from `run()`: its code, message, retryability, and
-outcome are preserved rather than degraded to `OUTCOME_UNKNOWN`:
+`ContainerInvocationError` from `run()`: its code, message, retryability,
+outcome, and provider code are preserved rather than degraded to
+`OUTCOME_UNKNOWN`:
 
 ```text
 Target:     example.python-steps.create-issue

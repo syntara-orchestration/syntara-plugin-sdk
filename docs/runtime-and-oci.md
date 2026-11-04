@@ -557,8 +557,8 @@ cancellation event), calls `runtime.invoke`, and maps the returned wrapper to a
 values raised from `run()` produce nonzero-status results; valid output
 produces a zero-status result. A `ContainerInvocationError` raised from
 `run()` is a deliberate terminal failure: it produces no wrapper and becomes
-a terminal `ContainerFailure` that keeps its code, message, retryability, and
-outcome. Any other exception raised from `run()` produces no wrapper and
+a terminal `ContainerFailure` that keeps its code, message, retryability,
+outcome, and provider code. Any other exception raised from `run()` produces no wrapper and
 becomes a terminal `ContainerFailure` with the code `OUTCOME_UNKNOWN`.
 Invalid output
 and serialization errors also produce no wrapper and become `ContainerFailure`

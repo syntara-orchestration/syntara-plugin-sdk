@@ -94,7 +94,7 @@ in `.raised`. A `StepFailure` produces a nonzero wrapper and appears in
 from `run()` is a deliberate terminal failure: `invoke_step` stores the
 exception itself in `.raised`, and the container helper exposes the workload
 failure as `ContainerRemoteError` in `.raised`; both keep its code, message,
-retryability, and outcome. Assert outcomes through these accessors
+retryability, outcome, and provider code. Assert outcomes through these accessors
 only; never through raw wrapper fields.
 
 Unexpected exceptions raised by the business hook are sanitized into

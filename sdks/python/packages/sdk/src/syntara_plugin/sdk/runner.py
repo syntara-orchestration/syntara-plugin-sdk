@@ -179,6 +179,8 @@ class RunErrorDetail:
     code: str
     message: str
     retryable: bool
+    # The workload's provider correlation code; empty when it carried none.
+    provider_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -1558,6 +1560,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
                 code=_scrub_text(terminal.error.code, secrets),
                 message=_scrub_text(terminal.error.message, secrets),
                 retryable=terminal.error.retryable,
+                provider_code=_scrub_text(terminal.error.provider_code, secrets),
             ),
             outcome=terminal.outcome,
             error_detail=detail,
@@ -1749,6 +1752,7 @@ def _consume(
                     code=str(error.code),
                     message=error.message,
                     retryable=error.retryable,
+                    provider_code=error.provider_code,
                 ),
                 outcome=error.outcome,
             )

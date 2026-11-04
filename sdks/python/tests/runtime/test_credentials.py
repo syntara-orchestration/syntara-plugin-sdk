@@ -390,6 +390,7 @@ def test_a_terminal_failure_after_a_read_keeps_its_fields(tmp_path: Path) -> Non
     assert container.raised.message == "The tracker rejected the request."
     assert container.raised.retryable is True
     assert container.raised.outcome == "not_completed"
+    assert container.raised.provider_code == "tracker"
     event = _terminal_failure_event(_binding(), {"mode": "terminal_failure"}, path, tmp_path)
     assert event.WhichOneof("event") == "failure"
     assert event.failure.code == "REMOTE_REJECTED"

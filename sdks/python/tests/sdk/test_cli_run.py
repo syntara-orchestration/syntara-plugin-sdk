@@ -1558,7 +1558,33 @@ def test_terminal_failure_from_run_keeps_its_fields_in_the_report(
     assert _report_field(captured.out, "Error") == "REMOTE_REJECTED (retryable: true)"
     assert _report_field(captured.out, "Message") == "The tracker rejected the request."
     assert _report_field(captured.out, "Outcome") == "not_completed"
+    assert _report_field(captured.out, "Provider code") == "tracker"
     assert "Error detail:" not in captured.out
+
+
+def test_terminal_failure_provider_code_appears_in_the_json_report(
+    tmp_path: Path, capsys
+) -> None:
+    """The JSON error document carries the provider correlation code."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws", terminal=True)
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(workspace / "plugin.yaml"),
+            "--json",
+            "--input",
+            '{"title": "x"}',
+        ]
+    )
+
+    assert status == 1
+    document = json.loads(capsys.readouterr().out)
+    assert document["ok"] is False
+    assert document["error"]["code"] == "REMOTE_REJECTED"
+    assert document["error"]["providerCode"] == "tracker"
 
 
 def test_unexpected_exception_attaches_the_local_traceback(

@@ -706,3 +706,45 @@ def test_empty_failure_message_is_a_protocol_error() -> None:
         _remote_failure(event)
 
     assert raised.value.source == "protocol"
+
+
+def test_failure_event_provider_code_surfaces_on_the_remote_error() -> None:
+    """The client keeps the workload's provider correlation code."""
+
+    event = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        failure=container_pb2.Failure(
+            code="REMOTE_REJECTED",
+            message="The tracker rejected the request.",
+            retryable=True,
+            outcome="not_completed",
+            provider_code="tracker",
+        ),
+    )
+    from syntara_plugin.runtime.container import _remote_failure
+
+    error = _remote_failure(event)
+
+    assert error.source == "workload"
+    assert error.provider_code == "tracker"
+
+
+def test_malformed_failure_provider_code_is_a_protocol_error() -> None:
+    """A provider code is shape-checked like every other remote string."""
+
+    from syntara_plugin.runtime.container import _remote_failure
+
+    event = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        failure=container_pb2.Failure(
+            code="REMOTE_REJECTED",
+            message="The tracker rejected the request.",
+            outcome="not_completed",
+            provider_code="Not A Code!",
+        ),
+    )
+
+    with pytest.raises(ContainerRemoteError) as raised:
+        _remote_failure(event)
+
+    assert raised.value.source == "protocol"

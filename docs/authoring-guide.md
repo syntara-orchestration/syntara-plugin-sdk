@@ -611,7 +611,8 @@ happened, `not_completed` (the default) when the step type cannot know
 whether its side effects occurred. Never raise it with `unknown`; an
 unexpected exception already becomes a terminal `OUTCOME_UNKNOWN` failure
 without leaking its text. `provider_code` optionally names the provider
-(`tracker`, `github`) for correlation. Prefer `StepFailure` for
+(`tracker`, `github`) for correlation; it appears in the run report and on
+every client surface that carries the failure. Prefer `StepFailure` for
 business-level rejections the workflow user should see as a result, and
 reserve `ContainerInvocationError` for terminal invocation outcomes.
 
@@ -1144,7 +1145,7 @@ The two paths report outcomes differently:
 | Success | `StandardOutputWrapper` with `status` `0`, `status_message` `Completed`, and `output` | Terminal result with the same fields |
 | Invalid input; `run()` is not called | Wrapper with a nonzero `status` and an `error` of code `INVALID_INPUT` | Terminal result with a nonzero status and the same error |
 | Deliberate failure (`StepFailure`) | Wrapper with a nonzero `status` and the structured error | Terminal result with a nonzero status and the same error |
-| Terminal failure (`ContainerInvocationError`) | The exception is raised with its code, message, retryability, and outcome | Terminal failure with the code, message, retryability, and outcome |
+| Terminal failure (`ContainerInvocationError`) | The exception is raised with its code, message, retryability, and outcome | Terminal failure with the code, message, retryability, outcome, and provider code |
 | Unexpected exception | `StepExecutionError` is raised with a safe message; the original traceback is kept as `detail` | Terminal failure `OUTCOME_UNKNOWN`; the exception text does not leave the container |
 | Output that violates the output schema | `StepExecutionError` is raised | Terminal failure `ABI_VIOLATION` |
 

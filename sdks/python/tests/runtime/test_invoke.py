@@ -692,6 +692,36 @@ def test_terminal_failure_from_run_keeps_its_fields_over_the_container_abi() -> 
     assert step.run_calls == 1
 
 
+def test_terminal_failure_provider_code_survives_the_client_surface() -> None:
+    step = TerminalFailureStep()
+    binding = _binding(step, "tests.runtime.invoke.terminal-failure-client")
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    add_container_runtime_service(
+        server,
+        StepRegistry({binding.descriptor.step_identity: container_step_for_binding(binding)}),
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    try:
+        client = ContainerClient(channel)
+        invocation = _invocation(binding, {"value": "hello"})
+        with pytest.raises(ContainerRemoteError) as raised:
+            client.execute(invocation)
+    finally:
+        channel.close()
+        server.stop(grace=0).wait()
+
+    error = raised.value
+    assert error.source == "workload"
+    assert error.code is FailureCode.REMOTE_REJECTED
+    assert error.message == "The remote service rejected the request."
+    assert error.retryable is True
+    assert error.outcome == "not_completed"
+    assert error.provider_code == "tracker"
+    assert step.run_calls == 1
+
+
 def test_async_service_preserves_a_terminal_failure_from_run() -> None:
     step = TerminalFailureStep()
     binding = _binding(step, "tests.runtime.invoke.async-terminal-failure")

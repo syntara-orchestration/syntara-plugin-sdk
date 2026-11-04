@@ -1530,6 +1530,7 @@ def _print_run_report_json(report: RunReport) -> None:
             "code": report.error.code,
             "message": report.error.message,
             "retryable": report.error.retryable,
+            "providerCode": report.error.provider_code,
         }
     )
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
@@ -1558,6 +1559,8 @@ def _report_fields(report: RunReport) -> list[tuple[str, str]]:
         fields.append(("Error", f"{report.error.code} (retryable: {retryable})"))
         if report.error.message:
             fields.append(("Message", report.error.message))
+        if report.error.provider_code:
+            fields.append(("Provider code", report.error.provider_code))
     if report.outcome is not None:
         fields.append(("Outcome", report.outcome))
     return fields

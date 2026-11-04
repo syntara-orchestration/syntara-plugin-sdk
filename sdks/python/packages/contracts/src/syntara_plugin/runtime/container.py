@@ -22,7 +22,7 @@ import grpc
 from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
-from .abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
+from .abi import _PROVIDER_CODE, CONTAINER_ABI, ContainerInvocationError, FailureCode
 from .credentials import approved_credential_path
 from .execution import StepExecutionError
 from .outcome import (
@@ -302,6 +302,7 @@ class ContainerRemoteError(RuntimeError):
         outcome: str,
         source: Literal["workload", "protocol", "transport"],
         message: str = "",
+        provider_code: str = "",
     ) -> None:
         super().__init__(INCOMPLETE_STEP_MESSAGE)
         self.code = code
@@ -312,6 +313,8 @@ class ContainerRemoteError(RuntimeError):
         # category is known, so consumers can display the reason without
         # trusting it.
         self.message = message
+        # The workload's bounded provider correlation code, empty when absent.
+        self.provider_code = provider_code
 
 
 ContainerStepHandler = Callable[[ContainerInvocation], ContainerResult]
@@ -925,12 +928,17 @@ def _remote_failure(event: container_pb2.ExecutionEvent) -> ContainerRemoteError
         # The ABI bounds the failure message like every other remote string;
         # an over-long message is a non-conforming peer, not a valid failure.
         raise _protocol_error()
+    if event.failure.provider_code and not _PROVIDER_CODE.fullmatch(
+        event.failure.provider_code
+    ):
+        raise _protocol_error()
     return ContainerRemoteError(
         code,
         retryable=event.failure.retryable,
         outcome=event.failure.outcome,
         source="workload",
         message=event.failure.message,
+        provider_code=event.failure.provider_code,
     )
 
 
