@@ -424,8 +424,9 @@ def test_execution_error_without_credential_read_keeps_debug_details(
 
     monkeypatch.setattr(StepExecutor, "execute", fail_before_read)
     binding = _binding()
+    context = build_execution_context()
     with pytest.raises(StepExecutionError) as raised:
-        invoke(binding, {"mode": "use"}, build_execution_context())
+        invoke(binding, {"mode": "use"}, context)
 
     assert "useful failure detail" in (raised.value.detail or "")
     assert raised.value.__cause__ is source_error
@@ -555,8 +556,9 @@ def test_large_step_output_reports_scan_limit_separately_from_leaks(
         credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
     )
     monkeypatch.setattr(credentials_module, "_MAX_SCAN_WORK", 20)
+    binding = _binding()
     with pytest.raises(StepExecutionError) as raised:
-        invoke(_binding(), {"mode": "large_output"}, context)
+        invoke(binding, {"mode": "large_output"}, context)
 
     assert raised.value.failure_code is FailureCode.CREDENTIAL_SCAN_LIMIT
     assert "step output complexity" in raised.value.safe_message
