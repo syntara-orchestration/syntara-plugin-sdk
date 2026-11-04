@@ -628,6 +628,43 @@ def test_compiler_canonicalizes_connection_types_and_binds_an_action_to_them() -
     assert compiled_action["integrationType"] == "acme.issue-tools.github-connection"
 
 
+@pytest.mark.parametrize("kind", ["Control", "Trigger"])
+def test_compiler_binds_control_and_trigger_to_declared_integration(kind: str) -> None:
+    path = f"steps/{kind.lower()}.yaml"
+    plugin = _plugin()
+    plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"},
+        "workload": {"image": "plugin-workload"},
+        "targets": ["integrations/github.yaml", "credentials/github-token.yaml", path],
+    }
+    document = _control() if kind == "Control" else _trigger()
+    spec = document["spec"]
+    assert isinstance(spec, dict)
+    spec["integrationType"] = "acme.issue-tools.github-connection"
+    result = compile_model(
+        _typed_plugin(plugin),
+        [Target("integrations/github.yaml", _integration()),
+         Target("credentials/github-token.yaml", _credential_recipe()),
+         Target(path, document)],
+        image_bindings={"plugin-workload": DIGEST},
+    )
+    compiled = result.descriptor["spec"]["targets"][2]
+    assert compiled["kind"] == kind
+    assert compiled["integrationType"] == "acme.issue-tools.github-connection"
+
+    missing_plugin = _plugin()
+    missing_plugin["spec"] = {
+        "documentation": {"path": "docs/README.md"}, "workload": {"image": "plugin-workload"},
+        "targets": [path],
+    }
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(missing_plugin), [Target(path, document)],
+            image_bindings={"plugin-workload": DIGEST},
+        )
+    assert "STEP_INTEGRATION_UNDECLARED" in {item.code for item in error.value.diagnostics}
+
+
 def test_compiler_rejects_a_connection_type_link_to_another_plugin_or_missing_type() -> None:
     plugin = _plugin()
     plugin["spec"] = {
@@ -648,7 +685,7 @@ def test_compiler_rejects_a_connection_type_link_to_another_plugin_or_missing_ty
         compile_model(typed_plugin, targets, image_bindings={"plugin-workload": DIGEST})
 
     assert {item.code for item in error.value.diagnostics} >= {
-        "ACTION_INTEGRATION_UNDECLARED",
+        "STEP_INTEGRATION_UNDECLARED",
         "CREDENTIAL_INTEGRATION_UNDECLARED",
     }
 

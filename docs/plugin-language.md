@@ -70,7 +70,7 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.runtime.operation` | Optional HTTP operation metadata for the built-in `syntara.http.request@<version>` platform runner: an inert method, relative path, and optional mappings. Forbidden for `custom-runner` and all other implementations. |
 | `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the step type implementation inside the digest-pinned runner image. It is an implementation identity, not a placement decision: Syntara policy may run it in the selected host execution path or delegate it to the Execution Plane. |
 | `spec.domain` | Optional qualified domain identifier that groups an Action step type independently of its runner. |
-| `spec.integrationType` | Optional qualified integration type required by the Action step type. A workflow selects an instance of this type, not raw credentials. |
+| `spec.integrationType` | Optional qualified integration type required by the step type. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |
 | `spec.output` | Required JSON Schema source for the step type's business result. |
 | `spec.error` | Optional JSON Schema source for failure details, separate from the successful business result schema in `spec.output`. |
@@ -113,6 +113,8 @@ declare a separate error schema. For a `workflow-invocation`, the parent
 Control step type consumes the child workflow's declared result; the parent's
 `spec.output` describes the result exposed by that invocation. Runtime wrapper
 failure metadata is separate from both schemas.
+`spec.integrationType` optionally declares the integration and its reachable
+credential recipes for a Control step type.
 
 ### Subworkflow composition
 
@@ -183,7 +185,7 @@ Schema: [`credential-recipe.schema.json`](../contracts/schemas/v1alpha1/credenti
 
 | Kind | Schema | Key fields |
 | --- | --- | --- |
-| `Trigger` | [`trigger.schema.json`](../contracts/schemas/v1alpha1/trigger.schema.json) | `spec.driver`, `spec.runtime`, `spec.configuration`, `spec.input`, `spec.output`, optional `spec.error` |
+| `Trigger` | [`trigger.schema.json`](../contracts/schemas/v1alpha1/trigger.schema.json) | `spec.driver`, `spec.runtime`, `spec.configuration`, `spec.input`, `spec.output`, optional `spec.error` and `spec.integrationType` |
 | `TriggerDriver` | [`trigger-driver.schema.json`](../contracts/schemas/v1alpha1/trigger-driver.schema.json) | `spec.id`, `spec.transport`, `spec.events` |
 | `TriggerEventMapping` | [`trigger-event-mapping.schema.json`](../contracts/schemas/v1alpha1/trigger-event-mapping.schema.json) | `spec.driver`, `spec.event`, `spec.configuration`, `spec.output` |
 
@@ -192,6 +194,8 @@ ingress driver, while `spec.runtime` selects the runner that implements the
 step type. `spec.configuration` is driver-owned setup and is not runtime
 input. `spec.input` and `spec.output` are the public event and business-result
 contracts. Optional `spec.error` describes the complete structured error result.
+Optional `spec.integrationType` declares the integration and its reachable
+credential recipes for a Trigger step type.
 The runtime also enforces the SDK base fields; without `spec.error`, the SDK
 base schema is used. Neither schema describes the runtime wrapper itself.
 The same category also represents a child-workflow entry in reference-mode

@@ -15,6 +15,7 @@
       "properties": {
         "driver": {"$ref": "step.schema.json#/$defs/driver"},
         "runtime": {"$ref": "step.schema.json#/$defs/runner"},
+        "integrationType": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
         "configuration": {"$ref": "common.schema.json#/$defs/documentSource"},
         "input": {"$ref": "common.schema.json#/$defs/documentSource"},
         "output": {"$ref": "common.schema.json#/$defs/documentSource", "description": "Schema for StandardOutputWrapper.result on success; describes the business result, not the wrapper."},

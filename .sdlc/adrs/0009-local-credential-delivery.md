@@ -21,7 +21,7 @@ path the same way:
   "container" is this process, whose filesystem is the host's.
 
 A second constraint is the separation between the ABI path and the step-side
-accessor: the adapter uses an approved provider and the installed Action graph
+accessor: the adapter uses an approved provider and the installed step type graph
 to grant an invocation-scoped credential handle.
 
 ## Decision

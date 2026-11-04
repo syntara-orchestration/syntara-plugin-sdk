@@ -271,8 +271,8 @@ types, and no raw credential values.
 
 ### Credential access
 
-An Action's installed `integrationType` and its linked `credentialTypes` define
-which recipe identifiers the step may request. The host supplies a provider for
+For an Action, Control, or Trigger, the installed `integrationType` and its linked
+`credentialTypes` define which recipe identifiers the step may request. The host supplies a provider for
 approved bindings; the supplied path names never grant permission themselves.
 A custom `CredentialProvider` must return a fresh `ScopedCredentialProvider`
 from `restrict(names, on_read)`. The view retains only the named bindings,

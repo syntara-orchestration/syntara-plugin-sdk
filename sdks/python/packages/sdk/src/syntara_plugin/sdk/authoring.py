@@ -555,6 +555,8 @@ def _normalize_control(
         target[field_name] = _target_document_source(spec.get(field_name), field_name, context)
     if "error" in spec:
         target["error"] = _target_document_source(spec.get("error"), "error", context)
+    if "integrationType" in spec:
+        target["integrationType"] = spec["integrationType"]
 
 
 def _normalize_http_operation(runtime: dict[str, Any], context: _NormalizationContext) -> None:
@@ -588,6 +590,8 @@ def _normalize_trigger(
         target[field_name] = _target_document_source(spec.get(field_name), field_name, context)
     if "error" in spec:
         target["error"] = _target_document_source(spec.get("error"), "error", context)
+    if "integrationType" in spec:
+        target["integrationType"] = spec["integrationType"]
 
 
 def _normalize_step_runtime(raw_runtime: object, plugin: Mapping[str, Any]) -> dict[str, Any]:
@@ -1007,7 +1011,7 @@ def _validate_connection_contracts(
     integrations, credentials = _collect_connection_types(targets, diagnostics)
     _validate_credential_integration_links(credentials, integrations, diagnostics)
     _validate_integration_credential_links(integrations, credentials, diagnostics)
-    _validate_action_integration_links(targets, integrations, diagnostics)
+    _validate_step_integration_links(targets, integrations, diagnostics)
 
 
 def _collect_connection_types(
@@ -1090,20 +1094,20 @@ def _validate_integration_credential_links(
                 )
 
 
-def _validate_action_integration_links(
+def _validate_step_integration_links(
     targets: Sequence[Mapping[str, Any]],
     integrations: Mapping[str, Mapping[str, Any]],
     diagnostics: list[Diagnostic],
 ) -> None:
     for target in targets:
-        if target.get("kind") != "Action":
+        if target.get("kind") not in {"Action", "Control", "Trigger"}:
             continue
         integration_id = target.get("integrationType")
         if integration_id is not None and integration_id not in integrations:
             diagnostics.append(
                 _diagnostic(
-                    "ACTION_INTEGRATION_UNDECLARED",
-                    f"Action references undeclared integration type {integration_id!r}.",
+                    "STEP_INTEGRATION_UNDECLARED",
+                    f"Step type references undeclared integration type {integration_id!r}.",
                     str(target.get("sourcePath", PLUGIN_MANIFEST_FILENAME)),
                     "Declare the referenced IntegrationType in this plugin.",
                 )

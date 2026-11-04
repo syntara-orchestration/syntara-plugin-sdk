@@ -1047,6 +1047,35 @@ def test_packaged_action_retains_only_declared_credentials(plugin_root: Path) ->
     assert descriptor.credential_names == ("sample.demo.token",)
 
 
+@pytest.mark.parametrize("kind", ["Control", "Trigger"])
+def test_packaged_control_and_trigger_retain_declared_credentials(
+    plugin_root: Path, kind: str
+) -> None:
+    target_path = f"steps/{kind.lower()}.yaml"
+
+    def manifests(package: str) -> dict[str, Any]:
+        document = (
+            _control_document(f"{package}.steps:SampleControlStep")
+            if kind == "Control"
+            else _trigger_document(f"{package}.steps:SampleTriggerStep")
+        )
+        document["spec"]["integrationType"] = "sample.demo.tracker"
+        return {
+            "docs/README.md": "# Demo\n", target_path: document,
+            "steps/integration.yaml": _integration_document(),
+            "steps/recipe.yaml": _credential_recipe_document(),
+        }
+
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document([target_path, "steps/recipe.yaml", "steps/integration.yaml"]),
+        manifests=manifests,
+    )
+    identity = "sample.demo.normalize-records" if kind == "Control" else "sample.demo.record-opened"
+    descriptor = load_plugin_bindings(package).binding(identity).descriptor
+    assert descriptor.credential_names == ("sample.demo.token",)
+
+
 def test_packaged_action_rejects_missing_credential_recipe(plugin_root: Path) -> None:
     def manifests(package: str) -> dict[str, Any]:
         action = _action_document(f"{package}.steps:SampleActionStep")

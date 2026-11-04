@@ -37,17 +37,17 @@ Their names are public API.
 | `mock_execution_context` | `ExecutionContext` | `mock_execution_context(invocation_id=..., workflow_run_id=..., runtime_context=..., cancelled=False)` builds one locally approved context: valid, free of real credentials, authorized only for local test execution. |
 | `step_bindings` | `StepBindings` + contract drift validation | `bind(step)` for any step type (a locally installed manifest verified with `check_step_contract`); `bind_step(entry_point, workspace=...)` for custom-runner step types (compile, install, drift-check); `resolve(identity_or_entry_point)` returns a ready binding. |
 
-Action-category step types execute only through an installed manifest: the SDK's
+Custom-runner step types execute only through an installed manifest: the SDK's
 `require_executable_contract` provenance gate rejects fabricated descriptors,
 so `bind_step` is the only path to an executable custom-runner step type binding. Binding an
-Action with `bind` is allowed for drift checks but is not executable.
+Action, Control, or Trigger with `bind` is allowed for drift checks but is not executable.
 
 ## Testing credentials
 
 `build_execution_context` and `mock_execution_context` accept
 `credential_file_paths={recipe_id: str(path)}` and `credential_directory=path`.
 Use a private temporary directory and fake JSON credential documents. The path
-must be directly inside that directory. Bind the Action with `bind_step` so its
+must be directly inside that directory. Bind the step type with `bind_step` so its
 compiled integration and recipe declarations authorize the identifier. The
 same context works with `invoke_step` and `invoke_step_in_container`; the latter
 passes only paths over its loopback ABI. Custom in-process providers are accepted

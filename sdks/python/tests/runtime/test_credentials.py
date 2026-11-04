@@ -16,6 +16,7 @@ import syntara_plugin.runtime.credentials as credentials_module
 from pydantic import BaseModel, ValidationError
 from syntara_plugin.runtime import (
     ActionStep,
+    ControlStep,
     CredentialAccessError,
     CredentialBinding,
     CredentialRecipe,
@@ -29,6 +30,7 @@ from syntara_plugin.runtime import (
     StepExecutionError,
     StepExecutor,
     StepFailure,
+    TriggerStep,
     invoke,
 )
 from syntara_plugin.testing import build_execution_context, invoke_step, invoke_step_in_container
@@ -109,6 +111,18 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
             return CredentialOutput(result=error.reason)
 
 
+class ControlCredentialStep(ControlStep[CredentialInput, CredentialOutput]):
+    def run(self, inputs: CredentialInput, context: ExecutionContext) -> CredentialOutput:
+        token = context.credential(_NAME).read()["token"]
+        return CredentialOutput(result="accepted" if token == _SECRET else "other")
+
+
+class TriggerCredentialStep(TriggerStep[CredentialInput, CredentialOutput]):
+    def run(self, inputs: CredentialInput, context: ExecutionContext) -> CredentialOutput:
+        token = context.credential(_NAME).read()["token"]
+        return CredentialOutput(result="accepted" if token == _SECRET else "other")
+
+
 def _connection_targets() -> list[dict[str, Any]]:
     metadata = {"name": "tracker", "displayName": "Tracker", "description": "Tracker."}
     return [
@@ -138,6 +152,46 @@ def _binding(targets: list[dict[str, Any]] | None = None) -> StepBinding:
         "acme.demo.use", manifest, {}, credential_targets=targets if targets is not None else _connection_targets()
     )
     return StepBinding(StepDescriptor.for_installed_step(step, installed), step)
+
+
+@pytest.mark.parametrize(
+    "kind,step_class,kind_spec",
+    [
+        ("Control", ControlCredentialStep, {"invocation": {"kind": "orchestration"}}),
+        ("Trigger", TriggerCredentialStep, {
+            "driver": "webhook.v1", "configuration": {"kind": "inline", "value": {"type": "object"}}
+        }),
+    ],
+)
+def test_control_and_trigger_read_declared_credentials(
+    tmp_path: Path, kind: str, step_class: type[ControlCredentialStep] | type[TriggerCredentialStep],
+    kind_spec: dict[str, Any],
+) -> None:
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    spec = {
+        "runtime": {"kind": "custom-runner", "entryPoint": f"{__name__}:{step_class.__name__}"},
+        "integrationType": "acme.demo.integration",
+        "input": {"kind": "inline", "value": CredentialInput.model_json_schema()},
+        "output": {"kind": "inline", "value": CredentialOutput.model_json_schema()},
+        **kind_spec,
+    }
+    manifest = {
+        "apiVersion": "syntara.io/v1alpha1", "kind": kind,
+        "metadata": {"name": "use", "displayName": "Use", "description": "Use a credential."},
+        "spec": spec,
+    }
+    step = step_class()
+    installed = InstalledStepManifest.from_manifest(
+        "acme.demo.use", manifest, {}, credential_targets=_connection_targets()
+    )
+    binding = StepBinding(StepDescriptor.for_installed_step(step, installed), step)
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    for call in (invoke_step, invoke_step_in_container):
+        outcome = call(binding, {"mode": "use"}, context=context)
+        assert outcome.ok and outcome.output == {"result": "accepted"}
 
 
 def test_canonical_models_round_trip_and_reject_unversioned_extensions() -> None:
