@@ -350,6 +350,7 @@ def _execute_scoped(
 ) -> StandardOutputWrapper[Mapping[str, Any]]:
     execution_error: StepExecutionError | None = None
     unexpected_error: BaseException | None = None
+    terminal_failure: ContainerInvocationError | StepExecutionError | None = None
     wrapper: StandardOutputWrapper[Mapping[str, Any]] | None = None
     try:
         _validate_context_output_digest(step, context)
@@ -357,13 +358,17 @@ def _execute_scoped(
     except StepExecutionError as error:
         execution_error = error
     except ContainerInvocationError as error:
-        _raise_scoped_terminal_failure(error, scope)
+        terminal_failure = _scoped_terminal_failure(error, scope)
     except Exception as error:
         unexpected_error = error
     except BaseException as error:
         if not scope.has_read:
             raise
         unexpected_error = error
+    if terminal_failure is not None:
+        # Raised outside the handler: raising a sanitized failure while the
+        # original is still active would retain it as ``__context__``.
+        raise terminal_failure
     if unexpected_error is not None:
         _raise_unexpected_scoped_error(unexpected_error, scope)
     if execution_error is not None:
@@ -415,49 +420,55 @@ def _raise_unexpected_scoped_error(error: BaseException, scope: _CredentialScope
     ) from None
 
 
-def _raise_credential_scan_limit() -> None:
-    raise StepExecutionError(
+def _credential_scan_limit_error() -> StepExecutionError:
+    return StepExecutionError(
         _CREDENTIAL_SCAN_LIMIT,
         failure_code=FailureCode.CREDENTIAL_SCAN_LIMIT,
-    ) from None
+    )
 
 
-def _raise_scoped_terminal_failure(
+def _raise_credential_scan_limit() -> None:
+    raise _credential_scan_limit_error() from None
+
+
+def _scoped_terminal_failure(
     error: ContainerInvocationError, scope: _CredentialScope
-) -> None:
-    """Propagate a deliberate terminal failure without credential exposure.
+) -> ContainerInvocationError | StepExecutionError:
+    """Return the sanitized terminal failure to raise for ``error``.
 
     The message and the provider code are the free-text fields a terminal
     failure carries across the container ABI; the detail and the original
     exception chain stay reachable to in-process callers and are not
     scanned. After a read, both ABI fields are checked and a leak in either
     degrades to a safe execution error exactly like a leaking wrapper, a
-    leaking detail is dropped, and the propagated failure is reconstructed
-    without the unsafe chain.
+    leaking detail is dropped, and the returned failure is reconstructed
+    without the unsafe chain. The caller raises the result outside the
+    ``except`` handler so the original is never retained as its
+    ``__context__``.
     """
     if not scope.has_read:
-        raise error
+        return error
     for abi_field in (error.safe_message, error.provider_code):
         scan_status = scope.scan(abi_field)
         if scan_status is _CredentialScanStatus.LIMIT_EXCEEDED:
-            _raise_credential_scan_limit()
+            return _credential_scan_limit_error()
         if scan_status is _CredentialScanStatus.SECRET_FOUND:
-            raise StepExecutionError(_INVALID_STEP_RESPONSE) from None
+            return StepExecutionError(_INVALID_STEP_RESPONSE)
     safe_detail = error.detail
     if safe_detail is not None:
         scan_status = scope.scan(safe_detail)
         if scan_status is _CredentialScanStatus.LIMIT_EXCEEDED:
-            _raise_credential_scan_limit()
+            return _credential_scan_limit_error()
         if scan_status is _CredentialScanStatus.SECRET_FOUND:
             safe_detail = None
-    raise ContainerInvocationError(
+    return ContainerInvocationError(
         error.code,
         error.safe_message,
         retryable=error.retryable,
         outcome=error.outcome,
         provider_code=error.provider_code,
         detail=safe_detail,
-    ) from None
+    )
 
 
 def _reject_credential_output(

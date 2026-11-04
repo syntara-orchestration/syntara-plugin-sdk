@@ -424,6 +424,10 @@ def test_a_terminal_failure_provider_code_cannot_leak_a_read_credential(
         assert _SECRET not in repr(outcome)
         assert _SECRET not in str(outcome.raised)
         assert _SECRET not in "".join(traceback.format_exception(outcome.raised))
+        if isinstance(outcome.raised, StepExecutionError):
+            # The degraded failure must not retain the original, whose
+            # provider code and cause carry the credential, as its context.
+            assert outcome.raised.__context__ is None
     event = _terminal_failure_event(
         _binding(), {"mode": "terminal_failure_provider_leak"}, path, tmp_path
     )
@@ -448,6 +452,9 @@ def test_a_terminal_failure_detail_and_chain_cannot_leak_a_read_credential(
     assert direct.raised.outcome == "not_completed"
     assert direct.raised.detail is None
     assert direct.raised.__cause__ is None
+    # The sanitized failure must not retain the original, whose detail and
+    # cause carry the credential, as its context.
+    assert direct.raised.__context__ is None
     assert _SECRET not in "".join(traceback.format_exception(direct.raised))
     container = invoke_step_in_container(
         _binding(), {"mode": "terminal_failure_detail_leak"}, context=context
@@ -487,6 +494,8 @@ def test_a_terminal_failure_message_cannot_leak_a_read_credential(tmp_path: Path
         assert code is FailureCode.ABI_VIOLATION
         assert _SECRET not in repr(outcome)
         assert _SECRET not in str(outcome.raised)
+        if isinstance(outcome.raised, StepExecutionError):
+            assert outcome.raised.__context__ is None
 
 
 def test_file_provider_refuses_unapproved_and_symlink_paths(tmp_path: Path) -> None:
