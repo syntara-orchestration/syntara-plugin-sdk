@@ -61,7 +61,9 @@ def _run(cosign: str, action: Literal["sign", "verify"], reference: str, key: Pa
     else:  # Defensive guard for untyped internal callers.
         raise CosignError("Unsupported Cosign action")
     try:
-        result = subprocess.run(
+        # `reference` is allow-listed and `key` is a resolved regular file;
+        # fixed argv plus shell=False prevents either value from adding flags.
+        result = subprocess.run(  # NOSONAR
             arguments,
             capture_output=True,
             check=False,
