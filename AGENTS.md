@@ -47,6 +47,7 @@ for dependencies; regenerate the lockfile when dependency metadata changes.
   distributions ship `Typing :: Typed`.
 - Never commit secrets, registry credentials, or generated build output, and
   keep credentials out of error messages, logs, and test output.
+- Before completing any change, run `make lint` and `make test`.
 - After a material change, review `README.md`, `contracts/`, `docs/`, and
   `.sdlc/` for needed updates, and report that review at handoff, including
   when nothing needed updating.
@@ -60,9 +61,9 @@ for dependencies; regenerate the lockfile when dependency metadata changes.
 
 Run the stages in order: research the requirement and the affected code,
 write an implementation plan for the engineer to review, implement the
-feature with tests, validate manually by running the real commands and
-examples, have another agent with clean context review the diff, then close
-with a summary. Ambiguity at any stage goes to the engineer.
+feature with tests, validate manually by running the commands and examples
+the change affects, have another agent with clean context review the diff,
+then close with a summary. Ambiguity at any stage goes to the engineer.
 
 ### Fix issues
 
@@ -77,8 +78,8 @@ the failing test first, the fix that turns it green second.
 Direct and to the point, with a few runnable examples where they earn their
 place; follow the approach, section flow, and tone of
 [docs/authoring-guide.md](docs/authoring-guide.md). Run every documented
-command and output block against the current CLI before submitting: docs that
-drift from real behavior are bugs.
+command and output block the change touches against the current CLI before
+submitting: docs that drift from real behavior are bugs.
 
 ## After pushing, while the PR is open
 

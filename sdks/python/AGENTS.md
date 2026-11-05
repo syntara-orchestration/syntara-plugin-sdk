@@ -11,8 +11,8 @@ contract tests. Dependencies resolve through the root workspace lockfile.
 
 - Run `pytest sdks/python/tests -q` for a fast loop; `make test` adds the
   examples suite.
-- After `make install` the checkout exposes `syntara-plugin`; use it against
-  the examples for manual validation, for example
+- After `make install` the checkout exposes `syntara-plugin`; use it for
+  manual validation against the examples the change affects, for example
   `syntara-plugin validate examples/hello-world/plugin.yaml --settings examples/hello-world/syntara-plugin.yaml`,
   and `syntara-plugin run` from source or a running image for runtime
   behavior (see [running-locally](../../docs/running-locally.md)).
