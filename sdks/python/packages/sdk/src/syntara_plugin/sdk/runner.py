@@ -1336,7 +1336,9 @@ def run_source(
         runtime_directory = tempfile.mkdtemp(prefix="syntara-run-runtime-")
         socket_path = Path(runtime_directory) / "runtime.sock"
         server = grpc.server(ThreadPoolExecutor(max_workers=2))
-        add_container_runtime_service(server, registry, secrets_directory)
+        add_container_runtime_service(
+            server, registry, secrets_directory, install_sigterm_shutdown=False
+        )
         if server.add_insecure_port(f"unix:{socket_path}") == 0:
             server.stop(None)
             shutil.rmtree(runtime_directory, ignore_errors=True)

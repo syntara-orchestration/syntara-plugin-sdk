@@ -11,6 +11,7 @@ environment-derived credentials, or plaintext secret material.
 from __future__ import annotations
 
 import json
+import os
 import re
 import signal
 from collections.abc import Callable, Iterator, Mapping
@@ -482,6 +483,7 @@ def add_container_runtime_service(
     steps: StepRegistry,
     local_credential_directory: Path | None = None,
     *,
+    install_sigterm_shutdown: bool = True,
     shutdown_grace_seconds: float = 5,
 ) -> ContainerRuntimeService:
     """Register the generic runtime service on a plugin workload gRPC server.
@@ -494,24 +496,34 @@ def add_container_runtime_service(
     teardown by the full grace window.
 
     To prevent that, this helper also installs a SIGTERM handler that stops
-    ``server``. A handler the caller installed itself is never overridden,
-    and installation is skipped when signals cannot be manipulated (for
-    example outside the main thread); those callers keep managing the
-    server lifecycle themselves, like ``serve_runtime`` does.
+    ``server``, but only when it runs as PID 1: that is the only process
+    whose unhandled SIGTERM the kernel discards, and installing a global
+    handler in a host process would hijack its signal policy (a test
+    harness call inside a pytest session must not stop the session from
+    terminating on SIGTERM). Host-process callers such as testing harnesses
+    pass ``install_sigterm_shutdown=False`` to make the opt-out explicit.
+    A handler the caller installed itself is never overridden.
     """
 
     service = ContainerRuntimeService(steps, local_credential_directory)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
-    _install_sigterm_shutdown(server, shutdown_grace_seconds)
+    if install_sigterm_shutdown:
+        _install_sigterm_shutdown(server, shutdown_grace_seconds)
     return service
 
 
 def _install_sigterm_shutdown(server: grpc.Server, grace: float) -> None:
-    """Stop ``server`` on SIGTERM, unless the caller owns signal policy."""
+    """Stop ``server`` on SIGTERM when running as the container's PID 1."""
 
     def _stop_server(_signum: int, _frame: object) -> None:
         server.stop(grace)
 
+    # Only PID 1 needs this: the kernel ignores unhandled signals for PID 1,
+    # so without a handler SIGTERM never reaches the process. Every other
+    # process already terminates on SIGTERM by default, and installing a
+    # global handler there would hijack the host's signal policy.
+    if os.getpid() != 1:
+        return
     if signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL:
         return
     try:

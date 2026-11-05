@@ -366,7 +366,9 @@ def invoke_step_in_container(
     )
     registry = StepRegistry({binding.descriptor.step_identity: bounded_handler})
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(server, registry, local_directory)
+    add_container_runtime_service(
+        server, registry, local_directory, install_sigterm_shutdown=False
+    )
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
