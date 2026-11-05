@@ -32,6 +32,7 @@ from syntara_plugin.contracts import (
     load_bundle,
     validate_runtime_binding,
 )
+from syntara_plugin.runtime.yaml_loader import UniqueKeyLoader
 
 from .artifact import ArtifactBuildError, PluginArtifact, build_plugin_artifact
 from .artifact_archive import (
@@ -2422,8 +2423,6 @@ def _write_release_inventory(
 
 def _read_runtime_binding_source(path: Path) -> dict[str, Any]:
     """Read one bounded YAML source document and reject duplicate keys."""
-    from .authoring import _UniqueKeyLoader
-
     try:
         content = path.expanduser().read_bytes()
     except OSError as error:
@@ -2431,7 +2430,7 @@ def _read_runtime_binding_source(path: Path) -> dict[str, Any]:
     if not content or len(content) > 1_048_576:
         raise SettingsError("RuntimeBinding source must be between 1 byte and 1 MiB")
     try:
-        value = yaml.load(content, Loader=_UniqueKeyLoader)
+        value = yaml.load(content, Loader=UniqueKeyLoader)
     except yaml.YAMLError as error:
         raise SettingsError(f"RuntimeBinding source is not valid YAML: {error}") from error
     return dict(_mapping(value, "RuntimeBinding source"))
