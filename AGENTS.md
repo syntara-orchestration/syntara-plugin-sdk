@@ -77,8 +77,8 @@ the failing test first, the fix that turns it green second.
 
 Direct and to the point, with a few runnable examples where they earn their
 place; follow the approach, section flow, and tone of
-[docs/authoring-guide.md](docs/authoring-guide.md). Run every documented
-command and output block the change touches against the current CLI before
+[docs/authoring-guide.md](docs/authoring-guide.md). Run only the documented
+commands and output blocks the change affects against the current CLI before
 submitting: docs that drift from real behavior are bugs.
 
 ## After pushing, while the PR is open
