@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import signal
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -480,12 +481,45 @@ def add_container_runtime_service(
     server: grpc.Server,
     steps: StepRegistry,
     local_credential_directory: Path | None = None,
+    *,
+    shutdown_grace_seconds: float = 5,
 ) -> ContainerRuntimeService:
-    """Register the generic runtime service on a plugin workload gRPC server."""
+    """Register the generic runtime service on a plugin workload gRPC server.
+
+    Workload images built with this helper usually run their Python process
+    as PID 1 in the container. The kernel ignores unhandled signals for
+    PID 1, and CPython installs no SIGTERM handler, so without an explicit
+    handler the container survives SIGTERM until the orchestrator's SIGKILL
+    at the end of its termination grace period — stalling every dispatch
+    teardown by the full grace window.
+
+    To prevent that, this helper also installs a SIGTERM handler that stops
+    ``server``. A handler the caller installed itself is never overridden,
+    and installation is skipped when signals cannot be manipulated (for
+    example outside the main thread); those callers keep managing the
+    server lifecycle themselves, like ``serve_runtime`` does.
+    """
 
     service = ContainerRuntimeService(steps, local_credential_directory)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
+    _install_sigterm_shutdown(server, shutdown_grace_seconds)
     return service
+
+
+def _install_sigterm_shutdown(server: grpc.Server, grace: float) -> None:
+    """Stop ``server`` on SIGTERM, unless the caller owns signal policy."""
+
+    def _stop_server(_signum: int, _frame: object) -> None:
+        server.stop(grace)
+
+    if signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL:
+        return
+    try:
+        signal.signal(signal.SIGTERM, _stop_server)
+    except ValueError:
+        # Not the main thread (or a restricted platform): the caller keeps
+        # responsibility for the server lifecycle.
+        return
 
 
 class ContainerClient:
