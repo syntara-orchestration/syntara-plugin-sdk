@@ -2694,6 +2694,7 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
                 archive,
                 destination,
                 auth_file=workload_auth_file,
+                allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
                 verbose=arguments.verbose,
             )
             if published_ref != image["reference"]:

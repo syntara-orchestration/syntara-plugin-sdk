@@ -134,6 +134,42 @@ def test_publish_workload_archive_requires_registry_digest_preservation(
 
     assert result == f"registry.example.test/acme/custom@{expected_digest}"
     assert commands[0][:3] == ["skopeo", "copy", "--preserve-digests"]
+    assert "--dest-tls-verify=false" not in commands[0]
+
+
+def test_publish_workload_archive_allows_explicit_loopback_http(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = tmp_path / "image.oci.tar"
+    expected_digest = _write_oci_archive(archive)
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        Path(command[command.index("--digestfile") + 1]).write_text(expected_digest)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+
+    publish_workload_archive(
+        archive,
+        "localhost:8443/acme/custom:0.1.0",
+        allow_insecure_loopback_http=True,
+    )
+
+    assert "--dest-tls-verify=false" in commands[0]
+
+
+def test_publish_workload_archive_rejects_insecure_remote_registry(tmp_path: Path) -> None:
+    archive = tmp_path / "image.oci.tar"
+    _write_oci_archive(archive)
+
+    with pytest.raises(WorkloadBuildError, match="restricted to localhost"):
+        publish_workload_archive(
+            archive,
+            "registry.example.test/acme/custom:0.1.0",
+            allow_insecure_loopback_http=True,
+        )
 
 
 def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, monkeypatch) -> None:

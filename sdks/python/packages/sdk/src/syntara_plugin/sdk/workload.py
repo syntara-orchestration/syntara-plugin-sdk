@@ -135,6 +135,7 @@ def publish_workload_archive(
     destination: str,
     *,
     auth_file: Path | None = None,
+    allow_insecure_loopback_http: bool = False,
     verbose: bool = False,
 ) -> str:
     """Copy an exact OCI archive to a registry and require digest preservation."""
@@ -144,6 +145,10 @@ def publish_workload_archive(
         raise WorkloadBuildError("workload OCI archive is not a regular file")
     if "@" in destination or ":" not in destination.rsplit("/", 1)[-1]:
         raise WorkloadBuildError("workload destination must be a repository and explicit tag")
+    if allow_insecure_loopback_http and not _is_loopback_repository(destination.rsplit(":", 1)[0]):
+        raise WorkloadBuildError(
+            "insecure workload publication is restricted to localhost or 127.0.0.1"
+        )
     expected_digest = _oci_archive_manifest_digest(archive)
     digest_handle = tempfile.NamedTemporaryFile(prefix="syntara-workload-digest-", delete=False)
     digest_path = Path(digest_handle.name)
@@ -152,6 +157,8 @@ def publish_workload_archive(
         command = ["skopeo", "copy", "--preserve-digests", "--digestfile", str(digest_path)]
         if auth_file is not None:
             command.extend(("--dest-authfile", str(auth_file)))
+        if allow_insecure_loopback_http:
+            command.append("--dest-tls-verify=false")
         command.extend((f"oci-archive:{archive}", f"docker://{destination}"))
         _run(command, verbose=verbose)
         reported = digest_path.read_text(encoding="utf-8").strip()
