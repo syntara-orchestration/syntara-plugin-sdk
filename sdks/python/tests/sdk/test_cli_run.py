@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from syntara_plugin.runtime import ContainerToolbox
 from syntara_plugin.sdk.cli import main
 
 _STEP_SOURCE = '''"""A custom-runner Action step type used by the run command tests."""
@@ -17,7 +18,7 @@ _STEP_SOURCE = '''"""A custom-runner Action step type used by the run command te
 from __future__ import annotations
 
 from pydantic import BaseModel
-from syntara_plugin.runtime import ActionStep, ErrorCategory, ExecutionContext, FailureCode, StepFailure
+from syntara_plugin.runtime import ActionStep, ContainerToolbox, ErrorCategory, ExecutionContext, FailureCode, StepFailure
 
 
 class EchoInput(BaseModel):
@@ -3669,8 +3670,8 @@ def test_delivered_credential_values_read_back_as_output_are_scrubbed(
     def echoing_binding(*args: Any, **kwargs: Any) -> Any:
         handler = original(*args, **kwargs)
 
-        def echoing(invocation: Any) -> Any:
-            result = handler(invocation)
+        def echoing(invocation: Any, toolbox: Any) -> Any:
+            result = handler(invocation, ContainerToolbox())
             read_back = {
                 name: json.loads(Path(path).read_text(encoding="utf-8"))
                 for name, path in invocation.credential_file_paths.items()

@@ -33,6 +33,7 @@ from .credentials import FileCredentialProvider
 from .execution import StepExecutionError
 from .outcome import StandardOutputWrapper, thaw_json
 from .step import BaseStep
+from .toolbox import ContainerToolbox
 
 _REFERENCE = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _INVALID_STEP_RESPONSE = "The step returned an invalid response."
@@ -56,7 +57,9 @@ class ResultObjectStore(Protocol):
         ...
 
 
-def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
+def _execution_context(
+    invocation: ContainerInvocation, toolbox: ContainerToolbox
+) -> ExecutionContext:
     """Build the transport-independent context for one container invocation."""
 
     try:
@@ -65,7 +68,8 @@ def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
         )
     except ValueError:
         raise ContainerInvocationError(
-            FailureCode.INVALID_INPUT, "Credential file paths must be approved.",
+            FailureCode.INVALID_INPUT,
+            "Credential file paths must be approved.",
             outcome="not_started",
         ) from None
     return ExecutionContext(
@@ -74,6 +78,7 @@ def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
         workflow_run_id=invocation.workflow_run_id,
         runtime_context=invocation.runtime_context,
         cancellation=invocation.cancellation,
+        toolbox=toolbox,
     )
 
 
@@ -220,14 +225,14 @@ def container_step_for_binding(
     validate_executable_step_binding(binding.descriptor, binding.step)
     output_schema_digest = _applied_output_schema_digest(binding)
 
-    def handler(invocation: ContainerInvocation) -> ContainerResult:
+    def handler(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         if invocation.step_revision_id != (step_revision_id or binding.descriptor.step_identity):
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
                 "The requested step type is not available in this container image.",
                 outcome="not_started",
             )
-        context = _execution_context(invocation)
+        context = _execution_context(invocation, toolbox)
         try:
             wrapper = invoke(binding, invocation.inputs, context)
         except StepExecutionError as error:
@@ -269,10 +274,12 @@ def container_step_for_bindings(
     Server startup uses resolved revisions with :func:`container_step_for_binding`.
     """
 
-    def handler(invocation: ContainerInvocation) -> ContainerResult:
+    def handler(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         try:
             binding = bindings.binding(invocation.step_revision_id)
-            return container_step_for_binding(binding, object_store=object_store)(invocation)
+            return container_step_for_binding(binding, object_store=object_store)(
+                invocation, toolbox
+            )
         except StepBindingError:
             message = "The requested step type is not available in this container image."
             raise ContainerInvocationError(

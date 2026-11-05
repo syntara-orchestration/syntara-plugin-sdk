@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import signal
+import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,12 +20,15 @@ from syntara_plugin.contracts import load_bundle, validate_document
 from .abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from .adapter import container_step_for_binding
 from .bindings import StepBinding, StepBindingError, StepBindings, validate_executable_step_binding
+from .commands import ContainerCommand
 from .container import (
     INCOMPLETE_STEP_MESSAGE,
     ContainerInvocation,
     ContainerResult,
     ContainerStepHandler,
     StepRegistry,
+    _process_command_response,
+    command_event,
     failure_event,
     invocation_from_request,
     terminal_execution_event,
@@ -32,6 +36,7 @@ from .container import (
 from .execution import StepExecutionError
 from .protocol import container_pb2, container_pb2_grpc
 from .step import BaseStep
+from .toolbox import ContainerToolbox
 
 _RUNTIME_CONFIG = "SYNTARA_RUNTIME_CONFIG"
 _RESOLVED_EXECUTION = "SYNTARA_RESOLVED_EXECUTION"
@@ -58,18 +63,106 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
 
     async def Execute(
         self,
-        request: container_pb2.ExecuteRequest,
+        request: AsyncIterator[container_pb2.ExecuteStreamRequest],
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[container_pb2.ExecutionEvent]:
-        invocation_id = request.invocation_id
+        invocation_id = ""
         cancellation: Event | None = None
+        handler_task: asyncio.Task[ContainerResult] | None = None
+        reader_task: asyncio.Task[None] | None = None
+        toolbox: ContainerToolbox | None = None
+        events: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
         try:
-            invocation, cancellation = invocation_from_request(request)
+            first_request = await request.__anext__()
+            if first_request.WhichOneof("request") != "execute":
+                raise ContainerInvocationError(
+                    FailureCode.ABI_VIOLATION,
+                    "The execution stream must begin with an execution request.",
+                    outcome="not_started",
+                )
+            invocation, cancellation = invocation_from_request(first_request.execute)
+            invocation_id = invocation.invocation_id
             handler = self._steps.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
-            context.add_done_callback(lambda _context: cancellation.set())
-            result = await self._execute_step(handler, invocation)
-            yield terminal_execution_event(invocation, result)
+
+            loop = asyncio.get_running_loop()
+
+            def emit_command(command: ContainerCommand) -> None:
+                loop.call_soon_threadsafe(events.put_nowait, ("command", command))
+
+            toolbox = ContainerToolbox(
+                invocation.invocation_id, invocation.timeout_seconds, emit_command
+            )
+
+            def disconnected(_context: Any) -> None:
+                cancellation.set()
+                toolbox.fail_pending_commands(
+                    ContainerInvocationError(
+                        FailureCode.CANCELLED,
+                        "The execution stream was disconnected.",
+                        retryable=True,
+                        outcome="not_completed",
+                    )
+                )
+
+            context.add_done_callback(disconnected)
+
+            handler_task = asyncio.create_task(
+                asyncio.to_thread(handler, invocation, toolbox)
+            )
+            handler_task.add_done_callback(
+                lambda task: events.put_nowait(("handler", task))
+            )
+
+            async def read_requests() -> None:
+                try:
+                    async for response in request:
+                        await events.put(("response", response))
+                except Exception as error:
+                    await events.put(("reader_error", error))
+                else:
+                    await events.put(("closed", None))
+
+            reader_task = asyncio.create_task(read_requests())
+            deadline = time.monotonic() + invocation.timeout_seconds
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ContainerInvocationError(
+                        FailureCode.TIMEOUT,
+                        "The step exceeded its execution timeout.",
+                        retryable=True,
+                        outcome="not_completed",
+                    )
+                try:
+                    event_kind, payload = await asyncio.wait_for(
+                        events.get(), timeout=remaining
+                    )
+                except TimeoutError:
+                    raise ContainerInvocationError(
+                        FailureCode.TIMEOUT,
+                        "The step exceeded its execution timeout.",
+                        retryable=True,
+                        outcome="not_completed",
+                    ) from None
+                if event_kind == "command":
+                    yield command_event(payload)
+                elif event_kind == "response":
+                    _process_command_response(payload, toolbox)
+                elif event_kind == "handler":
+                    result = payload.result()
+                    yield terminal_execution_event(invocation, result)
+                    break
+                elif event_kind == "reader_error":
+                    raise payload
+                elif event_kind == "closed":
+                    toolbox.fail_pending_commands(
+                        ContainerInvocationError(
+                            FailureCode.ABI_VIOLATION,
+                            "The execution stream closed before the command response.",
+                            outcome="unknown",
+                        )
+                    )
         except StepExecutionError as error:
             yield failure_event(
                 invocation_id,
@@ -92,7 +185,20 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 ),
             )
         finally:
+            if reader_task is not None and not reader_task.done():
+                reader_task.cancel()
+            if handler_task is not None and not handler_task.done():
+                handler_task.add_done_callback(_discard_step_result)
+            if toolbox is not None:
+                toolbox.fail_pending_commands(
+                    ContainerInvocationError(
+                        FailureCode.OUTCOME_UNKNOWN,
+                        INCOMPLETE_STEP_MESSAGE,
+                        outcome="unknown",
+                    )
+                )
             if cancellation is not None:
+                cancellation.set()
                 self._unregister_invocation(invocation_id, cancellation)
 
     async def Cancel(
@@ -131,9 +237,12 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             del self._active[invocation_id]
 
     async def _execute_step(
-        self, handler: ContainerStepHandler, invocation: ContainerInvocation
+        self,
+        handler: ContainerStepHandler,
+        invocation: ContainerInvocation,
+        toolbox: ContainerToolbox,
     ) -> ContainerResult:
-        task = asyncio.create_task(asyncio.to_thread(handler, invocation))
+        task = asyncio.create_task(asyncio.to_thread(handler, invocation, toolbox))
         task.add_done_callback(_discard_step_result)
         try:
             return await asyncio.wait_for(

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
 from enum import Enum
 from threading import Event
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .credentials import (
     CredentialAccessError,
@@ -14,6 +14,9 @@ from .credentials import (
     CredentialProvider,
     _CredentialScope,
 )
+
+if TYPE_CHECKING:
+    from .toolbox import ContainerToolbox
 
 
 class _NoCredentialProvider(Enum):
@@ -33,11 +36,16 @@ class ExecutionContext:
     workflow_run_id: str | None = None
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
+    toolbox: ContainerToolbox | None = field(default=None, compare=False, repr=False)
     credential_provider: InitVar[CredentialProvider | None | _NoCredentialProvider] = (
         _NoCredentialProvider.VALUE
     )
-    _provider: CredentialProvider | None = field(default=None, init=False, compare=False, repr=False)
-    _credential_scope: _CredentialScope | None = field(default=None, init=False, compare=False, repr=False)
+    _provider: CredentialProvider | None = field(
+        default=None, init=False, compare=False, repr=False
+    )
+    _credential_scope: _CredentialScope | None = field(
+        default=None, init=False, compare=False, repr=False
+    )
 
     def __post_init__(
         self, credential_provider: CredentialProvider | None | _NoCredentialProvider
@@ -46,7 +54,9 @@ class ExecutionContext:
 
         if not self.invocation_id:
             raise ValueError("invocation_id must not be empty")
-        provider = None if credential_provider is _NoCredentialProvider.VALUE else credential_provider
+        provider = (
+            None if credential_provider is _NoCredentialProvider.VALUE else credential_provider
+        )
         object.__setattr__(self, "_provider", provider)
 
     def credential(self, name: str) -> CredentialBinding:
@@ -59,8 +69,11 @@ class ExecutionContext:
         if self._credential_scope is not None:
             raise CredentialAccessError("unauthorized")
         context = ExecutionContext(
-            invocation_id=self.invocation_id, workflow_run_id=self.workflow_run_id,
-            runtime_context=self.runtime_context, cancellation=self.cancellation,
+            invocation_id=self.invocation_id,
+            workflow_run_id=self.workflow_run_id,
+            runtime_context=self.runtime_context,
+            cancellation=self.cancellation,
+            toolbox=self.toolbox,
         )
         object.__setattr__(context, "_credential_scope", _CredentialScope(names, self._provider))
         return context

@@ -23,6 +23,7 @@ from syntara_plugin.runtime import (
     ContainerInvocation,
     ContainerInvocationError,
     ContainerResult,
+    ContainerToolbox,
     FailureCode,
     StepRegistry,
     add_container_runtime_service,
@@ -55,13 +56,13 @@ class _AbiMismatchService(ContainerRuntimeService):
         )
 
 
-def _create_issue(invocation: ContainerInvocation) -> ContainerResult:
+def _create_issue(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
     return ContainerResult(
         OUTPUT_SCHEMA_DIGEST, output={"issue_url": "https://issues.example.test/run-e2e"}
     )
 
 
-def _rejected(invocation: ContainerInvocation) -> ContainerResult:
+def _rejected(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
     raise ContainerInvocationError(
         FailureCode.REMOTE_REJECTED,
         "The tracker rejected the request.",
@@ -70,18 +71,20 @@ def _rejected(invocation: ContainerInvocation) -> ContainerResult:
     )
 
 
-def _crashed(invocation: ContainerInvocation) -> ContainerResult:
+def _crashed(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
     raise RuntimeError("unexpected internal crash: token=SECRET-XYZ")
 
 
-def _object_reference_leak(invocation: ContainerInvocation) -> ContainerResult:
+def _object_reference_leak(
+    invocation: ContainerInvocation, toolbox: ContainerToolbox
+) -> ContainerResult:
     return ContainerResult(
         OUTPUT_SCHEMA_DIGEST,
         object_reference=f"ref-{invocation.inputs.get('api_token', '')}",
     )
 
 
-def _error_code_leak(invocation: ContainerInvocation) -> ContainerResult:
+def _error_code_leak(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
     return ContainerResult(
         OUTPUT_SCHEMA_DIGEST,
         status_code=5,
@@ -627,11 +630,17 @@ class _RecordingService(ContainerRuntimeService):
 
     def Execute(self, request, context):
         self.rpc_order.append("Execute")
+        first_request = next(request)
         invocation, _cancellation = __import__(
             "syntara_plugin.runtime.container", fromlist=["invocation_from_request"]
-        ).invocation_from_request(request)
+        ).invocation_from_request(first_request.execute)
         self.invocations.append(invocation)
-        return super().Execute(request, context)
+
+        def replay_request():
+            yield first_request
+            yield from request
+
+        return super().Execute(replay_request(), context)
 
 
 def _start_recording_server(handlers: dict[str, Any]) -> tuple[_RecordingService, int, grpc.Server]:
@@ -777,7 +786,7 @@ class _ProgressLeakService(ContainerRuntimeService):
         self._identity = identity
         self._steps = StepRegistry({identity: self._handler})
 
-    def _handler(self, invocation: ContainerInvocation) -> ContainerResult:
+    def _handler(self, invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         from syntara_plugin.runtime.container import ContainerResult as Result
 
         return Result("sha256:" + "a" * 64, output={"slug": "ok"})
@@ -794,7 +803,8 @@ def _start_progress_server(identity: str, monkeypatch: Any) -> tuple[int, grpc.S
     def execute_with_progress(request, context):
         from syntara_plugin.runtime.container import invocation_from_request
 
-        invocation, _ = invocation_from_request(request)
+        first_request = next(request)
+        invocation, _ = invocation_from_request(first_request.execute)
         secret = invocation.inputs.get("api_token", "")
         yield container_pb2.ExecutionEvent(
             invocation_id=invocation.invocation_id,
@@ -806,7 +816,11 @@ def _start_progress_server(identity: str, monkeypatch: Any) -> tuple[int, grpc.S
                 has_percent=True,
             ),
         )
-        yield from original_execute(request, context)
+        def replay_request():
+            yield first_request
+            yield from request
+
+        yield from original_execute(replay_request(), context)
 
     monkeypatch.setattr(service, "Execute", execute_with_progress)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
@@ -984,7 +998,7 @@ def _recording_handler(seen: dict[str, Any]) -> Any:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         handler = original(*args, **kwargs)
 
-        def recording(invocation: ContainerInvocation) -> ContainerResult:
+        def recording(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
             seen["credential_file_paths"] = dict(invocation.credential_file_paths)
             seen["files"] = {
                 name: Path(path).read_bytes()
@@ -998,7 +1012,7 @@ def _recording_handler(seen: dict[str, Any]) -> Any:
                 name: Path(path).parent.stat().st_mode & 0o777
                 for name, path in invocation.credential_file_paths.items()
             }
-            return handler(invocation)
+            return handler(invocation, toolbox)
 
         return recording
 

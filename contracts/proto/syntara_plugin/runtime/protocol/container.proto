@@ -8,12 +8,13 @@ package syntara.container.v1alpha1;
 // operating-system compatibility. A workload in any language may participate
 // if it implements this service and the message semantics below.
 //
-// The container ABI is the application-data channel. It deliberately carries
-// step type identity and bounded JSON objects, never a container command or
-// plaintext credential. Health negotiates the ABI and supported step type revision
+// The container ABI is the application-data channel. It carries step type
+// identity, bounded JSON objects, and invocation-scoped commands. Credential
+// reference resolution may return credential material to the workload in a
+// command response. Health negotiates the ABI and supported step type revision
 // before the Execution Plane sends Execute or Cancel.
 service ContainerService {
-  rpc Execute(ExecuteRequest) returns (stream ExecutionEvent);
+  rpc Execute(stream ExecuteStreamRequest) returns (stream ExecutionEvent);
   rpc Cancel(CancelRequest) returns (CancelResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
 }
@@ -31,6 +32,13 @@ message ExecuteRequest {
   // A bounded, non-secret runner-specific context selected by Syntara from the
   // installed immutable step. It never contains an endpoint or credential.
   bytes runtime_context_json = 7;
+}
+
+message ExecuteStreamRequest {
+  oneof request {
+    ExecuteRequest execute = 1;
+    ContainerCommandResponse command_response = 2;
+  }
 }
 
 message Progress {
@@ -86,7 +94,36 @@ message ExecutionEvent {
     Progress progress = 2;
     Result result = 3;
     Failure failure = 4;
+    ContainerCommand command = 5;
   }
+}
+
+message ContainerCommand {
+  string command_id = 1;
+  oneof command {
+    CredentialRefResolutionCommand credential_ref_resolution = 2;
+  }
+}
+
+message CredentialRefResolutionCommand {
+  string credential_ref = 1;
+}
+
+message ContainerCommandResponse {
+  string command_id = 1;
+  oneof response {
+    CredentialRefResolutionResponse credential_ref_resolution = 2;
+    CommandError error = 3;
+  }
+}
+
+message CredentialRefResolutionResponse {
+  string credential = 1;
+}
+
+message CommandError {
+  string code = 1;
+  string message = 2;
 }
 
 message CancelRequest { string invocation_id = 1; }

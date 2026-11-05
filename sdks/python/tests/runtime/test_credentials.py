@@ -41,6 +41,7 @@ from syntara_plugin.runtime import (
     invoke,
 )
 from syntara_plugin.runtime.container import _request_from_invocation
+from syntara_plugin.runtime.protocol import container_pb2
 from syntara_plugin.testing import build_execution_context, invoke_step, invoke_step_in_container
 
 _SECRET = "sample-credential-value-keep-private"
@@ -372,7 +373,8 @@ def _terminal_failure_event(
         root,
     )
     request = _request_from_invocation(invocation, root)
-    return next(service.Execute(request, _ServicerContext()))
+    stream_request = container_pb2.ExecuteStreamRequest(execute=request)
+    return next(service.Execute(iter([stream_request]), _ServicerContext()))
 
 
 def test_a_terminal_failure_after_a_read_keeps_its_fields(tmp_path: Path) -> None:

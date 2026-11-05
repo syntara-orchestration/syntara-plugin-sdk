@@ -32,6 +32,7 @@ from syntara_plugin.runtime.container import (
     ContainerRemoteError,
     ContainerResult,
     ContainerStepHandler,
+    ContainerToolbox,
     StepRegistry,
     add_container_runtime_service,
 )
@@ -216,13 +217,15 @@ class BoundedStepHandler:
         self._handler = handler
         self._timeout_seconds = timeout_seconds
 
-    def __call__(self, invocation: ContainerInvocation) -> ContainerResult:
+    def __call__(
+        self, invocation: ContainerInvocation, toolbox: ContainerToolbox
+    ) -> ContainerResult:
         completed: dict[str, ContainerResult] = {}
         failure: list[BaseException] = []
 
         def run() -> None:
             try:
-                completed["result"] = self._handler(invocation)
+                completed["result"] = self._handler(invocation, toolbox)
             except BaseException as error:  # noqa: BLE001 - re-raised on the worker
                 failure.append(error)
 

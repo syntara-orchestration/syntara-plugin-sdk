@@ -18,6 +18,7 @@ from syntara_plugin.runtime import (
     BaseStep,
     ContainerInvocation,
     ContainerInvocationError,
+    ContainerToolbox,
     ControlStep,
     ExecutionContext,
     FailureCode,
@@ -450,7 +451,9 @@ def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
         container_step,
         installed_step=_installed_step(_input_schema()),
     )
-    container_result = container_handler(_container_invocation({"message": "hello"}))
+    container_result = container_handler(
+        _container_invocation({"message": "hello"}), ContainerToolbox()
+    )
 
     assert direct_wrapper.status != 0
     assert direct_wrapper.error is not None
@@ -512,7 +515,9 @@ def test_schema_evaluation_failure_is_a_safe_invalid_input(
     )
 
     direct_wrapper = executor.execute({"message": "hello"}, _context())
-    container_result = container_handler(_container_invocation({"message": "hello"}))
+    container_result = container_handler(
+        _container_invocation({"message": "hello"}), ContainerToolbox()
+    )
 
     assert direct_wrapper.status != 0
     assert direct_wrapper.error is not None
@@ -538,7 +543,7 @@ def test_supported_action_adapter_maps_the_invalid_input_wrapper_to_the_envelope
         container_step,
         installed_step=_installed_step(_input_schema()),
     )
-    container_result = container_handler(_container_invocation(invalid_input))
+    container_result = container_handler(_container_invocation(invalid_input), ContainerToolbox())
 
     assert direct_wrapper.error is not None
     assert container_result.output is None
@@ -562,7 +567,7 @@ def test_supported_action_adapter_preserves_success_payload_and_digest() -> None
         container_step,
         installed_step=_installed_step(_input_schema(), output_schema),
     )
-    container_result = container_handler(_container_invocation(valid_input))
+    container_result = container_handler(_container_invocation(valid_input), ContainerToolbox())
 
     assert direct_wrapper.status == 0
     assert container_result.output == direct_wrapper.output
@@ -582,7 +587,7 @@ def test_container_step_rejects_a_mismatched_installed_identity() -> None:
     )
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.NOT_FOUND
     assert raised.value.outcome == "not_started"
@@ -759,7 +764,10 @@ def test_control_and_trigger_manifest_constraints_reject_values_pydantic_would_a
     )
     container_result = container_step_for_binding(
         container_bindings.binding("acme.plugin.container")
-    )(_container_invocation(inputs, step_revision_id="acme.plugin.container"))
+    )(
+        _container_invocation(inputs, step_revision_id="acme.plugin.container"),
+        ContainerToolbox(),
+    )
 
     assert direct_result.error is not None
     assert direct_result.error.code == FailureCode.INVALID_INPUT.value
@@ -921,7 +929,8 @@ def test_control_and_trigger_output_validation_is_shared_by_direct_and_container
     _bind_installed(container_bindings, identity, container_step)
     with pytest.raises(ContainerInvocationError, match="invalid response"):
         container_step_for_binding(container_bindings.binding(identity))(
-            _container_invocation({"message": "hello"}, step_revision_id=identity)
+            _container_invocation({"message": "hello"}, step_revision_id=identity),
+            ContainerToolbox(),
         )
 
     assert "action" not in str(direct_error.value).lower()
@@ -945,7 +954,8 @@ def test_supported_control_adapter_preserves_success_payload_and_digest() -> Non
         container_bindings.binding("acme.plugin.control")
     )
     container_result = container_handler(
-        _container_invocation(inputs, step_revision_id="acme.plugin.control")
+        _container_invocation(inputs, step_revision_id="acme.plugin.control"),
+        ContainerToolbox(),
     )
 
     assert direct_wrapper.status == 0
@@ -971,7 +981,10 @@ def test_supported_trigger_adapter_preserves_success_payload_and_digest() -> Non
     )
     container_result = container_step_for_binding(
         container_bindings.binding("acme.plugin.trigger")
-    )(_container_invocation(inputs, step_revision_id="acme.plugin.trigger"))
+    )(
+        _container_invocation(inputs, step_revision_id="acme.plugin.trigger"),
+        ContainerToolbox(),
+    )
 
     assert direct_wrapper.status == 0
     assert container_result.output == direct_wrapper.output
@@ -988,7 +1001,8 @@ def test_supported_control_adapter_maps_the_invalid_input_wrapper_to_the_envelop
     _bind_installed(bindings, "acme.plugin.control", step)
 
     result = container_step_for_binding(bindings.binding("acme.plugin.control"))(
-        _container_invocation({"message": 42}, step_revision_id="acme.plugin.control")
+        _container_invocation({"message": 42}, step_revision_id="acme.plugin.control"),
+        ContainerToolbox(),
     )
 
     assert result.output_schema_digest == canonical_json_digest(
@@ -1006,7 +1020,8 @@ def test_supported_trigger_adapter_maps_invalid_input_to_the_envelope() -> None:
     _bind_installed(bindings, "acme.plugin.trigger", step)
 
     result = container_step_for_binding(bindings.binding("acme.plugin.trigger"))(
-        _container_invocation({"message": 42}, step_revision_id="acme.plugin.trigger")
+        _container_invocation({"message": 42}, step_revision_id="acme.plugin.trigger"),
+        ContainerToolbox(),
     )
 
     assert result.output_schema_digest == canonical_json_digest(
@@ -1046,7 +1061,9 @@ def test_supported_non_action_adapter_propagates_the_complete_context(
         cancellation=cancellation,
     )
 
-    result = container_step_for_binding(bindings.binding(identity))(invocation)
+    result = container_step_for_binding(bindings.binding(identity))(
+        invocation, ContainerToolbox()
+    )
 
     assert result.output is not None
     assert step.last_context is not None

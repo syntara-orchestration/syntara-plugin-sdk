@@ -13,7 +13,12 @@ from pathlib import Path
 
 import grpc
 import pytest
-from syntara_plugin.runtime import ContainerClient, ContainerInvocation
+from syntara_plugin.runtime import (
+    ContainerClient,
+    ContainerInvocation,
+    ContainerResult,
+    CredentialRefResolutionCommand,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -46,7 +51,9 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
         context, _EXAMPLE / "src" / "existing_step" / "manifests", "existing-step-workload"
     )
     with (context / "Containerfile").open("a", encoding="utf-8") as stream:
-        stream.write("\nUSER 0\nCOPY registration.json /opt/syntara/registration-manifest.json\nUSER 1001\n")
+        stream.write(
+            "\nUSER 0\nCOPY registration.json /opt/syntara/registration-manifest.json\nUSER 1001\n"
+        )
 
     image_tag = f"syntara-plugin-runtime-it-{uuid.uuid4().hex}"
     container_name = f"syntara-runtime-it-{uuid.uuid4().hex}"
@@ -147,6 +154,115 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
         )
 
 
+@pytest.mark.parametrize("use_stream", [False, True], ids=["execute", "stream"])
+def test_credential_ref_resolution_flows_from_plugin_step_to_client(
+    tmp_path: Path, use_stream: bool
+) -> None:
+    context = tmp_path / "credential-command-context"
+    wheels = context / "wheels"
+    wheels.mkdir(parents=True)
+
+    _build_workspace_wheel("syntara-plugin-contracts", wheels)
+    _write_credential_command_step(context)
+    _build_step_wheel(context, "credential-command-step", wheels)
+    _write_credential_command_runtime_config(context)
+    _write_tls_containerfile(context)
+
+    workspace = tmp_path / "credential-command-workspace"
+    _write_credential_command_workspace(workspace)
+    revisions, resolved = _write_registration(context, workspace, "credential-command-workload")
+    image_tag = f"syntara-plugin-credential-command-it-{uuid.uuid4().hex}"
+    container_name = f"syntara-credential-command-it-{uuid.uuid4().hex}"
+    _build_image(context, image_tag)
+
+    host_port = _free_port()
+    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(tmp_path)
+    _make_tls_material_readable(certificate, key, client_ca)
+    subprocess.run(
+        [
+            "podman",
+            "run",
+            "--rm",
+            "--detach",
+            "--name",
+            container_name,
+            "--publish",
+            f"127.0.0.1:{host_port}:50051",
+            "--volume",
+            f"{certificate}:/run/secrets/server.crt:ro,Z",
+            "--volume",
+            f"{key}:/run/secrets/server.key:ro,Z",
+            "--volume",
+            f"{client_ca}:/run/secrets/client-ca.crt:ro,Z",
+            "--volume",
+            f"{resolved}:/run/syntara/resolved.json:ro,Z",
+            "--env",
+            "SYNTARA_RESOLVED_EXECUTION=/run/syntara/resolved.json",
+            image_tag,
+        ],
+        check=True,
+    )
+
+    credentials = grpc.ssl_channel_credentials(
+        root_certificates=client_ca.read_bytes(),
+        private_key=client_key.read_bytes(),
+        certificate_chain=client_certificate.read_bytes(),
+    )
+    channel = grpc.secure_channel(f"127.0.0.1:{host_port}", credentials)
+    credential_ref = uuid.uuid4()
+    try:
+        client = ContainerClient(channel)
+        _wait_for_health(client)
+
+        def resolve_credential_ref(
+            command: CredentialRefResolutionCommand,
+        ) -> str:
+            assert command.credential_ref == credential_ref
+            return "resolved-by-client"
+
+        invocation = _invocation(
+            revisions["integration.credential-command.v1"],
+            {"credential_ref": str(credential_ref)},
+            invocation_id="credential-command",
+        )
+        if use_stream:
+            events = list(
+                client.stream(
+                    invocation,
+                    timeout_seconds=10,
+                    on_command=resolve_credential_ref,
+                )
+            )
+            assert len(events) == 2
+            command, result = events
+            assert isinstance(command, CredentialRefResolutionCommand)
+            assert command.credential_ref == credential_ref
+            assert isinstance(result, ContainerResult)
+        else:
+            result = client.execute(
+                invocation,
+                timeout_seconds=10,
+                on_command=resolve_credential_ref,
+            )
+
+        assert result.status_code == 0
+        assert result.output == {"message": "resolved-by-client"}
+    finally:
+        channel.close()
+        subprocess.run(
+            ["podman", "rm", "--force", container_name],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["podman", "rmi", "--force", image_tag],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
 def _build_workspace_wheel(package: str, output: Path) -> None:
     subprocess.run(
         [
@@ -163,18 +279,29 @@ def _build_workspace_wheel(package: str, output: Path) -> None:
     )
 
 
-def _write_registration(context: Path, workspace: Path, workload: str) -> tuple[dict[str, str], Path]:
+def _write_registration(
+    context: Path, workspace: Path, workload: str
+) -> tuple[dict[str, str], Path]:
     from syntara_plugin.contracts import registration_manifest
     from syntara_plugin.sdk.authoring import BuildRequest, compile_workspace
 
-    descriptor = compile_workspace(BuildRequest(workspace / "plugin.yaml", require_image_bindings=False)).descriptor
+    descriptor = compile_workspace(
+        BuildRequest(workspace / "plugin.yaml", require_image_bindings=False)
+    ).descriptor
     manifest = registration_manifest(descriptor, workload)
     (context / "registration.json").write_text(json.dumps(manifest), encoding="utf-8")
     resolved = context / "resolved.json"
-    resolved.write_text(json.dumps({"bindings": [
-        {"stepRevisionId": revision, "runtimeKind": "custom-runner", **entry}
-        for revision, entry in manifest["steps"].items()
-    ]}), encoding="utf-8")
+    resolved.write_text(
+        json.dumps(
+            {
+                "bindings": [
+                    {"stepRevisionId": revision, "runtimeKind": "custom-runner", **entry}
+                    for revision, entry in manifest["steps"].items()
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     resolved.chmod(0o644)
     # Integration and credential targets are not steps and carry no revision.
     return {
@@ -290,6 +417,203 @@ def create_bindings() -> StepBindings:
 """,
         encoding="utf-8",
     )
+
+
+def _write_credential_command_step(context: Path) -> None:
+    package = context / "credential-command-step"
+    source = package / "src" / "syntara_credential_command_step"
+    source.mkdir(parents=True)
+    (package / "pyproject.toml").write_text(
+        """[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "syntara-credential-command-step"
+version = "0.1.0"
+dependencies = ["syntara-plugin-contracts>=0.1.0a1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/syntara_credential_command_step"]
+""",
+        encoding="utf-8",
+    )
+    (source / "__init__.py").write_text("", encoding="utf-8")
+    (source / "runtime.py").write_text(
+        """from uuid import UUID
+
+from pydantic import BaseModel
+from syntara_plugin.runtime import (
+    ActionStep,
+    ExecutionContext,
+    InstalledStepManifest,
+    StepBindings,
+    StepDescriptor,
+)
+
+
+class EchoInput(BaseModel):
+    credential_ref: UUID
+
+
+class EchoOutput(BaseModel):
+    message: str
+
+
+class EchoStep(ActionStep[EchoInput, EchoOutput]):
+    def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+        assert context.toolbox is not None
+        credential = context.toolbox.resolve_credential_ref(inputs.credential_ref)
+        return EchoOutput(message=credential)
+
+
+def create_bindings() -> StepBindings:
+    step = EchoStep()
+    installed_step = InstalledStepManifest.from_manifest(
+        "integration.credential-command.v1",
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "Action",
+            "metadata": {
+                "name": "echo",
+                "displayName": "Echo",
+                "description": "Resolves and echoes a credential reference.",
+            },
+            "spec": {
+                "runtime": {
+                    "kind": "custom-runner",
+                    "entryPoint": "syntara_credential_command_step.runtime:EchoStep",
+                },
+                "input": {"kind": "inline", "value": EchoInput.model_json_schema()},
+                "output": {"kind": "inline", "value": EchoOutput.model_json_schema()},
+                "error": {"kind": "inline", "value": {"type": "object"}},
+            },
+        },
+        {},
+    )
+    bindings = StepBindings()
+    bindings.bind(StepDescriptor.for_installed_step(step, installed_step), step)
+    return bindings
+""",
+        encoding="utf-8",
+    )
+
+
+def _build_step_wheel(context: Path, package_name: str, output: Path) -> None:
+    subprocess.run(
+        [
+            "uv",
+            "build",
+            "--directory",
+            str(context / package_name),
+            "--wheel",
+            "--out-dir",
+            str(output),
+            "--no-create-gitignore",
+        ],
+        check=True,
+    )
+
+
+def _write_credential_command_runtime_config(context: Path) -> None:
+    document = {
+        "abi": "syntara.container/v1alpha1",
+        "adapter": {"bindingsFactory": ("syntara_credential_command_step.runtime:create_bindings")},
+    }
+    (context / "runtime.json").write_text(json.dumps(document, indent=2), encoding="utf-8")
+
+
+def _write_tls_containerfile(context: Path) -> None:
+    (context / "Containerfile").write_text(
+        f"""FROM {_BASE_IMAGE}
+
+WORKDIR /app
+COPY wheels /wheels
+RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl
+USER 0
+RUN mkdir -p /etc/syntara
+COPY runtime.json /etc/syntara/runtime.json
+COPY registration.json /opt/syntara/registration-manifest.json
+RUN chmod 0644 /etc/syntara/runtime.json
+
+ENV SYNTARA_RUNTIME_CONFIG=/etc/syntara/runtime.json \\
+    SYNTARA_RUNTIME_GRPC_ADDRESS=0.0.0.0:50051 \\
+    SYNTARA_RUNTIME_GRPC_TLS_CERT=/run/secrets/server.crt \\
+    SYNTARA_RUNTIME_GRPC_TLS_KEY=/run/secrets/server.key \\
+    SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=/run/secrets/client-ca.crt \\
+    PYTHONUNBUFFERED=1 \\
+    PYTHONDONTWRITEBYTECODE=1
+
+USER 1001
+EXPOSE 50051
+ENTRYPOINT ["python3.12", "-m", "syntara_plugin.runtime.server"]
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_credential_command_workspace(workspace: Path) -> None:
+    (workspace / "steps/v1").mkdir(parents=True)
+    (workspace / "docs").mkdir(parents=True)
+    (workspace / "plugin.yaml").write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: integration
+  name: credential-command
+  version: 0.1.0
+  displayName: Credential command
+  description: Resolves and echoes a credential reference.
+spec:
+  documentation:
+    path: docs/README.md
+  workload:
+    image: credential-command-workload
+  targets:
+    - steps/v1/manifest.yaml
+""",
+        encoding="utf-8",
+    )
+    (workspace / "steps/v1/manifest.yaml").write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: v1
+  displayName: Echo
+  description: Resolves and echoes a credential reference.
+spec:
+  runtime:
+    kind: custom-runner
+    entryPoint: syntara_credential_command_step.runtime:EchoStep
+  input:
+    kind: inline
+    value:
+      type: object
+      title: EchoInput
+      properties:
+        credential_ref:
+          title: Credential Ref
+          type: string
+          format: uuid
+      required: [credential_ref]
+  output:
+    kind: inline
+    value:
+      type: object
+      title: EchoOutput
+      properties:
+        message:
+          title: Message
+          type: string
+      required: [message]
+  error:
+    kind: inline
+    value:
+      type: object
+""",
+        encoding="utf-8",
+    )
+    (workspace / "docs/README.md").write_text("# Credential command\n", encoding="utf-8")
 
 
 def _build_sample_wheel(context: Path, output: Path) -> None:
@@ -756,9 +1080,7 @@ def test_managed_image_mode_delivers_a_credential_as_a_read_only_file(
     _write_registration(context, workspace, image_tag)
     _build_image(context, image_tag)
 
-    expected = hashlib.sha256(
-        canonical_json_bytes({"token": _CREDENTIAL_TOKEN})
-    ).hexdigest()
+    expected = hashlib.sha256(canonical_json_bytes({"token": _CREDENTIAL_TOKEN})).hexdigest()
     monkeypatch.setattr("sys.stdin", StringIO(_CREDENTIAL_TOKEN))
 
     try:

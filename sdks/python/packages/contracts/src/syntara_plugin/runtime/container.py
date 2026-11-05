@@ -2,27 +2,31 @@
 
 One container image may register many immutable step type revisions.  The Execution
 Plane selects the revision in an :class:`ContainerInvocation`; the runtime
-dispatches to the matching Python callable. The protocol deliberately carries
-only JSON input data, bounded non-secret runtime context, and paths to
-credential files mounted by the Execution Plane. It never carries commands,
-environment-derived credentials, or plaintext secret material.
+dispatches to the matching Python callable. The protocol carries JSON input
+data, bounded runtime context, approved credential file paths, and
+invocation-scoped commands used to request host services.
 """
 
 from __future__ import annotations
 
 import json
+import queue
 import re
+import time
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from typing import Any, Literal, NoReturn
+from uuid import UUID
 
 import grpc
 from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
 from .abi import _PROVIDER_CODE, CONTAINER_ABI, ContainerInvocationError, FailureCode
+from .commands import ContainerCommand, CredentialRefResolutionCommand
 from .credentials import approved_credential_path
 from .execution import StepExecutionError
 from .outcome import (
@@ -35,6 +39,7 @@ from .outcome import (
     validate_json_object,
 )
 from .protocol import container_pb2, container_pb2_grpc
+from .toolbox import ContainerToolbox
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
@@ -317,7 +322,7 @@ class ContainerRemoteError(RuntimeError):
         self.provider_code = provider_code
 
 
-ContainerStepHandler = Callable[[ContainerInvocation], ContainerResult]
+ContainerStepHandler = Callable[[ContainerInvocation, ContainerToolbox], ContainerResult]
 
 
 class StepRegistry:
@@ -370,22 +375,118 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         self._active_lock = Lock()
 
     def Execute(
-        self, request: container_pb2.ExecuteRequest, context: grpc.ServicerContext
+        self,
+        request: Iterator[container_pb2.ExecuteStreamRequest],
+        context: grpc.ServicerContext,
     ) -> Iterator[container_pb2.ExecutionEvent]:
         cancellation: Event | None = None
-        invocation_id = request.invocation_id
+        invocation_id = ""
+        toolbox: ContainerToolbox | None = None
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
         try:
+            first_request = next(request)
+            if first_request.WhichOneof("request") != "execute":
+                raise ContainerInvocationError(
+                    FailureCode.ABI_VIOLATION,
+                    "The execution stream must begin with an execution request.",
+                    outcome="not_started",
+                )
             invocation, cancellation = invocation_from_request(
-                request, self._local_credential_directory
+                first_request.execute, self._local_credential_directory
             )
+            invocation_id = invocation.invocation_id
             handler = self._steps.resolve(invocation.step_revision_id)
             self._register_invocation(invocation.invocation_id, cancellation)
-            # Deadline expiry and a disconnected Execution Plane both become a
-            # cooperative cancellation signal visible to the step.
-            if not context.add_callback(cancellation.set):
+
+            toolbox = ContainerToolbox(
+                invocation.invocation_id,
+                invocation.timeout_seconds,
+                lambda command: events.put(("command", command)),
+            )
+
+            def disconnected() -> None:
                 cancellation.set()
-            result = handler(invocation)
-            yield terminal_execution_event(invocation, result)
+                toolbox.fail_pending_commands(
+                    ContainerInvocationError(
+                        FailureCode.CANCELLED,
+                        "The execution stream was disconnected.",
+                        retryable=True,
+                        outcome="not_completed",
+                    )
+                )
+
+            if not context.add_callback(disconnected):
+                cancellation.set()
+
+            handler_future: Future[ContainerResult] = Future()
+
+            def run_handler() -> None:
+                try:
+                    handler_future.set_result(handler(invocation, toolbox))
+                except BaseException as error:
+                    handler_future.set_exception(error)
+
+            handler_future.add_done_callback(
+                lambda future: events.put(("handler", future))
+            )
+            Thread(
+                target=run_handler,
+                name=f"syntara-container-step-{invocation_id}",
+                daemon=True,
+            ).start()
+
+            def read_requests() -> None:
+                try:
+                    for response in request:
+                        events.put(("response", response))
+                except Exception as error:
+                    events.put(("reader_error", error))
+                else:
+                    events.put(("closed", None))
+
+            Thread(
+                target=read_requests,
+                name=f"syntara-container-requests-{invocation_id}",
+                daemon=True,
+            ).start()
+
+            deadline = time.monotonic() + invocation.timeout_seconds
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ContainerInvocationError(
+                        FailureCode.TIMEOUT,
+                        "The step exceeded its execution timeout.",
+                        retryable=True,
+                        outcome="not_completed",
+                    )
+                try:
+                    event_kind, payload = events.get(timeout=remaining)
+                except queue.Empty:
+                    raise ContainerInvocationError(
+                        FailureCode.TIMEOUT,
+                        "The step exceeded its execution timeout.",
+                        retryable=True,
+                        outcome="not_completed",
+                    ) from None
+                if event_kind == "command":
+                    yield command_event(payload)
+                elif event_kind == "response":
+                    _process_command_response(payload, toolbox)
+                elif event_kind == "handler":
+                    result = payload.result()
+                    yield terminal_execution_event(invocation, result)
+                    break
+                elif event_kind == "reader_error":
+                    raise payload
+                elif event_kind == "closed":
+                    toolbox.fail_pending_commands(
+                        ContainerInvocationError(
+                            FailureCode.ABI_VIOLATION,
+                            "The execution stream closed before the command response.",
+                            outcome="unknown",
+                        )
+                    )
         except StepExecutionError as error:
             yield failure_event(
                 invocation_id,
@@ -407,6 +508,17 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 ),
             )
         finally:
+            if cancellation is not None:
+                cancellation.set()
+            if toolbox is not None:
+                toolbox.fail_pending_commands(
+                    ContainerInvocationError(
+                        FailureCode.CANCELLED,
+                        "The step did not complete.",
+                        retryable=True,
+                        outcome="not_completed",
+                    )
+                )
             if cancellation is not None:
                 self._unregister_invocation(invocation_id, cancellation)
 
@@ -531,13 +643,23 @@ class ContainerClient:
         return tuple(response.step_revision_ids)
 
     def execute(
-        self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None
+        self,
+        invocation: ContainerInvocation,
+        *,
+        timeout_seconds: float | None = None,
+        on_command: Callable[[ContainerCommand], str] | None = None,
     ) -> ContainerResult:
         """Invoke a step type and return its sole terminal result."""
 
-        for event in self.stream(invocation, timeout_seconds=timeout_seconds):
-            if isinstance(event, ContainerResult):
-                return event
+        stream = self.stream(
+            invocation, timeout_seconds=timeout_seconds, on_command=on_command
+        )
+        try:
+            for event in stream:
+                if isinstance(event, ContainerResult):
+                    return event
+        finally:
+            stream.close()
         raise ContainerRemoteError(
             FailureCode.OUTCOME_UNKNOWN,
             retryable=False,
@@ -553,6 +675,7 @@ class ContainerClient:
         error_schema: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
         resolve_object_reference: Callable[[str], Mapping[str, Any]] | None = None,
+        on_command: Callable[[ContainerCommand], str] | None = None,
     ) -> StandardOutputWrapper:
         """Invoke a step type and reconstruct its SDK-owned output wrapper.
 
@@ -564,7 +687,9 @@ class ContainerClient:
         Referenced output requires a host-supplied resolver.
         """
 
-        result = self.execute(invocation, timeout_seconds=timeout_seconds)
+        result = self.execute(
+            invocation, timeout_seconds=timeout_seconds, on_command=on_command
+        )
         return standard_output_from_container_result(
             result,
             output_schema=output_schema,
@@ -573,16 +698,32 @@ class ContainerClient:
         )
 
     def stream(
-        self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None
-    ) -> Iterator[ContainerProgress | ContainerResult]:
-        """Invoke a step type and yield progress followed by exactly one result."""
+        self,
+        invocation: ContainerInvocation,
+        *,
+        timeout_seconds: float | None = None,
+        on_command: Callable[[ContainerCommand], str] | None = None,
+    ) -> Iterator[ContainerProgress | ContainerResult | ContainerCommand]:
+        """Invoke a step type and yield progress, commands, and one result."""
 
         request = _request_from_invocation(invocation, self._local_credential_directory)
         deadline = _execution_deadline(invocation, timeout_seconds)
         saw_terminal = False
         rpc_failure: ContainerRemoteError | None = None
+        requests: queue.Queue[container_pb2.ExecuteStreamRequest | None] = queue.Queue()
+        requests.put(
+            container_pb2.ExecuteStreamRequest(execute=request)
+        )
+
+        def request_iterator() -> Iterator[container_pb2.ExecuteStreamRequest]:
+            while True:
+                item = requests.get()
+                if item is None:
+                    return
+                yield item
+
         try:
-            for event in self._stub.Execute(request, timeout=deadline):
+            for event in self._stub.Execute(request_iterator(), timeout=deadline):
                 if event.invocation_id != invocation.invocation_id:
                     raise _protocol_error()
                 event_kind = event.WhichOneof("event")
@@ -597,9 +738,32 @@ class ContainerClient:
                     continue
                 if event_kind == "failure":
                     raise _remote_failure(event)
+                if event_kind == "command":
+                    command = _command_from_event(event)
+                    if on_command is None:
+                        raise _protocol_error()
+                    value = on_command(command)
+                    if not isinstance(value, str):
+                        raise _protocol_error()
+                    requests.put(
+                        container_pb2.ExecuteStreamRequest(
+                            command_response=container_pb2.ContainerCommandResponse(
+                                command_id=command.command_id,
+                                credential_ref_resolution=(
+                                    container_pb2.CredentialRefResolutionResponse(
+                                        credential=value
+                                    )
+                                ),
+                            )
+                        )
+                    )
+                    yield command
+                    continue
                 raise _protocol_error()
         except grpc.RpcError as error:
             rpc_failure = _rpc_error(error)
+        finally:
+            requests.put_nowait(None)
         if rpc_failure is not None:
             raise rpc_failure
         if not saw_terminal:
@@ -850,6 +1014,13 @@ def _result_event(invocation_id: str, result: ContainerResult) -> container_pb2.
     )
 
 
+def command_event(command: ContainerCommand) -> container_pb2.ExecutionEvent:
+    return container_pb2.ExecutionEvent(
+        invocation_id=command.invocation_id,
+        command=command._protocol_command(),
+    )
+
+
 def failure_event(
     invocation_id: str, error: ContainerInvocationError
 ) -> container_pb2.ExecutionEvent:
@@ -864,6 +1035,75 @@ def failure_event(
             provider_code=error.provider_code,
         ),
     )
+
+
+def _command_from_event(event: container_pb2.ExecutionEvent) -> ContainerCommand:
+    command = event.command
+    command_kind = command.WhichOneof("command")
+    if command_kind != "credential_ref_resolution" or event.invocation_id == "":
+        raise _protocol_error()
+    try:
+        command_id = UUID(command.command_id)
+        credential_ref = UUID(command.credential_ref_resolution.credential_ref)
+    except (ValueError, AttributeError):
+        raise _protocol_error() from None
+    if str(command_id) != command.command_id:
+        raise _protocol_error()
+    return CredentialRefResolutionCommand(
+        command_id=command.command_id,
+        invocation_id=event.invocation_id,
+        credential_ref=credential_ref,
+    )
+
+
+def _process_command_response(
+    response: container_pb2.ExecuteStreamRequest,
+    toolbox: ContainerToolbox,
+) -> None:
+    if response.WhichOneof("request") != "command_response":
+        raise ContainerInvocationError(
+            FailureCode.ABI_VIOLATION,
+            "Only command responses may follow the execution request.",
+            outcome="unknown",
+        )
+    command_response = response.command_response
+    response_kind = command_response.WhichOneof("response")
+    if response_kind == "credential_ref_resolution":
+        value = command_response.credential_ref_resolution.credential
+        if not value or len(value) > MAX_MESSAGE_LENGTH:
+            raise ContainerInvocationError(
+                FailureCode.ABI_VIOLATION,
+                "The credential response is invalid.",
+                outcome="unknown",
+            )
+        if not toolbox.complete_command(command_response.command_id, value):
+            raise ContainerInvocationError(
+                FailureCode.ABI_VIOLATION,
+                "The command response does not match a pending command.",
+                outcome="unknown",
+            )
+    elif response_kind == "error":
+        try:
+            code = FailureCode(command_response.error.code)
+        except ValueError:
+            code = FailureCode.OUTCOME_UNKNOWN
+        error = ContainerInvocationError(
+            code,
+            "The credential reference could not be resolved.",
+            outcome="unknown",
+        )
+        if not toolbox.fail_command(command_response.command_id, error):
+            raise ContainerInvocationError(
+                FailureCode.ABI_VIOLATION,
+                "The command response does not match a pending command.",
+                outcome="unknown",
+            )
+    else:
+        raise ContainerInvocationError(
+            FailureCode.ABI_VIOLATION,
+            "The command response is invalid.",
+            outcome="unknown",
+        )
 
 
 def _progress_from_event(event: container_pb2.ExecutionEvent) -> ContainerProgress:

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n/syntara_plugin/runtime/protocol/container.proto\x12\x1asyntara.container.v1alpha1\"\xdf\x01\n\x0e\x45xecuteRequest\x12\x15\n\rinvocation_id\x18\x01 \x01(\t\x12\x17\n\x0fworkflow_run_id\x18\x08 \x01(\t\x12\x18\n\x10step_revision_id\x18\x02 \x01(\t\x12\x13\n\x0bruntime_abi\x18\x03 \x01(\t\x12\x13\n\x0binputs_json\x18\x04 \x01(\x0c\x12\"\n\x1a\x63redential_file_paths_json\x18\x05 \x01(\x0c\x12\x17\n\x0ftimeout_seconds\x18\x06 \x01(\r\x12\x1c\n\x14runtime_context_json\x18\x07 \x01(\x0c\"b\n\x08Progress\x12\x10\n\x08sequence\x18\x01 \x01(\r\x12\r\n\x05state\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x0f\n\x07percent\x18\x04 \x01(\x01\x12\x13\n\x0bhas_percent\x18\x05 \x01(\x08\"\x88\x02\n\x06Result\x12\x1c\n\x14output_schema_digest\x18\x01 \x01(\t\x12\x13\n\x0boutput_json\x18\x02 \x01(\x0c\x12\x18\n\x10object_reference\x18\x03 \x01(\t\x12\x13\n\x0bstatus_code\x18\x04 \x01(\r\x12\x16\n\x0estatus_message\x18\x05 \x01(\t\x12\x19\n\x11\x65rror_result_json\x18\n \x01(\x0c\x12\x1b\n\x13\x65rror_schema_digest\x18\x0b \x01(\tJ\x04\x08\x06\x10\x07J\x04\x08\x07\x10\x08J\x04\x08\x08\x10\tJ\x04\x08\t\x10\nR\nerror_codeR\rerror_messageR\tretryableR\x0e\x65rror_category\"{\n\x07\x46\x61ilure\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\tretryable\x18\x03 \x01(\x08\x12\x0f\n\x07outcome\x18\x04 \x01(\t\x12\x16\n\x0e\x63orrelation_id\x18\x05 \x01(\t\x12\x15\n\rprovider_code\x18\x06 \x01(\t\"\xd8\x01\n\x0e\x45xecutionEvent\x12\x15\n\rinvocation_id\x18\x01 \x01(\t\x12\x38\n\x08progress\x18\x02 \x01(\x0b\x32$.syntara.container.v1alpha1.ProgressH\x00\x12\x34\n\x06result\x18\x03 \x01(\x0b\x32\".syntara.container.v1alpha1.ResultH\x00\x12\x36\n\x07\x66\x61ilure\x18\x04 \x01(\x0b\x32#.syntara.container.v1alpha1.FailureH\x00\x42\x07\n\x05\x65vent\"&\n\rCancelRequest\x12\x15\n\rinvocation_id\x18\x01 \x01(\t\"\"\n\x0e\x43\x61ncelResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\"\x0f\n\rHealthRequest\"O\n\x0eHealthResponse\x12\r\n\x05ready\x18\x01 \x01(\x08\x12\x13\n\x0bruntime_abi\x18\x02 \x01(\t\x12\x19\n\x11step_revision_ids\x18\x03 \x03(\t2\xb9\x02\n\x10\x43ontainerService\x12\x63\n\x07\x45xecute\x12*.syntara.container.v1alpha1.ExecuteRequest\x1a*.syntara.container.v1alpha1.ExecutionEvent0\x01\x12_\n\x06\x43\x61ncel\x12).syntara.container.v1alpha1.CancelRequest\x1a*.syntara.container.v1alpha1.CancelResponse\x12_\n\x06Health\x12).syntara.container.v1alpha1.HealthRequest\x1a*.syntara.container.v1alpha1.HealthResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n/syntara_plugin/runtime/protocol/container.proto\x12\x1asyntara.container.v1alpha1\"\xdf\x01\n\x0e\x45xecuteRequest\x12\x15\n\rinvocation_id\x18\x01 \x01(\t\x12\x17\n\x0fworkflow_run_id\x18\x08 \x01(\t\x12\x18\n\x10step_revision_id\x18\x02 \x01(\t\x12\x13\n\x0bruntime_abi\x18\x03 \x01(\t\x12\x13\n\x0binputs_json\x18\x04 \x01(\x0c\x12\"\n\x1a\x63redential_file_paths_json\x18\x05 \x01(\x0c\x12\x17\n\x0ftimeout_seconds\x18\x06 \x01(\r\x12\x1c\n\x14runtime_context_json\x18\x07 \x01(\x0c\"\xb2\x01\n\x14\x45xecuteStreamRequest\x12=\n\x07\x65xecute\x18\x01 \x01(\x0b\x32*.syntara.container.v1alpha1.ExecuteRequestH\x00\x12P\n\x10\x63ommand_response\x18\x02 \x01(\x0b\x32\x34.syntara.container.v1alpha1.ContainerCommandResponseH\x00\x42\t\n\x07request\"b\n\x08Progress\x12\x10\n\x08sequence\x18\x01 \x01(\r\x12\r\n\x05state\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x0f\n\x07percent\x18\x04 \x01(\x01\x12\x13\n\x0bhas_percent\x18\x05 \x01(\x08\"\x88\x02\n\x06Result\x12\x1c\n\x14output_schema_digest\x18\x01 \x01(\t\x12\x13\n\x0boutput_json\x18\x02 \x01(\x0c\x12\x18\n\x10object_reference\x18\x03 \x01(\t\x12\x13\n\x0bstatus_code\x18\x04 \x01(\r\x12\x16\n\x0estatus_message\x18\x05 \x01(\t\x12\x19\n\x11\x65rror_result_json\x18\n \x01(\x0c\x12\x1b\n\x13\x65rror_schema_digest\x18\x0b \x01(\tJ\x04\x08\x06\x10\x07J\x04\x08\x07\x10\x08J\x04\x08\x08\x10\tJ\x04\x08\t\x10\nR\nerror_codeR\rerror_messageR\tretryableR\x0e\x65rror_category\"{\n\x07\x46\x61ilure\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\tretryable\x18\x03 \x01(\x08\x12\x0f\n\x07outcome\x18\x04 \x01(\t\x12\x16\n\x0e\x63orrelation_id\x18\x05 \x01(\t\x12\x15\n\rprovider_code\x18\x06 \x01(\t\"\x99\x02\n\x0e\x45xecutionEvent\x12\x15\n\rinvocation_id\x18\x01 \x01(\t\x12\x38\n\x08progress\x18\x02 \x01(\x0b\x32$.syntara.container.v1alpha1.ProgressH\x00\x12\x34\n\x06result\x18\x03 \x01(\x0b\x32\".syntara.container.v1alpha1.ResultH\x00\x12\x36\n\x07\x66\x61ilure\x18\x04 \x01(\x0b\x32#.syntara.container.v1alpha1.FailureH\x00\x12?\n\x07\x63ommand\x18\x05 \x01(\x0b\x32,.syntara.container.v1alpha1.ContainerCommandH\x00\x42\x07\n\x05\x65vent\"\x92\x01\n\x10\x43ontainerCommand\x12\x12\n\ncommand_id\x18\x01 \x01(\t\x12_\n\x19\x63redential_ref_resolution\x18\x02 \x01(\x0b\x32:.syntara.container.v1alpha1.CredentialRefResolutionCommandH\x00\x42\t\n\x07\x63ommand\"8\n\x1e\x43redentialRefResolutionCommand\x12\x16\n\x0e\x63redential_ref\x18\x01 \x01(\t\"\xd7\x01\n\x18\x43ontainerCommandResponse\x12\x12\n\ncommand_id\x18\x01 \x01(\t\x12`\n\x19\x63redential_ref_resolution\x18\x02 \x01(\x0b\x32;.syntara.container.v1alpha1.CredentialRefResolutionResponseH\x00\x12\x39\n\x05\x65rror\x18\x03 \x01(\x0b\x32(.syntara.container.v1alpha1.CommandErrorH\x00\x42\n\n\x08response\"5\n\x1f\x43redentialRefResolutionResponse\x12\x12\n\ncredential\x18\x01 \x01(\t\"-\n\x0c\x43ommandError\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"&\n\rCancelRequest\x12\x15\n\rinvocation_id\x18\x01 \x01(\t\"\"\n\x0e\x43\x61ncelResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\"\x0f\n\rHealthRequest\"O\n\x0eHealthResponse\x12\r\n\x05ready\x18\x01 \x01(\x08\x12\x13\n\x0bruntime_abi\x18\x02 \x01(\t\x12\x19\n\x11step_revision_ids\x18\x03 \x03(\t2\xc1\x02\n\x10\x43ontainerService\x12k\n\x07\x45xecute\x12\x30.syntara.container.v1alpha1.ExecuteStreamRequest\x1a*.syntara.container.v1alpha1.ExecutionEvent(\x01\x30\x01\x12_\n\x06\x43\x61ncel\x12).syntara.container.v1alpha1.CancelRequest\x1a*.syntara.container.v1alpha1.CancelResponse\x12_\n\x06Health\x12).syntara.container.v1alpha1.HealthRequest\x1a*.syntara.container.v1alpha1.HealthResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,22 +33,34 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_EXECUTEREQUEST']._serialized_start=80
   _globals['_EXECUTEREQUEST']._serialized_end=303
-  _globals['_PROGRESS']._serialized_start=305
-  _globals['_PROGRESS']._serialized_end=403
-  _globals['_RESULT']._serialized_start=406
-  _globals['_RESULT']._serialized_end=670
-  _globals['_FAILURE']._serialized_start=672
-  _globals['_FAILURE']._serialized_end=795
-  _globals['_EXECUTIONEVENT']._serialized_start=798
-  _globals['_EXECUTIONEVENT']._serialized_end=1014
-  _globals['_CANCELREQUEST']._serialized_start=1016
-  _globals['_CANCELREQUEST']._serialized_end=1054
-  _globals['_CANCELRESPONSE']._serialized_start=1056
-  _globals['_CANCELRESPONSE']._serialized_end=1090
-  _globals['_HEALTHREQUEST']._serialized_start=1092
-  _globals['_HEALTHREQUEST']._serialized_end=1107
-  _globals['_HEALTHRESPONSE']._serialized_start=1109
-  _globals['_HEALTHRESPONSE']._serialized_end=1188
-  _globals['_CONTAINERSERVICE']._serialized_start=1191
-  _globals['_CONTAINERSERVICE']._serialized_end=1504
+  _globals['_EXECUTESTREAMREQUEST']._serialized_start=306
+  _globals['_EXECUTESTREAMREQUEST']._serialized_end=484
+  _globals['_PROGRESS']._serialized_start=486
+  _globals['_PROGRESS']._serialized_end=584
+  _globals['_RESULT']._serialized_start=587
+  _globals['_RESULT']._serialized_end=851
+  _globals['_FAILURE']._serialized_start=853
+  _globals['_FAILURE']._serialized_end=976
+  _globals['_EXECUTIONEVENT']._serialized_start=979
+  _globals['_EXECUTIONEVENT']._serialized_end=1260
+  _globals['_CONTAINERCOMMAND']._serialized_start=1263
+  _globals['_CONTAINERCOMMAND']._serialized_end=1409
+  _globals['_CREDENTIALREFRESOLUTIONCOMMAND']._serialized_start=1411
+  _globals['_CREDENTIALREFRESOLUTIONCOMMAND']._serialized_end=1467
+  _globals['_CONTAINERCOMMANDRESPONSE']._serialized_start=1470
+  _globals['_CONTAINERCOMMANDRESPONSE']._serialized_end=1685
+  _globals['_CREDENTIALREFRESOLUTIONRESPONSE']._serialized_start=1687
+  _globals['_CREDENTIALREFRESOLUTIONRESPONSE']._serialized_end=1740
+  _globals['_COMMANDERROR']._serialized_start=1742
+  _globals['_COMMANDERROR']._serialized_end=1787
+  _globals['_CANCELREQUEST']._serialized_start=1789
+  _globals['_CANCELREQUEST']._serialized_end=1827
+  _globals['_CANCELRESPONSE']._serialized_start=1829
+  _globals['_CANCELRESPONSE']._serialized_end=1863
+  _globals['_HEALTHREQUEST']._serialized_start=1865
+  _globals['_HEALTHREQUEST']._serialized_end=1880
+  _globals['_HEALTHRESPONSE']._serialized_start=1882
+  _globals['_HEALTHRESPONSE']._serialized_end=1961
+  _globals['_CONTAINERSERVICE']._serialized_start=1964
+  _globals['_CONTAINERSERVICE']._serialized_end=2285
 # @@protoc_insertion_point(module_scope)

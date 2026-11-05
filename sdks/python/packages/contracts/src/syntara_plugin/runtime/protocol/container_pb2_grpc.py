@@ -32,9 +32,10 @@ class ContainerServiceStub(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    The container ABI is the application-data channel. It deliberately carries
-    step type identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step type revision
+    The container ABI is the application-data channel. It carries step type
+    identity, bounded JSON objects, and invocation-scoped commands. Credential
+    reference resolution may return credential material to the workload in a
+    command response. Health negotiates the ABI and supported step type revision
     before the Execution Plane sends Execute or Cancel.
     """
 
@@ -44,9 +45,9 @@ class ContainerServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.Execute = channel.unary_stream(
+        self.Execute = channel.stream_stream(
                 '/syntara.container.v1alpha1.ContainerService/Execute',
-                request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteRequest.SerializeToString,
+                request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteStreamRequest.SerializeToString,
                 response_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecutionEvent.FromString,
                 _registered_method=True)
         self.Cancel = channel.unary_unary(
@@ -68,13 +69,14 @@ class ContainerServiceServicer(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    The container ABI is the application-data channel. It deliberately carries
-    step type identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step type revision
+    The container ABI is the application-data channel. It carries step type
+    identity, bounded JSON objects, and invocation-scoped commands. Credential
+    reference resolution may return credential material to the workload in a
+    command response. Health negotiates the ABI and supported step type revision
     before the Execution Plane sends Execute or Cancel.
     """
 
-    def Execute(self, request, context):
+    def Execute(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -95,9 +97,9 @@ class ContainerServiceServicer(object):
 
 def add_ContainerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'Execute': grpc.unary_stream_rpc_method_handler(
+            'Execute': grpc.stream_stream_rpc_method_handler(
                     servicer.Execute,
-                    request_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteRequest.FromString,
+                    request_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteStreamRequest.FromString,
                     response_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecutionEvent.SerializeToString,
             ),
             'Cancel': grpc.unary_unary_rpc_method_handler(
@@ -125,14 +127,15 @@ class ContainerService(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    The container ABI is the application-data channel. It deliberately carries
-    step type identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step type revision
+    The container ABI is the application-data channel. It carries step type
+    identity, bounded JSON objects, and invocation-scoped commands. Credential
+    reference resolution may return credential material to the workload in a
+    command response. Health negotiates the ABI and supported step type revision
     before the Execution Plane sends Execute or Cancel.
     """
 
     @staticmethod
-    def Execute(request,
+    def Execute(request_iterator,
             target,
             options=(),
             channel_credentials=None,
@@ -142,11 +145,11 @@ class ContainerService(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
+        return grpc.experimental.stream_stream(
+            request_iterator,
             target,
             '/syntara.container.v1alpha1.ContainerService/Execute',
-            syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteRequest.SerializeToString,
+            syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteStreamRequest.SerializeToString,
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecutionEvent.FromString,
             options,
             channel_credentials,

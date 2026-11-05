@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -14,12 +15,15 @@ from syntara_plugin.runtime import (
     ContainerInvocation,
     ContainerRemoteError,
     ContainerResult,
+    ContainerToolbox,
     FailureCode,
     StepRegistry,
     add_container_runtime_service,
 )
 from syntara_plugin.runtime.container import _request_from_invocation
 from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
+
+from .helpers import stream_request as _stream_request
 
 OUTPUT_SCHEMA_DIGEST = "sha256:" + "a" * 64
 ERROR_SCHEMA_DIGEST = "sha256:" + "b" * 64
@@ -31,18 +35,20 @@ def test_generated_protocol_package_matches_container_abi() -> None:
 
 
 @pytest.fixture
-def runtime() -> tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]]:
+def runtime() -> Iterator[
+    tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]]
+]:
     calls: dict[str, Any] = {}
 
-    def create_issue(invocation: ContainerInvocation) -> ContainerResult:
+    def create_issue(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         calls["create"] = invocation
         return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 42})
 
-    def close_issue(invocation: ContainerInvocation) -> ContainerResult:
+    def close_issue(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         calls["close"] = invocation
         return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"closed": True})
 
-    def unsafe_failure(invocation: ContainerInvocation) -> ContainerResult:
+    def unsafe_failure(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         raise RuntimeError("github-token=plaintext-value")
 
     server = grpc.server(ThreadPoolExecutor(max_workers=4))
@@ -124,7 +130,7 @@ def test_nonstandard_json_numbers_are_rejected_at_the_container_boundary(
         runtime_context_json=b"{}",
     )
 
-    events = tuple(stub.Execute(request))
+    events = tuple(stub.Execute(iter([_stream_request(request)])))
 
     assert len(events) == 1
     assert events[0].failure.code == FailureCode.INVALID_INPUT.value
@@ -155,7 +161,7 @@ def test_unsupported_step_is_a_safe_not_found_failure(
 def test_runner_advertises_and_dispatches_only_the_selected_step() -> None:
     calls: list[ContainerInvocation] = []
 
-    def runner(invocation: ContainerInvocation) -> ContainerResult:
+    def runner(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         calls.append(invocation)
         return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"handled": True})
 
@@ -234,7 +240,7 @@ def test_invalid_abi_is_returned_as_a_terminal_failure(
         timeout_seconds=30,
     )
 
-    events = list(stub.Execute(request))
+    events = list(stub.Execute(iter([_stream_request(request)])))
 
     assert len(events) == 1
     assert events[0].failure.code == FailureCode.ABI_VIOLATION.value
@@ -254,7 +260,7 @@ def test_missing_workflow_run_id_is_invalid_input(
         timeout_seconds=30,
     )
 
-    events = list(stub.Execute(request))
+    events = list(stub.Execute(iter([_stream_request(request)])))
 
     assert len(events) == 1
     assert events[0].failure.code == FailureCode.INVALID_INPUT.value
@@ -275,7 +281,7 @@ def test_credential_file_paths_must_use_the_approved_secret_mount(
         timeout_seconds=30,
     )
 
-    events = list(stub.Execute(request))
+    events = list(stub.Execute(iter([_stream_request(request)])))
 
     assert len(events) == 1
     assert events[0].failure.code == FailureCode.INVALID_INPUT.value
@@ -304,7 +310,9 @@ def test_a_local_credential_directory_is_refused_unless_the_runtime_opts_in(
     token = tmp_path / "github-token"
     token.write_text("{}", encoding="utf-8")
 
-    events = list(stub.Execute(_credential_request(str(token))))
+    events = list(
+        stub.Execute(iter([_stream_request(_credential_request(str(token)))]))
+    )
 
     assert len(events) == 1
     assert events[0].failure.code == FailureCode.INVALID_INPUT.value
@@ -316,7 +324,7 @@ def test_an_opted_in_runtime_accepts_a_file_in_its_local_credential_directory(
 ) -> None:
     calls: dict[str, Any] = {}
 
-    def handler(invocation: ContainerInvocation) -> ContainerResult:
+    def handler(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         calls["invocation"] = invocation
         return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 42})
 
@@ -331,7 +339,9 @@ def test_an_opted_in_runtime_accepts_a_file_in_its_local_credential_directory(
     try:
         channel = grpc.insecure_channel(f"127.0.0.1:{port}")
         stub = container_pb2_grpc.ContainerServiceStub(channel)
-        events = list(stub.Execute(_credential_request(str(token))))
+        events = list(
+            stub.Execute(iter([_stream_request(_credential_request(str(token)))]))
+        )
     finally:
         server.stop(None)
 
@@ -371,7 +381,7 @@ def test_an_opted_in_runtime_still_refuses_paths_outside_its_directory(
     try:
         channel = grpc.insecure_channel(f"127.0.0.1:{port}")
         stub = container_pb2_grpc.ContainerServiceStub(channel)
-        events = list(stub.Execute(_credential_request(path)))
+        events = list(stub.Execute(iter([_stream_request(_credential_request(path))])))
     finally:
         server.stop(None)
 
@@ -382,7 +392,7 @@ def test_an_opted_in_runtime_still_refuses_paths_outside_its_directory(
 def test_an_opted_in_runtime_still_accepts_the_approved_secret_mount(tmp_path: Path) -> None:
     calls: dict[str, Any] = {}
 
-    def handler(invocation: ContainerInvocation) -> ContainerResult:
+    def handler(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         calls["invocation"] = invocation
         return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 42})
 
@@ -395,7 +405,17 @@ def test_an_opted_in_runtime_still_accepts_the_approved_secret_mount(tmp_path: P
     try:
         channel = grpc.insecure_channel(f"127.0.0.1:{port}")
         stub = container_pb2_grpc.ContainerServiceStub(channel)
-        events = list(stub.Execute(_credential_request("/var/run/syntara/secrets/github-token")))
+        events = list(
+            stub.Execute(
+                iter(
+                [
+                    _stream_request(
+                        _credential_request("/var/run/syntara/secrets/github-token")
+                    )
+                ]
+                )
+            )
+        )
     finally:
         server.stop(None)
 
@@ -427,14 +447,14 @@ def test_a_client_sends_a_local_credential_path_only_when_it_opts_in(tmp_path: P
     assert json.loads(request.credential_file_paths_json) == {"github-token": str(token)}
 
 
-def _ok(_invocation: ContainerInvocation) -> ContainerResult:
+def _ok(_invocation: ContainerInvocation, _toolbox: ContainerToolbox) -> ContainerResult:
     return ContainerResult(OUTPUT_SCHEMA_DIGEST, output={"issue": 42})
 
 
 def test_cancellation_reaches_the_selected_step() -> None:
     started = Event()
 
-    def waiting_handler(invocation: ContainerInvocation) -> ContainerResult:
+    def waiting_handler(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         started.set()
         invocation.cancellation.wait(timeout=1)
         if invocation.cancelled:
@@ -466,7 +486,7 @@ def test_invocation_timeout_sets_the_step_cancellation_signal() -> None:
     started = Event()
     cancelled = Event()
 
-    def waiting_handler(invocation: ContainerInvocation) -> ContainerResult:
+    def waiting_handler(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         started.set()
         invocation.cancellation.wait(timeout=2)
         if invocation.cancelled:

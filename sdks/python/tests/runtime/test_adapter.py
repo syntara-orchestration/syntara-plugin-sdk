@@ -18,6 +18,7 @@ from syntara_plugin.runtime import (
     ContainerInvocationError,
     ContainerRemoteError,
     ContainerResult,
+    ContainerToolbox,
     ControlStep,
     ErrorCategory,
     ErrorMessage,
@@ -262,7 +263,7 @@ def test_container_handler_executes_a_typed_step() -> None:
         ),
     )
 
-    result = handler(_invocation())
+    result = handler(_invocation(), ContainerToolbox())
 
     assert isinstance(result, ContainerResult)
     assert result.output_schema_digest == _expected_digest()
@@ -326,7 +327,7 @@ def test_container_handler_uses_the_public_runtime_invoke(monkeypatch: pytest.Mo
     )
     invocation = _invocation()
 
-    handler(invocation)
+    handler(invocation, ContainerToolbox())
 
     assert len(calls) == 1
     binding, inputs, context = calls[0]
@@ -345,7 +346,7 @@ def test_matching_runtime_context_digest_is_accepted() -> None:
     )
     invocation = _invocation(runtime_context={"outputSchemaDigest": _expected_digest()})
 
-    result = handler(invocation)
+    result = handler(invocation, ContainerToolbox())
 
     assert result.output_schema_digest == _expected_digest()
 
@@ -365,7 +366,7 @@ def test_mismatched_runtime_context_digest_is_an_abi_violation(
     invocation = _invocation(runtime_context={"outputSchemaDigest": "sha256:" + "a" * 64})
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "not_started"
@@ -387,7 +388,7 @@ def test_output_violating_the_manifest_schema_is_an_abi_violation(
     invocation = _invocation()
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -438,7 +439,7 @@ def test_output_violating_a_format_assertion_is_an_abi_violation() -> None:
     invocation = _invocation()
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -454,7 +455,7 @@ def test_oversized_output_is_externalized_through_the_object_store() -> None:
         object_store=store,
     )
 
-    result = handler(_invocation("acme.plugin.huge"))
+    result = handler(_invocation("acme.plugin.huge"), ContainerToolbox())
 
     assert result.status_code == 0
     assert result.output is None
@@ -500,7 +501,7 @@ def test_oversized_output_without_an_object_store_is_an_abi_violation() -> None:
     invocation = _invocation("acme.plugin.huge")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -523,7 +524,7 @@ def test_object_store_failure_does_not_retain_the_backend_exception() -> None:
     invocation = _invocation("acme.plugin.huge")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert sentinel not in str(raised.value)
     assert raised.value.__cause__ is None
@@ -541,7 +542,7 @@ def test_object_store_returning_an_invalid_reference_is_an_abi_violation() -> No
     invocation = _invocation("acme.plugin.huge")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -616,7 +617,7 @@ def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
     ],
 )
 def test_wrapper_round_trips_through_container_client(wrapper: StandardOutputWrapper) -> None:
-    def handler(invocation: ContainerInvocation) -> ContainerResult:
+    def handler(invocation: ContainerInvocation, toolbox: ContainerToolbox) -> ContainerResult:
         return _container_result(wrapper, _expected_digest(), canonical_json_digest(error_result_schema()), None)
 
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
@@ -783,7 +784,7 @@ def test_malformed_installed_output_schema_digest_is_a_safe_failure() -> None:
     invocation = _invocation(runtime_context={"outputSchemaDigest": "not-a-digest"})
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "not_started"
@@ -811,7 +812,7 @@ def test_invalid_input_is_a_safe_invalid_input_failure() -> None:
     )
     invocation = _invocation(inputs={"message": 42})
 
-    result = handler(invocation)
+    result = handler(invocation, ContainerToolbox())
 
     assert result.output is None
     assert result.status_code != 0
@@ -832,7 +833,7 @@ def test_validation_details_are_bounded_and_do_not_echo_values() -> None:
         "acme.plugin.bulk", inputs={"items": ["leaked-secret-value"] * 200}
     )
 
-    result = handler(invocation)
+    result = handler(invocation, ContainerToolbox())
 
     assert result.error_result["code"] == FailureCode.INVALID_INPUT.value
     assert len(result.error_result["message"]) <= 4096
@@ -847,7 +848,7 @@ def test_small_validation_failures_report_every_stable_code() -> None:
     )
     invocation = _invocation(inputs={"message": 42})
 
-    result = handler(invocation)
+    result = handler(invocation, ContainerToolbox())
 
     assert "properties.message.type: type" in result.error_result["message"]
     assert "and " not in result.error_result["message"]
@@ -863,7 +864,7 @@ def test_undeclared_output_model_is_an_abi_violation() -> None:
     invocation = _invocation()
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.ABI_VIOLATION
     assert raised.value.outcome == "unknown"
@@ -879,7 +880,7 @@ def test_cancellation_flows_from_the_invocation_to_the_step_context() -> None:
     invocation = _invocation()
     invocation.cancellation.set()
 
-    result = handler(invocation)
+    result = handler(invocation, ContainerToolbox())
 
     assert result.output is not None
     assert result.output["cancelled"] is True
@@ -890,7 +891,7 @@ def test_bindings_step_handler_resolves_by_invocation_identity() -> None:
     step = ActionEchoStep()
     _bind_step(bindings, "acme.plugin.echo", step, _echo_input_schema())
 
-    result = container_step_for_bindings(bindings)(_invocation())
+    result = container_step_for_bindings(bindings)(_invocation(), ContainerToolbox())
 
     assert result.output is not None
     assert result.output["message"] == "hello"
@@ -904,7 +905,7 @@ def test_bindings_step_handler_reports_unknown_identities_as_not_found() -> None
     invocation = _invocation("acme.plugin.missing")
 
     with pytest.raises(ContainerInvocationError) as raised:
-        handler(invocation)
+        handler(invocation, ContainerToolbox())
 
     assert raised.value.code is FailureCode.NOT_FOUND
 
@@ -1006,7 +1007,7 @@ def test_registry_dispatches_only_registered_binding_identities() -> None:
     steps = step_registry_from_bindings(bindings)
 
     assert steps.step_revision_ids == ("acme.plugin.echo",)
-    result = steps.resolve("acme.plugin.echo")(_invocation())
+    result = steps.resolve("acme.plugin.echo")(_invocation(), ContainerToolbox())
     assert result.output is not None
     assert result.output["message"] == "hello"
     with pytest.raises(ContainerInvocationError):

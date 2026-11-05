@@ -40,6 +40,7 @@ from syntara_plugin.runtime.container import (
     ContainerRemoteError,
     ContainerResult,
     ContainerStepHandler,
+    ContainerToolbox,
     StepRegistry,
     add_container_runtime_service,
 )
@@ -1394,9 +1395,11 @@ class _LocalErrorCapture:
         self._handler = handler
         self._captured = captured
 
-    def __call__(self, invocation: ContainerInvocation) -> ContainerResult:
+    def __call__(
+        self, invocation: ContainerInvocation, toolbox: ContainerToolbox
+    ) -> ContainerResult:
         try:
-            return self._handler(invocation)
+            return self._handler(invocation, toolbox)
         except ContainerInvocationError as error:
             cause = error.__cause__
             if isinstance(cause, StepExecutionError) and cause.detail:

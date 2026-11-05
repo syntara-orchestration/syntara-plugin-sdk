@@ -24,6 +24,7 @@ from syntara_plugin.runtime import (
     ContainerInvocation,
     ContainerInvocationError,
     ContainerRemoteError,
+    ContainerToolbox,
     ExecutionContext,
     FailureCode,
     InstalledStepManifest,
@@ -41,6 +42,9 @@ from syntara_plugin.runtime.server import (
     load_runtime_server_config,
     resolved_step_registry,
 )
+
+from .helpers import async_stream_request as _async_stream_request
+from .helpers import stream_request as _stream_request
 
 REVISION = "sha256:" + "a" * 64
 
@@ -98,8 +102,9 @@ class UncancellableTimeoutStep(ActionStep[EchoInput, EchoOutput]):
 
 
 class FakeServicerContext:
-    def add_done_callback(self, callback: object) -> None:
+    def add_done_callback(self, callback: object) -> bool:
         del callback
+        return True
 
 
 def installed_action_bindings(
@@ -274,7 +279,12 @@ async def _service_events(
         inputs_json=json.dumps({"message": invocation.inputs["message"]}).encode(),
         timeout_seconds=invocation.timeout_seconds,
     )
-    events = [event async for event in service.Execute(request, FakeServicerContext())]
+    events = [
+        event
+        async for event in service.Execute(
+            _async_stream_request(request), FakeServicerContext()
+        )
+    ]
     if release is not None:
         release.set()
     return events
@@ -481,7 +491,7 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
                 inputs_json=json.dumps({"message": "disconnect"}).encode(),
                 timeout_seconds=30,
             )
-            call = stub.Execute(request)
+            call = stub.Execute(iter([_stream_request(request)]))
             execution = asyncio.create_task(asyncio.to_thread(list, call))
             assert await asyncio.to_thread(CancellationStep.started.wait, 5)
 
@@ -750,9 +760,10 @@ def test_custom_resolved_revision_dispatches_with_installed_schema(tmp_path: Pat
     registry = resolved_step_registry(config, create_bindings())
 
     assert registry.step_revision_ids == (REVISION,)
-    assert registry.resolve(REVISION)(_invocation()).output == {"message": "hello"}
+    result = registry.resolve(REVISION)(_invocation(), ContainerToolbox())
+    assert result.output == {"message": "hello"}
     invalid = replace(_invocation(), inputs={})
-    result = registry.resolve(REVISION)(invalid)
+    result = registry.resolve(REVISION)(invalid, ContainerToolbox())
     assert result.error_result is not None
     assert result.error_result["code"] == "INVALID_INPUT"
     with pytest.raises(ContainerInvocationError) as error:
@@ -765,7 +776,8 @@ def test_platform_resolved_revision_needs_no_registration_manifest(tmp_path: Pat
     config.registration_manifest_path.unlink()
     registry = resolved_step_registry(config, create_bindings())
     assert registry.step_revision_ids == (REVISION,)
-    assert registry.resolve(REVISION)(_invocation()).output == {"message": "hello"}
+    result = registry.resolve(REVISION)(_invocation(), ContainerToolbox())
+    assert result.output == {"message": "hello"}
 
 
 def test_server_requires_resolved_execution_data() -> None:
@@ -913,9 +925,10 @@ def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
     bindings.bind(other.descriptor, other.step)
     registry = resolved_step_registry(_resolved_config(tmp_path, records), bindings)
 
-    assert registry.resolve(REVISION)(_invocation()).output == {"message": "hello"}
+    result = registry.resolve(REVISION)(_invocation(), ContainerToolbox())
+    assert result.output == {"message": "hello"}
     result = registry.resolve(other_revision)(
-        replace(_invocation(), step_revision_id=other_revision)
+        replace(_invocation(), step_revision_id=other_revision), ContainerToolbox()
     )
     assert result.error_result is not None
     assert result.error_result["code"] == "INVALID_INPUT"

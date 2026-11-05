@@ -23,6 +23,7 @@ from syntara_plugin.runtime import (
     ContainerRemoteError,
     ContainerResult,
     ContainerRuntimeService,
+    ContainerToolbox,
     ControlStep,
     ErrorResult,
     ExecutionContext,
@@ -47,6 +48,9 @@ from syntara_plugin.runtime import (
 )
 from syntara_plugin.runtime.container import _request_from_invocation
 from syntara_plugin.runtime.server import AsyncContainerRuntimeService
+
+from .helpers import async_stream_request as _async_stream_request
+from .helpers import stream_request as _stream_request
 
 
 class InvocationInput(BaseModel):
@@ -407,7 +411,12 @@ def _terminal_event(
             }
         )
     )
-    return next(service.Execute(_request_from_invocation(invocation), _ServicerContext()))
+    return next(
+        service.Execute(
+            iter([_stream_request(_request_from_invocation(invocation))]),
+            _ServicerContext(),
+        )
+    )
 
 
 @pytest.mark.parametrize(("step_type", "identity"), _SUCCESS_CASES, ids=("action", "control", "trigger"))
@@ -634,7 +643,9 @@ def test_invalid_input_uses_the_sdk_error_schema_with_a_strict_declared_schema()
     assert json.loads(event.result.error_result_json)["code"] == FailureCode.INVALID_INPUT.value
     assert event.result.error_schema_digest == canonical_json_digest(error_result_base_schema())
 
-    container_result = container_step_for_binding(binding)(_invocation(binding, {"value": "short"}))
+    container_result = container_step_for_binding(binding)(
+        _invocation(binding, {"value": "short"}), ContainerToolbox()
+    )
     wrapper = standard_output_from_container_result(
         container_result,
         output_schema=to_json_document(binding.descriptor.output_schema),
@@ -736,7 +747,8 @@ def test_async_service_preserves_a_terminal_failure_from_run() -> None:
         events = [
             event
             async for event in service.Execute(
-                _request_from_invocation(invocation), _AsyncServicerContext()
+                _async_stream_request(_request_from_invocation(invocation)),
+                _AsyncServicerContext(),
             )
         ]
         return events[0]
@@ -880,22 +892,28 @@ def test_unprovenanced_binding_cannot_produce_a_wrapper() -> None:
 def test_container_runtime_service_preserves_step_execution_outcome(outcome: str) -> None:
     binding = _binding(ActionEchoStep(), "tests.runtime.invoke.server-outcome")
 
-    def fail(_invocation: ContainerInvocation) -> Any:
+    def fail(_invocation: ContainerInvocation, _toolbox: ContainerToolbox) -> Any:
         raise StepExecutionError("A safe execution failure.", outcome=outcome)
 
     service = ContainerRuntimeService(
         StepRegistry({binding.descriptor.step_identity: fail})
     )
     invocation = _invocation(binding, {"value": "hello"})
-    event = next(service.Execute(_request_from_invocation(invocation), _ServicerContext()))
+    event = next(
+        service.Execute(
+            iter([_stream_request(_request_from_invocation(invocation))]),
+            _ServicerContext(),
+        )
+    )
 
     assert event.WhichOneof("event") == "failure"
     assert event.failure.outcome == outcome
 
 
 class _AsyncServicerContext:
-    def add_done_callback(self, callback: Any) -> None:
+    def add_done_callback(self, callback: Any) -> bool:
         del callback
+        return True
 
 
 @pytest.mark.parametrize("outcome", ["not_started", "unknown"])
@@ -904,7 +922,7 @@ def test_async_container_runtime_service_preserves_step_execution_outcome(
 ) -> None:
     binding = _binding(ActionEchoStep(), "tests.runtime.invoke.async-server-outcome")
 
-    def fail(_invocation: ContainerInvocation) -> Any:
+    def fail(_invocation: ContainerInvocation, _toolbox: ContainerToolbox) -> Any:
         raise StepExecutionError("A safe execution failure.", outcome=outcome)
 
     service = AsyncContainerRuntimeService(
@@ -916,7 +934,8 @@ def test_async_container_runtime_service_preserves_step_execution_outcome(
         events = [
             event
             async for event in service.Execute(
-                _request_from_invocation(invocation), _AsyncServicerContext()
+                _async_stream_request(_request_from_invocation(invocation)),
+                _AsyncServicerContext(),
             )
         ]
         return events[0]
@@ -961,12 +980,15 @@ def test_direct_and_container_adapter_results_are_equivalent(
     inputs = {"value": "same-result"}
 
     direct = invoke(binding, inputs, context)
-    container = container_step_for_binding(binding)(_invocation(
-        binding,
-        inputs,
-        invocation_id=context.invocation_id,
-        runtime_context=context.runtime_context,
-    ))
+    container = container_step_for_binding(binding)(
+        _invocation(
+            binding,
+            inputs,
+            invocation_id=context.invocation_id,
+            runtime_context=context.runtime_context,
+        ),
+        ContainerToolbox(),
+    )
 
     assert isinstance(container, ContainerResult)
     assert container.output_schema_digest == _schema_digest(binding)
@@ -984,12 +1006,15 @@ def test_direct_and_container_adapter_preserve_typed_failure_metadata(
     inputs = {"value": "rejected"}
 
     direct = invoke(binding, inputs, context)
-    container = container_step_for_binding(binding)(_invocation(
-        binding,
-        inputs,
-        invocation_id=context.invocation_id,
-        runtime_context=context.runtime_context,
-    ))
+    container = container_step_for_binding(binding)(
+        _invocation(
+            binding,
+            inputs,
+            invocation_id=context.invocation_id,
+            runtime_context=context.runtime_context,
+        ),
+        ContainerToolbox(),
+    )
 
     error = _error_document(direct.error_message)
     assert isinstance(container, ContainerResult)
@@ -1082,7 +1107,9 @@ def test_custom_error_schema_preserves_complete_result_through_grpc(asset: bool)
 
 def test_default_error_schema_is_applied_and_digest_is_reported() -> None:
     binding = _binding(ActionFailureStep(), "tests.default-error")
-    result = container_step_for_binding(binding)(_invocation(binding, {"value": "x"}))
+    result = container_step_for_binding(binding)(
+        _invocation(binding, {"value": "x"}), ContainerToolbox()
+    )
     assert result.error_schema_digest == canonical_json_digest(error_result_schema())
     assert result.error_result is not None
     assert set(result.error_result) == {"category", "code", "message", "retryable"}
