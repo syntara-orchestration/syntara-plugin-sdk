@@ -50,6 +50,10 @@ def _cosign() -> str:
 
 def _run(cosign: str, action: Literal["sign", "verify"], reference: str, key: Path) -> None:
     """Run one fixed Cosign operation with validated values as individual arguments."""
+    # Keep the allow-list check next to the subprocess sink as well as at the
+    # public entry points. The reference is a positional CLI argument, so only
+    # accept the restricted OCI repository@sha256:digest form here.
+    _validate_reference(reference)
     if action == "sign":
         arguments = [cosign, "sign", "--yes", f"--key={key}", reference]
     elif action == "verify":
