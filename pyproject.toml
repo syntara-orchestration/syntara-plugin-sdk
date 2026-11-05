@@ -2,10 +2,10 @@
 # This non-package workspace must remain distinct from the distributable SDK
 # member below; uv rejects two workspace members with the same package name.
 name = "syntara-plugin-sdk-workspace"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "Development workspace for the Syntara Plugin SDK distributions"
 requires-python = ">=3.12"
-dependencies = ["syntara-plugin-sdk[testing]==0.1.0a2"]
+dependencies = ["syntara-plugin-sdk[testing]==0.1.0a3"]
 
 [tool.uv.sources]
 syntara-plugin-sdk = { workspace = true }
