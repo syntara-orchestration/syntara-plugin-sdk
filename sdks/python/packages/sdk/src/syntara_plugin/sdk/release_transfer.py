@@ -30,7 +30,7 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_RECEIPT_BYTES = 1024 * 1024
 _MAX_LAYOUT_ENTRIES = 200_000
 _ORAS_TIMEOUT_SECONDS = 30 * 60
-_HTTP_SCHEME = "http://"
+_HTTP_SCHEME = "http://"  # NOSONAR - allowed only for explicit loopback development registries.
 _OCI_LAYOUT_INDEX = "index.json"
 
 
