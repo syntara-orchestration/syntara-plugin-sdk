@@ -10,6 +10,7 @@ Choose the guide that matches what you are doing.
 | Configure a plugin, publish an artifact, or update a catalog | [User guide](user-guide.md) |
 | Understand every YAML manifest field | [Plugin language reference](plugin-language.md) |
 | Configure `syntara-plugin.yaml` | [Build settings reference](build-settings.md) |
+| Build, publish, and transfer independent RuntimeBinding releases | [Runtime bindings and independent workload releases](runtime-bindings.md) |
 | Test step type implementations locally | [Testing reference](testing.md) |
 | Run one step type locally from source or a running image | [Running locally](running-locally.md) |
 | Contribute to the SDK or change a contract | [Developer guide](developer-guide.md) |

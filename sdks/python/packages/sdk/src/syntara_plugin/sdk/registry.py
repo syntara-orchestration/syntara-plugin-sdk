@@ -51,6 +51,7 @@ from .runtime_binding_index import (
 
 _REPOSITORY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,254}$")
 _CHANNEL_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LOOPBACK_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1"})
 _UPLOAD_SUCCESS = frozenset({201, 202})
 _MAX_AUTH_RESPONSE_BYTES = 16 * 1024
@@ -422,8 +423,11 @@ class CatalogIndexPublisher:
         *,
         content: bytes | None = None,
         content_type: str | None = None,
+        additional_headers: Mapping[str, str] | None = None,
     ) -> OciRegistryResponse:
         headers: dict[str, str] = {"Accept": "application/vnd.oci.image.manifest.v1+json"}
+        if additional_headers is not None:
+            headers.update(additional_headers)
         if content_type is not None:
             headers["Content-Type"] = content_type
         if self._bearer_authorization is not None:
@@ -531,12 +535,60 @@ class RuntimeBindingArtifactPublisher(CatalogIndexPublisher):
 class RuntimeBindingIndexPublisher(CatalogIndexPublisher):
     """Publish and read one per-plugin runtime-binding discovery index."""
 
-    def publish(self, artifact: RuntimeBindingIndexArtifact) -> RuntimeBindingIndexPublication:  # type: ignore[override]
-        """Upload validated index bytes, then advance its plugin-scoped channel."""
+    def publish(
+        self,
+        artifact: RuntimeBindingIndexArtifact,
+        *,
+        expected_current_digest: str | None,
+        expected_current_etag: str | None,
+    ) -> RuntimeBindingIndexPublication:  # type: ignore[override]
+        """Upload an index and advance its channel with an HTTP precondition.
+
+        The first publisher creates the channel with ``If-None-Match: *``.
+        Later publishers use the strong ETag observed with the predecessor and
+        ``If-Match``. Registries must honor conditional manifest PUT requests;
+        a precondition failure tells the caller to reread and rebuild the
+        successor from the latest index.
+        """
         _validate_runtime_binding_index_artifact(artifact)
+        document = _json_mapping(
+            artifact.document.content, "RUNTIME_BINDING_INDEX_DOCUMENT_INVALID"
+        )
+        metadata = document.get("metadata")
+        previous_digest = (
+            metadata.get("previousIndexDigest") if isinstance(metadata, Mapping) else None
+        )
+        generation = metadata.get("generation") if isinstance(metadata, Mapping) else None
+        if expected_current_digest is None:
+            if (
+                expected_current_etag is not None
+                or previous_digest is not None
+                or not isinstance(generation, int)
+                or isinstance(generation, bool)
+                or generation != 1
+            ):
+                raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_PRECONDITION_INVALID")
+            conditions = {"If-None-Match": "*"}
+        else:
+            if (
+                not _is_sha256_digest(expected_current_digest)
+                or expected_current_etag is None
+                or not _is_strong_etag(expected_current_etag)
+            ):
+                raise CatalogIndexPublicationError(
+                    "RUNTIME_BINDING_INDEX_CONDITIONAL_UPDATE_UNSUPPORTED"
+                )
+            if (
+                previous_digest != expected_current_digest
+                or not isinstance(generation, int)
+                or isinstance(generation, bool)
+                or generation < 2
+            ):
+                raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_PREDECESSOR_MISMATCH")
+            conditions = {"If-Match": expected_current_etag}
         for blob in (artifact.config, artifact.document):
             self._ensure_blob(blob)
-        self._put_manifest(artifact.manifest, artifact.digest)
+        self._put_manifest_conditionally(artifact.manifest, artifact.digest, conditions)
         return RuntimeBindingIndexPublication(
             repository=self._target.repository,
             channel=self._target.channel,
@@ -576,7 +628,9 @@ class RuntimeBindingIndexPublisher(CatalogIndexPublisher):
             document_response.content, "RUNTIME_BINDING_INDEX_DOCUMENT_INVALID"
         )
         try:
-            artifact = build_runtime_binding_index_artifact(document)
+            artifact = build_runtime_binding_index_artifact(
+                document, allow_expired_predecessor=True
+            )
         except ValueError as error:
             raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_DOCUMENT_INVALID") from error
         _validate_runtime_binding_index_envelope(
@@ -588,7 +642,31 @@ class RuntimeBindingIndexPublisher(CatalogIndexPublisher):
         )
         if response.content != artifact.manifest.content:
             raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_MANIFEST_INVALID")
-        return RuntimeBindingIndexSnapshot(manifest_digest=manifest_digest, document=document)
+        return RuntimeBindingIndexSnapshot(
+            manifest_digest=manifest_digest,
+            document=document,
+            etag=response.header("ETag"),
+        )
+
+    def _put_manifest_conditionally(
+        self,
+        manifest: OciBlob,
+        digest: str,
+        conditions: Mapping[str, str],
+    ) -> None:
+        """Advance the runtime-binding channel only if its predecessor is unchanged."""
+        result = self._request(
+            "PUT",
+            f"{self._repository_base_url()}/manifests/{quote(self._target.channel, safe='')}",
+            content=manifest.content,
+            content_type=manifest.descriptor.media_type,
+            additional_headers=conditions,
+        )
+        if result.status_code in {409, 412}:
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_CONFLICT")
+        if result.status_code not in _UPLOAD_SUCCESS:
+            raise CatalogIndexPublicationError("MANIFEST_PUBLICATION_FAILED")
+        self._verify_reported_digest(result, digest)
 
 
 class PluginArtifactPublisher(CatalogIndexPublisher):
@@ -871,6 +949,19 @@ def _sha256_digest(content: bytes) -> str:
 
 def _is_sha256_digest(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def _is_strong_etag(value: str | None) -> bool:
+    """Accept only a quoted, strong HTTP entity tag for conditional updates."""
+    return (
+        value is not None
+        and len(value) >= 2
+        and value.startswith('"')
+        and value.endswith('"')
+        and not value.startswith("W/")
+        and '"' not in value[1:-1]
+        and all(ord(character) >= 0x21 for character in value[1:-1])
+    )
 
 
 def _parse_bearer_challenge(challenge: str | None) -> dict[str, str]:

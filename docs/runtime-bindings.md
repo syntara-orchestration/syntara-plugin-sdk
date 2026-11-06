@@ -171,6 +171,58 @@ policy allow an unsigned development release. This is a policy decision; the
 SDK reports whether each object was signed and does not mark an unsigned
 object trusted.
 
+## Transfer a signed release to a disconnected registry
+
+The release publication receipt records each immutable subject digest and the
+registry tags used for discovery. Use `transfer export` to copy those subjects
+and their attached OCI referrers, including Cosign signatures, into an OCI
+layout archive. `transfer import` copies the same objects and referrers into a
+disconnected registry, restores the recorded tags, and checks that every
+subject manifest digest is unchanged. Keep the receipt with the archive.
+
+These commands require the ORAS CLI (1.3 or newer). ORAS performs recursive
+referrer copying; the `--recursive` option is currently marked preview in its
+CLI documentation, so pin the ORAS version in the release process and exercise
+the transfer path when upgrading it. Pass Docker- or Podman-compatible auth
+files explicitly when either registry requires authentication; the SDK does
+not store registry credentials in the release inventory.
+
+Export from the source registry:
+
+```sh
+syntara-plugin transfer export dist/release-publication.json \
+  --registry-origin https://registry.example.com \
+  --registry-auth-file ~/.config/containers/auth.json \
+  --output dist/release-transfer.oci.tar
+```
+
+Copy both `release-transfer.oci.tar` and `release-publication.json` to the
+disconnected environment, then import using the destination registry origin.
+Repository paths remain the same. The registry hostname can change for the
+copy operation:
+
+```sh
+syntara-plugin transfer import dist/release-transfer.oci.tar \
+  dist/release-publication.json \
+  --registry-origin https://registry.airgap.example.com \
+  --registry-auth-file ~/.config/containers/auth.json
+```
+
+The importer verifies the subject digest after writing each recorded tag. For
+signed subjects, also verify them against the destination registry with the
+publisher's Cosign public key before enabling that registry as a trusted
+source. Transfer preserves signatures; it does not make a signature trusted.
+The import can partially complete if the destination registry fails midway;
+rerun it with the same receipt to finish the remaining copies.
+
+The transfer is byte preserving: it does not rewrite references inside an
+artifact. In particular, image references in a RuntimeBinding still name the
+source registry host. The destination must make those references resolve to
+the copied images, for example by retaining the same registry address or
+configuring a trusted registry mirror for the workload runtime. Rewriting an
+image reference changes the RuntimeBinding digest; publish and sign a new
+RuntimeBinding and advance its binding index if a new reference is required.
+
 ## Image-only security update
 
 Keep P unchanged. Rebuild an image option, or add a new option in the source
@@ -192,6 +244,24 @@ only the changed I, new B, and successor RuntimeBinding index. The SDK does not
 update the plugin catalog index for this flow because the plugin identity and
 step contracts have not changed. Syntara must still enforce its configured
 trust and installation policy before exposing the new option.
+
+## Index expiry and concurrent publishers
+
+An expired RuntimeBinding index remains usable only as a verified historical
+predecessor when the SDK prepares a successor. The SDK copies its entries,
+increments the generation, records the previous index digest, and gives the
+successor a new validity window. Consumers still reject an expired index.
+Republishing the same binding after expiry therefore renews the index instead
+of treating the old index as an idempotent success.
+
+The mutable per-plugin index tag is updated conditionally. A first publisher
+uses `If-None-Match: *`; a successor uses the strong ETag read with its
+predecessor in `If-Match`. If another publisher wins first, the registry
+returns a conflict and the SDK stops without replacing that index. Rerun the
+publish command to read the new predecessor and build a successor that includes
+both releases. Registries must return strong ETags and honor conditional
+manifest PUT requests; the SDK fails closed when it cannot safely condition an
+update.
 
 ## Inspect and verify
 

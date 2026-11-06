@@ -48,6 +48,7 @@ class RuntimeBindingIndexSnapshot:
 
     manifest_digest: str
     document: Mapping[str, Any]
+    etag: str | None = None
 
 
 def next_runtime_binding_index(
@@ -105,12 +106,21 @@ def next_runtime_binding_index(
         raw_entries = spec.get("entries")
         if not isinstance(raw_entries, list):
             raise RuntimeBindingIndexError("current index entries must be a list")
+        expires_at = metadata.get("expiresAt")
+        if not isinstance(expires_at, str):
+            raise RuntimeBindingIndexError("current index expiresAt must be a timestamp")
+        try:
+            current_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise RuntimeBindingIndexError("current index expiresAt must be a timestamp") from error
+        if current_expiry.tzinfo is None or current_expiry.utcoffset() is None:
+            raise RuntimeBindingIndexError("current index expiresAt must include a timezone")
         entries = [dict(_mapping(item, "current index entry")) for item in raw_entries]
         matches = [index for index, item in enumerate(entries) if item.get("bindingDigest") == binding_digest]
         if len(matches) > 1:
             raise RuntimeBindingIndexError("current index repeats a binding digest")
         if matches:
-            if entries[matches[0]] == candidate:
+            if entries[matches[0]] == candidate and current_expiry > issued_at:
                 return dict(current), True
             entries[matches[0]] = candidate
         else:
@@ -150,8 +160,15 @@ def next_runtime_binding_index(
 
 def build_runtime_binding_index_artifact(
     document: Mapping[str, Any],
+    *,
+    allow_expired_predecessor: bool = False,
 ) -> RuntimeBindingIndexArtifact:
-    """Build OCI bytes after checking the binding-index contract and freshness."""
+    """Build OCI bytes after checking the binding-index contract and freshness.
+
+    ``allow_expired_predecessor`` is reserved for reconstructing an already
+    published index while creating its successor. The publisher still applies
+    strict freshness validation before it accepts an artifact for publication.
+    """
 
     metadata = _mapping(document.get("metadata"), "index metadata")
     plugin_digest = metadata.get("pluginDigest")
@@ -164,7 +181,12 @@ def build_runtime_binding_index_artifact(
         index_digest=metadata.get("previousIndexDigest"),
     )
     diagnostics = validate_runtime_binding_index(
-        load_bundle(), document, plugin_digest=plugin_digest, now=now, checkpoint=checkpoint
+        load_bundle(),
+        document,
+        plugin_digest=plugin_digest,
+        now=now,
+        checkpoint=checkpoint,
+        allow_expired_predecessor=allow_expired_predecessor,
     )
     if diagnostics:
         raise RuntimeBindingIndexError("; ".join(item.code for item in diagnostics))

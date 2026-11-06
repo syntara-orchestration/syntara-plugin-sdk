@@ -359,11 +359,15 @@ def validate_runtime_binding_index(
     plugin_digest: str,
     now: datetime,
     checkpoint: RuntimeBindingCheckpoint | None = None,
+    allow_expired_predecessor: bool = False,
 ) -> tuple[RuntimeBindingDiagnostic, ...]:
     """Validate an index against plugin identity, expiry, and replay state.
 
     Signature, repository authorization, OCI subject verification, and
-    persistence remain responsibilities of the caller.
+    persistence remain responsibilities of the caller. Set
+    ``allow_expired_predecessor`` only when validating the current index as the
+    base for publishing a fresh successor. Consumers must use the default,
+    which rejects expired indexes.
     """
 
     schema_errors = validate_document(bundle, "runtime_binding_index", document)
@@ -408,7 +412,9 @@ def validate_runtime_binding_index(
         )
     issued_at = datetime.fromisoformat(metadata["issuedAt"].replace("Z", "+00:00"))
     expires_at = datetime.fromisoformat(metadata["expiresAt"].replace("Z", "+00:00"))
-    if issued_at > now or expires_at <= now or expires_at <= issued_at:
+    if issued_at > now or (
+        expires_at <= now and not allow_expired_predecessor
+    ) or expires_at <= issued_at:
         diagnostics.append(
             RuntimeBindingDiagnostic(
                 "RUNTIME_BINDING_INDEX_TIME_INVALID",
