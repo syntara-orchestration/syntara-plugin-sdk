@@ -171,57 +171,89 @@ policy allow an unsigned development release. This is a policy decision; the
 SDK reports whether each object was signed and does not mark an unsigned
 object trusted.
 
-## Transfer a signed release to a disconnected registry
+## Mirror a release with ORAS
 
-The release publication receipt records each immutable subject digest and the
-registry tags used for discovery. Use `transfer export` to copy those subjects
-and their attached OCI referrers, including Cosign signatures, into an OCI
-layout archive. `transfer import` copies the same objects and referrers into a
-disconnected registry, restores the recorded tags, and checks that every
-subject manifest digest is unchanged. Keep the receipt with the archive.
+Registry mirroring is an operational step, not an SDK command. Use ORAS to
+copy each release object by its immutable digest. Add `--recursive` to copy
+OCI referrers such as Cosign signatures as well. The SDK's
+`release-publication.json` lists the immutable references for the workload
+images, plugin artifact, RuntimeBinding, and RuntimeBinding index. Use the
+release inventory and publication output to select the tags to retain in the
+destination registry. The catalog index is reported by the catalog update
+command; copy it too when mirroring that catalog source.
 
-These commands require the ORAS CLI (1.3 or newer). ORAS performs recursive
-referrer copying; the `--recursive` option is currently marked preview in its
-CLI documentation, so pin the ORAS version in the release process and exercise
-the transfer path when upgrading it. Pass Docker- or Podman-compatible auth
-files explicitly when either registry requires authentication; the SDK does
-not store registry credentials in the release inventory.
+ORAS 1.3 supports registry-to-registry copies, OCI layout archives, auth files,
+and multiple destination tags. Its `--recursive` option is currently marked
+Preview, so pin the ORAS version used by the promotion process and validate it
+when upgrading. [ORAS `cp` documentation](https://oras.land/docs/commands/oras_cp/)
 
-Export from the source registry:
-
-```sh
-syntara-plugin transfer export dist/release-publication.json \
-  --registry-origin https://registry.example.com \
-  --registry-auth-file ~/.config/containers/auth.json \
-  --output dist/release-transfer.oci.tar
-```
-
-Copy both `release-transfer.oci.tar` and `release-publication.json` to the
-disconnected environment, then import using the destination registry origin.
-Repository paths remain the same. The registry hostname can change for the
-copy operation:
+When both registries are reachable, copy each object directly. Replace the
+references and tags with values from the publication receipt and release
+inventory; repeat for every workload image, plugin artifact, binding, and
+index. Include the discovery tags used by the target environment:
 
 ```sh
-syntara-plugin transfer import dist/release-transfer.oci.tar \
-  dist/release-publication.json \
-  --registry-origin https://registry.airgap.example.com \
-  --registry-auth-file ~/.config/containers/auth.json
+SOURCE_AUTH="$HOME/.config/containers/source-auth.json"
+DEST_AUTH="$HOME/.config/containers/destination-auth.json"
+SOURCE_REF="registry.example.com/syntara-admin/plugins/http-request@sha256:<digest>"
+DEST_REPO="registry-mirror.example.com/syntara-admin/plugins/http-request"
+
+oras cp --recursive \
+  --from-registry-config "$SOURCE_AUTH" \
+  --to-registry-config "$DEST_AUTH" \
+  "$SOURCE_REF" \
+  "$DEST_REPO:sha256-<digest-hex>,<release-tag>"
 ```
 
-The importer verifies the subject digest after writing each recorded tag. For
-signed subjects, also verify them against the destination registry with the
-publisher's Cosign public key before enabling that registry as a trusted
-source. Transfer preserves signatures; it does not make a signature trusted.
-The import can partially complete if the destination registry fails midway;
-rerun it with the same receipt to finish the remaining copies.
+For a disconnected environment, copy each object into a local OCI layout on the
+connected side, then carry the layout archive and a small mapping of each
+layout tag to its destination repository and tags:
 
-The transfer is byte preserving: it does not rewrite references inside an
-artifact. In particular, image references in a RuntimeBinding still name the
-source registry host. The destination must make those references resolve to
-the copied images, for example by retaining the same registry address or
-configuring a trusted registry mirror for the workload runtime. Rewriting an
-image reference changes the RuntimeBinding digest; publish and sign a new
-RuntimeBinding and advance its binding index if a new reference is required.
+```sh
+LAYOUT=./release-layout
+LAYOUT_TAG=plugin-<digest-hex>
+mkdir -p "$LAYOUT"
+
+oras cp --recursive \
+  --from-registry-config "$SOURCE_AUTH" \
+  --to-oci-layout \
+  "$SOURCE_REF" \
+  "$LAYOUT:$LAYOUT_TAG"
+
+tar -cf release-transfer.tar -C "$LAYOUT" .
+```
+
+On the disconnected side, repeat the import for each saved mapping, using the
+recorded layout tag, repository, and destination tags:
+
+```sh
+oras cp --recursive \
+  --from-oci-layout \
+  --to-registry-config "$DEST_AUTH" \
+  "release-transfer.tar:$LAYOUT_TAG" \
+  "$DEST_REPO:sha256-<digest-hex>,<release-tag>"
+```
+
+Resolve a destination tag to confirm it still names the expected digest, then
+verify signatures with the publisher's Cosign key and the platform's normal
+trust policy:
+
+```sh
+oras resolve --registry-config "$DEST_AUTH" \
+  "$DEST_REPO:sha256-<digest-hex>"
+cosign verify --key cosign.pub "$DEST_REPO@sha256:<digest>"
+```
+
+Cosign verification may also check the repository identity recorded in the
+signature. If the mirror changes that identity, use the platform's approved
+promotion trust policy or sign the mirrored reference; do not disable identity
+checks just to make verification pass.
+
+Copying does not rewrite artifact content. In particular, image references in
+a RuntimeBinding retain the source registry hostname. Configure the mirror so
+those references resolve to the copied images, or retain the same registry
+address. Changing an image reference changes the RuntimeBinding digest; that
+requires publishing a new binding and advancing its binding index.
 
 ## Image-only security update
 

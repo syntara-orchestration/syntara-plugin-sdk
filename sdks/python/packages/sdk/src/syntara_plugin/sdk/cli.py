@@ -59,10 +59,6 @@ from .registry import (
     RuntimeBindingArtifactPublisher,
     RuntimeBindingIndexPublisher,
 )
-from .release_transfer import (
-    export_release_publication,
-    import_release_publication,
-)
 from .runtime_binding import (
     RuntimeBindingArtifactBuildError,
     build_runtime_binding_artifact,
@@ -147,8 +143,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _build_artifact(arguments)
     if arguments.command == "publish":
         return _publish_artifact(arguments)
-    if arguments.command == "transfer":
-        return _transfer_release(arguments)
     if arguments.command == "catalog" and arguments.catalog_command == "update":
         return _update_catalog(arguments)
     if arguments.command == "catalog" and arguments.catalog_command == "recover":
@@ -562,50 +556,6 @@ def _parser() -> argparse.ArgumentParser:
         "--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP
     )
 
-    transfer = commands.add_parser(
-        "transfer",
-        help="Export or import a published release together with OCI signature referrers.",
-    )
-    transfer_commands = transfer.add_subparsers(dest="transfer_command", required=True)
-    transfer_export = transfer_commands.add_parser(
-        "export", help="Create an OCI layout archive of a published release and its referrers."
-    )
-    transfer_export.add_argument("receipt", type=Path, help="Completed release-publication.json receipt.")
-    transfer_export.add_argument("--output", type=Path, required=True, help="New OCI layout tar output path.")
-    _add_settings_argument(transfer_export)
-    transfer_export.add_argument(
-        "--registry-origin", help="Source registry origin; defaults to registry.origin in settings."
-    )
-    transfer_export.add_argument(
-        "--registry-auth-file",
-        type=Path,
-        help="Docker- or Podman-compatible auth.json used to read the source registry.",
-    )
-    transfer_export.add_argument(
-        "--allow-insecure-loopback-http",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Allow HTTP only for localhost or 127.0.0.1 developer registries.",
-    )
-    transfer_export.add_argument("--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP)
-
-    transfer_import = transfer_commands.add_parser(
-        "import", help="Import an OCI layout archive and its referrers to a registry."
-    )
-    transfer_import.add_argument("archive", type=Path, help="OCI layout tar produced by transfer export.")
-    transfer_import.add_argument("receipt", type=Path, help="The matching release-publication.json receipt.")
-    transfer_import.add_argument("--registry-origin", required=True, help="Destination registry origin.")
-    transfer_import.add_argument(
-        "--registry-auth-file",
-        type=Path,
-        help="Docker- or Podman-compatible auth.json used to write the destination registry.",
-    )
-    transfer_import.add_argument(
-        "--allow-insecure-loopback-http",
-        action="store_true",
-        help="Allow HTTP only when the destination is localhost or 127.0.0.1.",
-    )
-    transfer_import.add_argument("--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP)
     return parser
 
 
@@ -737,21 +687,6 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
     if arguments.command == "publish":
         _resolve_publication_arguments(arguments, settings)
         _resolve_catalog_publication_arguments(arguments, settings)
-    if arguments.command == "transfer":
-        if arguments.transfer_command == "export":
-            arguments.registry_origin = arguments.registry_origin or settings.registry.origin
-            arguments.registry_auth_file = (
-                arguments.registry_auth_file or settings.registry.auth_file
-            )
-            arguments.allow_insecure_loopback_http = _boolean_option(
-                arguments.allow_insecure_loopback_http,
-                settings.registry.allow_insecure_loopback_http,
-                default=False,
-            )
-        for name in ("registry_auth_file", "output", "archive", "receipt"):
-            value = getattr(arguments, name, None)
-            if isinstance(value, Path):
-                setattr(arguments, name, value.expanduser())
     if arguments.command == "catalog" and arguments.catalog_command in {"update", "recover"}:
         _resolve_catalog_arguments(arguments, settings)
     if arguments.command == "build":
@@ -2603,46 +2538,6 @@ def _publish_artifact(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _transfer_release(arguments: argparse.Namespace) -> int:
-    """Move a completed release and its OCI referrers through an offline archive."""
-    try:
-        if arguments.transfer_command == "export":
-            if not arguments.registry_origin:
-                raise SettingsError(
-                    "transfer export requires --registry-origin or registry.origin in settings"
-                )
-            result = export_release_publication(
-                arguments.receipt,
-                arguments.output,
-                registry_origin=arguments.registry_origin,
-                auth_file=arguments.registry_auth_file,
-                allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
-            )
-        else:
-            result = import_release_publication(
-                arguments.archive,
-                arguments.receipt,
-                registry_origin=arguments.registry_origin,
-                auth_file=arguments.registry_auth_file,
-                allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
-            )
-    except (ValueError, OSError) as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
-
-    if arguments.json:
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    elif arguments.transfer_command == "export":
-        print(f"Release transfer archive: {result['archive']}")
-        print(f"Published objects: {result['artifactCount']}")
-        print("OCI referrers: included recursively")
-    else:
-        print(f"Imported release objects: {result['artifactCount']}")
-        print(f"Destination registry: {result['registryOrigin']}")
-        print("OCI referrers: imported recursively")
-    return 0
-
-
 def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dict[str, Any]:
     """Publish one verified local release inventory in dependency order."""
     credentials = _publication_credentials(arguments, operation="release publish")
@@ -2810,11 +2705,6 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
                 {
                     "kind": "workload-image",
                     "immutableReference": published_ref,
-                    "destinationReferences": _release_transfer_destination_references(
-                        str(image["repository"]),
-                        str(image["digest"]),
-                        str(image["tag"]),
-                    ),
                     "signature": (
                         "signed"
                         if _sign_reference(
@@ -2842,9 +2732,6 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
             {
                 "kind": "plugin",
                 "immutableReference": published_plugin["immutableReference"],
-                "destinationReferences": _release_transfer_destination_references(
-                    plugin_repository, plugin_digest, arguments.channel
-                ),
                 "signature": (
                     "signed"
                     if _sign_reference(
@@ -2853,21 +2740,6 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
                     )
                     else "unsigned"
                 ),
-            }
-        )
-        _write_release_publication_receipt(receipt_path, publication_receipt)
-    elif plugin_artifact is not None:
-        # An image-only release still transfers the unchanged plugin artifact
-        # and any referrers attached to it so a disconnected catalog can
-        # resolve the exact digest referenced by the RuntimeBinding.
-        publication_receipt["publications"].append(
-            {
-                "kind": "plugin",
-                "immutableReference": f"{plugin_repository}@{plugin_digest}",
-                "destinationReferences": _release_transfer_destination_references(
-                    plugin_repository, plugin_digest
-                ),
-                "signature": "existing",
             }
         )
         _write_release_publication_receipt(receipt_path, publication_receipt)
@@ -2890,9 +2762,6 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
         {
             "kind": "runtime-binding",
             "immutableReference": published_binding.immutable_reference,
-            "destinationReferences": _release_transfer_destination_references(
-                binding_repository, binding_digest, binding_channel
-            ),
             "signature": (
                 "signed"
                 if _sign_reference(
@@ -2948,9 +2817,6 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
         {
             "kind": "runtime-binding-index",
             "immutableReference": binding_index_reference,
-            "destinationReferences": _release_transfer_destination_references(
-                plugin_repository, binding_index_digest, index_channel
-            ),
             "idempotent": index_idempotent,
             "signature": binding_index_signature,
         }
@@ -2968,35 +2834,10 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
     }
     if plugin_artifact is not None and plugin_record.get("publish") and arguments.update_catalog:
         _phase(arguments, "Updating plugin catalog after all release dependencies")
-        catalog_result = _run_catalog_update(
+        result["catalog"] = _run_catalog_update(
             arguments,
             artifact_path=plugin_archive,
             credentials=credentials,
-        )
-        result["catalog"] = catalog_result
-        catalog_repository = _required_string(
-            catalog_result.get("repository"), "published catalog repository"
-        )
-        catalog_digest = _required_string(
-            catalog_result.get("catalogIndexDigest"), "published catalog index digest"
-        )
-        catalog_channel = _required_string(
-            catalog_result.get("channel"), "published catalog channel"
-        )
-        publication_receipt["publications"].append(
-            {
-                "kind": "catalog-index",
-                "immutableReference": _required_string(
-                    catalog_result.get("immutableReference"),
-                    "published catalog immutable reference",
-                ),
-                "destinationReferences": _release_transfer_destination_references(
-                    catalog_repository,
-                    catalog_digest,
-                    catalog_channel,
-                ),
-                "signature": catalog_result.get("signature"),
-            }
         )
     publication_receipt["ok"] = True
     _write_release_publication_receipt(receipt_path, publication_receipt)
@@ -3106,17 +2947,6 @@ def _runtime_binding_index_channel(plugin_digest: str) -> str:
     if _SHA256_DIGEST.fullmatch(plugin_digest) is None:
         raise SettingsError("plugin artifact digest must be sha256")
     return f"runtime-bindings-{plugin_digest.removeprefix('sha256:')}"
-
-
-def _release_transfer_destination_references(
-    repository: str, digest: str, *channels: str
-) -> list[str]:
-    """List a stable digest tag plus the channels consumers use to discover it."""
-    if _SHA256_DIGEST.fullmatch(digest) is None:
-        raise SettingsError("release transfer destination requires a sha256 digest")
-    references = [f"{repository}:sha256-{digest.removeprefix('sha256:')}"]
-    references.extend(f"{repository}:{channel}" for channel in channels)
-    return list(dict.fromkeys(references))
 
 
 def _write_release_publication_receipt(path: Path, value: Mapping[str, Any]) -> None:
