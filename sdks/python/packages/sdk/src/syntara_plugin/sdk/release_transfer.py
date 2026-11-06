@@ -30,6 +30,8 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_RECEIPT_BYTES = 1024 * 1024
 _MAX_LAYOUT_ENTRIES = 200_000
 _ORAS_TIMEOUT_SECONDS = 30 * 60
+_HTTP_SCHEME = "http://"
+_OCI_LAYOUT_INDEX = "index.json"
 
 
 class ReleaseTransferError(ValueError):
@@ -71,7 +73,7 @@ def export_release_publication(
                 source,
                 digest,
                 auth_file=auth_path,
-                plain_http=origin.startswith("http://"),
+                plain_http=origin.startswith(_HTTP_SCHEME),
             )
             _run_oras(
                 oras,
@@ -79,7 +81,7 @@ def export_release_publication(
                     "cp",
                     "--recursive",
                     *(["--from-registry-config", str(auth_path)] if auth_path else []),
-                    *(["--from-plain-http"] if origin.startswith("http://") else []),
+                    *(["--from-plain-http"] if origin.startswith(_HTTP_SCHEME) else []),
                     "--to-oci-layout",
                     source,
                     f"{layout}:{local_tag}",
@@ -161,7 +163,7 @@ def import_release_publication(
                 "--recursive",
                 "--from-oci-layout",
                 *(["--to-registry-config", str(auth_path)] if auth_path else []),
-                *(["--to-plain-http"] if origin.startswith("http://") else []),
+                *(["--to-plain-http"] if origin.startswith(_HTTP_SCHEME) else []),
                 source,
                 target,
             ],
@@ -172,7 +174,7 @@ def import_release_publication(
                 f"{origin}/{destination}",
                 digest,
                 auth_file=auth_path,
-                plain_http=origin.startswith("http://"),
+                plain_http=origin.startswith(_HTTP_SCHEME),
             )
 
     return {
@@ -310,14 +312,17 @@ def _resolve_digest(
 
 
 def _run_oras(oras: str, arguments: list[str]) -> str:
+    _validate_oras_arguments(arguments)
     try:
-        result = subprocess.run(
-            [oras, *arguments],
-            capture_output=True,
-            check=False,
-            shell=False,
-            timeout=_ORAS_TIMEOUT_SECONDS,
-            text=True,
+        result = (
+            subprocess.run(  # NOSONAR - fixed ORAS argv allowlist; shell=False, validated operands.
+                [oras, *arguments],
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=_ORAS_TIMEOUT_SECONDS,
+                text=True,
+            )
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ReleaseTransferError("ORAS command could not complete") from error
@@ -326,6 +331,49 @@ def _run_oras(oras: str, arguments: list[str]) -> str:
             f"ORAS release transfer failed with exit status {result.returncode}"
         )
     return result.stdout
+
+
+def _validate_oras_arguments(arguments: list[str]) -> None:
+    """Allow only the ORAS operations and flags used by this module."""
+    if not arguments or arguments[0] not in {"cp", "resolve"}:
+        raise ReleaseTransferError("unsupported ORAS operation")
+    operation = arguments[0]
+    flags = (
+        {"--oci-layout", "--plain-http"}
+        if operation == "resolve"
+        else {
+            "--recursive",
+            "--from-oci-layout",
+            "--to-oci-layout",
+            "--from-plain-http",
+            "--to-plain-http",
+        }
+    )
+    value_flags = (
+        {"--registry-config"}
+        if operation == "resolve"
+        else {"--from-registry-config", "--to-registry-config"}
+    )
+    operands = 0
+    expecting_path = False
+    for argument in arguments[1:]:
+        if not isinstance(argument, str) or "\x00" in argument:
+            raise ReleaseTransferError("ORAS arguments must be text without null bytes")
+        if expecting_path:
+            if not os.path.isabs(argument):
+                raise ReleaseTransferError("ORAS registry configuration path must be absolute")
+            expecting_path = False
+        elif argument in value_flags:
+            expecting_path = True
+        elif argument in flags:
+            continue
+        elif argument.startswith("-"):
+            raise ReleaseTransferError("unsupported ORAS command option")
+        else:
+            operands += 1
+    expected_operands = 1 if operation == "resolve" else 2
+    if expecting_path or operands != expected_operands:
+        raise ReleaseTransferError("invalid ORAS command arguments")
 
 
 def _layout_tag(immutable_reference: str) -> str:
@@ -337,7 +385,7 @@ def _layout_tag(immutable_reference: str) -> str:
 
 
 def _require_layout(path: Path) -> None:
-    if not (path / "oci-layout").is_file() or not (path / "index.json").is_file():
+    if not (path / "oci-layout").is_file() or not (path / _OCI_LAYOUT_INDEX).is_file():
         raise ReleaseTransferError("ORAS did not produce a complete OCI image layout")
 
 
@@ -356,9 +404,9 @@ def _validate_layout_archive(path: Path) -> None:
                         "release transfer archive contains an unsupported file type"
                     )
                 normalized = "/".join(part for part in name.parts if part not in {"", "."})
-                if normalized in {"oci-layout", "index.json"}:
+                if normalized in {"oci-layout", _OCI_LAYOUT_INDEX}:
                     found.add(normalized)
-        if found != {"oci-layout", "index.json"}:
+        if found != {"oci-layout", _OCI_LAYOUT_INDEX}:
             raise ReleaseTransferError("input is not a complete OCI image layout archive")
     except ReleaseTransferError:
         raise
