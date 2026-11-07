@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.syntara.io/v1alpha1/runtime-binding-source.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "syntara.io/v1alpha1"},
+    "kind": {"const": "RuntimeBinding"},
+    "metadata": {"$ref": "common.schema.json#/$defs/runtimeBindingMetadata"},
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin", "workloads"],
+      "properties": {
+        "plugin": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+\\.ya?ml$"},
+            "artifact": {"$ref": "#/$defs/pluginArtifact"}
+          },
+          "oneOf": [{"required": ["source"]}, {"required": ["artifact"]}]
+        },
+        "workloads": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"$ref": "common.schema.json#/$defs/identifier"},
+          "additionalProperties": {"$ref": "#/$defs/workloadSource"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "pluginArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "digest"],
+      "properties": {
+        "repository": {"$ref": "common.schema.json#/$defs/repository"},
+        "digest": {"$ref": "common.schema.json#/$defs/sha256Digest"}
+      }
+    },
+    "imageSource": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["buildTarget"], "properties": {"buildTarget": {"$ref": "common.schema.json#/$defs/identifier"}}},
+        {"type": "object", "additionalProperties": false, "required": ["reference"], "properties": {"reference": {"$ref": "common.schema.json#/$defs/digestImageReference"}}}
+      ]
+    },
+    "optionSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "displayName", "image"],
+      "properties": {
+        "name": {"$ref": "common.schema.json#/$defs/identifier"},
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
+        "description": {"type": "string", "maxLength": 2000},
+        "image": {"$ref": "#/$defs/imageSource"}
+      }
+    },
+    "workloadSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "options"],
+      "properties": {
+        "default": {"$ref": "common.schema.json#/$defs/identifier"},
+        "options": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/$defs/optionSource"}}
+      }
+    }
+  }
+}

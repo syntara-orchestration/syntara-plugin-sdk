@@ -328,10 +328,19 @@ syntara-plugin run --mode image \
 
 Image mode executes through `ContainerClient` against a workload runtime
 serving the container ABI. **By default the CLI manages the container for
-you**: it detects Podman (preferred) or Docker, verifies the workspace's
-declared workload image (`spec.workload.image`) is available locally, runs
-it, waits for its health endpoint, executes, and removes the container
-afterwards. The report shows the image it used:
+you**: it detects Podman (preferred) or Docker, resolves the selected workload
+image, runs it, waits for its health endpoint, executes, and removes the
+container afterwards. For the multi-image release flow, pass the built release
+inventory and the stable option name; the SDK resolves that option to the exact
+local image archive:
+
+```sh
+syntara-plugin run create-issue --mode image \
+  --release dist/release.json --image-option python-pdf \
+  --input-file input.json
+```
+
+The report shows the image and digest it used:
 
 ```text
 Target:         example.python-steps.create-issue
@@ -345,13 +354,12 @@ client certificates, removed afterwards), which works everywhere published
 ports do, including Docker Desktop. openssl is required for the managed
 path: there is deliberately no cleartext fallback, because a fixed-port
 unauthenticated listener would let any local process impersonate the runtime.
-The managed path never builds and never pulls images: a missing image is an
-error with the fix, not a side effect, because building requires the
-author-owned Containerfile and bindings factory the CLI cannot infer. The
-image must be tagged with the logical workload ID your `plugin.yaml` declares
-under `spec.workload.image`; after `build --with-workload` pushes
-`repository:tag`, tag the local image accordingly, for example
-`podman tag repository:tag python-steps-workload`. A
+The managed path never builds or pulls images: a missing image is an error
+with the fix, not a side effect, because building requires the author-owned
+Containerfile and bindings factory the CLI cannot infer. Build the release
+first with `syntara-plugin build`; for a RuntimeBinding release, use the
+inventory and option shown above. The legacy single-image path uses the image
+reference recorded in the compiled descriptor. A
 container whose process exits before its runtime becomes healthy is reported
 immediately, with its exit status and the last lines of its log, instead of
 waiting out the startup window. The

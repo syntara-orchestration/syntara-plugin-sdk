@@ -56,8 +56,10 @@ class BuildSettings:
     """Source compilation and portable metadata-archive defaults."""
 
     artifact_output: Path | None = None
+    runtime_binding_manifest: Path | None = None
+    runtime_binding_output: Path | None = None
     image_bindings: Mapping[str, str] = field(default_factory=dict)
-    workload: WorkloadBuildSettings | None = None
+    workloads: Mapping[str, WorkloadBuildSettings] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -229,7 +231,13 @@ def _parse_build(value: object, source: Path) -> BuildSettings:
     document = _mapping(value, "build")
     _reject_unknown_keys(
         document,
-        {"artifactOutput", "imageBindings", "workload"},
+        {
+            "artifactOutput",
+            "runtimeBindings",
+            "runtimeBindingOutput",
+            "imageBindings",
+            "workloads",
+        },
         "build",
     )
     raw_bindings = document.get("imageBindings", {})
@@ -239,31 +247,51 @@ def _parse_build(value: object, source: Path) -> BuildSettings:
         if not isinstance(identifier, str) or not isinstance(image, str) or not image:
             raise SettingsError("build.imageBindings must map non-empty image IDs to references")
         parsed_bindings[identifier] = image
+    raw_workloads = _mapping(document.get("workloads", {}), "build.workloads")
+    parsed_workloads: dict[str, WorkloadBuildSettings] = {}
+    for identifier, workload in raw_workloads.items():
+        if not isinstance(identifier, str) or not identifier:
+            raise SettingsError("build.workloads must map non-empty build-target IDs to settings")
+        parsed = _parse_workload(workload, source, path=f"build.workloads.{identifier}")
+        assert parsed is not None
+        parsed_workloads[identifier] = parsed
     return BuildSettings(
         artifact_output=_path(
             document.get("artifactOutput"), source, "build.artifactOutput"
         ),
+        runtime_binding_manifest=_path(
+            document.get("runtimeBindings"), source, "build.runtimeBindings"
+        ),
+        runtime_binding_output=_path(
+            document.get("runtimeBindingOutput"), source, "build.runtimeBindingOutput"
+        ),
         image_bindings=parsed_bindings,
-        workload=_parse_workload(document.get("workload"), source),
+        workloads=parsed_workloads,
     )
 
 
-def _parse_workload(value: object, source: Path) -> WorkloadBuildSettings | None:
+def _parse_workload(
+    value: object,
+    source: Path,
+    *,
+    path: str,
+) -> WorkloadBuildSettings | None:
     if value is None:
         return None
-    document = _mapping(value, "build.workload")
+    document = _mapping(value, path)
     _reject_unknown_keys(
         document,
-        {"engine", "context", "containerfile", "tag", "platform", "imageId"},
-        "build.workload",
+        {"engine", "context", "containerfile", "repository", "tag", "platform", "imageId"},
+        path,
     )
     return WorkloadBuildSettings(
-        engine=_string(document.get("engine"), "build.workload.engine"),
-        context=_path(document.get("context"), source, "build.workload.context"),
-        containerfile=_path(document.get("containerfile"), source, "build.workload.containerfile"),
-        tag=_string(document.get("tag"), "build.workload.tag"),
-        platform=_string(document.get("platform"), "build.workload.platform"),
-        image_id=_string(document.get("imageId"), "build.workload.imageId"),
+        engine=_string(document.get("engine"), f"{path}.engine"),
+        context=_path(document.get("context"), source, f"{path}.context"),
+        containerfile=_path(document.get("containerfile"), source, f"{path}.containerfile"),
+        repository=_string(document.get("repository"), f"{path}.repository"),
+        tag=_string(document.get("tag"), f"{path}.tag"),
+        platform=_string(document.get("platform"), f"{path}.platform"),
+        image_id=_string(document.get("imageId"), f"{path}.imageId"),
     )
 
 

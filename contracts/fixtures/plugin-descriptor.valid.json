@@ -14,12 +14,14 @@
         "canonicalDigest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
         "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
         "mediaType": "text/markdown",
-        "references": ["plugin.yaml#/spec/documentation"],
+        "references": [
+          "plugin.yaml#/spec/documentation"
+        ],
         "size": 14
       }
     },
-    "contractBundleDigest": "sha256:70e283b00499a5808c88920c2db93da9cc5892e45e085db80ff21a93cd3d28c0",
-    "plugin_revision_id": "sha256:7f945ca8e63187238e5d637d987fb2574d63503b03faa8289f43efb0f6353a11",
+    "contractBundleDigest": "sha256:b267e4fbfe5909eb767fed5424f897ba461002b1bd513eb8390480b32ff29370",
+    "plugin_revision_id": "sha256:319adfd52dcc43faa2c3ec9901da1a27babe149d29c72db3b35dd42ce91e9823",
     "sdkVersion": "0.1.0-alpha.1",
     "documentation": {
       "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
@@ -28,14 +30,18 @@
     "targets": [
       {
         "identity": "acme.issue-tools.create-issue",
-        "input": {"type": "object"},
+        "input": {
+          "type": "object"
+        },
         "kind": "Action",
         "metadata": {
           "description": "Creates one issue.",
           "displayName": "Create issue",
           "name": "create-issue"
         },
-        "output": {"type": "object"},
+        "output": {
+          "type": "object"
+        },
         "runtime": {
           "abi": "syntara.container/v1alpha1",
           "entryPoint": "issue_tools.actions:CreateIssue",
@@ -47,12 +53,14 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "steps/create-issue.yaml",
-        "step_revision_id": "sha256:d242abda30cdd275bfea3aace3a398bc3b5eb32ae452f17523ca0296f37794f0",
+        "step_revision_id": "sha256:11d424ce374f8d8cd30b5089a5cdca3713f638a3627681abee75ca7911cea177",
         "version": "0.1.0"
       },
       {
         "identity": "acme.issue-tools.invoke-deploy",
-        "input": {"type": "object"},
+        "input": {
+          "type": "object"
+        },
         "invocation": {
           "kind": "workflow-invocation",
           "workflow": "acme.issue-tools.deploy"
@@ -63,7 +71,9 @@
           "displayName": "Invoke deploy",
           "name": "invoke-deploy"
         },
-        "output": {"type": "object"},
+        "output": {
+          "type": "object"
+        },
         "runtime": {
           "abi": "syntara.container/v1alpha1",
           "entryPoint": "issue_tools.controls:Deploy",
@@ -75,18 +85,26 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "controls/invoke.yaml",
-        "step_revision_id": "sha256:b132822488fb040d5f4fa7e68c52ccf334704ca8b41b11205b2c58b170586b50",
+        "step_revision_id": "sha256:c250d93f6fc71e499c96cea757bcf69834513717ea3e4e552c0b57ff3a5110ba",
         "version": "0.1.0"
       },
       {
         "configuration": {
-          "properties": {"secret": {"type": "string"}},
+          "properties": {
+            "secret": {
+              "type": "string"
+            }
+          },
           "type": "object"
         },
         "driver": "webhook.v1",
         "identity": "acme.issue-tools.issue-opened",
         "input": {
-          "properties": {"event": {"type": "string"}},
+          "properties": {
+            "event": {
+              "type": "string"
+            }
+          },
           "type": "object"
         },
         "kind": "Trigger",
@@ -96,7 +114,11 @@
           "name": "issue-opened"
         },
         "output": {
-          "properties": {"runId": {"type": "string"}},
+          "properties": {
+            "runId": {
+              "type": "string"
+            }
+          },
           "type": "object"
         },
         "runtime": {
@@ -109,7 +131,7 @@
           "output": "sha256:9165019f477995f6b0f38b7225ae22d3aee26feabba71afb8a2552918ebce43a"
         },
         "sourcePath": "triggers/issue-opened.yaml",
-        "step_revision_id": "sha256:6417324ff765720af79d5a32989df998f7e8cbc5feb438c46a3c0e8996c0dee0",
+        "step_revision_id": "sha256:4a7f1609d5ebc7d7b6cb888c9866e55fc4b26b1df6fb6fd1d38d79d11defe6b3",
         "version": "0.1.0"
       }
     ],

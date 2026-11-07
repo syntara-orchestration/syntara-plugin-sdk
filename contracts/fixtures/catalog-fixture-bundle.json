@@ -1,26 +1,131 @@
 {
   "fixtureBundleVersion": "syntara.catalog-fixtures/v1alpha1",
-  "contractBundleDigest": "sha256:70e283b00499a5808c88920c2db93da9cc5892e45e085db80ff21a93cd3d28c0",
-  "fixtureContentDigest": "sha256:db68cb9788281bb897cb233ef0486d55ed5862c01bc47efc43610590d051bb6d",
+  "contractBundleDigest": "sha256:b267e4fbfe5909eb767fed5424f897ba461002b1bd513eb8390480b32ff29370",
+  "fixtureContentDigest": "sha256:10f3feedd66969115e1d58c19922859ed0d7512ea09d4acc988b15fca145e748",
   "catalogCases": [
-    {"path": "catalog/valid-20.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 41, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": []},
-    {"path": "catalog/expired.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_INDEX_EXPIRED"]},
-    {"path": "catalog/replayed.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_INDEX_GENERATION_REPLAY"]},
-    {"path": "catalog/wrong-source.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_INDEX_SOURCE_MISMATCH"]},
-    {"path": "catalog/broken-predecessor.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_INDEX_PREDECESSOR_MISMATCH"]},
-    {"path": "catalog/unsupported-contract.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_INDEX_CONTRACT_UNSUPPORTED"]},
-    {"path": "catalog/duplicate-identity.json", "sourceId": "local-quay", "now": "2026-10-06T13:00:00Z", "checkpoint": {"generation": 42, "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "expectedCodes": ["CATALOG_ENTRY_IDENTITY_DUPLICATE"]}
+    {
+      "path": "catalog/valid-20.json",
+      "sourceId": "local-quay",
+      "now": "2026-10-06T13:00:00Z",
+      "checkpoint": {
+        "generation": 41,
+        "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedCodes": []
+    },
+    {
+      "path": "catalog/expired.json",
+      "sourceId": "local-quay",
+      "now": "2026-10-06T13:00:00Z",
+      "checkpoint": {
+        "generation": 42,
+        "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedCodes": [
+        "CATALOG_INDEX_EXPIRED"
+      ]
+    },
+    {
+      "path": "catalog/replayed.json",
+      "sourceId": "local-quay",
+      "now": "2026-10-06T13:00:00Z",
+      "checkpoint": {
+        "generation": 42,
+        "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedCodes": [
+        "CATALOG_INDEX_GENERATION_REPLAY"
+      ]
+    },
+    {
+      "path": "catalog/wrong-source.json",
+      "sourceId": "local-quay",
+      "now": "2026-10-06T13:00:00Z",
+      "checkpoint": {
+        "generation": 42,
+        "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedCodes": [
+        "CATALOG_INDEX_SOURCE_MISMATCH"
+      ]
+    },
+    {
+      "path": "catalog/broken-predecessor.json",
+      "sourceId": "local-quay",
+      "now": "2026-10-06T13:00:00Z",
+      "checkpoint": {
+        "generation": 42,
+        "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedCodes": [
+        "CATALOG_INDEX_PREDECESSOR_MISMATCH"
+      ]
+    },
+    {
+      "path": "catalog/unsupported-contract.json",
+      "sourceId": "local-quay",
+      "now": "2026-10-06T13:00:00Z",
+      "checkpoint": {
+        "generation": 42,
+        "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedCodes": [
+        "CATALOG_INDEX_CONTRACT_UNSUPPORTED"
+      ]
+    },
+    {
+      "path": "catalog/duplicate-identity.json",
+      "sourceId": "local-quay",
+      "now": "2026-10-06T13:00:00Z",
+      "checkpoint": {
+        "generation": 42,
+        "indexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expectedCodes": [
+        "CATALOG_ENTRY_IDENTITY_DUPLICATE"
+      ]
+    }
   ],
   "documentCases": [
-    {"path": "catalog-source.valid.json", "kind": "catalog_source"},
-    {"path": "catalog-source-status.valid.json", "kind": "catalog_source_status"},
-    {"path": "integration.valid.json", "kind": "integration"},
-    {"path": "credential-recipe.valid.json", "kind": "credential_recipe"},
-    {"path": "trigger-driver.valid.json", "kind": "trigger_driver"},
-    {"path": "trigger-event-mapping.valid.json", "kind": "trigger_event_mapping"},
-    {"path": "installed-identity.valid.json", "kind": "installed_identity"},
-    {"path": "control.valid.json", "kind": "control"},
-    {"path": "trigger.valid.json", "kind": "trigger"},
-    {"path": "plugin-descriptor.valid.json", "kind": "plugin_descriptor"}
+    {
+      "path": "catalog-source.valid.json",
+      "kind": "catalog_source"
+    },
+    {
+      "path": "catalog-source-status.valid.json",
+      "kind": "catalog_source_status"
+    },
+    {
+      "path": "integration.valid.json",
+      "kind": "integration"
+    },
+    {
+      "path": "credential-recipe.valid.json",
+      "kind": "credential_recipe"
+    },
+    {
+      "path": "trigger-driver.valid.json",
+      "kind": "trigger_driver"
+    },
+    {
+      "path": "trigger-event-mapping.valid.json",
+      "kind": "trigger_event_mapping"
+    },
+    {
+      "path": "installed-identity.valid.json",
+      "kind": "installed_identity"
+    },
+    {
+      "path": "control.valid.json",
+      "kind": "control"
+    },
+    {
+      "path": "trigger.valid.json",
+      "kind": "trigger"
+    },
+    {
+      "path": "plugin-descriptor.valid.json",
+      "kind": "plugin_descriptor"
+    }
   ]
 }

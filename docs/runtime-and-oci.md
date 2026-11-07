@@ -1,38 +1,28 @@
 # Runtime and OCI model
 
-This page distinguishes the pieces of a plugin release. It is useful when you
-need a custom runner; ordinary platform-runner actions need only the plugin
-artifact.
+This page describes the workload ABI and OCI packaging details. For the
+multi-image release lifecycle, use the [RuntimeBindings guide](runtime-bindings.md).
+Ordinary platform-runner actions need only the plugin artifact.
 
 ## Release boundaries
 
 ```text
-plugin.yaml + target manifests + schemas + Markdown
-                  |
-                  | syntara-plugin build
-                  v
-          plugin metadata OCI artifact
-                  |
-                  | syntara-plugin publish
-                  v
-       registry artifact repository / catalog index
-
-custom-runner source + Containerfile
-                  |
-                  | syntara-plugin build --with-workload --publish
-                  v
-        immutable workload image digest
-                  |
-                  | bound into metadata artifact
-                  v
-       Execution Plane pulls the approved digest
+Plugin source + step manifests + schemas  --build-->  plugin artifact (P)
+RuntimeBinding source + images             --build-->  binding artifact (B) + image(s) (I)
+P + B + I                                  --publish--> registry digests
+P                                          --catalog--> plugin catalog index
+B                                          --index----> per-plugin RuntimeBinding index
 ```
 
-The artifact is the declarative, inspectable plugin release. A workload image
-is a separate OCI image containing author-owned executable code. The compiler
-records a custom-runner action's logical image ID and binds it to an immutable
-`repository@sha256:...` reference. The Execution Plane uses that resolved
-reference, never a mutable tag.
+The plugin artifact is the declarative, inspectable release. A workload image
+is a separate OCI image containing author-owned executable code. In the
+multi-image flow, the plugin descriptor carries a logical workload name and
+the RuntimeBinding maps that name to one or more image options pinned by
+`repository@sha256:...`. The Execution Plane must use the exact image digest
+resolved by the platform; it must not accept a workflow-supplied image URI.
+Legacy single-image descriptors may still carry their digest directly. New
+multi-image releases should use RuntimeBindings so an image security update
+does not require republishing P.
 
 For `platform-runner` steps, the plugin declares an implementation from an
 already registered plugin. The AO Plugin Registry resolves its image and entry
@@ -608,10 +598,12 @@ implementation:
   from a source filename.
 - Authors do not hard-code build-generated revision IDs.
 - The compiled contract carries the `module:Class` entry point and required
-  ABI. `--with-workload` embeds the compiler-generated registration manifest
-  at `/opt/syntara/registration-manifest.json` in the image before pushing it.
-- Revision IDs identify compiled contracts, not image bytes. The workload image
-  is separately bound by its immutable digest in the descriptor.
+  ABI. The SDK generates a registration manifest for each logical workload
+  and includes it in the image before exporting the local image archive.
+- Revision IDs identify compiled contracts, not image bytes. In the
+  multi-image flow, the RuntimeBinding artifact separately maps each workload
+  option to its immutable image digest; the plugin artifact does not change
+  when only that image mapping changes.
 
 The registration manifest is canonical JSON with
 `apiVersion: syntara.registration/v1alpha1`, `kind: RegistrationManifest`,
@@ -635,17 +627,19 @@ item is a duty the platform already performs, with a pointer to where the
 needed data already lives. The SDK does not implement them.
 
 - **Digest verification**: pull the plugin artifact by digest (the digest is
-  the OCI address), read workload image digests from the compiled
-  descriptor's `spec.workloads` inside the artifact, and deploy images by
-  digest. The registration manifest and resolved execution data carry the
+  the OCI address), then read workload image digests from the RuntimeBinding
+  artifact referenced by the plugin's RuntimeBinding index. When signing is
+  enabled, verify the index and referenced artifacts against the configured
+  trust policy. Deploy
+  images by digest. The registration manifest and resolved execution data carry the
   step revision IDs, entry points, ABIs, and schema digests; the runtime
   server cross-checks them against the installed bindings at startup and
   refuses to start on any mismatch. Each step revision ID digests the full
   compiled target, including its metadata, so metadata integrity is covered
   by the revision check.
-- **Staging and import**: install the artifact's plugin wheel and the
-  registration manifest into the workload image, as the `--with-workload`
-  flow and the Existing step types example's Containerfile do.
+- **Staging and import**: install the plugin wheel and registration manifest
+  into the workload image during the local build. The Containerfile and SDK
+  build settings are shown in the [RuntimeBindings guide](runtime-bindings.md).
 - **Trust**: `InstalledStepManifest.from_manifest` is the authorized-document
   boundary. The SDK records opaque provenance for factory-created objects but
   cannot establish remote or cryptographic provenance; the platform supplies
@@ -653,7 +647,8 @@ needed data already lives. The SDK does not implement them.
 - **Dependency compatibility**: the registration manifest records the
   `sdkVersion`, and the workload image owns its contracts distribution and
   adapter versions. The platform checks them against the compiled
-  descriptor's declared ABI before dispatch.
+  descriptor's declared ABI before dispatch. The RuntimeBinding also records
+  the contract-bundle digest used to resolve the image selection.
 - **Import isolation**: one workload image holds one plugin today. Running
   several plugins in one Python interpreter is a platform concern; the SDK
   gives each plugin its own package and manifest namespace but no import

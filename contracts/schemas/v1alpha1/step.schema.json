@@ -31,12 +31,16 @@
       "properties": {
         "kind": {"enum": ["platform-runner", "custom-runner"]},
         "entryPoint": {"$ref": "#/$defs/entryPoint"},
-        "implementation": {"$ref": "#/$defs/implementation"}
+        "implementation": {"$ref": "#/$defs/implementation"},
+        "workload": {"$ref": "common.schema.json#/$defs/identifier"}
       },
       "allOf": [
         {
           "if": {"properties": {"kind": {"const": "platform-runner"}}},
-          "then": {"required": ["implementation"], "not": {"required": ["entryPoint"]}}
+          "then": {
+            "required": ["implementation"],
+            "not": {"anyOf": [{"required": ["entryPoint"]}, {"required": ["workload"]}]}
+          }
         },
         {
           "if": {"properties": {"kind": {"const": "custom-runner"}}},

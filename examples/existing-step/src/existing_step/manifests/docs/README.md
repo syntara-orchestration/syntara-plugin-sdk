@@ -47,9 +47,11 @@ Automation Orchestrator also remain separate from this publisher-owned plugin
 prototype.
 
 The checked-in `Containerfile` is the base workload recipe; it is not a
-standalone runnable image. Use `syntara-plugin build --with-workload` for a
-publisher image: that command compiles the descriptor, generates the immutable
-registration manifest, and adds it at
-`/opt/syntara/registration-manifest.json`. A custom-runner server intentionally
-refuses to start without that manifest. The integration test performs the same
-final-layer step explicitly so it can exercise the image recipe in isolation.
+standalone runnable image. The current multi-image release workflow is
+documented in the SDK's
+[RuntimeBindings guide](../../../../../../docs/runtime-bindings.md). It
+builds local workload archives, generates the immutable registration manifest,
+and adds it at `/opt/syntara/registration-manifest.json`. A custom-runner server
+intentionally refuses to start without that manifest. The integration test
+performs the same final-layer step explicitly so it can exercise the image
+recipe in isolation.

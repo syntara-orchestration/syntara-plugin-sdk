@@ -79,12 +79,22 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Settings for deterministic metadata-artifact assembly and an optional custom-runner image build.",
+      "description": "Settings for deterministic metadata-artifact assembly and optional custom-runner image builds.",
       "properties": {
         "artifactOutput": {
           "type": "string",
           "minLength": 1,
           "description": "Output path for the generated plugin metadata OCI archive (.oci.tar). Relative paths are resolved from this settings file."
+        },
+        "runtimeBindings": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional author-maintained RuntimeBinding source manifest. Relative paths are resolved from this settings file."
+        },
+        "runtimeBindingOutput": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional output path for the resolved RuntimeBinding OCI archive. Relative paths are resolved from this settings file."
         },
         "imageBindings": {
           "type": "object",
@@ -95,39 +105,46 @@
             "description": "An immutable OCI image reference in repository@sha256:digest form."
           }
         },
-        "workload": {
+        "workloads": {
           "type": "object",
-          "additionalProperties": false,
-          "description": "One author-owned custom-runner image build target. It is used only with the explicit --with-workload command option.",
-          "properties": {
-            "engine": {
-              "const": "podman",
-              "description": "Container engine used to build and push the custom-runner image. Podman is the currently supported engine."
-            },
-            "context": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Container build context directory. Relative paths are resolved from this settings file."
-            },
-            "containerfile": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Path to the Containerfile within the selected build context. Relative paths are resolved from this settings file."
-            },
-            "tag": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Mutable build-and-push tag used only to obtain the registry's resulting immutable image digest."
-            },
-            "platform": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Target operating system and architecture, such as linux/arm64."
-            },
-            "imageId": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Logical custom-runner image identifier declared by plugin.yaml and bound to the pushed digest."
+          "description": "Build settings keyed by buildTarget identifiers used in runtime-bindings.yaml.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]{0,62}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["engine", "context", "containerfile", "tag", "platform"],
+            "properties": {
+              "engine": {
+                "const": "podman",
+                "description": "Container engine used for the local OCI archive build. Podman is currently supported."
+              },
+              "context": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Container build context directory, resolved relative to this settings file."
+              },
+              "containerfile": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Containerfile path within the selected build context, resolved relative to this settings file."
+              },
+              "repository": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Optional image repository; the resulting image digest is recorded in the RuntimeBinding."
+              },
+              "tag": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Temporary local image tag. The release identity is the OCI digest."
+              },
+              "platform": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Target operating system and architecture, such as linux/amd64."
+              }
             }
           }
         }

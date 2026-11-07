@@ -92,10 +92,18 @@ def _validate_workloads(
 
     for workload_id, workload in workloads.items():
         image = workload.get("image") if isinstance(workload, Mapping) else None
-        if not is_digest_image_reference(image):
+        abi = workload.get("abi") if isinstance(workload, Mapping) else None
+        provider = workload.get("provider") if isinstance(workload, Mapping) else None
+        if image is not None and not is_digest_image_reference(image):
             errors.append(
                 f"plugin descriptor workload {workload_id!r} image must be pinned to a sha256 digest"
             )
+        if provider is not None and image is None:
+            errors.append(
+                f"plugin descriptor provider {workload_id!r} must include its immutable image"
+            )
+        if abi not in {"syntara.container/v1alpha1", "syntara.provider/v1alpha1"}:
+            errors.append(f"plugin descriptor workload {workload_id!r} has an invalid ABI")
 
     for target in targets:
         if not isinstance(target, Mapping):

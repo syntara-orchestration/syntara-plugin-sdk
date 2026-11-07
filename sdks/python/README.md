@@ -100,10 +100,12 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin catalog update ./dist/my-plugi
 ```
 
 It is a thin adapter over the public compiler, OCI builder, archive verifier,
-and explicit registry publisher. `build` is offline: it writes one deterministic
-OCI-layout archive and reports its OCI metadata. Archive `inspect` verifies the
-archive before reporting it, and `publish` uploads those exact verified bytes;
-neither operation recompiles source. `publish` requires an explicit registry
+and explicit registry publisher. For metadata-only plugins, `build` writes a
+deterministic OCI-layout archive without publishing it. For custom-workload
+plugins, `build` also builds local workload images and writes the plugin and
+RuntimeBinding archives plus a release inventory. Archive `inspect` verifies
+the prepared files, and `publish` uploads those exact bytes; it does not rebuild
+them. `publish` requires an explicit registry
 origin, repository, channel (OCI tag), username, and `--password-stdin`; it
 never stores credentials. It can also be invoked from a source checkout with
 `python -m syntara_plugin.sdk.cli`.
@@ -117,13 +119,14 @@ does not make ordinary `publish` modify a shared discovery channel. The
 [user guide](../../docs/user-guide.md) documents settings-backed catalog
 configuration and the single-writer CI requirement.
 
-The default build stays offline. The opt-in `build --with-workload` preview
-uses Podman to build and push one configured workload image, reads its
-registry-returned digest, and binds that immutable reference into the normal
-portable metadata archive. Add `--publish --password-stdin` to publish the
-newly written archive in the same invocation. A versioned non-secret
-`syntara-plugin.yaml` supplies stable `manifest`, shared `registry`, `build`,
-workload, publication, and catalog values; explicit CLI values override it. See
-the [build settings reference](../../docs/build-settings.md) and
-[ADR 0006](../../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md) for the
-settings schema, security boundaries, and remaining Execution Plane gate.
+For custom-runner plugins, use the independent RuntimeBinding release flow.
+`build` creates local OCI archives for workload images and the plugin and
+RuntimeBinding artifacts; it does not publish them. Inspect the generated
+`dist/release.json`, then use `publish --artifact-kind release` to upload the
+prepared objects in dependency order. For an image-only security update, reuse
+the existing plugin archive and publish a new image, RuntimeBinding, and
+per-plugin RuntimeBinding index without changing the plugin catalog entry.
+See the [RuntimeBindings guide](../../docs/runtime-bindings.md) and
+[build settings reference](../../docs/build-settings.md) for commands and
+non-secret `syntara-plugin.yaml` settings. `build` writes local OCI archives;
+`publish` uploads those exact files after inspection.

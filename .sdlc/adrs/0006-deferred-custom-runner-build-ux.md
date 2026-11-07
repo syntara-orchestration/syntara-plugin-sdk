@@ -1,9 +1,12 @@
 # ADR 0006: Defer combined custom-runner image builds until catalog flow is proven
 
-- Status: Accepted — developer-preview implementation; Execution Plane release gate retained
+- Status: Historical decision; release flow superseded by ADR 0010
 - Date: 2026-10-07
 
 ## Context
+
+ADR 0010 records the current separate build and publish lifecycle. This record
+preserves the earlier decision and its rationale for context.
 
 The current SDK has a safe separation of responsibilities. `syntara-plugin
 build` compiles a plugin workspace and writes a reviewable metadata OCI archive.

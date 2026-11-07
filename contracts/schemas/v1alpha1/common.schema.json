@@ -36,6 +36,16 @@
         "description": {"type": "string", "minLength": 1, "maxLength": 2000}
       }
     },
+    "runtimeBindingMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "name"],
+      "properties": {
+        "namespace": {"$ref": "#/$defs/identifier"},
+        "name": {"$ref": "#/$defs/identifier"},
+        "release": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
     "targetMetadata": {
       "type": "object",
       "additionalProperties": false,

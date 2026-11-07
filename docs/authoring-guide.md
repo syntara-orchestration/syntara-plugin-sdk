@@ -88,8 +88,8 @@ If you have not created a plugin before, complete
 | Category | The role of a step type: `action`, `control`, or `trigger`. The manifest `kind` is `Action`, `Control`, or `Trigger`. |
 | Runner | What executes the step type: the Syntara `platform-runner` or your own `custom-runner`. |
 | Entry point | The `module:Class` handle of a custom-runner implementation, such as `python_steps.create_issue:CreateIssueStep`. |
-| Workload image | The container image that holds your custom-runner code. A plugin has at most one. |
-| Step type identity | The stable name `namespace.plugin.step`, such as `example.python-steps.create-issue`. |
+| Workload image | A container image that holds custom-runner code. A plugin may declare multiple logical workloads and image options. |
+| Step identity | The stable name `namespace.plugin.step`, such as `example.python-steps.create-issue`. |
 
 For the complete vocabulary, see
 [Terms and execution model](plugin-language.md#terms-and-execution-model).
@@ -184,8 +184,10 @@ examples/python-steps/
 └── tests/                               # pytest suite
 ```
 
-The `plugin.yaml` file names the plugin, declares the workload image that all
-custom-runner step types share, and lists the step type manifests:
+The `plugin.yaml` file names the plugin, declares the logical custom workload
+IDs used by its Steps, and lists the Step manifests. Image choices and immutable
+image digests live in the separate `runtime-bindings.yaml` source manifest; see
+the [RuntimeBindings guide](runtime-bindings.md):
 
 ```yaml
 apiVersion: syntara.io/v1alpha1
@@ -199,8 +201,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: python-steps-workload
+  workloads:
+    python:
+      image: python-runtime
   targets:
     - steps/create-issue/manifest.yaml
     - steps/record-opened/manifest.yaml
@@ -844,9 +847,13 @@ flowchart LR
     classDef todo fill:#f5f5f5,stroke:#8a8d90,color:#151515
 ```
 
-The `build` command compiles the workspace into a deterministic OCI archive:
-the same source always produces the same digests. The build is offline. It
-does not contact a registry, build an image, or run anything.
+For a platform-runner plugin, `build` compiles the workspace into a deterministic
+metadata OCI archive without publishing it. For a custom-workload plugin, `build`
+also builds the configured workload images locally and creates the plugin and
+RuntimeBinding archives plus a release inventory. A build may pull base-image
+layers or language dependencies; it does not publish objects to the configured
+registry or run the workload. See the [RuntimeBindings guide](runtime-bindings.md)
+for the complete custom-workload flow.
 
 ### Build a platform-runner plugin
 
@@ -864,26 +871,13 @@ syntara-plugin inspect ./dist/incident-tracker.oci.tar
 
 ### Build a custom-runner plugin
 
-A custom-runner plugin must pin its workload image to an immutable digest.
-Without a digest, the build fails:
-
-```text
-error: IMAGE_BINDING_MISSING: No explicit immutable binding was supplied for 'incident-tracker-workload'.
-```
-
-If you already have an image digest, pass it with `--image-binding`, or set
-it once under `build.imageBindings` in `syntara-plugin.yaml`:
-
-```sh
-syntara-plugin build \
-  --image-binding incident-tracker-workload=<repository>@sha256:<digest>
-```
-
-To have the SDK build and push the image instead, use the
-`build --with-workload` flow. It requires a `Containerfile` and a bindings
-factory that you write. For the procedure, see
-[Optional custom-runner image build](user-guide.md#optional-custom-runner-image-build),
-and for the image pattern, see [Image mode](running-locally.md#image-mode).
+Use a source `RuntimeBinding` to list image options and local build targets.
+The SDK builds the plugin artifact and workload images without publishing
+them. `inspect` reviews the generated release inventory and each archive;
+`publish --artifact-kind release` uploads the exact reviewed bytes. For a
+first release, image-only security update, or multi-image example, follow the
+[RuntimeBindings guide](runtime-bindings.md). The older `--image-binding` path
+remains for a single image bound directly in a legacy plugin descriptor.
 
 ## Publish the release
 
@@ -1080,18 +1074,19 @@ moves from your workspace to execution:
 ```mermaid
 flowchart TB
     accTitle: How a plugin moves from a workspace to execution
-    accDescr: The SDK builds a plugin artifact and an optional workload image and publishes them to a registry. Automation Orchestrator, outside the SDK, installs the release and runs the pinned image.
+    accDescr: The SDK builds a plugin artifact, a RuntimeBinding artifact, and one or more workload images, then publishes the exact release objects. Automation Orchestrator, outside the SDK, installs the release and resolves an approved image option.
     subgraph sdk["Your workspace and the SDK"]
         src["Manifests, schemas, docs"] -->|build| art[("Plugin artifact")]
-        code["Python package, Containerfile"] -->|"build --with-workload"| img[("Workload image<br/>repository@sha256")]
-        img -.->|digest pinned into| art
+        code["Python package, Containerfiles"] -->|build| img[("Workload image(s)<br/>repository@sha256")]
+        art -.->|plugin digest| bind[("RuntimeBinding artifact")]
+        img -.->|image digest options| bind
     end
     art -->|publish| reg["Registry and catalog index"]
     subgraph ao["Automation Orchestrator (outside the SDK)"]
         install["Install an immutable revision"] --> exec["Execute through a runner"]
     end
     reg --> install
-    img -.->|pulled by digest| exec
+    bind -.->|approved option resolves to digest| exec
     style ao stroke-dasharray: 5 5
 ```
 
@@ -1106,8 +1101,9 @@ build-generated revision IDs. For more information, see
 ### Entry point and artifact binding
 
 The `entryPoint` value names your implementation inside the workload image.
-The build binds the plugin's logical image ID to an immutable
-`repository@sha256:<digest>` reference, never a mutable tag. Inside the
+The plugin contract names a logical workload ID. A RuntimeBinding maps that
+ID to one or more image options whose values are immutable
+`repository@sha256:<digest>` references, never mutable tags. Inside the
 image, a bindings factory delegates to `load_plugin_bindings`, which reads
 the packaged `plugin.yaml` and registers each custom-runner step type through
 its installed manifest, so that the manifest schema stays the execution

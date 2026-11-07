@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import tarfile
 from dataclasses import replace
+from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +21,9 @@ from syntara_plugin.sdk.workload import (
     WorkloadBuildError,
     WorkloadBuildRequest,
     build_and_push_workload,
+    build_workload_archive,
+    publish_workload_archive,
+    workload_archive_digest,
 )
 
 
@@ -30,6 +36,140 @@ def _descriptor():
 def _assert_workload_build_rejected(request: WorkloadBuildRequest, match: str) -> None:
     with pytest.raises(WorkloadBuildError, match=match):
         build_and_push_workload(request)
+
+
+def _write_oci_archive(path: Path) -> str:
+    manifest = b'{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}'
+    digest = "sha256:" + sha256(manifest).hexdigest()
+    index = json.dumps(
+        {
+            "schemaVersion": 2,
+            "manifests": [
+                {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": digest,
+                    "size": len(manifest),
+                }
+            ],
+        }
+    ).encode()
+    with tarfile.open(path, "w:") as archive:
+        for name, payload in (
+            ("index.json", index),
+            (f"blobs/sha256/{digest.removeprefix('sha256:')}", manifest),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, BytesIO(payload))
+    return digest
+
+
+def test_build_workload_archive_is_local_only_and_uses_oci_manifest_digest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    context = tmp_path / "context"
+    context.mkdir()
+    containerfile = context / "Containerfile"
+    containerfile.write_text("FROM scratch\n", encoding="utf-8")
+    commands: list[list[str]] = []
+    expected_digest = ""
+
+    def run(command, **kwargs):
+        nonlocal expected_digest
+        commands.append(command)
+        if command[1] == "save":
+            expected_digest = _write_oci_archive(Path(command[command.index("--output") + 1]))
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+    request = WorkloadBuildRequest(
+        engine="podman",
+        context=context,
+        containerfile=containerfile,
+        repository="registry.example.test/acme/custom",
+        tag="0.1.0",
+        platform="linux/amd64",
+        registration_descriptor=_descriptor(),
+        workload_id="plugin-workload",
+    )
+    destination = tmp_path / "image.oci.tar"
+
+    reference = build_workload_archive(request, destination)
+
+    assert reference == f"{request.repository}@{expected_digest}"
+    assert [command[1] for command in commands] == ["build", "build", "save", "rmi", "rmi"]
+    assert commands[2][2:5] == ["--format", "oci-archive", "--output"]
+
+
+def test_workload_archive_digest_rejects_duplicate_tar_paths(tmp_path: Path) -> None:
+    archive_path = tmp_path / "duplicate.oci.tar"
+    with tarfile.open(archive_path, mode="w:") as archive:
+        for payload in (b"{}", b"{}"):
+            member = tarfile.TarInfo("index.json")
+            member.size = len(payload)
+            archive.addfile(member, BytesIO(payload))
+
+    with pytest.raises(WorkloadBuildError, match="duplicate paths"):
+        workload_archive_digest(archive_path)
+
+
+def test_publish_workload_archive_requires_registry_digest_preservation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = tmp_path / "image.oci.tar"
+    expected_digest = _write_oci_archive(archive)
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        Path(command[command.index("--digestfile") + 1]).write_text(expected_digest)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+
+    result = publish_workload_archive(
+        archive,
+        "registry.example.test/acme/custom:0.1.0",
+    )
+
+    assert result == f"registry.example.test/acme/custom@{expected_digest}"
+    assert commands[0][:3] == ["skopeo", "copy", "--preserve-digests"]
+    assert "--dest-tls-verify=false" not in commands[0]
+
+
+def test_publish_workload_archive_allows_explicit_loopback_http(
+    tmp_path: Path, monkeypatch
+) -> None:
+    archive = tmp_path / "image.oci.tar"
+    expected_digest = _write_oci_archive(archive)
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        Path(command[command.index("--digestfile") + 1]).write_text(expected_digest)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+
+    publish_workload_archive(
+        archive,
+        "localhost:8443/acme/custom:0.1.0",
+        allow_insecure_loopback_http=True,
+    )
+
+    assert "--dest-tls-verify=false" in commands[0]
+
+
+def test_publish_workload_archive_rejects_insecure_remote_registry(tmp_path: Path) -> None:
+    archive = tmp_path / "image.oci.tar"
+    _write_oci_archive(archive)
+
+    with pytest.raises(WorkloadBuildError, match="restricted to localhost"):
+        publish_workload_archive(
+            archive,
+            "registry.example.test/acme/custom:0.1.0",
+            allow_insecure_loopback_http=True,
+        )
 
 
 def test_podman_build_and_push_returns_only_a_registry_digest(tmp_path: Path, monkeypatch) -> None:

@@ -74,29 +74,20 @@ printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish \
 
 The command verifies the local archive first, uploads its immutable blobs, advances the configured catalog index, and reports immutable references for both. It does not recompile the source. Production registries require HTTPS; HTTP is allowed only for an explicit loopback development registry. Set `publish.updateCatalog: false` (or pass `--no-update-catalog`) only when staging a release that must not yet be discoverable.
 
-## Optional custom-runner image build
+## Custom-runner images and RuntimeBindings
 
-For a plugin containing an action with `runtime.kind: custom-runner`, the developer-preview flow can build and push the author-owned image, use the registry-returned digest in the metadata archive, and publish the archive:
+Use the [RuntimeBindings guide](runtime-bindings.md) for the current multi-image
+flow. It builds images and metadata locally, then publishes the prepared release
+in an explicit dependency order. A plugin artifact (P), RuntimeBinding artifact
+(B), and workload image (I) have separate digests and update lifecycles. An
+image-only security update can publish a new I and B without changing P or the
+plugin catalog entry.
 
-```sh
-printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin build \
-  --with-workload --publish --password-stdin --verbose
-```
-
-This performs three OCI publications:
-
-1. Podman pushes the workload image to `registry.workloadRepository` and returns its immutable digest.
-2. The SDK publishes the plugin metadata archive to `registry.artifactRepository`.
-3. The SDK creates or advances the configured catalog index so Syntara can discover the release.
-
-Before the image is pushed, the SDK adds a generated registration manifest at
-`/opt/syntara/registration-manifest.json`. It maps each custom-runner step
-revision to its entry point and ABI. Image bindings supplied for an externally
-built image are not inspected by the SDK; the image producer must embed the
-matching manifest. See the [plugin language reference](plugin-language.md) and
-the [runtime and OCI model](runtime-and-oci.md).
-
-The feature does not yet prove custom-runner execution in the Execution Plane, secret delivery, signing, or production egress policy. See [ADR 0006](../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md).
+Custom-runner image builds use `runtime-bindings.yaml` and
+`build.workloads.<buildTarget>`. `build` creates local OCI archives and a
+release inventory; it never publishes. Use the separate `publish` command to
+upload the inspected files. For the complete flow, see
+[RuntimeBindings](runtime-bindings.md).
 
 ## Administer or recover a catalog
 

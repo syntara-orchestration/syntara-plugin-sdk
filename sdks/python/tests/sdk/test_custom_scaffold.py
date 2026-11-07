@@ -45,8 +45,11 @@ def test_custom_workspace_runs_and_generated_tests_pass(
     assert main(["validate", str(workspace / "plugin.yaml")]) == 0
     plugin = yaml.safe_load((workspace / "plugin.yaml").read_text())
     target = yaml.safe_load((workspace / "steps/do-work/manifest.yaml").read_text())
-    assert plugin["spec"]["workload"]["image"] == f"{name}-workload"
+    workload_id = f"{name}-workload"
+    assert plugin["spec"]["workloads"][workload_id]["image"] == workload_id
     assert target["spec"]["runtime"]["kind"] == "custom-runner"
+    assert target["spec"]["runtime"]["workload"] == workload_id
+    assert (workspace / "runtime-bindings.yaml").is_file()
     assert target["spec"]["output"]["value"]["required"] == ["resource"]
     entry_point = target["spec"]["runtime"]["entryPoint"]
     monkeypatch.syspath_prepend(str(workspace))
@@ -223,18 +226,30 @@ def test_custom_init_rejects_unsupported_schemas_and_invalid_defaults(
     assert not workspace.exists()
 
 
-def test_generated_workspace_build_requires_image_binding(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_generated_workspace_build_creates_local_runtime_binding_release(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = tmp_path / "binding"
     assert main(["init", str(workspace), "--runner", "custom-runner"]) == 0
     capsys.readouterr()
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["deferredImageBindings"] == ["binding-workload"]
-    archive = workspace / "plugin.oci.tar"
-    assert main(["build", str(workspace / "plugin.yaml"), "--output", str(archive)]) == 1
-    assert "IMAGE_BINDING_MISSING" in capsys.readouterr().err
-    assert not archive.exists()
+
+    def build_workload(request, destination: Path, *, verbose: bool) -> str:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"mock OCI workload archive")
+        return request.repository + "@sha256:" + "a" * 64
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli.build_workload_archive", build_workload)
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.workload_archive_digest", lambda _path: "sha256:" + "a" * 64
+    )
+    assert main(["build", str(workspace / "plugin.yaml"), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert Path(payload["pluginArchive"]).is_file()
+    assert Path(payload["bindingArchive"]).is_file()
+    assert Path(payload["releaseInventory"]).is_file()
+    assert payload["images"][0]["workload"] == "binding-workload"
 
 
 def test_custom_schema_file_and_drift_detection(
@@ -362,5 +377,7 @@ def test_custom_long_name_and_prerelease_build_metadata(tmp_path: Path) -> None:
     )
     assert main(["validate", str(workspace / "plugin.yaml")]) == 0
     settings = yaml.safe_load((workspace / "syntara-plugin.yaml").read_text())
-    assert len(settings["build"]["workload"]["imageId"]) <= 63
+    assert len(settings["build"]["workloads"]["custom-runtime"]["tag"]) <= 63
+    assert settings["build"]["runtimeBindings"] == "runtime-bindings.yaml"
+    assert (workspace / "Containerfile").read_text().count("@sha256:") == 1
     assert 'version = "1.2.3.dev0+preview.1"' in (workspace / "pyproject.toml").read_text()

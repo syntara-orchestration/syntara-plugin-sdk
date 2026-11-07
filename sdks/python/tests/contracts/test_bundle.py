@@ -8,12 +8,15 @@ from typing import Any
 import pytest
 from syntara_plugin.contracts import (
     CatalogCheckpoint,
+    RuntimeBindingCheckpoint,
     bundle_digest,
     fixture_content_digest,
     load_bundle,
     load_fixture_bundle,
     validate_catalog_index,
     validate_document,
+    validate_runtime_binding,
+    validate_runtime_binding_index,
 )
 from syntara_plugin.runtime import ContractBundle as RuntimeContractBundle
 from syntara_plugin.sdk import ContractBundle as SdkContractBundle
@@ -53,6 +56,9 @@ def test_bundle_has_stable_digest_and_required_contracts() -> None:
         "plugin-build-settings.schema.json",
         "plugin-descriptor.schema.json",
         "registration-manifest.schema.json",
+        "runtime-binding-index.schema.json",
+        "runtime-binding-resolved.schema.json",
+        "runtime-binding-source.schema.json",
         "resolved-execution.schema.json",
         "runtime.schema.json",
         "step.schema.json",
@@ -95,9 +101,11 @@ def test_plugin_build_settings_schema_is_descriptive_and_strict() -> None:
 
     assert schema["properties"]["registry"]["properties"]["artifactRepository"]["description"]
     assert schema["properties"]["build"]["properties"]["artifactOutput"]["description"]
-    assert schema["properties"]["build"]["properties"]["workload"]["properties"]["context"][
-        "description"
+    workload_build = schema["properties"]["build"]["properties"]["workloads"][
+        "additionalProperties"
     ]
+    assert workload_build["properties"]["containerfile"]["description"]
+    assert "workload" not in schema["properties"]["build"]["properties"]
     assert (
         validate_document(
             bundle,
@@ -550,6 +558,170 @@ def test_pinned_catalog_fixture_bundle_exercises_control_plane_contracts() -> No
             checkpoint=checkpoint,
         )
         assert [item.code for item in diagnostics] == case["expectedCodes"]
+
+
+def _runtime_binding_source() -> dict[str, Any]:
+    return {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "RuntimeBinding",
+        "metadata": {"namespace": "acme", "name": "issue-tools-runtime"},
+        "spec": {
+            "plugin": {"source": "plugin.yaml"},
+            "workloads": {
+                "python": {
+                    "default": "base",
+                    "options": [
+                        {
+                            "name": "base",
+                            "displayName": "Python base",
+                            "image": {"buildTarget": "python-base"},
+                        },
+                        {
+                            "name": "aws",
+                            "displayName": "Python with AWS SDK",
+                            "image": {"buildTarget": "python-aws"},
+                        },
+                    ],
+                }
+            },
+        },
+    }
+
+
+def _runtime_binding_resolved() -> dict[str, Any]:
+    return {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "RuntimeBinding",
+        "metadata": {"namespace": "acme", "name": "issue-tools-runtime"},
+        "spec": {
+            "plugin": {
+                "repository": "quay.io/acme/issue-tools",
+                "digest": "sha256:" + "a" * 64,
+            },
+            "contract": {
+                "pluginRevisionId": "sha256:" + "b" * 64,
+                "contractBundleDigest": load_bundle().digest,
+                "stepRevisionIds": ["sha256:" + "c" * 64],
+            },
+            "workloads": {
+                "python": {
+                    "default": "base",
+                    "options": [
+                        {
+                            "name": "base",
+                            "displayName": "Python base",
+                            "image": "quay.io/acme/python-base@sha256:" + "d" * 64,
+                        }
+                    ],
+                }
+            },
+        },
+    }
+
+
+def _runtime_binding_index() -> dict[str, Any]:
+    return {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "RuntimeBindingIndex",
+        "metadata": {
+            "pluginDigest": "sha256:" + "a" * 64,
+            "generation": 1,
+            "issuedAt": "2026-11-03T12:00:00Z",
+            "expiresAt": "2026-11-04T12:00:00Z",
+        },
+        "spec": {
+            "contractVersion": "syntara.io/v1alpha1",
+            "entries": [
+                {
+                    "bindingRepository": "quay.io/acme/issue-tools/runtime",
+                    "bindingDigest": "sha256:" + "e" * 64,
+                    "release": "security-refresh-1",
+                    "status": "available",
+                }
+            ],
+        },
+    }
+
+
+def test_runtime_binding_contracts_accept_source_resolved_and_index_documents() -> None:
+    bundle = load_bundle()
+    assert validate_runtime_binding(bundle, _runtime_binding_source(), resolved=False) == ()
+    resolved = _runtime_binding_resolved()
+    assert validate_runtime_binding(bundle, resolved, resolved=True) == ()
+    assert validate_runtime_binding_index(
+        bundle,
+        _runtime_binding_index(),
+        plugin_digest="sha256:" + "a" * 64,
+        now=datetime.fromisoformat("2026-11-03T12:30:00+00:00"),
+    ) == ()
+
+
+def test_runtime_binding_rejects_duplicate_option_names_and_unknown_defaults() -> None:
+    source = _runtime_binding_source()
+    options = source["spec"]["workloads"]["python"]["options"]
+    options[1]["name"] = "base"
+    source["spec"]["workloads"]["python"]["default"] = "missing"
+
+    diagnostics = validate_runtime_binding(load_bundle(), source, resolved=False)
+
+    assert {item.code for item in diagnostics} == {
+        "RUNTIME_BINDING_OPTION_DUPLICATE",
+        "RUNTIME_BINDING_DEFAULT_MISSING",
+    }
+
+
+def test_resolved_runtime_binding_must_match_plugin_contract_and_workloads() -> None:
+    resolved = _runtime_binding_resolved()
+    descriptor = {
+        "spec": {
+            "plugin_revision_id": "sha256:" + "f" * 64,
+            "contractBundleDigest": "sha256:" + "1" * 64,
+            "targets": [
+                {
+                    "kind": "Action",
+                    "step_revision_id": "sha256:" + "2" * 64,
+                    "runtime": {
+                        "kind": "custom-runner",
+                        "workload": "bash",
+                        "entryPoint": "plugin:Step",
+                    },
+                }
+            ],
+        }
+    }
+
+    diagnostics = validate_runtime_binding(
+        load_bundle(), resolved, resolved=True, plugin_descriptor=descriptor
+    )
+
+    assert {
+        "RUNTIME_BINDING_PLUGIN_REVISION_MISMATCH",
+        "RUNTIME_BINDING_CONTRACT_BUNDLE_MISMATCH",
+        "RUNTIME_BINDING_STEP_SET_MISMATCH",
+        "RUNTIME_BINDING_WORKLOAD_SET_MISMATCH",
+    } <= {item.code for item in diagnostics}
+
+
+def test_runtime_binding_index_rejects_replay_and_duplicate_binding_digest() -> None:
+    index = _runtime_binding_index()
+    index["metadata"]["generation"] = 2
+    index["metadata"]["previousIndexDigest"] = "sha256:" + "f" * 64
+    index["spec"]["entries"].append(dict(index["spec"]["entries"][0]))
+
+    diagnostics = validate_runtime_binding_index(
+        load_bundle(),
+        index,
+        plugin_digest="sha256:" + "a" * 64,
+        now=datetime.fromisoformat("2026-11-03T12:30:00+00:00"),
+        checkpoint=RuntimeBindingCheckpoint(
+            generation=1, index_digest="sha256:" + "0" * 64
+        ),
+    )
+
+    assert {item.code for item in diagnostics} == {
+        "RUNTIME_BINDING_INDEX_PREDECESSOR_MISMATCH",
+        "RUNTIME_BINDING_INDEX_DUPLICATE_ENTRY",
+    }
 
 
 def test_fixture_content_digest_changes_when_a_manifest_listed_document_changes() -> None:

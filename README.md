@@ -3,7 +3,7 @@
 Build, validate, package, and publish Syntara plugins. A plugin is a
 versioned declaration of step types in the action, control, and trigger categories,
 integration types,
-credential recipes, documentation, and—when needed—one custom runner image.
+credential recipes, documentation, and—when needed—one or more custom runner workloads.
 
 The SDK gives plugin authors one public command: `syntara-plugin`.
 
@@ -82,9 +82,10 @@ be advertised. `catalog update` remains available for release administration
 and `catalog recover --previous-index-digest ...` repairs a deleted or replaced
 mutable catalog tag from the exact digest Syntara last accepted. This preserves
 rollback protection rather than restarting at generation one.
-For an Action step type using an author-owned container, use
-`syntara-plugin build --with-workload --publish` after configuring the
-`build.workload` settings; see the [user guide](docs/user-guide.md).
+For an Action Step type using an author-owned container, use the independent
+image and RuntimeBinding flow in the [runtime bindings guide](docs/runtime-bindings.md).
+`build` creates local artifacts and images; `publish` uploads the prepared release
+explicitly.
 
 For local development, `registry.authFile` can point to a local Docker- or
 Podman-compatible `auth.json` file. It reads one matching inline Basic
@@ -111,6 +112,7 @@ syntara-plugin validate examples/hello-world/plugin.yaml \
 - [Running locally](docs/running-locally.md) — validate inputs and run one Step type from source or a running image.
 - [Developer guide](docs/developer-guide.md) — local setup, tests, contract changes, and contribution expectations.
 - [Runtime and OCI model](docs/runtime-and-oci.md) — container ABI, artifact boundaries, and ownership.
+- [Runtime bindings](docs/runtime-bindings.md) — independent plugin, binding, and workload-image lifecycle, with build and publish commands.
 - [Documentation index](docs/README.md) — the complete map, including design records and language-specific notes.
 
 The normative `syntara.io/v1alpha1` schemas and conformance fixtures live in

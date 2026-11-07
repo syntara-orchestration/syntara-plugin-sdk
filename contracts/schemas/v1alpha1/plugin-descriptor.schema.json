@@ -66,10 +66,13 @@
     "workload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["abi", "image"],
+      "required": ["abi"],
       "properties": {
         "abi": {"enum": ["syntara.container/v1alpha1", "syntara.provider/v1alpha1"]},
-        "image": {"$ref": "common.schema.json#/$defs/digestImageReference"},
+        "image": {
+          "$ref": "common.schema.json#/$defs/digestImageReference",
+          "description": "Legacy image pin. New custom-runner releases keep image options in the separate RuntimeBinding artifact."
+        },
         "provider": {"$ref": "common.schema.json#/$defs/identifier"}
       }
     },

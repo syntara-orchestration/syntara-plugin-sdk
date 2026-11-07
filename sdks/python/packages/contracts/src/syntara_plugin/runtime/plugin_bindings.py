@@ -50,6 +50,7 @@ def load_plugin_bindings(
     package: str,
     *,
     manifests_root: str = DEFAULT_MANIFESTS_ROOT,
+    workload_id: str | None = None,
 ) -> StepBindings:
     """Load one packaged plugin and bind every custom-runner Step target.
 
@@ -62,12 +63,15 @@ def load_plugin_bindings(
     ``StepDescriptor.for_installed_step`` with its identity derived as
     ``namespace.plugin.step``, so the existing provenance and drift checks
     apply. Platform-runner targets, ``IntegrationType`` targets, and
-    ``CredentialRecipe`` targets are skipped without binding.
+    ``CredentialRecipe`` targets are skipped without binding. When
+    ``workload_id`` is supplied, only custom-runner Steps assigned to that
+    logical workload are bound.
 
     Args:
         package: The importable plugin package that carries the manifests.
         manifests_root: The package subdirectory that mirrors the plugin
             workspace and holds ``plugin.yaml``.
+        workload_id: Optional logical workload name selected for this image.
 
     Raises:
         StepBindingError: When the plugin package or any packaged manifest
@@ -80,7 +84,9 @@ def load_plugin_bindings(
 
     root = _plugin_root(package, manifests_root)
     plugin = _plugin_document(root)
-    return _bind_declared_targets(root, plugin)
+    if workload_id == "":
+        raise StepBindingError("workload_id must be a non-empty string")
+    return _bind_declared_targets(root, plugin, workload_id=workload_id)
 
 
 def _plugin_root(package: str, manifests_root: str) -> Traversable:
@@ -110,7 +116,10 @@ def _plugin_document(root: Traversable) -> dict[str, Any]:
 
 
 def _bind_declared_targets(
-    root: Traversable, plugin: Mapping[str, Any]
+    root: Traversable,
+    plugin: Mapping[str, Any],
+    *,
+    workload_id: str | None,
 ) -> StepBindings:
     """Bind every custom-runner Step target the plugin declares, in order."""
 
@@ -133,6 +142,8 @@ def _bind_declared_targets(
         if target is None:
             continue
         target_name, runtime = target
+        if workload_id is not None and runtime.get("workload") != workload_id:
+            continue
         identity = f"{namespace}.{plugin_name}.{target_name}"
         previous = declared.get(identity)
         if previous is not None:
@@ -145,9 +156,10 @@ def _bind_declared_targets(
         declared[identity] = target_path
         _bind_custom_runner_target(root, target_path, document, identity, runtime, bindings, credential_targets)
     if not bindings.step_identities:
+        selected_workload = f" for workload {workload_id!r}" if workload_id is not None else ""
         message = (
             f"the packaged plugin {namespace}.{plugin_name} declares no "
-            "custom-runner Action, Control, or Trigger targets"
+            f"custom-runner Step targets{selected_workload}"
         )
         raise StepBindingError(message)
     return bindings
