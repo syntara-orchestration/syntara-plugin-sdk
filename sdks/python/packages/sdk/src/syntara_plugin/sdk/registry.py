@@ -13,7 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Protocol, cast
@@ -535,6 +535,20 @@ class RuntimeBindingArtifactPublisher(CatalogIndexPublisher):
 class RuntimeBindingIndexPublisher(CatalogIndexPublisher):
     """Publish and read one per-plugin runtime-binding discovery index."""
 
+    def __init__(
+        self,
+        target: CatalogIndexPublicationTarget,
+        *,
+        credentials: RegistryCredentials | None = None,
+        transport: OciRegistryTransport | None = None,
+        verify_current_index: Callable[[str], None] | None = None,
+        allow_unverified_current: bool = False,
+    ) -> None:
+        """Configure how an existing mutable index is trusted before extension."""
+        super().__init__(target, credentials=credentials, transport=transport)
+        self._verify_current_index = verify_current_index
+        self._allow_unverified_current = allow_unverified_current
+
     def publish(
         self,
         artifact: RuntimeBindingIndexArtifact,
@@ -642,6 +656,10 @@ class RuntimeBindingIndexPublisher(CatalogIndexPublisher):
         )
         if response.content != artifact.manifest.content:
             raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_MANIFEST_INVALID")
+        if self._verify_current_index is not None:
+            self._verify_current_index(manifest_digest)
+        elif not self._allow_unverified_current:
+            raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_TRUST_POLICY_REQUIRED")
         return RuntimeBindingIndexSnapshot(
             manifest_digest=manifest_digest,
             document=document,
@@ -952,15 +970,16 @@ def _is_sha256_digest(value: object) -> bool:
 
 
 def _is_strong_etag(value: str | None) -> bool:
-    """Accept only a quoted, strong HTTP entity tag for conditional updates."""
-    return (
-        value is not None
-        and len(value) >= 2
-        and value.startswith('"')
-        and value.endswith('"')
-        and not value.startswith("W/")
-        and '"' not in value[1:-1]
-        and all(ord(character) >= 0x21 for character in value[1:-1])
+    """Accept a syntactically valid strong HTTP entity tag for conditional updates."""
+    if value is None or len(value) < 2 or not value.startswith('"') or not value.endswith('"'):
+        return False
+    # RFC 9110 permits an empty opaque tag (``ETag: ""``). For non-empty tags,
+    # etagc is %x21 / %x23-7E / obs-text (%x80-FF); quotes and DEL are excluded.
+    return all(
+        ord(character) == 0x21
+        or 0x23 <= ord(character) <= 0x7E
+        or 0x80 <= ord(character) <= 0xFF
+        for character in value[1:-1]
     )
 
 

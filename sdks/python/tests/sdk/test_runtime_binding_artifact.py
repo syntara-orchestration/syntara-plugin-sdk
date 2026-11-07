@@ -4,6 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 from syntara_plugin.sdk import (
     BuildRequest,
@@ -12,8 +13,10 @@ from syntara_plugin.sdk import (
     compile_workspace,
     read_runtime_binding_archive,
     resolve_runtime_binding,
+    write_plugin_artifact_archive,
     write_runtime_binding_archive,
 )
+from syntara_plugin.sdk.cli import _read_linked_runtime_binding_archive
 
 
 def _plugin(tmp_path: Path) -> tuple[dict[str, object], Path]:
@@ -63,7 +66,11 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
     source = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "RuntimeBinding",
-        "metadata": {"namespace": "example", "name": "python-steps-runtime"},
+        "metadata": {
+            "namespace": "example",
+            "name": "python-steps-runtime-custom",
+            "release": "security-refresh-1",
+        },
         "spec": {
             "plugin": {"source": "plugin.yaml"},
             "workloads": {
@@ -110,14 +117,24 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
         resolved, descriptor, plugin_artifact.manifest.descriptor
     )
     archive_path = tmp_path / "runtime-binding.oci.tar"
+    plugin_archive_path = tmp_path / "plugin.oci.tar"
 
     write_runtime_binding_archive(binding_artifact, archive_path)
+    write_plugin_artifact_archive(plugin_artifact, plugin_archive_path)
     reopened = read_runtime_binding_archive(archive_path, plugin_descriptor=descriptor)
+    linked, linked_plugin, linked_document = _read_linked_runtime_binding_archive(
+        archive_path,
+        plugin_archive_path,
+        expected_plugin_repository="acme/python-steps",
+    )
 
     assert reopened.config.content == binding_artifact.config.content
     assert reopened.binding_document.content == binding_artifact.binding_document.content
     assert reopened.manifest.content == binding_artifact.manifest.content
     assert reopened.digest == binding_artifact.digest
+    assert linked.digest == binding_artifact.digest
+    assert linked_plugin.digest == plugin_artifact.digest
+    assert linked_document["metadata"] == source["metadata"]
     assert json.loads(reopened.binding_document.content)["spec"]["plugin"]["digest"] == plugin_artifact.digest
     assert reopened.digest != plugin_artifact.digest
     assert resolved["spec"]["workloads"]["python"]["options"][1]["image"].endswith("d" * 64)
@@ -146,3 +163,36 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
             )
         )
     ).digest
+
+    with pytest.raises(ValueError, match="registry.artifactRepository"):
+        _read_linked_runtime_binding_archive(
+            archive_path,
+            plugin_archive_path,
+            expected_plugin_repository="acme/another-plugin",
+        )
+
+    other_workspace = tmp_path / "other-plugin"
+    shutil.copytree(workspace, other_workspace)
+    other_manifest_path = other_workspace / "plugin.yaml"
+    other_manifest = yaml.safe_load(other_manifest_path.read_text(encoding="utf-8"))
+    other_manifest["metadata"]["version"] = "9.9.9"
+    other_manifest_path.write_text(
+        yaml.safe_dump(other_manifest, sort_keys=False), encoding="utf-8"
+    )
+    other_artifact = build_plugin_artifact(
+        compile_workspace(
+            BuildRequest(
+                other_manifest_path,
+                require_image_bindings=False,
+                bind_workload_images=False,
+            )
+        )
+    )
+    other_archive_path = tmp_path / "other-plugin.oci.tar"
+    write_plugin_artifact_archive(other_artifact, other_archive_path)
+    with pytest.raises(ValueError):
+        _read_linked_runtime_binding_archive(
+            archive_path,
+            other_archive_path,
+            expected_plugin_repository="acme/python-steps",
+        )

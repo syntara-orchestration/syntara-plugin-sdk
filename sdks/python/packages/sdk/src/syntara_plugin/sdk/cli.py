@@ -60,6 +60,7 @@ from .registry import (
     RuntimeBindingIndexPublisher,
 )
 from .runtime_binding import (
+    RuntimeBindingArtifact,
     RuntimeBindingArtifactBuildError,
     build_runtime_binding_artifact,
     resolve_runtime_binding,
@@ -437,6 +438,21 @@ def _parser() -> argparse.ArgumentParser:
         help="Cosign private key used to sign every published release object; omit to publish unsigned.",
     )
     publish.add_argument(
+        "--cosign-verify-key",
+        type=Path,
+        help="Cosign public key used to verify the current RuntimeBinding index before extending it.",
+    )
+    publish.add_argument(
+        "--allow-unverified-binding-index",
+        action="store_true",
+        help="Development only: allow publishing from an existing RuntimeBinding index without a trusted digest or signature.",
+    )
+    publish.add_argument(
+        "--plugin-artifact-archive",
+        type=Path,
+        help="Exact plugin OCI archive linked by a RuntimeBinding archive; required for runtime-binding publication.",
+    )
+    publish.add_argument(
         "--verbose",
         action="store_true",
         default=None,
@@ -666,6 +682,8 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
         arguments.json = _boolean_option(arguments.json, settings.output.json, default=False)
     if getattr(arguments, "cosign_key", None) is not None:
         arguments.cosign_key = arguments.cosign_key.expanduser()
+    if getattr(arguments, "cosign_verify_key", None) is not None:
+        arguments.cosign_verify_key = arguments.cosign_verify_key.expanduser()
     if arguments.command == "inspect":
         if arguments.verify and arguments.cosign_key is None:
             raise SettingsError("inspect --verify requires --cosign-key")
@@ -687,6 +705,8 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
     if arguments.command == "publish":
         _resolve_publication_arguments(arguments, settings)
         _resolve_catalog_publication_arguments(arguments, settings)
+        if arguments.plugin_artifact_archive is not None:
+            arguments.plugin_artifact_archive = arguments.plugin_artifact_archive.expanduser()
     if arguments.command == "catalog" and arguments.catalog_command in {"update", "recover"}:
         _resolve_catalog_arguments(arguments, settings)
     if arguments.command == "build":
@@ -2565,8 +2585,10 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
     binding_archive = _release_inventory_path(
         inventory_path, binding_record.get("archive"), "runtime-binding archive"
     )
-    if plugin_record.get("publish") and plugin_archive is None:
-        raise SettingsError("release inventory requests plugin publication but has no plugin archive")
+    if plugin_archive is None:
+        raise SettingsError(
+            "release publish requires the exact plugin archive to verify its RuntimeBinding"
+        )
     if plugin_record.get("publish") and (
         arguments.repository != plugin_repository or not arguments.channel
     ):
@@ -2580,32 +2602,15 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
     if plugin_record.get("publish") and arguments.update_catalog:
         _require_catalog_configuration(arguments)
 
-    plugin_artifact = (
-        read_plugin_artifact_archive(plugin_archive) if plugin_archive is not None else None
-    )
-    if plugin_artifact is not None and plugin_artifact.digest != plugin_digest:
-        raise ArtifactArchiveError("plugin archive digest does not match the release inventory")
-    if plugin_artifact is not None and plugin_record.get("publish"):
-        if plugin_artifact.digest != plugin_digest:
-            raise ArtifactArchiveError("plugin artifact identity changed after build")
-
-    plugin_descriptor = None
-    if plugin_artifact is not None:
-        plugin_descriptor = _decode_json_object(
-            plugin_artifact.plugin_manifest.content, "plugin descriptor"
-        )
-    binding_artifact = read_runtime_binding_archive(
+    binding_artifact, plugin_artifact, binding_document = _read_linked_runtime_binding_archive(
         binding_archive,
-        plugin_descriptor=plugin_descriptor,
-        plugin_manifest_descriptor=(
-            plugin_artifact.manifest.descriptor if plugin_artifact is not None else None
-        ),
+        plugin_archive,
+        expected_plugin_repository=plugin_repository,
     )
+    if plugin_artifact.digest != plugin_digest:
+        raise ArtifactArchiveError("plugin archive digest does not match the release inventory")
     if binding_artifact.digest != binding_digest:
         raise ArtifactArchiveError("runtime-binding archive digest does not match the release inventory")
-    binding_document = _decode_json_object(
-        binding_artifact.binding_document.content, "RuntimeBinding document"
-    )
     linked_plugin = _mapping(
         _mapping(binding_document.get("spec"), "RuntimeBinding spec").get("plugin"),
         "RuntimeBinding spec.plugin",
@@ -2669,6 +2674,8 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
             allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         ),
         credentials=credentials,
+        verify_current_index=_runtime_binding_index_verifier(arguments, plugin_repository),
+        allow_unverified_current=arguments.allow_unverified_binding_index,
     )
     current_binding_index = index_publisher.read_current()
     if arguments.expected_binding_index_digest is not None:
@@ -3017,21 +3024,27 @@ def _publish_runtime_binding_release(
     arguments: argparse.Namespace, archive: Path
 ) -> dict[str, Any]:
     """Publish one binding by digest and advance only its plugin-scoped index."""
+    plugin_archive = getattr(arguments, "plugin_artifact_archive", None)
+    if plugin_archive is None:
+        raise SettingsError(
+            "runtime-binding publish requires --plugin-artifact-archive so the binding can be verified against its plugin"
+        )
     credentials = _publication_credentials(arguments, operation="runtime-binding publish")
     if not arguments.registry_origin or not arguments.repository:
         raise SettingsError("runtime-binding publish requires registry.origin and artifactRepository")
     if arguments.expires_in_hours is None or arguments.expires_in_hours <= 0:
         raise SettingsError("runtime-binding publish requires catalog.expiresInHours for the binding index")
-    artifact = read_runtime_binding_archive(archive)
-    document = _decode_json_object(artifact.binding_document.content, "RuntimeBinding document")
+    artifact, plugin_artifact, document = _read_linked_runtime_binding_archive(
+        archive, plugin_archive, expected_plugin_repository=arguments.repository
+    )
     plugin_link = _mapping(_mapping(document.get("spec"), "RuntimeBinding spec").get("plugin"), "RuntimeBinding plugin")
     plugin_repository = _required_string(plugin_link.get("repository"), "RuntimeBinding plugin repository")
     plugin_digest = _required_string(plugin_link.get("digest"), "RuntimeBinding plugin digest")
-    if plugin_repository != arguments.repository:
-        raise SettingsError("RuntimeBinding and plugin must use registry.artifactRepository")
+    if plugin_artifact.digest != plugin_digest:
+        raise ArtifactArchiveError("RuntimeBinding does not reference the supplied plugin artifact digest")
 
     binding_channel = f"binding-{artifact.digest.removeprefix('sha256:')}"
-    binding_publication = RuntimeBindingArtifactPublisher(
+    binding_publisher = RuntimeBindingArtifactPublisher(
         PluginArtifactPublicationTarget(
             registry_origin=arguments.registry_origin,
             repository=plugin_repository,
@@ -3039,7 +3052,7 @@ def _publish_runtime_binding_release(
             allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         ),
         credentials=credentials,
-    ).publish(artifact)
+    )
     index_channel = _runtime_binding_index_channel(plugin_digest)
     index_publisher = RuntimeBindingIndexPublisher(
         CatalogIndexPublicationTarget(
@@ -3049,12 +3062,15 @@ def _publish_runtime_binding_release(
             allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         ),
         credentials=credentials,
+        verify_current_index=_runtime_binding_index_verifier(arguments, plugin_repository),
+        allow_unverified_current=arguments.allow_unverified_binding_index,
     )
     current = index_publisher.read_current()
     if arguments.expected_binding_index_digest is not None and (
         current.manifest_digest if current is not None else None
     ) != arguments.expected_binding_index_digest:
         raise SettingsError("current runtime-binding index digest does not match the expected digest")
+    binding_publication = binding_publisher.publish(artifact)
     index_document, idempotent = next_runtime_binding_index(
         current=current.document if current is not None else None,
         current_manifest_digest=current.manifest_digest if current is not None else None,
@@ -3106,6 +3122,68 @@ def _publish_runtime_binding_release(
         "ok": True,
         "repository": binding_publication.repository,
     }
+
+
+def _read_linked_runtime_binding_archive(
+    binding_archive: Path,
+    plugin_archive: Path,
+    *,
+    expected_plugin_repository: str,
+) -> tuple[RuntimeBindingArtifact, PluginArtifact, dict[str, Any]]:
+    """Verify a binding archive against the exact plugin archive it names."""
+    plugin_artifact = read_plugin_artifact_archive(plugin_archive)
+    plugin_descriptor = _decode_json_object(
+        plugin_artifact.plugin_manifest.content, "plugin descriptor"
+    )
+    binding_artifact = read_runtime_binding_archive(
+        binding_archive,
+        plugin_descriptor=plugin_descriptor,
+        plugin_manifest_descriptor=plugin_artifact.manifest.descriptor,
+    )
+    binding_document = _decode_json_object(
+        binding_artifact.binding_document.content, "RuntimeBinding document"
+    )
+    plugin_link = _mapping(
+        _mapping(binding_document.get("spec"), "RuntimeBinding spec").get("plugin"),
+        "RuntimeBinding spec.plugin",
+    )
+    if plugin_link.get("repository") != expected_plugin_repository:
+        raise ArtifactArchiveError(
+            "RuntimeBinding and plugin must use registry.artifactRepository"
+        )
+    if plugin_link.get("digest") != plugin_artifact.digest:
+        raise ArtifactArchiveError(
+            "RuntimeBinding does not reference the supplied plugin artifact digest"
+        )
+    return binding_artifact, plugin_artifact, binding_document
+
+
+def _runtime_binding_index_verifier(
+    arguments: argparse.Namespace, repository: str
+) -> Callable[[str], None]:
+    """Build the trust check applied before a current binding index is extended."""
+    verification_key = getattr(arguments, "cosign_verify_key", None)
+    expected_digest = getattr(arguments, "expected_binding_index_digest", None)
+    allow_unverified = bool(getattr(arguments, "allow_unverified_binding_index", False))
+
+    def verify(digest: str) -> None:
+        if expected_digest is not None and digest != expected_digest:
+            raise SettingsError(
+                "current runtime-binding index digest does not match the expected digest"
+            )
+        if verification_key is not None:
+            verify_oci_reference(
+                _cosign_immutable_reference(arguments, repository, digest),
+                key=verification_key,
+            )
+        elif expected_digest is None and not allow_unverified:
+            raise SettingsError(
+                "extending a RuntimeBinding index requires --cosign-verify-key, "
+                "--expected-binding-index-digest, or the development-only "
+                "--allow-unverified-binding-index option"
+            )
+
+    return verify
 
 
 def _update_catalog(arguments: argparse.Namespace) -> int:
@@ -3630,8 +3708,7 @@ def _inspect(arguments: argparse.Namespace) -> int:
             source = None
         if source is not None and source.get("kind") == "RuntimeBinding":
             spec = _mapping(source.get("spec"), "RuntimeBinding spec")
-            plugin = _mapping(spec.get("plugin"), "RuntimeBinding plugin")
-            resolved = "artifact" in plugin
+            resolved = "contract" in spec
             diagnostics = validate_runtime_binding(
                 load_bundle(),
                 source,

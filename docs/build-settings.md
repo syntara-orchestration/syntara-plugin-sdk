@@ -10,6 +10,9 @@ example and release commands.
 apiVersion: syntara.io/v1alpha1
 kind: PluginBuildSettings
 manifest: plugin.yaml
+output:
+  verbose: false
+  json: false
 registry:
   origin: https://quay.io
   artifactRepository: acme/report-tools
@@ -55,6 +58,13 @@ The SDK selects one settings file in this order: explicit `--settings`, a file
 beside the selected plugin manifest, then a file in the current directory. It
 does not merge files. Command-line arguments override values from the selected
 file. Relative paths are resolved from the settings file.
+
+## `output`
+
+| Key | Meaning |
+| --- | --- |
+| `verbose` | Default verbose progress for commands that support it. An explicit `--verbose` option takes precedence. |
+| `json` | Default machine-readable output for commands that support it. An explicit `--json` option takes precedence. |
 
 ## `registry`
 

@@ -136,6 +136,9 @@ def resolve_runtime_binding(
     plugin_spec = plugin_descriptor.get("spec")
     if not isinstance(plugin_metadata, Mapping) or not isinstance(plugin_spec, Mapping):
         raise RuntimeBindingArtifactBuildError("plugin descriptor metadata and spec are required")
+    binding_metadata = source.get("metadata")
+    if not isinstance(binding_metadata, Mapping):
+        raise RuntimeBindingArtifactBuildError("RuntimeBinding metadata is required")
 
     workloads: dict[str, Any] = {}
     for workload_id, workload_source in source["spec"]["workloads"].items():
@@ -173,10 +176,7 @@ def resolve_runtime_binding(
     resolved = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "RuntimeBinding",
-        "metadata": {
-            "namespace": plugin_metadata["namespace"],
-            "name": f"{plugin_metadata['name']}-runtime",
-        },
+        "metadata": dict(binding_metadata),
         "spec": {
             "plugin": {"repository": plugin_repository, "digest": plugin_digest},
             "contract": {

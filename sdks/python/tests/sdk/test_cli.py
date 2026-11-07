@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import base64
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
+from syntara_plugin.sdk import RegistryCredentials
 from syntara_plugin.sdk.cli import (
     _build_runtime_binding_images,
     _catalog_entry,
     _credentials_from_auth_file,
+    _publish_release,
     _read_release_inventory,
     _release_inventory_path,
+    _runtime_binding_index_verifier,
     main,
 )
 from syntara_plugin.sdk.settings import SETTINGS_FILENAME, SettingsError
@@ -50,6 +54,47 @@ def test_registry_auth_file_supports_configured_loopback_http_origin(tmp_path: P
 
     assert credentials.username == "publisher"
     assert credentials.password == "local-password"
+
+
+def test_runtime_binding_index_predecessor_requires_configured_trust(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    arguments = SimpleNamespace(
+        cosign_verify_key=None,
+        expected_binding_index_digest=None,
+        allow_unverified_binding_index=False,
+        registry_origin="https://registry.example.test",
+    )
+
+    with pytest.raises(SettingsError, match="requires --cosign-verify-key"):
+        _runtime_binding_index_verifier(
+            arguments, "acme/plugins/issue-tracker"
+        )(digest)
+
+    arguments.allow_unverified_binding_index = True
+    _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")(digest)
+
+    arguments.allow_unverified_binding_index = False
+    arguments.expected_binding_index_digest = digest
+    _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")(digest)
+    with pytest.raises(SettingsError, match="does not match the expected digest"):
+        _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")(
+            "sha256:" + "b" * 64
+        )
+
+    arguments.expected_binding_index_digest = None
+    arguments.cosign_verify_key = Path("cosign.pub")
+    verified: list[tuple[str, Path]] = []
+
+    def record_verify(reference: str, *, key: Path) -> None:
+        verified.append((reference, key))
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli.verify_oci_reference", record_verify)
+    _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")(digest)
+    assert verified == [
+        (f"registry.example.test/acme/plugins/issue-tracker@{digest}", Path("cosign.pub"))
+    ]
 
 
 def test_init_creates_a_compilable_workspace_and_validate_reports_its_digest(
@@ -770,7 +815,7 @@ def test_publish_reports_immutable_reference(tmp_path: Path, capsys, monkeypatch
             published["target"] = target
             published["credentials"] = credentials
 
-        def publish(self, artifact):
+        def publish(self, artifact, **kwargs):
             published["artifact"] = artifact
             return SimpleNamespace(
                 channel="0.1.0",
@@ -1158,6 +1203,10 @@ def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
     assert resolved["spec"]["workloads"]["python"]["options"][0]["image"].endswith(
         _WORKLOAD_DIGEST
     )
+    assert main(["inspect", payload["bindingDocument"], "--json"]) == 0
+    inspected_binding = json.loads(capsys.readouterr().out)
+    assert inspected_binding["kind"] == "RuntimeBinding"
+    assert inspected_binding["valid"] is True
 
     assert main(["build", "--settings", str(settings), "--json"]) == 0
     repeated_build = json.loads(capsys.readouterr().out)
@@ -1179,6 +1228,123 @@ def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
     )
     assert "must be under" in capsys.readouterr().err
     assert not outside_archive.exists()
+
+
+def test_image_only_release_keeps_plugin_and_catalog_unchanged(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    workspace = tmp_path / "image-only-plugin"
+    assert main(
+        ["init", str(workspace), "--namespace", "acme", "--template", "custom-workload"]
+    ) == 0
+    capsys.readouterr()
+    settings_path = workspace / SETTINGS_FILENAME
+    settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
+    settings["registry"].update(
+        {
+            "origin": "https://registry.example.test",
+            "artifactRepository": "acme/plugins/image-only",
+            "workloadRepository": "acme/workloads/image-only",
+            "catalogRepository": "acme/catalog-index",
+            "username": "publisher",
+        }
+    )
+    settings_path.write_text(yaml.safe_dump(settings, sort_keys=False), encoding="utf-8")
+
+    image_digest = "sha256:" + "c" * 64
+    image_reference = f"acme/workloads/image-only@{image_digest}"
+    image_archive = workspace / "dist" / f"python-runtime-{image_digest[7:]}.oci.tar"
+    image_archive.parent.mkdir(parents=True, exist_ok=True)
+    image_archive.write_bytes(b"test image archive placeholder")
+
+    def build_images(*args, **kwargs):
+        return [
+            {
+                "archive": str(image_archive),
+                "buildTarget": "python-runtime",
+                "digest": image_digest,
+                "platform": "linux/amd64",
+                "reference": image_reference,
+                "repository": "acme/workloads/image-only",
+                "tag": "1.0.0",
+                "workload": "python",
+            }
+        ]
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli._build_runtime_binding_images", build_images)
+    assert main(["build", "--settings", str(settings_path), "--json"]) == 0
+    first_build = json.loads(capsys.readouterr().out)
+    plugin_archive = Path(first_build["pluginArchive"])
+    plugin_digest = first_build["pluginArtifactDigest"]
+
+    assert (
+        main(
+            [
+                "build",
+                "--settings",
+                str(settings_path),
+                "--plugin-artifact-archive",
+                str(plugin_archive),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    image_build = json.loads(capsys.readouterr().out)
+    inventory_path = Path(image_build["releaseInventory"])
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    assert inventory["plugin"]["publish"] is False
+    assert inventory["plugin"]["digest"] == plugin_digest
+
+    class _BindingPublisher:
+        def __init__(self, target, *, credentials=None):
+            self.target = target
+
+        def publish(self, artifact, **kwargs):
+            return SimpleNamespace(
+                repository=self.target.repository,
+                channel=self.target.channel,
+                manifest_digest=artifact.digest,
+                immutable_reference=f"{self.target.repository}@{artifact.digest}",
+            )
+
+    class _IndexPublisher(_BindingPublisher):
+        def __init__(self, target, *, credentials=None, verify_current_index=None, allow_unverified_current=False):
+            super().__init__(target, credentials=credentials)
+
+        def read_current(self):
+            return None
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli._publication_credentials", lambda *a, **k: RegistryCredentials("publisher", "pw"))
+    monkeypatch.setattr("syntara_plugin.sdk.cli._temporary_skopeo_auth_file", lambda *a, **k: nullcontext(None))
+    monkeypatch.setattr("syntara_plugin.sdk.cli.RuntimeBindingArtifactPublisher", _BindingPublisher)
+    monkeypatch.setattr("syntara_plugin.sdk.cli.RuntimeBindingIndexPublisher", _IndexPublisher)
+    monkeypatch.setattr("syntara_plugin.sdk.cli.workload_archive_digest", lambda path: image_digest)
+    monkeypatch.setattr("syntara_plugin.sdk.cli.publish_workload_archive", lambda archive, destination, **kwargs: image_reference)
+    monkeypatch.setattr("syntara_plugin.sdk.cli._sign_reference", lambda *a, **k: False)
+    monkeypatch.setattr("syntara_plugin.sdk.cli._publish_archive", lambda *a, **k: pytest.fail("image-only update must not republish P"))
+    monkeypatch.setattr("syntara_plugin.sdk.cli._run_catalog_update", lambda *a, **k: pytest.fail("image-only update must not update the plugin catalog"))
+    arguments = SimpleNamespace(
+        registry_origin="https://registry.example.test",
+        username="publisher",
+        repository="acme/plugins/image-only",
+        channel="1.0.0",
+        expires_in_hours=24,
+        allow_insecure_loopback_http=False,
+        update_catalog=True,
+        expected_binding_index_digest=None,
+        cosign_verify_key=None,
+        allow_unverified_binding_index=False,
+        cosign_key=None,
+        verbose=False,
+    )
+
+    result = _publish_release(arguments, inventory_path)
+
+    assert result["ok"] is True
+    assert "catalog" not in result
+    assert not any(publication["kind"] == "plugin" for publication in result["publications"])
+    assert any(publication["kind"] == "workload-image" for publication in result["publications"])
 
 
 def test_runtime_binding_image_archives_are_content_addressed_and_reusable(

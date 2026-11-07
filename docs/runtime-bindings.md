@@ -163,7 +163,8 @@ digests, publishes in dependency order, and prints the immutable references:
 
 ```sh
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish dist/release.json \
-  --artifact-kind release --password-stdin --cosign-key cosign.key
+  --artifact-kind release --password-stdin --cosign-key cosign.key \
+  --cosign-verify-key cosign.pub
 ```
 
 The publisher may omit `--cosign-key` only when its registry and Syntara source
@@ -276,6 +277,30 @@ only the changed I, new B, and successor RuntimeBinding index. The SDK does not
 update the plugin catalog index for this flow because the plugin identity and
 step contracts have not changed. Syntara must still enforce its configured
 trust and installation policy before exposing the new option.
+
+When publishing a standalone RuntimeBinding archive, supply the exact plugin
+archive it names so the SDK can verify the plugin digest, descriptor, and
+contract before it publishes the binding or advances the index:
+
+```sh
+printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish \
+  dist/runtime-bindings.oci.tar --artifact-kind runtime-binding \
+  --plugin-artifact-archive dist/report-tools.oci.tar \
+  --password-stdin --cosign-key cosign.key
+```
+
+Before extending an existing binding index, the SDK requires a trust anchor:
+either `--cosign-verify-key` for the current index signature or
+`--expected-binding-index-digest` from a trusted release record. For local
+development only, `--allow-unverified-binding-index` explicitly opts out of
+that check. `--cosign-key` signs the new objects; it is not the public key used
+to verify the existing index. The first index has no predecessor to verify.
+
+Registry write permissions authorize publishing the binding and changing its
+mutable index tag. Keep each plugin in its own artifact repository and scope
+release credentials to that repository. The SDK verifies the binding against
+the exact plugin archive, but per-publisher authorization remains the registry's
+responsibility.
 
 ## Index expiry and concurrent publishers
 
