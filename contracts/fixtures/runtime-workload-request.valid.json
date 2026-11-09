@@ -1,0 +1,33 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerWorkloadRequest",
+  "workItem": {
+    "apiVersion": "syntara.io/v1alpha1",
+    "kind": "ContainerStepWorkItem",
+    "invocationId": "invoke-1",
+    "workflowRunId": "workflow-1",
+    "stepRevisionId": "step-1",
+    "pluginDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtimeAbi": "syntara.container/v1alpha2",
+    "imageDigest": "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "integrationHandle": "integration-1",
+    "inputs": {
+      "title": "Example"
+    },
+    "credentialHandles": [
+      "credential-1"
+    ],
+    "capabilityGrantId": "grant-1",
+    "executionPolicyId": "policy-1",
+    "timeoutSeconds": 300,
+    "requestHash": "sha256:52d09c6bd621187e66182a4c6fec090ada0fd229fb95d585a4f2c698172d5b5e"
+  },
+  "policySnapshot": {
+    "apiVersion": "syntara.io/v1alpha1",
+    "kind": "ExecutionPolicySnapshot",
+    "policyId": "policy-1",
+    "revision": "revision-1",
+    "requestHash": "sha256:52d09c6bd621187e66182a4c6fec090ada0fd229fb95d585a4f2c698172d5b5e",
+    "effectiveCapabilities": []
+  }
+}

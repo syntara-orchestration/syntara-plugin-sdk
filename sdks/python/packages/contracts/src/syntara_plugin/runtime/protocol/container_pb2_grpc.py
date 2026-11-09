@@ -32,10 +32,8 @@ class ContainerServiceStub(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    The container ABI is the application-data channel. It deliberately carries
-    step type identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step type revision
-    before the Execution Plane sends Execute or Cancel.
+    Health negotiates the exact ABI and revision before Execute. The transport
+    must authenticate both peers and protect confidentiality (mTLS in production).
     """
 
     def __init__(self, channel):
@@ -44,18 +42,18 @@ class ContainerServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.Execute = channel.unary_stream(
-                '/syntara.container.v1alpha1.ContainerService/Execute',
-                request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteRequest.SerializeToString,
-                response_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecutionEvent.FromString,
+        self.Execute = channel.stream_stream(
+                '/syntara.container.v1alpha2.ContainerService/Execute',
+                request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteClientMessage.SerializeToString,
+                response_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteServerMessage.FromString,
                 _registered_method=True)
         self.Cancel = channel.unary_unary(
-                '/syntara.container.v1alpha1.ContainerService/Cancel',
+                '/syntara.container.v1alpha2.ContainerService/Cancel',
                 request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.CancelRequest.SerializeToString,
                 response_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.CancelResponse.FromString,
                 _registered_method=True)
         self.Health = channel.unary_unary(
-                '/syntara.container.v1alpha1.ContainerService/Health',
+                '/syntara.container.v1alpha2.ContainerService/Health',
                 request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.HealthRequest.SerializeToString,
                 response_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.HealthResponse.FromString,
                 _registered_method=True)
@@ -68,13 +66,11 @@ class ContainerServiceServicer(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    The container ABI is the application-data channel. It deliberately carries
-    step type identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step type revision
-    before the Execution Plane sends Execute or Cancel.
+    Health negotiates the exact ABI and revision before Execute. The transport
+    must authenticate both peers and protect confidentiality (mTLS in production).
     """
 
-    def Execute(self, request, context):
+    def Execute(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -95,10 +91,10 @@ class ContainerServiceServicer(object):
 
 def add_ContainerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'Execute': grpc.unary_stream_rpc_method_handler(
+            'Execute': grpc.stream_stream_rpc_method_handler(
                     servicer.Execute,
-                    request_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteRequest.FromString,
-                    response_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecutionEvent.SerializeToString,
+                    request_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteClientMessage.FromString,
+                    response_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteServerMessage.SerializeToString,
             ),
             'Cancel': grpc.unary_unary_rpc_method_handler(
                     servicer.Cancel,
@@ -112,9 +108,9 @@ def add_ContainerServiceServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'syntara.container.v1alpha1.ContainerService', rpc_method_handlers)
+            'syntara.container.v1alpha2.ContainerService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('syntara.container.v1alpha1.ContainerService', rpc_method_handlers)
+    server.add_registered_method_handlers('syntara.container.v1alpha2.ContainerService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -125,14 +121,12 @@ class ContainerService(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    The container ABI is the application-data channel. It deliberately carries
-    step type identity and bounded JSON objects, never a container command or
-    plaintext credential. Health negotiates the ABI and supported step type revision
-    before the Execution Plane sends Execute or Cancel.
+    Health negotiates the exact ABI and revision before Execute. The transport
+    must authenticate both peers and protect confidentiality (mTLS in production).
     """
 
     @staticmethod
-    def Execute(request,
+    def Execute(request_iterator,
             target,
             options=(),
             channel_credentials=None,
@@ -142,12 +136,12 @@ class ContainerService(object):
             wait_for_ready=None,
             timeout=None,
             metadata=None):
-        return grpc.experimental.unary_stream(
-            request,
+        return grpc.experimental.stream_stream(
+            request_iterator,
             target,
-            '/syntara.container.v1alpha1.ContainerService/Execute',
-            syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteRequest.SerializeToString,
-            syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecutionEvent.FromString,
+            '/syntara.container.v1alpha2.ContainerService/Execute',
+            syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteClientMessage.SerializeToString,
+            syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteServerMessage.FromString,
             options,
             channel_credentials,
             insecure,
@@ -172,7 +166,7 @@ class ContainerService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/syntara.container.v1alpha1.ContainerService/Cancel',
+            '/syntara.container.v1alpha2.ContainerService/Cancel',
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.CancelRequest.SerializeToString,
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.CancelResponse.FromString,
             options,
@@ -199,7 +193,7 @@ class ContainerService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/syntara.container.v1alpha1.ContainerService/Health',
+            '/syntara.container.v1alpha2.ContainerService/Health',
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.HealthRequest.SerializeToString,
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.HealthResponse.FromString,
             options,

@@ -1,5 +1,5 @@
 {
-  "abi": "syntara.container/v1alpha1",
+  "abi": "syntara.container/v1alpha2",
   "adapter": {
     "bindingsFactory": "existing_step.runtime:create_bindings"
   }

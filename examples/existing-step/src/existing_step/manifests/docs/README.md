@@ -32,7 +32,7 @@ The repository's CI job and local integration target package the plugin wheel,
 install it beside `syntara-plugin-contracts`, build a workload image from the
 checked-in `Containerfile`, embed the compiler-generated registration manifest,
 start the runtime server with mutual TLS, and invoke all three step types over
-`syntara.container/v1alpha1`:
+`syntara.container/v1alpha2`:
 
 ```sh
 make test-integration

@@ -7,6 +7,7 @@ import copy
 import json
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from typing import Any
 
 import grpc
@@ -46,6 +47,7 @@ from syntara_plugin.runtime import (
     to_json_document,
 )
 from syntara_plugin.runtime.container import _request_from_invocation
+from syntara_plugin.runtime.protocol import container_pb2
 from syntara_plugin.runtime.server import AsyncContainerRuntimeService
 
 
@@ -361,7 +363,6 @@ def _invocation(
         workflow_run_id=f"{invocation_id}-run",
         step_revision_id=binding.descriptor.step_identity,
         inputs=inputs,
-        credential_file_paths={},
         timeout_seconds=30,
         runtime_context=values,
     )
@@ -387,7 +388,20 @@ def _error_document(error: Any) -> dict[str, Any]:
     return document
 
 
+def _requests(invocation: ContainerInvocation):
+    yield container_pb2.ExecuteClientMessage(start=_request_from_invocation(invocation))
+    Event().wait(5)
+
+
+async def _async_requests(invocation: ContainerInvocation):
+    yield container_pb2.ExecuteClientMessage(start=_request_from_invocation(invocation))
+    await asyncio.Event().wait()
+
+
 class _ServicerContext:
+    def is_active(self) -> bool:
+        return True
+
     def add_callback(self, callback: Any) -> bool:
         self.callback = callback
         return True
@@ -407,7 +421,7 @@ def _terminal_event(
             }
         )
     )
-    return next(service.Execute(_request_from_invocation(invocation), _ServicerContext()))
+    return next(service.Execute(_requests(invocation), _ServicerContext())).event
 
 
 @pytest.mark.parametrize(("step_type", "identity"), _SUCCESS_CASES, ids=("action", "control", "trigger"))
@@ -734,9 +748,9 @@ def test_async_service_preserves_a_terminal_failure_from_run() -> None:
 
     async def read_event() -> Any:
         events = [
-            event
+            event.event
             async for event in service.Execute(
-                _request_from_invocation(invocation), _AsyncServicerContext()
+                _async_requests(invocation), _AsyncServicerContext()
             )
         ]
         return events[0]
@@ -887,7 +901,7 @@ def test_container_runtime_service_preserves_step_execution_outcome(outcome: str
         StepRegistry({binding.descriptor.step_identity: fail})
     )
     invocation = _invocation(binding, {"value": "hello"})
-    event = next(service.Execute(_request_from_invocation(invocation), _ServicerContext()))
+    event = next(service.Execute(_requests(invocation), _ServicerContext())).event
 
     assert event.WhichOneof("event") == "failure"
     assert event.failure.outcome == outcome
@@ -914,9 +928,9 @@ def test_async_container_runtime_service_preserves_step_execution_outcome(
 
     async def read_event() -> Any:
         events = [
-            event
+            event.event
             async for event in service.Execute(
-                _request_from_invocation(invocation), _AsyncServicerContext()
+                _async_requests(invocation), _AsyncServicerContext()
             )
         ]
         return events[0]

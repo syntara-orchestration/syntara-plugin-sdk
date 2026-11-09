@@ -39,30 +39,26 @@ The corresponding runtime work-item JSON shape is in
 The Python helper implementation is in
 [`container.py`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/container.py).
 
-The Application Binary Interface (ABI) is the boundary between an Execution Plane launcher and an author
-workload. It carries invocation and workflow-run identities, step type inputs,
-output/error contracts, and approved file paths. It does not carry raw
-credentials in workflow JSON, environment variables, or command-line arguments.
+The Application Binary Interface (ABI) is the boundary between an Execution
+Plane launcher and a workload. The `syntara.container/v1alpha2` bidirectional
+invocation stream carries non-secret inputs and business events. For a
+credential read, the workload sends the declared CredentialRecipe ID as a
+logical name. The Execution Plane resolves that name within the current
+attempt and returns a bounded JSON object in a separate sensitive response;
+credential IDs and references are never sent to the workload. `ContainerClient`
+accepts a `credential_handler` per execution or stream, so the host can bind
+each resolver to its own attempt. The channel must authenticate both peers
+and protect confidentiality (mTLS in production).
 
-The ABI carries approved credential-file paths, not credential values. The
-launcher is responsible for authorizing the paths and making the files
-available to the workload; those host-side policies are outside this SDK.
+The generic `ContainerWorkloadRequest` carries its work item and policy
+snapshot without credential leases or secret file paths. Its work item contains
+opaque `credentialHandles` for platform use; these are not sent to the
+workload. The platform owns how an attempt's callback is resolved.
 
-An approved path is one under `/var/run/syntara/secrets/`, enforced on both
-the sending and the receiving side. There is one deliberate, default-off
-exception: a client and a runtime may each be given one local credential
-directory, and then also accept a file directly inside it. Nothing on a host
-can write under `/var/run` without privilege, so `syntara-plugin run` uses
-this for its in-process loopback runtime in source mode; see
-[Running locally](running-locally.md#supplying-credentials). A deployed
-workload never sets it and accepts approved mount paths only. Image mode
-needs no exception: it mounts the file at the approved path.
-
-Credential values must never appear in business output, wrapper status or
-error fields, raised error messages, or logs. Pass approved file paths or
-handles through the runtime boundary; do not copy secret values into inputs or
-runtime context. The test harness can detect sentinel leaks, but it does not
-redact values written by step type code.
+Credential values must never appear in business output, status, errors, or
+logs. Do not put values in inputs or runtime context. See
+[ADR 0011](../.sdlc/adrs/0011-credential-callback.md) for callback lifetime and
+failure semantics.
 
 ### Runtime adapters and workload images
 
@@ -81,7 +77,7 @@ with all adapter-specific bootstrap details under `adapter`:
 
 ```json
 {
-  "abi": "syntara.container/v1alpha1",
+  "abi": "syntara.container/v1alpha2",
   "adapter": {
     "bindingsFactory": "acme_plugin.runtime:create_bindings"
   }
@@ -138,7 +134,7 @@ resolved execution data as a read-only JSON file, named by
     "stepIdentity": "acme.plugin.echo",
     "runtimeKind": "custom-runner",
     "entryPoint": "acme_plugin.steps:EchoStep",
-    "abi": "syntara.container/v1alpha1",
+    "abi": "syntara.container/v1alpha2",
     "schemaDigests": {
       "input": "sha256:<64 lowercase hex digits>",
       "output": "sha256:<64 lowercase hex digits>"
@@ -183,7 +179,7 @@ this path for Action, Control, and Trigger. `make test-integration` builds its
 plugin wheel, installs it with the Python contracts distribution, and invokes
 all three manifest-declared entry points over the container ABI. The current
 standalone Execution Plane still vendors the older `syntara.node.v1` protocol;
-until that service adopts `syntara.container/v1alpha1`, this repository proves
+until that service adopts `syntara.container/v1alpha2`, this repository proves
 the SDK adapter path but does not claim end-to-end Execution Plane dispatch.
 Automation Orchestrator's workflow selection and platform-owned runners remain
 separate platform responsibilities.
@@ -212,8 +208,8 @@ server requires at startup (see
 > hard-coded identity drifts from the packaged manifest contract.
 
 The server listens on `127.0.0.1:50051` by default. Override the address with
-`SYNTARA_RUNTIME_GRPC_ADDRESS`; every non-loopback listener requires mutual
-TLS. Supply all three of `SYNTARA_RUNTIME_GRPC_TLS_CERT`,
+`SYNTARA_RUNTIME_GRPC_ADDRESS`; every TCP listener requires mutual
+TLS, including loopback. Supply all three of `SYNTARA_RUNTIME_GRPC_TLS_CERT`,
 `SYNTARA_RUNTIME_GRPC_TLS_KEY`, and `SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA` when
 TLS is enabled. These values are mounted file paths, never PEM data or private
 key contents.
@@ -229,13 +225,11 @@ Execution Plane and a step type container use to exchange execution requests,
 progress, results, and cancellation. It is not a CPU ABI. The current contract
 is defined in
 [`container.proto`](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
-and identified as `syntara.container/v1alpha1`.
+and identified as `syntara.container/v1alpha2`.
 
 The `Result` protobuf uses the structured error-result fields defined by this
-release. The ABI remains `v1alpha1` because this pre-1.0 alpha contract does
-not promise wire compatibility between prereleases. Existing alpha images
-must be rebuilt or upgraded with this SDK before they are used; Health checks
-the ABI identifier exactly but does not distinguish incompatible alpha builds.
+release. Existing images must be rebuilt or upgraded for `v1alpha2`; Health
+checks the ABI identifier exactly.
 
 Final workload images, rather than a reusable SDK base layer, are the OCI
 artifacts published for deployment. They must record their immutable
@@ -289,7 +283,7 @@ types, and no raw credential values.
 
 For an Action, Control, or Trigger, the installed `integrationType` and its linked
 `credentialTypes` define which recipe identifiers the step may request. The host supplies a provider for
-approved bindings; the supplied path names never grant permission themselves.
+approved bindings; a supplied name never grants permission by itself.
 A custom `CredentialProvider` must return a fresh `ScopedCredentialProvider`
 from `restrict(names, on_read)`. The view retains only the named bindings,
 reports every read through `on_read`, and revokes access on `close`. Providers
@@ -311,10 +305,9 @@ fingerprints; output scans are limited to 10,000 nodes and 4,000,000 scan-work
 units. If a scan cannot finish within those bounds, the SDK reports
 `CREDENTIAL_SCAN_LIMIT`, distinct from a detected leak. Reduce credential document
 size or output complexity to stay within the limits. The SDK cannot redact logs emitted by step code, so
-step authors must not log returned values. The SDK does not provision production
-files or implement a vault. A Python step is not sandboxed by this accessor; the
-host must provision only files authorized for the invocation and enforce its own
-process isolation.
+step authors must not log returned values. The SDK does not resolve production
+credential IDs or implement a vault. A Python step is not sandboxed by this
+accessor; the host must authorize each invocation and enforce process isolation.
 
 `CredentialRecipe` and `IntegrationType` Pydantic views validate and serialize
 the existing v1alpha1 authoring documents; the canonical JSON Schemas remain

@@ -300,7 +300,6 @@ def _container_invocation(
         workflow_run_id="run-1",
         step_revision_id=step_revision_id,
         inputs=inputs,
-        credential_file_paths={},
         timeout_seconds=30,
         runtime_context={"environment": "test"},
     )
@@ -1040,7 +1039,6 @@ def test_supported_non_action_adapter_propagates_the_complete_context(
         workflow_run_id="run-1",
         step_revision_id=identity,
         inputs={"message": "hello"},
-        credential_file_paths={},
         timeout_seconds=30,
         runtime_context=runtime_context,
         cancellation=cancellation,

@@ -20,7 +20,7 @@ from .outcome import MAX_MESSAGE_LENGTH
 # compatibility marker for a versioned, language-neutral runtime protocol; it
 # is not the OCI image architecture. The Execution Plane and workload compare
 # this exact value during Health before exchanging Execute/Cancel messages.
-CONTAINER_ABI = "syntara.container/v1alpha1"
+CONTAINER_ABI = "syntara.container/v1alpha2"
 PROVIDER_ABI = "syntara.provider/v1alpha1"
 
 

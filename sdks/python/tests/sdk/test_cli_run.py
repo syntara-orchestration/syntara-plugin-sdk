@@ -1499,9 +1499,13 @@ def test_address_with_a_scheme_is_a_usage_error(tmp_path: Path, capsys) -> None:
     assert "HOST:PORT" in capsys.readouterr().err
 
 
-def test_image_mode_unreachable_address_exits_one(tmp_path: Path, capsys) -> None:
+def test_image_mode_unreachable_address_exits_one(tmp_path: Path, capsys, monkeypatch) -> None:
     """An unreachable runtime reports the address and the fix."""
 
+    import grpc
+    import syntara_plugin.sdk.runner as runner_module
+
+    monkeypatch.setattr(runner_module, "_channel", lambda address, tls: grpc.insecure_channel(address))
     workspace = _write_echo_workspace(tmp_path / "ws")
 
     status = main(
@@ -1513,6 +1517,7 @@ def test_image_mode_unreachable_address_exits_one(tmp_path: Path, capsys) -> Non
             "image",
             "--address",
             "127.0.0.1:59999",
+            "--tls-ca", "ca.crt", "--tls-cert", "client.crt", "--tls-key", "client.key",
             "--input",
             '{"title": "x"}',
         ]
@@ -2454,7 +2459,7 @@ def test_template_guidance_preserves_transport_options(
     )
 
 
-def test_json_failures_emit_one_document_on_stdout(tmp_path: Path, capsys) -> None:
+def test_json_failures_emit_one_document_on_stdout(tmp_path: Path, capsys, monkeypatch) -> None:
     """Every failing exit path parses as one JSON document when --json is set."""
 
     workspace = _write_echo_workspace(tmp_path / "ws")
@@ -2495,6 +2500,10 @@ def test_json_failures_emit_one_document_on_stdout(tmp_path: Path, capsys) -> No
     assert document["error"]["kind"] == "SettingsError"
 
     # Execution failure: unreachable image-mode address (exit 1).
+    import grpc
+    import syntara_plugin.sdk.runner as runner_module
+
+    monkeypatch.setattr(runner_module, "_channel", lambda address, tls: grpc.insecure_channel(address))
     status = main(
         [
             "run",
@@ -2505,6 +2514,7 @@ def test_json_failures_emit_one_document_on_stdout(tmp_path: Path, capsys) -> No
             "image",
             "--address",
             "127.0.0.1:59999",
+            "--tls-ca", "ca.crt", "--tls-cert", "client.crt", "--tls-key", "client.key",
             "--input",
             '{"title": "x"}',
         ]
@@ -2886,6 +2896,7 @@ def test_mode_spies_source_image_and_address(monkeypatch, tmp_path: Path, capsys
             "image",
             "--address",
             "127.0.0.1:59999",
+            "--tls-ca", "ca.crt", "--tls-cert", "client.crt", "--tls-key", "client.key",
             "--input",
             '{"title": "x"}',
         ]
@@ -3377,8 +3388,7 @@ def test_a_credential_name_the_secret_mount_cannot_hold_is_refused(
 
     assert status == 2
     captured = capsys.readouterr()
-    assert "cannot be delivered as a credential file" in captured.err
-    assert "letters, digits, '.', '_', and '-'" in captured.err
+    assert "is not a credential recipe reachable" in captured.err
 
 
 def test_fields_the_recipe_does_not_declare_secret_are_still_scrubbed(
@@ -3422,10 +3432,10 @@ def test_fields_the_recipe_does_not_declare_secret_are_still_scrubbed(
     assert "user-one" in scrubbed  # not declared in secretFields, still scrubbed
 
 
-def test_source_mode_warns_the_credential_path_is_not_the_production_mount(
+def test_source_mode_does_not_warn_about_a_credential_mount(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
-    """Source mode cannot create /var/run/syntara/secrets, so the author hears it."""
+    """Source mode has no credential delivery path or mount."""
 
     workspace = _write_credential_workspace(tmp_path / "ws")
     monkeypatch.setattr("sys.stdin", StringIO(_TOKEN))
@@ -3434,9 +3444,7 @@ def test_source_mode_warns_the_credential_path_is_not_the_production_mount(
 
     assert status == 0
     captured = capsys.readouterr()
-    assert "delivers credential files at a temporary path" in captured.err
-    assert "/var/run/syntara/secrets" in captured.err
-    assert "context.credential(name).read()" in captured.err
+    assert "credential files at a temporary path" not in captured.err
 
 
 def test_a_target_without_an_integration_type_reaches_no_credential(
@@ -3670,11 +3678,11 @@ def test_delivered_credential_values_read_back_as_output_are_scrubbed(
         handler = original(*args, **kwargs)
 
         def echoing(invocation: Any) -> Any:
+            assert invocation.credential_provider is not None
+            scoped = invocation.credential_provider.restrict(frozenset({_RECIPE}), lambda value: None)
+            read_back = {_RECIPE: scoped.read(_RECIPE)}
+            scoped.close()
             result = handler(invocation)
-            read_back = {
-                name: json.loads(Path(path).read_text(encoding="utf-8"))
-                for name, path in invocation.credential_file_paths.items()
-            }
             return dataclass_replace(result, output=read_back)
 
         return echoing
@@ -3806,15 +3814,14 @@ def test_an_overlong_credential_name_is_refused_as_usage(
 ) -> None:
     """A name no filesystem can hold fails before any invocation starts."""
 
-    name = "a" * 256
+    name = "a" * 257
     workspace = _write_credential_workspace(tmp_path / "ws")
 
     status = main(_credential_run(workspace, f"{name}=-"))
 
     assert status == 2
     captured = capsys.readouterr()
-    assert "cannot be delivered as a credential file" in captured.err
-    assert "ENAMETOOLONG" in captured.err
+    assert "name must be a bounded recipe identifier" in captured.err
 
 
 def test_loaded_credential_repr_hides_document_and_secret_values() -> None:
@@ -3830,32 +3837,6 @@ def test_loaded_credential_repr_hides_document_and_secret_values() -> None:
     assert _TOKEN not in rendered
     assert "739251" not in rendered
     assert _RECIPE in rendered
-
-
-def test_a_credential_file_write_failure_is_a_structured_error(monkeypatch) -> None:
-    """An unexpected delivery failure names the credential, never its value."""
-
-    from syntara_plugin.sdk.runner import (
-        LoadedCredential,
-        RunExecutionError,
-        credential_files,
-    )
-
-    def refuse(self: Path, data: bytes) -> None:
-        raise OSError("no space left on device")
-
-    monkeypatch.setattr(Path, "write_bytes", refuse)
-    credential = LoadedCredential(
-        name=_RECIPE, document={"token": _TOKEN}, secret_values=(_TOKEN,)
-    )
-
-    with pytest.raises(RunExecutionError) as raised:
-        with credential_files((credential,), container_readable=False):
-            pass
-
-    assert "could not be created" in raised.value.message
-    assert _TOKEN not in raised.value.message
-    assert _TOKEN not in "\n".join(raised.value.detail)
 
 
 def test_template_mode_never_reads_a_credential(tmp_path: Path, capsys) -> None:
@@ -3969,9 +3950,7 @@ def test_the_credential_directory_is_removed_after_the_run(
     status = main(_credential_run(workspace, f"{_RECIPE}=-"))
 
     assert status == 0
-    assert created
-    for directory in created:
-        assert not directory.exists()
+    assert not created
 
 
 def test_a_run_without_credentials_creates_no_secret_directory(
@@ -4014,3 +3993,47 @@ def test_a_credential_file_warning_reaches_stderr_under_json(
     assert "readable by other local users" in captured.err
     # stdout stays exactly one parseable document.
     assert json.loads(captured.out)["credentials"] == [_RECIPE]
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1:50051", "localhost:50051", "[::1]:50051"])
+def test_image_mode_requires_tls_for_loopback_address(
+    address: str, tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import syntara_plugin.sdk.runner as runner_module
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        raise runner_module.RunExecutionError("unexpected execution")
+
+    monkeypatch.setattr(runner_module, "run_image", capture)
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    status = main([
+        "run", "--manifest", str(workspace / "plugin.yaml"), "--mode", "image",
+        "--address", address, "--input", '{"title": "x"}',
+    ])
+    assert status == 2
+    assert "requires mutual TLS" in capsys.readouterr().err
+
+
+def test_image_mode_accepts_loopback_address_with_complete_tls(tmp_path: Path, capsys, monkeypatch) -> None:
+    import syntara_plugin.sdk.runner as runner_module
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        raise runner_module.RunExecutionError("captured invocation")
+
+    monkeypatch.setattr(runner_module, "run_image", capture)
+    status = main([
+        "run", "--manifest", str(workspace / "plugin.yaml"), "--mode", "image",
+        "--address", "127.0.0.1:50051", "--tls-ca", "ca.crt", "--tls-cert", "client.crt",
+        "--tls-key", "client.key", "--input", '{"title": "x"}',
+    ])
+    assert status == 1
+    assert "captured invocation" in capsys.readouterr().err
+    assert len(calls) == 1
+    assert calls[0][0][0] == "127.0.0.1:50051"
+    assert calls[0][1]["tls"] == runner_module.TlsOptions(
+        ca=Path("ca.crt"), certificate=Path("client.crt"), key=Path("client.key")
+    )

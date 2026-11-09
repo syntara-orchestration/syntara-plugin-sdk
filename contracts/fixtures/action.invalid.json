@@ -9,7 +9,7 @@
     "description": "Creates an issue."
   },
   "spec": {
-    "runtime": {"kind": "platform-runner", "abi": "syntara.container/v1alpha1"},
+    "runtime": {"kind": "platform-runner", "abi": "syntara.container/v1alpha2"},
     "input": {"kind": "asset", "path": "../secret.json"},
     "output": {"kind": "inline", "value": {}},
     "error": {"kind": "inline", "value": {}}

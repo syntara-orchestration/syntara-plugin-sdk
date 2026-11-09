@@ -170,7 +170,7 @@ def _schema_digests(input_schema: Mapping[str, Any] | None = None) -> dict[str, 
 def write_runtime_config(
     tmp_path: Path,
     *,
-    abi: str = "syntara.container/v1alpha1",
+    abi: str = "syntara.container/v1alpha2",
     adapter: object | None = None,
 ) -> Path:
     document = {
@@ -206,7 +206,7 @@ def resolved_file(tmp_path: Path, step_class: type[BaseStep[EchoInput, EchoOutpu
         "stepIdentity": identities[step_class],
         "runtimeKind": "platform-runner",
         "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
-        "abi": "syntara.container/v1alpha1",
+        "abi": "syntara.container/v1alpha2",
         "schemaDigests": _schema_digests(),
     }]}), encoding="utf-8")
     return path
@@ -218,7 +218,6 @@ def _invocation() -> ContainerInvocation:
         workflow_run_id="workflow-run-1",
         step_revision_id=REVISION,
         inputs={"message": "hello"},
-        credential_file_paths={},
         timeout_seconds=30,
         runtime_context={},
     )
@@ -230,7 +229,6 @@ def _barrier_invocation(invocation_id: str) -> ContainerInvocation:
         workflow_run_id="workflow-run-1",
         step_revision_id=REVISION,
         inputs={"message": invocation_id},
-        credential_file_paths={},
         timeout_seconds=30,
         runtime_context={},
     )
@@ -242,7 +240,6 @@ def _cancellation_invocation() -> ContainerInvocation:
         workflow_run_id="workflow-run-1",
         step_revision_id=REVISION,
         inputs={"message": "cancelled"},
-        credential_file_paths={},
         timeout_seconds=30,
         runtime_context={},
     )
@@ -254,7 +251,6 @@ def _timeout_invocation(step_revision_id: str) -> ContainerInvocation:
         workflow_run_id="workflow-run-1",
         step_revision_id=step_revision_id,
         inputs={"message": "timeout"},
-        credential_file_paths={},
         timeout_seconds=1,
         runtime_context={},
     )
@@ -270,11 +266,15 @@ async def _service_events(
         invocation_id=invocation.invocation_id,
         workflow_run_id=invocation.workflow_run_id,
         step_revision_id=invocation.step_revision_id,
-        runtime_abi="syntara.container/v1alpha1",
+        runtime_abi="syntara.container/v1alpha2",
         inputs_json=json.dumps({"message": invocation.inputs["message"]}).encode(),
         timeout_seconds=invocation.timeout_seconds,
     )
-    events = [event async for event in service.Execute(request, FakeServicerContext())]
+    async def requests():
+        yield container_pb2.ExecuteClientMessage(start=request)
+        await asyncio.Event().wait()
+
+    events = [message.event async for message in service.Execute(requests(), FakeServicerContext())]
     if release is not None:
         release.set()
     return events
@@ -362,12 +362,22 @@ def test_runtime_server_serves_health_and_executes_a_bound_step(tmp_path: Path) 
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
 
+    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(tmp_path)
+
     async def scenario() -> None:
         server = create_runtime_server(
-            replace(_resolved_config(tmp_path, [_resolved_record()]), address=f"127.0.0.1:{port}")
+            replace(
+                _resolved_config(tmp_path, [_resolved_record()]), address=f"localhost:{port}",
+                tls_certificate=certificate, tls_key=key, tls_client_ca=client_ca,
+            )
         )
         await server.start()
-        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        channel = grpc.secure_channel(
+            f"localhost:{port}", grpc.ssl_channel_credentials(
+                root_certificates=client_ca.read_bytes(),
+                private_key=client_key.read_bytes(), certificate_chain=client_certificate.read_bytes(),
+            )
+        )
         try:
             client = ContainerClient(channel)
             health = await asyncio.to_thread(client.health)
@@ -393,16 +403,24 @@ def test_runtime_server_executes_steps_concurrently(tmp_path: Path) -> None:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
 
+    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(tmp_path)
+
     async def scenario() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_barrier_bindings",
                 resolved_execution_path=resolved_file(tmp_path, BarrierStep),
-                address=f"127.0.0.1:{port}",
+                address=f"localhost:{port}",
+                tls_certificate=certificate, tls_key=key, tls_client_ca=client_ca,
             )
         )
         await server.start()
-        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        channel = grpc.secure_channel(
+            f"localhost:{port}", grpc.ssl_channel_credentials(
+                root_certificates=client_ca.read_bytes(),
+                private_key=client_key.read_bytes(), certificate_chain=client_certificate.read_bytes(),
+            )
+        )
         try:
             client = ContainerClient(channel)
             results = await asyncio.gather(
@@ -426,16 +444,24 @@ def test_runtime_server_cancels_an_active_step(tmp_path: Path) -> None:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
 
+    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(tmp_path)
+
     async def scenario() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_cancellation_bindings",
                 resolved_execution_path=resolved_file(tmp_path, CancellationStep),
-                address=f"127.0.0.1:{port}",
+                address=f"localhost:{port}",
+                tls_certificate=certificate, tls_key=key, tls_client_ca=client_ca,
             )
         )
         await server.start()
-        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        channel = grpc.secure_channel(
+            f"localhost:{port}", grpc.ssl_channel_credentials(
+                root_certificates=client_ca.read_bytes(),
+                private_key=client_key.read_bytes(), certificate_chain=client_certificate.read_bytes(),
+            )
+        )
         try:
             client = ContainerClient(channel)
             execution = asyncio.create_task(
@@ -460,16 +486,24 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
 
+    certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(tmp_path)
+
     async def scenario() -> None:
         server = create_runtime_server(
             RuntimeServerConfig(
                 bindings_factory=f"{__name__}:create_cancellation_bindings",
                 resolved_execution_path=resolved_file(tmp_path, CancellationStep),
-                address=f"127.0.0.1:{port}",
+                address=f"localhost:{port}",
+                tls_certificate=certificate, tls_key=key, tls_client_ca=client_ca,
             )
         )
         await server.start()
-        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        channel = grpc.secure_channel(
+            f"localhost:{port}", grpc.ssl_channel_credentials(
+                root_certificates=client_ca.read_bytes(),
+                private_key=client_key.read_bytes(), certificate_chain=client_certificate.read_bytes(),
+            )
+        )
         try:
             stub = container_pb2_grpc.ContainerServiceStub(channel)
             invocation = _cancellation_invocation()
@@ -477,11 +511,15 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
                 invocation_id=invocation.invocation_id,
                 workflow_run_id=invocation.workflow_run_id,
                 step_revision_id=invocation.step_revision_id,
-                runtime_abi="syntara.container/v1alpha1",
+                runtime_abi="syntara.container/v1alpha2",
                 inputs_json=json.dumps({"message": "disconnect"}).encode(),
                 timeout_seconds=30,
             )
-            call = stub.Execute(request)
+            def requests():
+                yield container_pb2.ExecuteClientMessage(start=request)
+                CancellationStep.cancelled.wait(10)
+
+            call = stub.Execute(requests())
             execution = asyncio.create_task(asyncio.to_thread(list, call))
             assert await asyncio.to_thread(CancellationStep.started.wait, 5)
 
@@ -597,6 +635,9 @@ def test_runtime_server_configuration_accepts_an_uppercase_loopback_host(
         {
             "SYNTARA_RUNTIME_CONFIG": str(config_path),
             "SYNTARA_RUNTIME_GRPC_ADDRESS": "LOCALHOST:50051",
+            "SYNTARA_RUNTIME_GRPC_TLS_CERT": "/tmp/cert",
+            "SYNTARA_RUNTIME_GRPC_TLS_KEY": "/tmp/key",
+            "SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA": "/tmp/ca",
         }
     )
 
@@ -712,7 +753,7 @@ def _resolved_record(kind: str = "custom-runner") -> dict[str, object]:
         "stepIdentity": "smoke.echo.v1",
         "runtimeKind": kind,
         "entryPoint": f"{__name__}:EchoStep",
-        "abi": "syntara.container/v1alpha1",
+        "abi": "syntara.container/v1alpha2",
         "schemaDigests": _schema_digests(),
     }
 
@@ -733,7 +774,7 @@ def _resolved_config(
             "steps": {REVISION: {
                 "stepIdentity": "smoke.echo.v1",
                 "entryPoint": f"{__name__}:EchoStep",
-                "abi": "syntara.container/v1alpha1",
+                "abi": "syntara.container/v1alpha2",
                 "schemaDigests": _schema_digests(),
             }},
         }
@@ -929,3 +970,56 @@ def test_resolved_schema_digests_must_match_the_installed_binding(tmp_path: Path
 
     with pytest.raises(RuntimeServerError, match="schema digests differ"):
         resolved_step_registry(config, bindings)
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1:50051", "localhost:50051", "[::1]:50051"])
+def test_tcp_runtime_listener_requires_mutual_tls(address: str, tmp_path: Path) -> None:
+    config_path = write_runtime_config(tmp_path)
+    with pytest.raises(RuntimeServerError, match="mutual TLS"):
+        load_runtime_server_config({
+            "SYNTARA_RUNTIME_CONFIG": str(config_path),
+            "SYNTARA_RUNTIME_GRPC_ADDRESS": address,
+        })
+
+
+def test_direct_runtime_config_rejects_plaintext_tcp(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config = replace(_resolved_config(tmp_path, [_resolved_record()]), address="127.0.0.1:50051")
+        with pytest.raises(RuntimeServerError, match="mutual TLS"):
+            create_runtime_server(config)
+    asyncio.run(scenario())
+
+
+def test_async_shutdown_emits_cancelled_event() -> None:
+    async def scenario() -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def handler(invocation: ContainerInvocation) -> Any:
+            started.set()
+            release.wait(5)
+            return None
+
+        from syntara_plugin.runtime import StepRegistry
+        service = AsyncContainerRuntimeService(StepRegistry({"example.step": handler}))
+        invocation = replace(_invocation(), step_revision_id="example.step")
+        from syntara_plugin.runtime.container import _request_from_invocation
+
+        async def requests():
+            yield container_pb2.ExecuteClientMessage(start=_request_from_invocation(invocation))
+            await asyncio.Event().wait()
+
+        async def consume():
+            return [message async for message in service.Execute(requests(), FakeServicerContext())]
+
+        task = asyncio.create_task(consume())
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            service.shutdown()
+            messages = await asyncio.wait_for(task, 2)
+            assert len(messages) == 1
+            assert messages[0].event.failure.code == FailureCode.CANCELLED
+            assert messages[0].event.failure.outcome == "not_completed"
+        finally:
+            release.set()
+    asyncio.run(scenario())

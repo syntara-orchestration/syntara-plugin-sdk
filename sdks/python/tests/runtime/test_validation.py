@@ -905,7 +905,7 @@ def _matching_target(step_class: type[BaseStep[Any, Any]], **overrides: Any) -> 
             "kind": "custom-runner",
             "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
             "workload": "plugin-workload",
-            "abi": "syntara.container/v1alpha1",
+            "abi": "syntara.container/v1alpha2",
         },
     }
     target.update(overrides)

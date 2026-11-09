@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package syntara.container.v1alpha1;
+package syntara.container.v1alpha2;
 
 // ABI means Application Binary Interface. Here it is the versioned, language-
 // neutral gRPC protocol between the Execution Plane (the client/launcher) and
@@ -8,12 +8,10 @@ package syntara.container.v1alpha1;
 // operating-system compatibility. A workload in any language may participate
 // if it implements this service and the message semantics below.
 //
-// The container ABI is the application-data channel. It deliberately carries
-// step type identity and bounded JSON objects, never a container command or
-// plaintext credential. Health negotiates the ABI and supported step type revision
-// before the Execution Plane sends Execute or Cancel.
+// Health negotiates the exact ABI and revision before Execute. The transport
+// must authenticate both peers and protect confidentiality (mTLS in production).
 service ContainerService {
-  rpc Execute(ExecuteRequest) returns (stream ExecutionEvent);
+  rpc Execute(stream ExecuteClientMessage) returns (stream ExecuteServerMessage);
   rpc Cancel(CancelRequest) returns (CancelResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
 }
@@ -24,13 +22,53 @@ message ExecuteRequest {
   string step_revision_id = 2;
   string runtime_abi = 3;
   bytes inputs_json = 4;
-  // A JSON object mapping approved credential names to temporary in-container
-  // file paths. Secret values never travel through this protocol.
-  bytes credential_file_paths_json = 5;
+  reserved 5;
+  reserved "credential_file_paths_json";
   uint32 timeout_seconds = 6;
   // A bounded, non-secret runner-specific context selected by Syntara from the
   // installed immutable step. It never contains an endpoint or credential.
   bytes runtime_context_json = 7;
+}
+
+// The first client message is start; subsequent messages are responses to
+// credential requests. Each request ID is unique within an invocation.
+message ExecuteClientMessage {
+  oneof message {
+    ExecuteRequest start = 1;
+    CredentialResponse credential_response = 2;
+  }
+}
+
+message ExecuteServerMessage {
+  oneof message {
+    ExecutionEvent event = 1;
+    CredentialRequest credential_request = 2;
+  }
+}
+
+// name is a declared CredentialRecipe ID, not a credential ID or reference.
+message CredentialRequest {
+  string invocation_id = 1;
+  string request_id = 2;
+  string name = 3;
+}
+
+// This sensitive response is never an ExecutionEvent. Exactly one of document
+// or error must be set. The document is a JSON object of at most 1 MiB;
+// error has no provider-specific message or details.
+message CredentialResponse {
+  string invocation_id = 1;
+  string request_id = 2;
+  oneof outcome {
+    bytes document_json = 3;
+    CredentialError error = 4;
+  }
+}
+
+enum CredentialError {
+  CREDENTIAL_ERROR_UNSPECIFIED = 0;
+  CREDENTIAL_ERROR_MISSING = 1;
+  CREDENTIAL_ERROR_UNAVAILABLE = 2;
 }
 
 message Progress {

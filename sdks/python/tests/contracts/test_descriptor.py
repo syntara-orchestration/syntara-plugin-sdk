@@ -31,7 +31,7 @@ def _target(identity: str = "acme.plugin.step") -> dict[str, object]:
         "output": {"type": "object"},
         "runtime": {
             "kind": "custom-runner",
-            "abi": "syntara.container/v1alpha1",
+            "abi": "syntara.container/v1alpha2",
             "entryPoint": "plugin:Step",
             "workload": "runner",
         },
@@ -49,7 +49,7 @@ def _descriptor(targets: list[dict[str, object]]) -> dict[str, object]:
             "targets": targets,
             "workloads": {
                 "runner": {
-                    "abi": "syntara.container/v1alpha1",
+                    "abi": "syntara.container/v1alpha2",
                     "image": "quay.io/acme/runner@sha256:" + "a" * 64,
                 }
             },
@@ -134,11 +134,11 @@ def test_platform_implementation_changes_step_and_plugin_revision() -> None:
 @pytest.mark.parametrize(
     ("workload_id", "abi", "provider", "changes_revision"),
     [
-        ("plugin-workload", "syntara.container/v1alpha1", None, False),
+        ("plugin-workload", "syntara.container/v1alpha2", None, False),
         ("provider-image", "syntara.provider/v1alpha1", "provider", True),
-        ("provider-image", "syntara.container/v1alpha1", "provider", True),
-        ("plugin-workload", "syntara.container/v1alpha1", "provider", False),
-        ("unused-image", "syntara.container/v1alpha1", None, True),
+        ("provider-image", "syntara.container/v1alpha2", "provider", True),
+        ("plugin-workload", "syntara.container/v1alpha2", "provider", False),
+        ("unused-image", "syntara.container/v1alpha2", None, True),
     ],
 )
 def test_plugin_revision_tracks_non_runner_workload_images(

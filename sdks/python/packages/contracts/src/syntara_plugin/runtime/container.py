@@ -2,10 +2,8 @@
 
 One container image may register many immutable step type revisions.  The Execution
 Plane selects the revision in an :class:`ContainerInvocation`; the runtime
-dispatches to the matching Python callable. The protocol deliberately carries
-only JSON input data, bounded non-secret runtime context, and paths to
-credential files mounted by the Execution Plane. It never carries commands,
-environment-derived credentials, or plaintext secret material.
+dispatches to the matching Python callable. Credential responses use a
+separate sensitive message on an authenticated, confidential stream.
 """
 
 from __future__ import annotations
@@ -16,8 +14,8 @@ import re
 import signal
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
-from threading import Event, Lock
+from queue import Queue
+from threading import Event, Lock, Thread
 from typing import Any, Literal, NoReturn
 
 import grpc
@@ -25,7 +23,8 @@ from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
 from .abi import _PROVIDER_CODE, CONTAINER_ABI, ContainerInvocationError, FailureCode
-from .credentials import approved_credential_path
+from .credential_callback import CallbackCredentialProvider
+from .credentials import CredentialAccessError, CredentialProvider
 from .execution import StepExecutionError
 from .outcome import (
     MAX_MESSAGE_LENGTH,
@@ -70,11 +69,10 @@ class ContainerInvocation:
     workflow_run_id: str
     step_revision_id: str
     inputs: Mapping[str, Any]
-    credential_file_paths: Mapping[str, str]
     timeout_seconds: int
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
-    _credential_directory: Path | None = field(default=None, init=False, compare=False, repr=False)
+    credential_provider: CredentialProvider | None = field(default=None, compare=False, repr=False)
 
     @property
     def cancelled(self) -> bool:
@@ -356,71 +354,134 @@ class StepRegistry:
 
 
 class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
-    """gRPC implementation of the language-neutral container ABI.
+    """Bidirectional invocation service on an authenticated, confidential channel."""
 
-    ``local_credential_directory`` is the default-off exception described on
-    :func:`_is_approved_credential_path`; a deployed workload leaves it unset
-    and accepts approved secret mount paths only.
-    """
-
-    def __init__(
-        self, steps: StepRegistry, local_credential_directory: Path | None = None
-    ) -> None:
+    def __init__(self, steps: StepRegistry) -> None:
         self._steps = steps
-        self._local_credential_directory = local_credential_directory
-        self._active: dict[str, Event] = {}
+        self._active: dict[str, tuple[Event, CallbackCredentialProvider, Queue[container_pb2.ExecuteServerMessage | None]]] = {}
         self._active_lock = Lock()
 
     def Execute(
-        self, request: container_pb2.ExecuteRequest, context: grpc.ServicerContext
-    ) -> Iterator[container_pb2.ExecutionEvent]:
+        self, requests: Iterator[container_pb2.ExecuteClientMessage], context: grpc.ServicerContext
+    ) -> Iterator[container_pb2.ExecuteServerMessage]:
+        invocation_id = ""
         cancellation: Event | None = None
-        invocation_id = request.invocation_id
+        provider: CallbackCredentialProvider | None = None
+        outgoing: Queue[container_pb2.ExecuteServerMessage | None] = Queue()
         try:
-            invocation, cancellation = invocation_from_request(
-                request, self._local_credential_directory
-            )
+            first = next(requests)
+            if first.WhichOneof("message") != "start":
+                raise ContainerInvocationError(FailureCode.INVALID_INPUT, "The invocation is invalid.", outcome="not_started")
+            request = first.start
+            invocation_id = request.invocation_id
+            invocation, cancellation = invocation_from_request(request)
             handler = self._steps.resolve(invocation.step_revision_id)
-            self._register_invocation(invocation.invocation_id, cancellation)
-            # Deadline expiry and a disconnected Execution Plane both become a
-            # cooperative cancellation signal visible to the step.
-            if not context.add_callback(cancellation.set):
+            provider = CallbackCredentialProvider(
+                invocation_id,
+                lambda req: outgoing.put(container_pb2.ExecuteServerMessage(credential_request=req)),
+                cancellation,
+                invocation.timeout_seconds,
+            )
+            object.__setattr__(invocation, "credential_provider", provider)
+            self._register_invocation(invocation_id, cancellation, provider, outgoing)
+
+            def close() -> None:
+                assert cancellation is not None and provider is not None
                 cancellation.set()
-            result = handler(invocation)
-            yield terminal_execution_event(invocation, result)
-        except StepExecutionError as error:
-            yield failure_event(
-                invocation_id,
-                ContainerInvocationError(
-                    error.failure_code,
-                    error.safe_message,
-                    outcome=error.outcome,
-                ),
-            )
+                provider.close()
+                outgoing.put(None)
+
+            if not context.add_callback(close):
+                close()
+
+            def receive() -> None:
+                try:
+                    for message in requests:
+                        if message.WhichOneof("message") == "credential_response":
+                            assert provider is not None
+                            provider.receive(message.credential_response)
+                        else:
+                            break
+                except Exception:
+                    pass
+                finally:
+                    close()
+
+            def run() -> None:
+                try:
+                    result = handler(invocation)
+                    event = terminal_execution_event(invocation, result)
+                except StepExecutionError as error:
+                    event = failure_event(invocation_id, ContainerInvocationError(
+                        error.failure_code, error.safe_message, outcome=error.outcome
+                    ))
+                except ContainerInvocationError as error:
+                    event = failure_event(invocation_id, error)
+                except Exception:
+                    event = failure_event(invocation_id, ContainerInvocationError(
+                        FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
+                    ))
+                finally:
+                    assert provider is not None
+                    provider.close()
+                outgoing.put(container_pb2.ExecuteServerMessage(event=event))
+                outgoing.put(None)
+
+            Thread(target=receive, daemon=True).start()
+            Thread(target=run, daemon=True).start()
+            while context.is_active():
+                message = outgoing.get()
+                if message is None:
+                    break
+                yield message
+        except StopIteration:
+            return
         except ContainerInvocationError as error:
-            yield failure_event(invocation_id, error)
+            yield container_pb2.ExecuteServerMessage(event=failure_event(invocation_id, error))
         except Exception:
-            yield failure_event(
-                invocation_id,
-                ContainerInvocationError(
-                    FailureCode.OUTCOME_UNKNOWN,
-                    INCOMPLETE_STEP_MESSAGE,
-                    outcome="unknown",
-                ),
-            )
+            yield container_pb2.ExecuteServerMessage(event=failure_event(
+                invocation_id, ContainerInvocationError(
+                    FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
+                )
+            ))
         finally:
             if cancellation is not None:
+                cancellation.set()
+                if provider is not None:
+                    provider.close()
                 self._unregister_invocation(invocation_id, cancellation)
 
     def Cancel(
         self, request: container_pb2.CancelRequest, context: grpc.ServicerContext
     ) -> container_pb2.CancelResponse:
         with self._active_lock:
-            cancellation = self._active.get(request.invocation_id)
-        if cancellation is None:
+            active = self._active.get(request.invocation_id)
+        if active is None:
             return container_pb2.CancelResponse(accepted=False)
+        cancellation, provider, outgoing = active
         cancellation.set()
+        provider.close()
+        outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
+            request.invocation_id, ContainerInvocationError(
+                FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+            )
+        )))
+        outgoing.put(None)
         return container_pb2.CancelResponse(accepted=True)
+
+    def shutdown(self) -> None:
+        """Revoke every active callback before stopping the server."""
+        with self._active_lock:
+            active = list(self._active.items())
+        for invocation_id, (cancellation, provider, outgoing) in active:
+            cancellation.set()
+            provider.close()
+            outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
+                invocation_id, ContainerInvocationError(
+                    FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+                )
+            )))
+            outgoing.put(None)
 
     def Health(
         self, request: container_pb2.HealthRequest, context: grpc.ServicerContext
@@ -431,7 +492,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             step_revision_ids=self._steps.step_revision_ids,
         )
 
-    def _register_invocation(self, invocation_id: str, cancellation: Event) -> None:
+    def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: Queue[container_pb2.ExecuteServerMessage | None]) -> None:
         with self._active_lock:
             if invocation_id in self._active:
                 raise ContainerInvocationError(
@@ -439,11 +500,12 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                     "The step is already running.",
                     outcome="not_started",
                 )
-            self._active[invocation_id] = cancellation
+            self._active[invocation_id] = (cancellation, provider, outgoing)
 
     def _unregister_invocation(self, invocation_id: str, cancellation: Event) -> None:
         with self._active_lock:
-            if self._active.get(invocation_id) is cancellation:
+            active = self._active.get(invocation_id)
+            if active is not None and active[0] is cancellation:
                 del self._active[invocation_id]
 
 
@@ -481,7 +543,6 @@ def terminal_execution_event(
 def add_container_runtime_service(
     server: grpc.Server,
     steps: StepRegistry,
-    local_credential_directory: Path | None = None,
     *,
     install_sigterm_shutdown: bool = True,
     shutdown_grace_seconds: float = 5,
@@ -505,17 +566,18 @@ def add_container_runtime_service(
     A handler the caller installed itself is never overridden.
     """
 
-    service = ContainerRuntimeService(steps, local_credential_directory)
+    service = ContainerRuntimeService(steps)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
     if install_sigterm_shutdown:
-        _install_sigterm_shutdown(server, shutdown_grace_seconds)
+        _install_sigterm_shutdown(server, shutdown_grace_seconds, service)
     return service
 
 
-def _install_sigterm_shutdown(server: grpc.Server, grace: float) -> None:
+def _install_sigterm_shutdown(server: grpc.Server, grace: float, service: ContainerRuntimeService) -> None:
     """Stop ``server`` on SIGTERM when running as the container's PID 1."""
 
     def _stop_server(_signum: int, _frame: object) -> None:
+        service.shutdown()
         server.stop(grace)
 
     # Only PID 1 needs this: the kernel ignores unhandled signals for PID 1,
@@ -541,20 +603,12 @@ class ContainerClient:
     policy, including mTLS and workload-network rules, with the Execution Plane
     rather than in untrusted plugin code.
 
-    ``local_credential_directory`` is the default-off exception described on
-    :func:`_is_approved_credential_path`; the Execution Plane leaves it unset
-    and sends approved secret mount paths only.
+    Each invocation can supply a credential handler that resolves a declared
+    recipe ID within that invocation's authority and returns a JSON object.
     """
 
-    # A class-level default so the production rule also applies to a client
-    # built without running __init__.
-    _local_credential_directory: Path | None = None
-
-    def __init__(
-        self, channel: grpc.Channel, local_credential_directory: Path | None = None
-    ) -> None:
+    def __init__(self, channel: grpc.Channel) -> None:
         self._channel = channel
-        self._local_credential_directory = local_credential_directory
         self._stub = container_pb2_grpc.ContainerServiceStub(channel)
 
     def health(self, *, timeout_seconds: float | None = None) -> tuple[str, ...]:
@@ -577,11 +631,14 @@ class ContainerClient:
         return tuple(response.step_revision_ids)
 
     def execute(
-        self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None
+        self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,
+        credential_handler: Callable[[str], Mapping[str, Any]] | None = None,
     ) -> ContainerResult:
         """Invoke a step type and return its sole terminal result."""
 
-        for event in self.stream(invocation, timeout_seconds=timeout_seconds):
+        for event in self.stream(
+            invocation, timeout_seconds=timeout_seconds, credential_handler=credential_handler
+        ):
             if isinstance(event, ContainerResult):
                 return event
         raise ContainerRemoteError(
@@ -599,6 +656,7 @@ class ContainerClient:
         error_schema: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
         resolve_object_reference: Callable[[str], Mapping[str, Any]] | None = None,
+        credential_handler: Callable[[str], Mapping[str, Any]] | None = None,
     ) -> StandardOutputWrapper:
         """Invoke a step type and reconstruct its SDK-owned output wrapper.
 
@@ -610,7 +668,9 @@ class ContainerClient:
         Referenced output requires a host-supplied resolver.
         """
 
-        result = self.execute(invocation, timeout_seconds=timeout_seconds)
+        result = self.execute(
+            invocation, timeout_seconds=timeout_seconds, credential_handler=credential_handler
+        )
         return standard_output_from_container_result(
             result,
             output_schema=output_schema,
@@ -619,33 +679,90 @@ class ContainerClient:
         )
 
     def stream(
-        self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None
+        self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,
+        credential_handler: Callable[[str], Mapping[str, Any]] | None = None,
     ) -> Iterator[ContainerProgress | ContainerResult]:
         """Invoke a step type and yield progress followed by exactly one result."""
 
-        request = _request_from_invocation(invocation, self._local_credential_directory)
+        request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)
+        outgoing: Queue[container_pb2.ExecuteClientMessage | None] = Queue()
+        outgoing.put(container_pb2.ExecuteClientMessage(start=request))
+        active = Event()
+        active.set()
+        pending: set[str] = set()
+        seen: set[str] = set()
+        pending_lock = Lock()
+
+        def requests() -> Iterator[container_pb2.ExecuteClientMessage]:
+            while active.is_set():
+                message = outgoing.get()
+                if message is None:
+                    return
+                yield message
+
+        def respond(req: container_pb2.CredentialRequest) -> None:
+            response = container_pb2.CredentialResponse(
+                invocation_id=invocation.invocation_id, request_id=req.request_id
+            )
+            try:
+                if credential_handler is None:
+                    raise CredentialAccessError("missing")
+                value = credential_handler(req.name)
+                response.document_json = _encode_json_object(value, "credential")
+            except CredentialAccessError as error:
+                response.error = (container_pb2.CREDENTIAL_ERROR_MISSING
+                    if error.reason == "missing" else container_pb2.CREDENTIAL_ERROR_UNAVAILABLE)
+            except Exception:
+                response.error = container_pb2.CREDENTIAL_ERROR_UNAVAILABLE
+            with pending_lock:
+                pending.discard(req.request_id)
+                if active.is_set():
+                    outgoing.put(container_pb2.ExecuteClientMessage(credential_response=response))
+
         saw_terminal = False
         rpc_failure: ContainerRemoteError | None = None
+        call = None
         try:
-            for event in self._stub.Execute(request, timeout=deadline):
-                if event.invocation_id != invocation.invocation_id:
+            call = self._stub.Execute(requests(), timeout=deadline)
+            for message in call:
+                kind = message.WhichOneof("message")
+                if kind == "credential_request":
+                    req = message.credential_request
+                    if (req.invocation_id != invocation.invocation_id
+                            or not _IDENTITY.fullmatch(req.request_id)
+                            or not _IDENTITY.fullmatch(req.name)):
+                        raise _protocol_error()
+                    with pending_lock:
+                        if req.request_id in seen or len(seen) >= 4096 or len(pending) >= 16 or saw_terminal:
+                            raise _protocol_error()
+                        pending.add(req.request_id)
+                        seen.add(req.request_id)
+                    Thread(target=respond, args=(req,), daemon=True).start()
+                    continue
+                if kind != "event":
+                    raise _protocol_error()
+                event = message.event
+                if event.invocation_id != invocation.invocation_id or saw_terminal:
                     raise _protocol_error()
                 event_kind = event.WhichOneof("event")
                 if event_kind == "progress":
                     yield _progress_from_event(event)
-                    continue
-                if event_kind == "result":
-                    if saw_terminal:
-                        raise _protocol_error()
+                elif event_kind == "result":
                     saw_terminal = True
                     yield _result_from_event(event)
-                    continue
-                if event_kind == "failure":
+                elif event_kind == "failure":
                     raise _remote_failure(event)
-                raise _protocol_error()
+                else:
+                    raise _protocol_error()
         except grpc.RpcError as error:
             rpc_failure = _rpc_error(error)
+        finally:
+            with pending_lock:
+                active.clear()
+                outgoing.put(None)
+            if call is not None:
+                call.cancel()
         if rpc_failure is not None:
             raise rpc_failure
         if not saw_terminal:
@@ -671,7 +788,6 @@ class ContainerClient:
 
 def invocation_from_request(
     request: container_pb2.ExecuteRequest,
-    local_credential_directory: Path | None = None,
 ) -> tuple[ContainerInvocation, Event]:
     try:
         _require_identity(request.invocation_id, "invocation_id")
@@ -697,27 +813,21 @@ def invocation_from_request(
         )
     inputs = _decode_json_object(request.inputs_json, "inputs")
     runtime_context = _decode_json_object(request.runtime_context_json, "runtime context")
-    credential_file_paths = _decode_credential_file_paths(
-        request.credential_file_paths_json, local_credential_directory
-    )
     cancellation = Event()
     invocation = ContainerInvocation(
         invocation_id=request.invocation_id,
         workflow_run_id=request.workflow_run_id,
         step_revision_id=request.step_revision_id,
         inputs=inputs,
-        credential_file_paths=credential_file_paths,
         timeout_seconds=request.timeout_seconds,
         runtime_context=runtime_context,
         cancellation=cancellation,
     )
-    object.__setattr__(invocation, "_credential_directory", local_credential_directory)
     return invocation, cancellation
 
 
 def _request_from_invocation(
     invocation: ContainerInvocation,
-    local_credential_directory: Path | None = None,
 ) -> container_pb2.ExecuteRequest:
     _require_identity(invocation.invocation_id, "invocation_id")
     _require_identity(invocation.workflow_run_id, "workflow_run_id")
@@ -730,9 +840,6 @@ def _request_from_invocation(
         step_revision_id=invocation.step_revision_id,
         runtime_abi=CONTAINER_ABI,
         inputs_json=_encode_json_object(invocation.inputs, "inputs"),
-        credential_file_paths_json=_encode_credential_file_paths(
-            invocation.credential_file_paths, local_credential_directory
-        ),
         timeout_seconds=invocation.timeout_seconds,
         runtime_context_json=_encode_json_object(invocation.runtime_context, "runtime context"),
     )
@@ -799,40 +906,6 @@ def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, An
     return result
 
 
-def _is_approved_credential_path(path: Any, local_directory: Path | None) -> bool:
-    """Whether a credential file path is one this runtime accepts.
-
-    The approved secret mount is the only path a deployed workload ever sees.
-    ``local_directory`` is the deliberate, default-off exception for a local
-    loopback run, where client and runtime share one process and no caller can
-    write under ``/var/run``: a file directly inside that private directory is
-    accepted as well. Both sides are resolved before comparison, so neither a
-    ``..`` segment nor a symlink can name a file outside it.
-    """
-
-    return approved_credential_path(path, local_directory)
-
-
-def _decode_credential_file_paths(
-    value: bytes, local_directory: Path | None = None
-) -> dict[str, str]:
-    paths = _decode_json_object(value, "credential file paths")
-    for name, path in paths.items():
-        if not isinstance(name, str) or not _IDENTITY.fullmatch(name):
-            raise ContainerInvocationError(
-                FailureCode.INVALID_INPUT,
-                "Credential file names must be Syntara identities.",
-                outcome="not_started",
-            )
-        if not _is_approved_credential_path(path, local_directory):
-            raise ContainerInvocationError(
-                FailureCode.INVALID_INPUT,
-                "Credential file paths must be approved secret mount paths.",
-                outcome="not_started",
-            )
-    return paths
-
-
 def _encode_json_object(value: Mapping[str, Any], field_name: str) -> bytes:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a JSON object")
@@ -844,17 +917,6 @@ def _encode_json_object(value: Mapping[str, Any], field_name: str) -> bytes:
     if len(encoded) > _MAX_JSON_BYTES:
         raise ValueError(f"{field_name} payload is too large")
     return encoded
-
-
-def _encode_credential_file_paths(
-    value: Mapping[str, str], local_directory: Path | None = None
-) -> bytes:
-    for name, path in value.items():
-        if not isinstance(name, str) or not _IDENTITY.fullmatch(name):
-            raise ValueError("credential file names must be Syntara identities")
-        if not _is_approved_credential_path(path, local_directory):
-            raise ValueError("credential file paths must be approved secret mount paths")
-    return _encode_json_object(value, "credential file paths")
 
 
 def _require_identity(value: str, field_name: str) -> None:

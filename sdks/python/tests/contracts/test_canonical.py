@@ -27,7 +27,6 @@ def _request() -> dict[str, Any]:
             "effectiveCapabilities": ["network.github-api"],
             "requestHash": "sha256:" + "b" * 64,
         },
-        "credentialLeases": [],
     }
 
 

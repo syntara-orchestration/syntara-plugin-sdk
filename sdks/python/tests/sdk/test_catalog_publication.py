@@ -144,7 +144,7 @@ def _artifact_with_workload_image(artifact: PluginArtifact, image: object) -> Pl
 
     descriptor_document = json.loads(artifact.plugin_manifest.content)
     descriptor_document.setdefault("spec", {})["workloads"] = {
-        "runner": {"abi": "syntara.container/v1alpha1", "image": image}
+        "runner": {"abi": "syntara.container/v1alpha2", "image": image}
     }
     descriptor = OciBlob.create(
         canonical_json_bytes(descriptor_document), artifact.plugin_manifest.descriptor.media_type

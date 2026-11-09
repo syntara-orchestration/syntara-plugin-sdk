@@ -20,8 +20,8 @@
         "size": 14
       }
     },
-    "contractBundleDigest": "sha256:b267e4fbfe5909eb767fed5424f897ba461002b1bd513eb8390480b32ff29370",
-    "plugin_revision_id": "sha256:319adfd52dcc43faa2c3ec9901da1a27babe149d29c72db3b35dd42ce91e9823",
+    "contractBundleDigest": "sha256:7fb9e782ebc4a1a0c55e58ba74b13cfe5f8cf67e24212601766bbdcbdc4b534c",
+    "plugin_revision_id": "sha256:d7f8b582c6a8574892dd06b3303c76e971511e20b7f46a5f42994d8cac096064",
     "sdkVersion": "0.1.0-alpha.1",
     "documentation": {
       "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
@@ -43,7 +43,7 @@
           "type": "object"
         },
         "runtime": {
-          "abi": "syntara.container/v1alpha1",
+          "abi": "syntara.container/v1alpha2",
           "entryPoint": "issue_tools.actions:CreateIssue",
           "kind": "custom-runner",
           "workload": "plugin-workload"
@@ -53,7 +53,7 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "steps/create-issue.yaml",
-        "step_revision_id": "sha256:11d424ce374f8d8cd30b5089a5cdca3713f638a3627681abee75ca7911cea177",
+        "step_revision_id": "sha256:1b12a7d5ae45f9304bccba89e657b9b007ee92de0c3b6537c49bf3b709847497",
         "version": "0.1.0"
       },
       {
@@ -75,7 +75,7 @@
           "type": "object"
         },
         "runtime": {
-          "abi": "syntara.container/v1alpha1",
+          "abi": "syntara.container/v1alpha2",
           "entryPoint": "issue_tools.controls:Deploy",
           "kind": "custom-runner",
           "workload": "plugin-workload"
@@ -85,7 +85,7 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "controls/invoke.yaml",
-        "step_revision_id": "sha256:c250d93f6fc71e499c96cea757bcf69834513717ea3e4e552c0b57ff3a5110ba",
+        "step_revision_id": "sha256:c61156f2c74f6625c8696c306de7dde3b325c7db1dde1701cf4acde64db058b1",
         "version": "0.1.0"
       },
       {
@@ -131,13 +131,13 @@
           "output": "sha256:9165019f477995f6b0f38b7225ae22d3aee26feabba71afb8a2552918ebce43a"
         },
         "sourcePath": "triggers/issue-opened.yaml",
-        "step_revision_id": "sha256:4a7f1609d5ebc7d7b6cb888c9866e55fc4b26b1df6fb6fd1d38d79d11defe6b3",
+        "step_revision_id": "sha256:0f29b66d60ede3cb39137d51ad4d1ed1a3dd77f74985eb7fa9112bc08614dd5a",
         "version": "0.1.0"
       }
     ],
     "workloads": {
       "plugin-workload": {
-        "abi": "syntara.container/v1alpha1",
+        "abi": "syntara.container/v1alpha2",
         "image": "quay.io/acme/issue-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     }

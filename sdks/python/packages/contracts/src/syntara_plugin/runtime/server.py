@@ -29,6 +29,7 @@ from .container import (
     invocation_from_request,
     terminal_execution_event,
 )
+from .credential_callback import CallbackCredentialProvider
 from .execution import StepExecutionError
 from .protocol import container_pb2, container_pb2_grpc
 from .step import BaseStep
@@ -42,7 +43,6 @@ _TLS_CERTIFICATE = "SYNTARA_RUNTIME_GRPC_TLS_CERT"
 _TLS_KEY = "SYNTARA_RUNTIME_GRPC_TLS_KEY"
 _TLS_CLIENT_CA = "SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA"
 _DEFAULT_ADDRESS = "127.0.0.1:50051"
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class RuntimeServerError(RuntimeError):
@@ -50,61 +50,134 @@ class RuntimeServerError(RuntimeError):
 
 
 class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
-    """Async gRPC implementation used by the Python runtime adapter."""
+    """Async invocation stream; step code runs on a separate thread."""
 
     def __init__(self, steps: StepRegistry) -> None:
         self._steps = steps
-        self._active: dict[str, Event] = {}
+        self._active: dict[str, tuple[Event, CallbackCredentialProvider, asyncio.Queue[Any]]] = {}
 
     async def Execute(
-        self,
-        request: container_pb2.ExecuteRequest,
+        self, requests: AsyncIterator[container_pb2.ExecuteClientMessage],
         context: grpc.aio.ServicerContext,
-    ) -> AsyncIterator[container_pb2.ExecutionEvent]:
-        invocation_id = request.invocation_id
+    ) -> AsyncIterator[container_pb2.ExecuteServerMessage]:
+        invocation_id = ""
         cancellation: Event | None = None
+        provider: CallbackCredentialProvider | None = None
+        receiver: asyncio.Task[None] | None = None
+        worker: asyncio.Task[None] | None = None
+        outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
         try:
-            invocation, cancellation = invocation_from_request(request)
+            first = await anext(requests)
+            if first.WhichOneof("message") != "start":
+                raise ContainerInvocationError(FailureCode.INVALID_INPUT, "The invocation is invalid.", outcome="not_started")
+            invocation_id = first.start.invocation_id
+            invocation, cancellation = invocation_from_request(first.start)
             handler = self._steps.resolve(invocation.step_revision_id)
-            self._register_invocation(invocation.invocation_id, cancellation)
-            context.add_done_callback(lambda _context: cancellation.set())
-            result = await self._execute_step(handler, invocation)
-            yield terminal_execution_event(invocation, result)
-        except StepExecutionError as error:
-            yield failure_event(
-                invocation_id,
-                ContainerInvocationError(
-                    error.failure_code,
-                    error.safe_message,
-                    outcome=error.outcome,
-                    detail=error.detail,
-                ),
-            )
+
+            def send(request: container_pb2.CredentialRequest) -> None:
+                try:
+                    loop.call_soon_threadsafe(outgoing.put_nowait, container_pb2.ExecuteServerMessage(credential_request=request))
+                except RuntimeError:
+                    pass
+
+            provider = CallbackCredentialProvider(invocation_id, send, cancellation, invocation.timeout_seconds)
+            object.__setattr__(invocation, "credential_provider", provider)
+            self._register_invocation(invocation_id, cancellation, provider, outgoing)
+
+            def close() -> None:
+                assert cancellation is not None and provider is not None
+                cancellation.set()
+                provider.close()
+
+            context.add_done_callback(lambda _context: close())
+
+            async def receive() -> None:
+                try:
+                    async for message in requests:
+                        if message.WhichOneof("message") != "credential_response":
+                            break
+                        assert provider is not None
+                        provider.receive(message.credential_response)
+                finally:
+                    close()
+                    outgoing.put_nowait(None)
+
+            async def run() -> None:
+                try:
+                    result = await self._execute_step(handler, invocation)
+                    event = terminal_execution_event(invocation, result)
+                except StepExecutionError as error:
+                    event = failure_event(invocation_id, ContainerInvocationError(
+                        error.failure_code, error.safe_message, outcome=error.outcome
+                    ))
+                except ContainerInvocationError as error:
+                    event = failure_event(invocation_id, error)
+                except Exception:
+                    event = failure_event(invocation_id, ContainerInvocationError(
+                        FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
+                    ))
+                finally:
+                    assert provider is not None
+                    provider.close()
+                outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
+                outgoing.put_nowait(None)
+
+            receiver = asyncio.create_task(receive())
+            worker = asyncio.create_task(run())
+            while True:
+                message = await outgoing.get()
+                if message is None:
+                    break
+                yield message
+        except StopAsyncIteration:
+            return
         except ContainerInvocationError as error:
-            yield failure_event(invocation_id, error)
+            yield container_pb2.ExecuteServerMessage(event=failure_event(invocation_id, error))
         except Exception:
-            yield failure_event(
-                invocation_id,
-                ContainerInvocationError(
-                    FailureCode.OUTCOME_UNKNOWN,
-                    INCOMPLETE_STEP_MESSAGE,
-                    outcome="unknown",
-                ),
-            )
+            yield container_pb2.ExecuteServerMessage(event=failure_event(
+                invocation_id, ContainerInvocationError(
+                    FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
+                )
+            ))
         finally:
             if cancellation is not None:
+                cancellation.set()
+                if provider is not None:
+                    provider.close()
                 self._unregister_invocation(invocation_id, cancellation)
+            for task in (receiver, worker):
+                if task is not None:
+                    task.cancel()
 
     async def Cancel(
-        self,
-        request: container_pb2.CancelRequest,
-        context: grpc.aio.ServicerContext,
+        self, request: container_pb2.CancelRequest, context: grpc.aio.ServicerContext,
     ) -> container_pb2.CancelResponse:
-        cancellation = self._active.get(request.invocation_id)
-        if cancellation is None:
+        active = self._active.get(request.invocation_id)
+        if active is None:
             return container_pb2.CancelResponse(accepted=False)
+        cancellation, provider, outgoing = active
         cancellation.set()
+        provider.close()
+        outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
+            request.invocation_id, ContainerInvocationError(
+                FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+            )
+        )))
+        outgoing.put_nowait(None)
         return container_pb2.CancelResponse(accepted=True)
+
+    def shutdown(self) -> None:
+        """Revoke all active reads immediately on shutdown."""
+        for invocation_id, (cancellation, provider, outgoing) in list(self._active.items()):
+            cancellation.set()
+            provider.close()
+            outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
+                invocation_id, ContainerInvocationError(
+                    FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+                )
+            )))
+            outgoing.put_nowait(None)
 
     async def Health(
         self,
@@ -117,17 +190,18 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             step_revision_ids=self._steps.step_revision_ids,
         )
 
-    def _register_invocation(self, invocation_id: str, cancellation: Event) -> None:
+    def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: asyncio.Queue[Any]) -> None:
         if invocation_id in self._active:
             raise ContainerInvocationError(
                 FailureCode.CONFLICT,
                 "The step is already running.",
                 outcome="not_started",
             )
-        self._active[invocation_id] = cancellation
+        self._active[invocation_id] = (cancellation, provider, outgoing)
 
     def _unregister_invocation(self, invocation_id: str, cancellation: Event) -> None:
-        if self._active.get(invocation_id) is cancellation:
+        active = self._active.get(invocation_id)
+        if active is not None and active[0] is cancellation:
             del self._active[invocation_id]
 
     async def _execute_step(
@@ -234,13 +308,17 @@ def load_runtime_bindings(specification: str) -> StepBindings:
 
 def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
     """Create and bind, but do not start, the in-container gRPC server."""
+    return _create_runtime_server(config)[0]
 
+
+def _create_runtime_server(config: RuntimeServerConfig) -> tuple[grpc.aio.Server, AsyncContainerRuntimeService]:
+
+    _validate_listener(config.address, config.tls_certificate, config.tls_key, config.tls_client_ca)
     bindings = load_runtime_bindings(config.bindings_factory)
     steps = resolved_step_registry(config, bindings)
     server = grpc.aio.server()
-    container_pb2_grpc.add_ContainerServiceServicer_to_server(
-        AsyncContainerRuntimeService(steps), server
-    )
+    service = AsyncContainerRuntimeService(steps)
+    container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
     credentials = _server_credentials(config)
     port = (
         server.add_secure_port(config.address, credentials)
@@ -250,7 +328,7 @@ def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
     if port == 0:
         message = f"could not bind the runtime gRPC listener: {config.address}"
         raise RuntimeServerError(message)
-    return server
+    return server, service
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -400,7 +478,7 @@ def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) 
 async def serve_runtime(config: RuntimeServerConfig) -> None:
     """Run the gRPC server until SIGTERM or SIGINT is received."""
 
-    server = create_runtime_server(config)
+    server, service = _create_runtime_server(config)
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -409,6 +487,7 @@ async def serve_runtime(config: RuntimeServerConfig) -> None:
     try:
         await stopping.wait()
     finally:
+        service.shutdown()
         await server.stop(grace=30)
 
 
@@ -462,25 +541,26 @@ def _listener_settings(
     environ: Mapping[str, str],
 ) -> tuple[str, Path | None, Path | None, Path | None]:
     address = environ.get(_GRPC_ADDRESS, _DEFAULT_ADDRESS).strip()
-    host, port = _split_address(address)
-    if not host or not port.isdecimal() or not 1 <= int(port) <= 65_535:
-        message = f"{_GRPC_ADDRESS} must be a host:port TCP address"
-        raise RuntimeServerError(message)
-
     certificate = _optional_path(environ.get(_TLS_CERTIFICATE))
     key = _optional_path(environ.get(_TLS_KEY))
     client_ca = _optional_path(environ.get(_TLS_CLIENT_CA))
+    _validate_listener(address, certificate, key, client_ca)
+    return address, certificate, key, client_ca
+
+
+def _validate_listener(
+    address: str, certificate: Path | None, key: Path | None, client_ca: Path | None,
+) -> None:
+    host, port = _split_address(address)
+    if not host or not port.isdecimal() or not 1 <= int(port) <= 65_535:
+        raise RuntimeServerError(f"{_GRPC_ADDRESS} must be a host:port TCP address")
     supplied_tls = (certificate, key, client_ca)
     if any(value is not None for value in supplied_tls) and not all(
         value is not None for value in supplied_tls
     ):
-        message = "runtime gRPC TLS requires certificate, key, and client CA paths"
-        raise RuntimeServerError(message)
-    normalized_host = host.removeprefix("[").removesuffix("]").casefold()
-    if normalized_host not in _LOOPBACK_HOSTS and certificate is None:
-        message = "non-loopback runtime gRPC listeners require mutual TLS"
-        raise RuntimeServerError(message)
-    return address, certificate, key, client_ca
+        raise RuntimeServerError("runtime gRPC TLS requires certificate, key, and client CA paths")
+    if certificate is None:
+        raise RuntimeServerError("runtime gRPC TCP listeners require mutual TLS")
 
 
 def _split_address(address: str) -> tuple[str, str]:
