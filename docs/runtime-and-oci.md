@@ -50,6 +50,12 @@ accepts a `credential_handler` per execution or stream, so the host can bind
 each resolver to its own attempt. The channel must authenticate both peers
 and protect confidentiality (mTLS in production).
 
+A host may close its send stream while awaiting the terminal event. The step
+continues, but credential reads cannot complete after that closure. An invalid
+follow-up message processed before the terminal event is committed cancels the
+invocation and produces a cancellation failure. Later messages may be ignored.
+On shutdown, active invocations may finish during the server's grace period.
+
 The generic `ContainerWorkloadRequest` carries its work item and policy
 snapshot without credential leases or secret file paths. Its work item contains
 opaque `credentialHandles` for platform use; these are not sent to the

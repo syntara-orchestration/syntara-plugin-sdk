@@ -1023,3 +1023,48 @@ def test_async_shutdown_emits_cancelled_event() -> None:
         finally:
             release.set()
     asyncio.run(scenario())
+
+
+def test_serve_runtime_waits_for_grace_before_revoking_invocations(monkeypatch: Any) -> None:
+    from syntara_plugin.runtime import server as runtime_server
+
+    async def scenario() -> None:
+        stopping = None
+        stop_started = asyncio.Event()
+        stop_finished = asyncio.Event()
+        revoked = False
+
+        class Server:
+            async def start(self) -> None:
+                pass
+
+            async def stop(self, grace: float) -> None:
+                assert grace == 30
+                stop_started.set()
+                await stop_finished.wait()
+
+        class Service:
+            def shutdown(self) -> None:
+                nonlocal revoked
+                revoked = True
+
+        def add_signal_handler(_signal: Any, callback: Any) -> None:
+            nonlocal stopping
+            stopping = callback
+
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "add_signal_handler", add_signal_handler)
+        monkeypatch.setattr(runtime_server, "_create_runtime_server", lambda _config: (Server(), Service()))
+        task = asyncio.create_task(runtime_server.serve_runtime(None))
+        await asyncio.sleep(0)
+        assert stopping is not None
+        stopping()
+        await asyncio.wait_for(stop_started.wait(), 2)
+        try:
+            assert not revoked
+        finally:
+            stop_finished.set()
+            await task
+        assert revoked
+
+    asyncio.run(scenario())

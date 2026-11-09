@@ -7,7 +7,7 @@ import importlib
 import json
 import os
 import signal
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -92,7 +92,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
 
             context.add_done_callback(lambda _context: close())
 
-            receiver = asyncio.create_task(self._receive_responses(requests, bound_provider, close, outgoing))
+            receiver = asyncio.create_task(self._receive_responses(requests, bound_provider, invocation, outgoing))
             worker = asyncio.create_task(self._run_step(handler, invocation, bound_provider, outgoing))
             while True:
                 message = await outgoing.get()
@@ -123,17 +123,23 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     async def _receive_responses(
         requests: AsyncIterator[container_pb2.ExecuteClientMessage],
         provider: CallbackCredentialProvider,
-        close: Callable[[], None],
+        invocation: ContainerInvocation,
         outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None],
     ) -> None:
         try:
             async for message in requests:
                 if message.WhichOneof("message") != "credential_response":
-                    break
+                    invocation.cancellation.set()
+                    outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
+                        invocation.invocation_id, ContainerInvocationError(
+                            FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+                        )
+                    )))
+                    outgoing.put_nowait(None)
+                    return
                 provider.receive(message.credential_response)
         finally:
-            close()
-            outgoing.put_nowait(None)
+            provider.close()
 
     async def _run_step(
         self,
@@ -497,8 +503,10 @@ async def serve_runtime(config: RuntimeServerConfig) -> None:
     try:
         await stopping.wait()
     finally:
-        service.shutdown()
-        await server.stop(grace=30)
+        try:
+            await server.stop(grace=30)
+        finally:
+            service.shutdown()
 
 
 def main() -> None:

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import signal
+from _thread import LockType
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from queue import Queue
@@ -367,17 +368,27 @@ def _close_sync_invocation(
 def _receive_sync_responses(
     requests: Iterator[container_pb2.ExecuteClientMessage],
     provider: CallbackCredentialProvider,
-    close: Callable[[], None],
+    invocation: ContainerInvocation,
+    outgoing: Queue[container_pb2.ExecuteServerMessage | None],
+    terminal_lock: LockType,
 ) -> None:
     try:
         for message in requests:
             if message.WhichOneof("message") != "credential_response":
-                break
+                with terminal_lock:
+                    invocation.cancellation.set()
+                    outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
+                        invocation.invocation_id, ContainerInvocationError(
+                            FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+                        )
+                    )))
+                    outgoing.put(None)
+                return
             provider.receive(message.credential_response)
     except Exception:
         pass
     finally:
-        close()
+        provider.close()
 
 
 def _run_sync_step(
@@ -385,6 +396,7 @@ def _run_sync_step(
     invocation: ContainerInvocation,
     provider: CallbackCredentialProvider,
     outgoing: Queue[container_pb2.ExecuteServerMessage | None],
+    terminal_lock: LockType,
 ) -> None:
     try:
         result = handler(invocation)
@@ -401,8 +413,9 @@ def _run_sync_step(
         ))
     finally:
         provider.close()
-    outgoing.put(container_pb2.ExecuteServerMessage(event=event))
-    outgoing.put(None)
+    with terminal_lock:
+        outgoing.put(container_pb2.ExecuteServerMessage(event=event))
+        outgoing.put(None)
 
 
 class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
@@ -420,6 +433,8 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         cancellation: Event | None = None
         provider: CallbackCredentialProvider | None = None
         outgoing: Queue[container_pb2.ExecuteServerMessage | None] = Queue()
+        # Order malformed-message cancellation against the worker's terminal event.
+        terminal_lock = Lock()
         try:
             first = next(requests)
             if first.WhichOneof("message") != "start":
@@ -443,8 +458,8 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             if not context.add_callback(close):
                 close()
 
-            Thread(target=_receive_sync_responses, args=(requests, provider, close), daemon=True).start()
-            Thread(target=_run_sync_step, args=(handler, invocation, provider, outgoing), daemon=True).start()
+            Thread(target=_receive_sync_responses, args=(requests, provider, invocation, outgoing, terminal_lock), daemon=True).start()
+            Thread(target=_run_sync_step, args=(handler, invocation, provider, outgoing, terminal_lock), daemon=True).start()
             while context.is_active():
                 message = outgoing.get()
                 if message is None:
@@ -593,8 +608,13 @@ def _install_sigterm_shutdown(server: grpc.Server, grace: float, service: Contai
     """Stop ``server`` on SIGTERM when running as the container's PID 1."""
 
     def _stop_server(_signum: int, _frame: object) -> None:
-        service.shutdown()
-        server.stop(grace)
+        stopped = server.stop(grace)
+
+        def revoke_after_stop() -> None:
+            stopped.wait()
+            service.shutdown()
+
+        Thread(target=revoke_after_stop, daemon=True).start()
 
     # Only PID 1 needs this: the kernel ignores unhandled signals for PID 1,
     # so without a handler SIGTERM never reaches the process. Every other

@@ -257,3 +257,294 @@ def test_shared_client_uses_attempt_specific_resolvers() -> None:
     finally:
         channel.close()
         server.stop(0).wait()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("malformed", [False, True])
+def test_request_stream_end_has_a_terminal_event(
+    asynchronous: bool, malformed: bool, monkeypatch: Any,
+) -> None:
+    from syntara_plugin.runtime.container import _request_from_invocation
+
+    provider_closed = Event()
+    release = Event()
+    original_close = CallbackCredentialProvider.close
+
+    def close(provider: CallbackCredentialProvider) -> None:
+        original_close(provider)
+        provider_closed.set()
+
+    monkeypatch.setattr(CallbackCredentialProvider, "close", close)
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        release.wait(5)
+        return ContainerResult(_DIGEST, output={"ok": True})
+
+    def consume(port: int) -> list[Any]:
+        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        try:
+            start = container_pb2.ExecuteClientMessage(start=_request_from_invocation(_invocation()))
+            messages = [start, start] if malformed else [start]
+            return list(container_pb2_grpc.ContainerServiceStub(channel).Execute(iter(messages), timeout=3))
+        finally:
+            channel.close()
+
+    def check(messages: list[Any]) -> None:
+        assert len(messages) == 1
+        if malformed:
+            assert messages[0].event.failure.code == FailureCode.CANCELLED
+            assert messages[0].event.failure.outcome == "not_completed"
+        else:
+            assert messages[0].event.WhichOneof("event") == "result"
+
+    async def run_async() -> None:
+        server = grpc.aio.server()
+        container_pb2_grpc.add_ContainerServiceServicer_to_server(
+            AsyncContainerRuntimeService(StepRegistry({"example.step": handler})), server
+        )
+        port = server.add_insecure_port("127.0.0.1:0")
+        await server.start()
+        task = asyncio.create_task(asyncio.to_thread(consume, port))
+        try:
+            assert await asyncio.to_thread(provider_closed.wait, 2)
+            release.set()
+            check(await asyncio.wait_for(task, 2))
+        finally:
+            release.set()
+            await server.stop(0)
+
+    if asynchronous:
+        asyncio.run(run_async())
+    else:
+        server = grpc.server(ThreadPoolExecutor(max_workers=2))
+        add_container_runtime_service(server, StepRegistry({"example.step": handler}))
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                task = pool.submit(consume, port)
+                assert provider_closed.wait(2)
+                release.set()
+                check(task.result(timeout=2))
+        finally:
+            release.set()
+            server.stop(0).wait()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_half_close_unblocks_pending_credential_read(asynchronous: bool) -> None:
+    from syntara_plugin.runtime.container import _request_from_invocation
+
+    half_close = Event()
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        assert invocation.credential_provider is not None
+        view = invocation.credential_provider.restrict(frozenset({_NAME}), lambda document: None)
+        try:
+            try:
+                view.read(_NAME)
+                raise AssertionError("credential read unexpectedly succeeded")
+            except CredentialAccessError as error:
+                return ContainerResult(_DIGEST, output={"reason": error.reason})
+        finally:
+            view.close()
+
+    def consume(port: int) -> list[Any]:
+        def requests():
+            yield container_pb2.ExecuteClientMessage(start=_request_from_invocation(_invocation()))
+            assert half_close.wait(3)
+
+        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        messages = []
+        try:
+            for message in container_pb2_grpc.ContainerServiceStub(channel).Execute(requests(), timeout=4):
+                messages.append(message)
+                if message.WhichOneof("message") == "credential_request":
+                    half_close.set()
+            return messages
+        finally:
+            half_close.set()
+            channel.close()
+
+    def check(messages: list[Any]) -> None:
+        assert [message.WhichOneof("message") for message in messages] == ["credential_request", "event"]
+        assert messages[1].event.WhichOneof("event") == "result"
+        assert messages[1].event.result.output_json == b'{"reason":"expired"}'
+
+    async def run_async() -> None:
+        server = grpc.aio.server()
+        container_pb2_grpc.add_ContainerServiceServicer_to_server(
+            AsyncContainerRuntimeService(StepRegistry({"example.step": handler})), server
+        )
+        port = server.add_insecure_port("127.0.0.1:0")
+        await server.start()
+        try:
+            check(await asyncio.to_thread(consume, port))
+        finally:
+            half_close.set()
+            await server.stop(0)
+
+    if asynchronous:
+        asyncio.run(run_async())
+    else:
+        server = grpc.server(ThreadPoolExecutor(max_workers=2))
+        add_container_runtime_service(server, StepRegistry({"example.step": handler}))
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        try:
+            check(consume(port))
+        finally:
+            half_close.set()
+            server.stop(0).wait()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_shutdown_grace_delivers_running_invocation_result(asynchronous: bool, monkeypatch: Any) -> None:
+    import signal
+
+    from syntara_plugin.runtime import server as runtime_server
+    from syntara_plugin.runtime.container import _install_sigterm_shutdown
+
+    started = Event()
+    release = Event()
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        started.set()
+        release.wait(5)
+        return ContainerResult(_DIGEST, output={"ok": True})
+
+    def consume(port: int) -> ContainerResult:
+        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+            return ContainerClient(channel).execute(_invocation())
+
+    async def run_async() -> None:
+        grpc_server = grpc.aio.server()
+        service = AsyncContainerRuntimeService(StepRegistry({"example.step": handler}))
+        container_pb2_grpc.add_ContainerServiceServicer_to_server(service, grpc_server)
+        port = grpc_server.add_insecure_port("127.0.0.1:0")
+        listening = asyncio.Event()
+        draining = asyncio.Event()
+        signals = []
+
+        class Server:
+            async def start(self) -> None:
+                await grpc_server.start()
+                listening.set()
+
+            async def stop(self, grace: float) -> None:
+                draining.set()
+                await grpc_server.stop(grace)
+
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "add_signal_handler", lambda _sig, callback: signals.append(callback))
+        monkeypatch.setattr(runtime_server, "_create_runtime_server", lambda _config: (Server(), service))
+        serving = asyncio.create_task(runtime_server.serve_runtime(None))
+        await listening.wait()
+        result = asyncio.create_task(asyncio.to_thread(consume, port))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            signals[0]()
+            await asyncio.wait_for(draining.wait(), 2)
+            release.set()
+            assert (await asyncio.wait_for(result, 2)).output == {"ok": True}
+            await asyncio.wait_for(serving, 2)
+        finally:
+            release.set()
+            if not serving.done():
+                serving.cancel()
+                await grpc_server.stop(0)
+
+    if asynchronous:
+        asyncio.run(run_async())
+    else:
+        grpc_server = grpc.server(ThreadPoolExecutor(max_workers=2))
+        service = add_container_runtime_service(
+            grpc_server, StepRegistry({"example.step": handler}), install_sigterm_shutdown=False
+        )
+        port = grpc_server.add_insecure_port("127.0.0.1:0")
+        grpc_server.start()
+        signals = []
+        monkeypatch.setattr("os.getpid", lambda: 1)
+        monkeypatch.setattr(signal, "getsignal", lambda _sig: signal.SIG_DFL)
+        monkeypatch.setattr(signal, "signal", lambda _sig, callback: signals.append(callback))
+        _install_sigterm_shutdown(grpc_server, 3, service)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                result = pool.submit(consume, port)
+                assert started.wait(2)
+                signals[0](signal.SIGTERM, None)
+                release.set()
+                assert result.result(timeout=2).output == {"ok": True}
+        finally:
+            release.set()
+            grpc_server.stop(0).wait()
+
+
+def test_malformed_message_observed_before_sync_terminal_commit_wins(monkeypatch: Any) -> None:
+    from syntara_plugin.runtime import container as runtime_container
+
+    result_computed = Event()
+    release_result = Event()
+    malformed_observed = Event()
+    release_failure = Event()
+    result_queued = Event()
+    original_terminal = runtime_container.terminal_execution_event
+    original_failure = runtime_container.failure_event
+
+    class RecordingQueue(Queue):
+        def put(self, item: Any, *args: Any, **kwargs: Any) -> None:
+            super().put(item, *args, **kwargs)
+            if item is not None and item.HasField("event") and item.event.WhichOneof("event") == "result":
+                result_queued.set()
+
+    def terminal(invocation: ContainerInvocation, result: ContainerResult) -> Any:
+        event = original_terminal(invocation, result)
+        result_computed.set()
+        assert release_result.wait(3)
+        return event
+
+    def failure(invocation_id: str, error: Any) -> Any:
+        if error.code == FailureCode.CANCELLED:
+            malformed_observed.set()
+            assert release_failure.wait(3)
+        return original_failure(invocation_id, error)
+
+    monkeypatch.setattr(runtime_container, "Queue", RecordingQueue)
+    monkeypatch.setattr(runtime_container, "terminal_execution_event", terminal)
+    monkeypatch.setattr(runtime_container, "failure_event", failure)
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    add_container_runtime_service(
+        server,
+        StepRegistry({"example.step": lambda _: ContainerResult(_DIGEST, output={"ok": True})}),
+        install_sigterm_shutdown=False,
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+
+    def consume() -> list[Any]:
+        def requests():
+            start = container_pb2.ExecuteClientMessage(start=runtime_container._request_from_invocation(_invocation()))
+            yield start
+            assert result_computed.wait(3)
+            yield start
+
+        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+            return list(container_pb2_grpc.ContainerServiceStub(channel).Execute(requests(), timeout=4))
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(consume)
+            try:
+                assert malformed_observed.wait(2)
+                release_result.set()
+                result_queued.wait(0.5)
+            finally:
+                release_result.set()
+                release_failure.set()
+            messages = future.result(timeout=2)
+            assert len(messages) == 1
+            assert messages[0].event.failure.code == FailureCode.CANCELLED
+    finally:
+        release_result.set()
+        release_failure.set()
+        server.stop(0).wait()

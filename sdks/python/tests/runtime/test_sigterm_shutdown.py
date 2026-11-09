@@ -96,3 +96,29 @@ def test_sigterm_stops_the_running_pid1_server(monkeypatch) -> None:
         waiter.join(timeout=10)
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+def test_sigterm_waits_for_grace_before_revoking_invocations(monkeypatch) -> None:
+    from syntara_plugin.runtime.container import _install_sigterm_shutdown
+
+    terminated = Event()
+    revoked = Event()
+    handlers = []
+
+    class Server:
+        def stop(self, grace):
+            assert grace == 5
+            return terminated
+
+    class Service:
+        def shutdown(self):
+            revoked.set()
+
+    monkeypatch.setattr(os, "getpid", lambda: 1)
+    monkeypatch.setattr(signal, "getsignal", lambda _: signal.SIG_DFL)
+    monkeypatch.setattr(signal, "signal", lambda _, handler: handlers.append(handler))
+    _install_sigterm_shutdown(Server(), 5, Service())
+    handlers[0](signal.SIGTERM, None)
+    assert not revoked.is_set()
+    terminated.set()
+    assert revoked.wait(2)

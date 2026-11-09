@@ -30,6 +30,13 @@ reject leaks. An access failure never includes provider details. Hosts must not
 log sensitive messages. The callback grants access only for the invocation;
 it is not a sandbox for arbitrary Python code.
 
+Closing the client's send stream revokes credential reads but leaves the
+invocation running so it can return a terminal event. A malformed follow-up
+message processed before the terminal event is committed cancels the
+invocation and returns a cancellation failure; later messages may be ignored.
+Server shutdown allows active invocations to finish during the configured grace
+period; remaining reads and invocations are revoked when that period ends.
+
 The local CLI serves supplied credentials from memory over a private socket in
 source mode or an authenticated channel to its managed image. It writes no
 delivery files and keeps rejecting credentials for self-managed runtimes.

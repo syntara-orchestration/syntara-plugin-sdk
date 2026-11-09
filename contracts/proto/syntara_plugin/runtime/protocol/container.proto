@@ -34,7 +34,11 @@ message ExecuteRequest {
 }
 
 // The first client message is start; subsequent messages are responses to
-// credential requests. Each request ID is unique within an invocation.
+// credential requests. Each request ID is unique within an invocation. A
+// client may close its send stream; the invocation continues, but pending and
+// future credential reads fail. Any other subsequent message processed before
+// the terminal event is committed cancels the invocation with a terminal
+// CANCELLED failure. Messages arriving after that point may be ignored.
 message ExecuteClientMessage {
   oneof message {
     ExecuteRequest start = 1;
