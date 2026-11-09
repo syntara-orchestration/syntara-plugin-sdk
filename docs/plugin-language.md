@@ -240,32 +240,41 @@ Python JSON-number rendering (`1.0`, `-0.0`, and `1e-07` remain distinct
 spellings); object keys and strings are not Unicode-normalized.
 
 The plugin projection contains `projection`, `kind: "plugin"`, and the complete
-compiled descriptor without generated IDs. It excludes every workload binding
-referenced by a custom-runner target because that image embeds the registration
+compiled descriptor without generated IDs or `sdkVersion`. It excludes every
+workload binding referenced by a custom-runner target because that image embeds the registration
 manifest containing these IDs. Provider-only and unreferenced workload bindings
 remain in the projection. The step type projection contains `projection`,
-`kind: "step"`, the plugin's namespace/name/version, `sdkVersion`,
-`contractBundleDigest`, and the complete compiled target without its generated
-ID.
+`kind: "step"`, the plugin's namespace/name/version, `contractBundleDigest`,
+and the complete compiled target without its generated ID.
 
 **Step type revision change rule:** The compiler creates a new `step_revision_id`
 when any part of that projection changes. This includes the plugin
 namespace/name/release version; the step type's category and input, output, or
 error contracts; its runtime kind, ABI, and declared entry point or
-implementation reference; the exact `sdkVersion`; and the contract-bundle
+implementation reference; and the contract-bundle
 digest. A platform-runner implementation reference is part of the compiled
 target and therefore participates in both revision projections.
 
-A step type revision does not change for a workload image repository, image
-digest, or registration-time image selection; for another step type; or for
-plugin documentation. The latter two changes can create a new
+A step type revision does not change for an SDK package version, workload image
+repository, image digest, or registration-time image selection; for another
+step type; or for plugin documentation. The latter two changes can create a new
 `plugin_revision_id` without changing this step type's revision.
 
-Recompiling the same author inputs with a different SDK version or contract
-bundle intentionally creates a distinct step type revision. Existing published
-revisions remain valid. Before a new custom-runner revision can execute, its
-selected workload image must contain a registration-manifest mapping for that
-new revision.
+Recompiling unchanged author inputs with a different SDK version preserves both
+revision IDs, provided the compiled contract and contract bundle are unchanged.
+The version remains in the descriptor and registration manifest, so their bytes
+and the plugin artifact digest can still change. A registration manifest must
+match its particular descriptor, including `sdkVersion`.
+
+Earlier prerelease builds incorrectly included `sdkVersion` in the v1
+projection. This correction changes their revision IDs, and the current
+validator rejects their old IDs. Recompile those descriptors and regenerate
+registration manifests and custom-runner images, then update the corresponding
+bindings and installed references before dispatching the corrected revisions.
+Coordinate the corrected contracts implementation with every descriptor
+validator, including the Execution Plane: validators using the old projection
+reject corrected IDs, while corrected validators reject old IDs.
+Future changes to the projection algorithm require a new projection version.
 
 Revision IDs identify compiled contracts, not image bytes. The workload image
 digest remains separately bound in `spec.workloads` and in the complete

@@ -108,16 +108,26 @@ def test_revision_fixture_is_a_stable_projection_vector() -> None:
             validate_registration_manifest(fixture, "plugin-workload", altered)
 
 
-def test_revision_ids_commit_to_sdk_plugin_and_step_contracts() -> None:
+def test_revision_ids_exclude_sdk_version() -> None:
     descriptor = _descriptor([_target()])
     original_plugin = plugin_revision_id(descriptor)
     original_step = step_revision_id(descriptor, descriptor["spec"]["targets"][0])
     descriptor["spec"]["sdkVersion"] = "0.1.0-alpha.2"
-    assert plugin_revision_id(descriptor) != original_plugin
-    assert step_revision_id(descriptor, descriptor["spec"]["targets"][0]) != original_step
-    assert len(revision_errors(descriptor)) == 2
+    assert plugin_revision_id(descriptor) == original_plugin
+    assert step_revision_id(descriptor, descriptor["spec"]["targets"][0]) == original_step
+    assert revision_errors(descriptor) == ()
     descriptor["spec"]["plugin_revision_id"] = "sha256:" + "0" * 64
     assert "plugin revision ID does not match its contract" in revision_errors(descriptor)
+
+
+def test_descriptor_requires_sdk_version_even_though_revision_excludes_it() -> None:
+    descriptor = json.loads(
+        (Path(__file__).parents[4] / "contracts/fixtures/plugin-descriptor.valid.json").read_text()
+    )
+    del descriptor["spec"]["sdkVersion"]
+
+    assert validate_document(load_bundle(), "plugin_descriptor", descriptor)
+    assert revision_errors(descriptor) == ("plugin descriptor has invalid revision inputs",)
 
 
 def test_platform_implementation_changes_step_and_plugin_revision() -> None:

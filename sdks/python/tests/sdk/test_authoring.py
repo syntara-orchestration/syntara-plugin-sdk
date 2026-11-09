@@ -322,6 +322,34 @@ def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path
     _assert_missing_workload_rejected(first.descriptor)
 
 
+def test_sdk_version_changes_metadata_not_compiled_contract_revisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
+    monkeypatch.setattr("syntara_plugin.sdk.authoring.version", lambda _name: "1.2.3")
+    first = _compile(root)
+    monkeypatch.setattr("syntara_plugin.sdk.authoring.version", lambda _name: "1.2.4")
+    second = _compile(root)
+
+    first_spec = first.descriptor["spec"]
+    second_spec = second.descriptor["spec"]
+    assert first_spec["sdkVersion"] == "1.2.3"
+    assert second_spec["sdkVersion"] == "1.2.4"
+    assert first_spec["plugin_revision_id"] == second_spec["plugin_revision_id"]
+    assert first_spec["targets"][0]["step_revision_id"] == second_spec["targets"][0]["step_revision_id"]
+    assert first.digest != second.digest
+
+    first_manifest = registration_manifest(first.descriptor, "plugin-workload")
+    second_manifest = registration_manifest(second.descriptor, "plugin-workload")
+    assert first_manifest["sdkVersion"] == "1.2.3"
+    assert second_manifest["sdkVersion"] == "1.2.4"
+    assert first_manifest["steps"] == second_manifest["steps"]
+    validate_registration_manifest(first.descriptor, "plugin-workload", first_manifest)
+    validate_registration_manifest(second.descriptor, "plugin-workload", second_manifest)
+    with pytest.raises(ValueError, match="does not match"):
+        validate_registration_manifest(first.descriptor, "plugin-workload", second_manifest)
+
+
 def _assert_registration_manifest_rejected(descriptor, manifest) -> None:
     with pytest.raises(ValueError):
         validate_registration_manifest(descriptor, "plugin-workload", manifest)
