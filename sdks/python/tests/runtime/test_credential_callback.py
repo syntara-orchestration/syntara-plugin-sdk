@@ -17,6 +17,7 @@ from syntara_plugin.runtime import (
     ContainerResult,
     CredentialAccessError,
     FailureCode,
+    ScopedCredentialProvider,
     StepRegistry,
     add_container_runtime_service,
 )
@@ -36,6 +37,13 @@ def _invocation() -> ContainerInvocation:
     )
 
 
+def _record_read_failure(view: ScopedCredentialProvider, errors: list[str]) -> None:
+    try:
+        view.read(_NAME)
+    except CredentialAccessError as error:
+        errors.append(error.reason)
+
+
 def test_mismatched_and_late_responses_are_discarded(monkeypatch: Any) -> None:
     import syntara_plugin.runtime.credential_callback as callback
 
@@ -46,13 +54,7 @@ def test_mismatched_and_late_responses_are_discarded(monkeypatch: Any) -> None:
     view = provider.restrict(frozenset({_NAME}), recorded.append)
     errors: list[str] = []
 
-    def read() -> None:
-        try:
-            view.read(_NAME)
-        except CredentialAccessError as error:
-            errors.append(error.reason)
-
-    thread = Thread(target=read)
+    thread = Thread(target=_record_read_failure, args=(view, errors))
     thread.start()
     request = requests.get(timeout=1)
     provider.receive(container_pb2.CredentialResponse(
@@ -75,13 +77,7 @@ def test_scope_close_unblocks_pending_read() -> None:
     view = provider.restrict(frozenset({_NAME}), lambda document: None)
     result: list[str] = []
 
-    def read() -> None:
-        try:
-            view.read(_NAME)
-        except CredentialAccessError as error:
-            result.append(error.reason)
-
-    thread = Thread(target=read)
+    thread = Thread(target=_record_read_failure, args=(view, result))
     thread.start()
     requests.get(timeout=1)
     view.close()
@@ -194,13 +190,7 @@ def test_invalid_credential_documents_fail_without_recording(payload: bytes) -> 
     view = provider.restrict(frozenset({_NAME}), recorded.append)
     errors: list[str] = []
 
-    def read() -> None:
-        try:
-            view.read(_NAME)
-        except CredentialAccessError as error:
-            errors.append(error.reason)
-
-    thread = Thread(target=read)
+    thread = Thread(target=_record_read_failure, args=(view, errors))
     thread.start()
     request = requests.get(timeout=1)
     provider.receive(container_pb2.CredentialResponse(
@@ -218,13 +208,7 @@ def test_pending_reads_are_bounded_and_revoked_together() -> None:
     view = provider.restrict(frozenset({_NAME}), lambda document: None)
     errors: list[str] = []
 
-    def read() -> None:
-        try:
-            view.read(_NAME)
-        except CredentialAccessError as error:
-            errors.append(error.reason)
-
-    threads = [Thread(target=read) for _ in range(16)]
+    threads = [Thread(target=_record_read_failure, args=(view, errors)) for _ in range(16)]
     for thread in threads:
         thread.start()
     for _ in threads:
