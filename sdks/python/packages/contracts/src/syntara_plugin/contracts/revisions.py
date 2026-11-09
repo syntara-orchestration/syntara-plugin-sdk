@@ -23,7 +23,6 @@ def step_revision_id(descriptor: Mapping[str, Any], target: Mapping[str, Any]) -
             "projection": REVISION_PROJECTION_VERSION,
             "kind": "step",
             "plugin": {key: metadata[key] for key in ("namespace", "name", "version")},
-            "sdkVersion": spec["sdkVersion"],
             "contractBundleDigest": spec["contractBundleDigest"],
             "target": {key: value for key, value in target.items() if key != "step_revision_id"},
         }
@@ -35,6 +34,7 @@ def plugin_revision_id(descriptor: Mapping[str, Any]) -> str:
 
     spec = dict(descriptor["spec"])
     spec.pop("plugin_revision_id", None)
+    spec.pop("sdkVersion", None)
     spec["targets"] = [
         {key: value for key, value in target.items() if key != "step_revision_id"}
         for target in spec["targets"]
