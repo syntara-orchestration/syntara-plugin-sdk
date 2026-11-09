@@ -44,6 +44,7 @@ _MAX_TIMEOUT_SECONDS = 86_400
 _MAX_STATUS_CODE = 4_294_967_295
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
 INCOMPLETE_STEP_MESSAGE = "The step did not complete."
+_CANCELLED_STEP_MESSAGE = "The step was cancelled."
 
 # A platform-owned runner can handle any installed step type that the control
 # plane has already resolved to that runner. It is a health-advertisement
@@ -353,6 +354,57 @@ class StepRegistry:
         )
 
 
+def _close_sync_invocation(
+    cancellation: Event,
+    provider: CallbackCredentialProvider,
+    outgoing: Queue[container_pb2.ExecuteServerMessage | None],
+) -> None:
+    cancellation.set()
+    provider.close()
+    outgoing.put(None)
+
+
+def _receive_sync_responses(
+    requests: Iterator[container_pb2.ExecuteClientMessage],
+    provider: CallbackCredentialProvider,
+    close: Callable[[], None],
+) -> None:
+    try:
+        for message in requests:
+            if message.WhichOneof("message") != "credential_response":
+                break
+            provider.receive(message.credential_response)
+    except Exception:
+        pass
+    finally:
+        close()
+
+
+def _run_sync_step(
+    handler: ContainerStepHandler,
+    invocation: ContainerInvocation,
+    provider: CallbackCredentialProvider,
+    outgoing: Queue[container_pb2.ExecuteServerMessage | None],
+) -> None:
+    try:
+        result = handler(invocation)
+        event = terminal_execution_event(invocation, result)
+    except StepExecutionError as error:
+        event = failure_event(invocation.invocation_id, ContainerInvocationError(
+            error.failure_code, error.safe_message, outcome=error.outcome
+        ))
+    except ContainerInvocationError as error:
+        event = failure_event(invocation.invocation_id, error)
+    except Exception:
+        event = failure_event(invocation.invocation_id, ContainerInvocationError(
+            FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
+        ))
+    finally:
+        provider.close()
+    outgoing.put(container_pb2.ExecuteServerMessage(event=event))
+    outgoing.put(None)
+
+
 class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     """Bidirectional invocation service on an authenticated, confidential channel."""
 
@@ -386,49 +438,13 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             self._register_invocation(invocation_id, cancellation, provider, outgoing)
 
             def close() -> None:
-                assert cancellation is not None and provider is not None
-                cancellation.set()
-                provider.close()
-                outgoing.put(None)
+                _close_sync_invocation(invocation.cancellation, provider, outgoing)
 
             if not context.add_callback(close):
                 close()
 
-            def receive() -> None:
-                try:
-                    for message in requests:
-                        if message.WhichOneof("message") == "credential_response":
-                            assert provider is not None
-                            provider.receive(message.credential_response)
-                        else:
-                            break
-                except Exception:
-                    pass
-                finally:
-                    close()
-
-            def run() -> None:
-                try:
-                    result = handler(invocation)
-                    event = terminal_execution_event(invocation, result)
-                except StepExecutionError as error:
-                    event = failure_event(invocation_id, ContainerInvocationError(
-                        error.failure_code, error.safe_message, outcome=error.outcome
-                    ))
-                except ContainerInvocationError as error:
-                    event = failure_event(invocation_id, error)
-                except Exception:
-                    event = failure_event(invocation_id, ContainerInvocationError(
-                        FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
-                    ))
-                finally:
-                    assert provider is not None
-                    provider.close()
-                outgoing.put(container_pb2.ExecuteServerMessage(event=event))
-                outgoing.put(None)
-
-            Thread(target=receive, daemon=True).start()
-            Thread(target=run, daemon=True).start()
+            Thread(target=_receive_sync_responses, args=(requests, provider, close), daemon=True).start()
+            Thread(target=_run_sync_step, args=(handler, invocation, provider, outgoing), daemon=True).start()
             while context.is_active():
                 message = outgoing.get()
                 if message is None:
@@ -463,7 +479,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         provider.close()
         outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
             request.invocation_id, ContainerInvocationError(
-                FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+                FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
             )
         )))
         outgoing.put(None)
@@ -478,7 +494,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             provider.close()
             outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
                 invocation_id, ContainerInvocationError(
-                    FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+                    FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
                 )
             )))
             outgoing.put(None)
@@ -517,7 +533,7 @@ def terminal_execution_event(
         if invocation.cancelled:
             raise ContainerInvocationError(
                 FailureCode.CANCELLED,
-                    "The step was cancelled.",
+                    _CANCELLED_STEP_MESSAGE,
                 outcome="not_completed",
             )
         if not isinstance(result, ContainerResult):
@@ -594,6 +610,85 @@ def _install_sigterm_shutdown(server: grpc.Server, grace: float, service: Contai
         # Not the main thread (or a restricted platform): the caller keeps
         # responsibility for the server lifecycle.
         return
+
+
+class _CredentialRequestBridge:
+    """Keep one invocation's host responses outside the business event stream."""
+
+    def __init__(
+        self, invocation_id: str,
+        credential_handler: Callable[[str], Mapping[str, Any]] | None,
+        start: container_pb2.ExecuteRequest,
+    ) -> None:
+        self._invocation_id = invocation_id
+        self._credential_handler = credential_handler
+        self._outgoing: Queue[container_pb2.ExecuteClientMessage | None] = Queue()
+        self._outgoing.put(container_pb2.ExecuteClientMessage(start=start))
+        self._active = Event()
+        self._active.set()
+        self._pending: set[str] = set()
+        self._seen: set[str] = set()
+        self._lock = Lock()
+
+    def requests(self) -> Iterator[container_pb2.ExecuteClientMessage]:
+        while self._active.is_set():
+            message = self._outgoing.get()
+            if message is None:
+                return
+            yield message
+
+    def accept(self, request: container_pb2.CredentialRequest) -> None:
+        if (request.invocation_id != self._invocation_id
+                or not _IDENTITY.fullmatch(request.request_id)
+                or not _IDENTITY.fullmatch(request.name)):
+            raise _protocol_error()
+        with self._lock:
+            if (request.request_id in self._seen or len(self._seen) >= 4096
+                    or len(self._pending) >= 16 or not self._active.is_set()):
+                raise _protocol_error()
+            self._pending.add(request.request_id)
+            self._seen.add(request.request_id)
+        Thread(target=self._respond, args=(request,), daemon=True).start()
+
+    def _respond(self, request: container_pb2.CredentialRequest) -> None:
+        response = container_pb2.CredentialResponse(
+            invocation_id=self._invocation_id, request_id=request.request_id
+        )
+        try:
+            if self._credential_handler is None:
+                raise CredentialAccessError("missing")
+            value = self._credential_handler(request.name)
+            response.document_json = _encode_json_object(value, "credential")
+        except CredentialAccessError as error:
+            response.error = (container_pb2.CREDENTIAL_ERROR_MISSING
+                if error.reason == "missing" else container_pb2.CREDENTIAL_ERROR_UNAVAILABLE)
+        except Exception:
+            response.error = container_pb2.CREDENTIAL_ERROR_UNAVAILABLE
+        with self._lock:
+            self._pending.discard(request.request_id)
+            if self._active.is_set():
+                self._outgoing.put(container_pb2.ExecuteClientMessage(credential_response=response))
+
+    def close(self) -> None:
+        with self._lock:
+            self._active.clear()
+            self._outgoing.put(None)
+
+
+def _execution_event_from_stream(
+    event: container_pb2.ExecutionEvent, invocation_id: str,
+    saw_terminal: bool,
+) -> ContainerProgress | ContainerResult:
+    if event.invocation_id != invocation_id or saw_terminal:
+        raise _protocol_error()
+    kind = event.WhichOneof("event")
+    if kind == "progress":
+        return _progress_from_event(event)
+    if kind == "result":
+        return _result_from_event(event)
+    if kind == "failure":
+        raise _remote_failure(event)
+    raise _protocol_error()
 
 
 class ContainerClient:
@@ -690,81 +785,31 @@ class ContainerClient:
 
         request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)
-        outgoing: Queue[container_pb2.ExecuteClientMessage | None] = Queue()
-        outgoing.put(container_pb2.ExecuteClientMessage(start=request))
-        active = Event()
-        active.set()
-        pending: set[str] = set()
-        seen: set[str] = set()
-        pending_lock = Lock()
-
-        def requests() -> Iterator[container_pb2.ExecuteClientMessage]:
-            while active.is_set():
-                message = outgoing.get()
-                if message is None:
-                    return
-                yield message
-
-        def respond(req: container_pb2.CredentialRequest) -> None:
-            response = container_pb2.CredentialResponse(
-                invocation_id=invocation.invocation_id, request_id=req.request_id
-            )
-            try:
-                if credential_handler is None:
-                    raise CredentialAccessError("missing")
-                value = credential_handler(req.name)
-                response.document_json = _encode_json_object(value, "credential")
-            except CredentialAccessError as error:
-                response.error = (container_pb2.CREDENTIAL_ERROR_MISSING
-                    if error.reason == "missing" else container_pb2.CREDENTIAL_ERROR_UNAVAILABLE)
-            except Exception:
-                response.error = container_pb2.CREDENTIAL_ERROR_UNAVAILABLE
-            with pending_lock:
-                pending.discard(req.request_id)
-                if active.is_set():
-                    outgoing.put(container_pb2.ExecuteClientMessage(credential_response=response))
-
+        bridge = _CredentialRequestBridge(invocation.invocation_id, credential_handler, request)
         saw_terminal = False
         rpc_failure: ContainerRemoteError | None = None
         call = None
         try:
-            call = self._stub.Execute(requests(), timeout=deadline)
+            call = self._stub.Execute(bridge.requests(), timeout=deadline)
             for message in call:
                 kind = message.WhichOneof("message")
                 if kind == "credential_request":
-                    req = message.credential_request
-                    if (req.invocation_id != invocation.invocation_id
-                            or not _IDENTITY.fullmatch(req.request_id)
-                            or not _IDENTITY.fullmatch(req.name)):
+                    if saw_terminal:
                         raise _protocol_error()
-                    with pending_lock:
-                        if req.request_id in seen or len(seen) >= 4096 or len(pending) >= 16 or saw_terminal:
-                            raise _protocol_error()
-                        pending.add(req.request_id)
-                        seen.add(req.request_id)
-                    Thread(target=respond, args=(req,), daemon=True).start()
+                    bridge.accept(message.credential_request)
                     continue
                 if kind != "event":
                     raise _protocol_error()
-                event = message.event
-                if event.invocation_id != invocation.invocation_id or saw_terminal:
-                    raise _protocol_error()
-                event_kind = event.WhichOneof("event")
-                if event_kind == "progress":
-                    yield _progress_from_event(event)
-                elif event_kind == "result":
+                event = _execution_event_from_stream(
+                    message.event, invocation.invocation_id, saw_terminal
+                )
+                if isinstance(event, ContainerResult):
                     saw_terminal = True
-                    yield _result_from_event(event)
-                elif event_kind == "failure":
-                    raise _remote_failure(event)
-                else:
-                    raise _protocol_error()
+                yield event
         except grpc.RpcError as error:
             rpc_failure = _rpc_error(error)
         finally:
-            with pending_lock:
-                active.clear()
-                outgoing.put(None)
+            bridge.close()
             if call is not None:
                 call.cancel()
         if rpc_failure is not None:

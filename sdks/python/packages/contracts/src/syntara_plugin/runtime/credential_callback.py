@@ -64,6 +64,18 @@ class CallbackCredentialProvider:
         request_id = uuid.uuid4().hex
         ready = Event()
         responses: list[container_pb2.CredentialResponse] = []
+        try:
+            self._begin_read(name, request_id, ready, responses)
+            response = self._await_response(ready, responses)
+            return self._decode_response(response)
+        finally:
+            with self._lock:
+                self._pending.pop(request_id, None)
+
+    def _begin_read(
+        self, name: str, request_id: str, ready: Event,
+        responses: list[container_pb2.CredentialResponse],
+    ) -> None:
         with self._lock:
             if not self._active or self._cancellation.is_set() or time.monotonic() >= self._deadline:
                 raise CredentialAccessError("expired")
@@ -75,38 +87,40 @@ class CallbackCredentialProvider:
             self._send(container_pb2.CredentialRequest(
                 invocation_id=self._invocation_id, request_id=request_id, name=name
             ))
+
+    def _await_response(
+        self, ready: Event, responses: list[container_pb2.CredentialResponse]
+    ) -> container_pb2.CredentialResponse:
+        deadline = min(self._deadline, time.monotonic() + _READ_TIMEOUT)
+        while not ready.wait(min(0.1, max(0.0, deadline - time.monotonic()))):
+            if self._cancellation.is_set() or time.monotonic() >= deadline:
+                raise CredentialAccessError("unavailable")
+        with self._lock:
+            if not self._active or self._cancellation.is_set() or not responses:
+                raise CredentialAccessError("expired")
+            if time.monotonic() >= deadline:
+                raise CredentialAccessError("unavailable")
+            return responses[0]
+
+    @staticmethod
+    def _decode_response(response: container_pb2.CredentialResponse) -> dict[str, Any]:
+        if response.WhichOneof("outcome") == "error":
+            reason = "missing" if response.error == container_pb2.CREDENTIAL_ERROR_MISSING else "unavailable"
+            raise CredentialAccessError(reason)
+        if response.WhichOneof("outcome") != "document_json" or len(response.document_json) > _MAX_BYTES:
+            raise CredentialAccessError("unavailable")
         try:
-            deadline = min(self._deadline, time.monotonic() + _READ_TIMEOUT)
-            while not ready.wait(min(0.1, max(0.0, deadline - time.monotonic()))):
-                if self._cancellation.is_set() or time.monotonic() >= deadline:
-                    raise CredentialAccessError("unavailable")
-            with self._lock:
-                if not self._active or self._cancellation.is_set() or not responses:
-                    raise CredentialAccessError("expired")
-                if time.monotonic() >= deadline:
-                    raise CredentialAccessError("unavailable")
-                response = responses[0]
-            if response.WhichOneof("outcome") == "error":
-                reason = "missing" if response.error == container_pb2.CREDENTIAL_ERROR_MISSING else "unavailable"
-                raise CredentialAccessError(reason)
-            if response.WhichOneof("outcome") != "document_json" or len(response.document_json) > _MAX_BYTES:
-                raise CredentialAccessError("unavailable")
-            invalid = False
-            document: Any = None
-            try:
-                document = json.loads(response.document_json, parse_constant=_invalid_constant, object_pairs_hook=_unique_members)
-                if not isinstance(document, dict):
-                    raise ValueError
-                canonical_json_bytes(document)
-            except (TypeError, ValueError, RecursionError):
-                invalid = True
-            if invalid:
-                raise CredentialAccessError("unavailable")
-            assert isinstance(document, dict)
-            return document
-        finally:
-            with self._lock:
-                self._pending.pop(request_id, None)
+            document = json.loads(
+                response.document_json,
+                parse_constant=_invalid_constant,
+                object_pairs_hook=_unique_members,
+            )
+            if not isinstance(document, dict):
+                raise ValueError
+            canonical_json_bytes(document)
+        except (TypeError, ValueError, RecursionError):
+            raise CredentialAccessError("unavailable") from None
+        return document
 
     def receive(self, response: container_pb2.CredentialResponse) -> None:
         with self._lock:

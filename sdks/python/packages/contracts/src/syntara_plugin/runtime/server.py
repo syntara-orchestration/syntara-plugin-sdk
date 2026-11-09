@@ -7,7 +7,7 @@ import importlib
 import json
 import os
 import signal
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -84,47 +84,16 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             provider = CallbackCredentialProvider(invocation_id, send, cancellation, invocation.timeout_seconds)
             object.__setattr__(invocation, "credential_provider", provider)
             self._register_invocation(invocation_id, cancellation, provider, outgoing)
+            bound_provider = provider
 
             def close() -> None:
-                assert cancellation is not None and provider is not None
-                cancellation.set()
-                provider.close()
+                invocation.cancellation.set()
+                bound_provider.close()
 
             context.add_done_callback(lambda _context: close())
 
-            async def receive() -> None:
-                try:
-                    async for message in requests:
-                        if message.WhichOneof("message") != "credential_response":
-                            break
-                        assert provider is not None
-                        provider.receive(message.credential_response)
-                finally:
-                    close()
-                    outgoing.put_nowait(None)
-
-            async def run() -> None:
-                try:
-                    result = await self._execute_step(handler, invocation)
-                    event = terminal_execution_event(invocation, result)
-                except StepExecutionError as error:
-                    event = failure_event(invocation_id, ContainerInvocationError(
-                        error.failure_code, error.safe_message, outcome=error.outcome
-                    ))
-                except ContainerInvocationError as error:
-                    event = failure_event(invocation_id, error)
-                except Exception:
-                    event = failure_event(invocation_id, ContainerInvocationError(
-                        FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
-                    ))
-                finally:
-                    assert provider is not None
-                    provider.close()
-                outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
-                outgoing.put_nowait(None)
-
-            receiver = asyncio.create_task(receive())
-            worker = asyncio.create_task(run())
+            receiver = asyncio.create_task(self._receive_responses(requests, bound_provider, close, outgoing))
+            worker = asyncio.create_task(self._run_step(handler, invocation, bound_provider, outgoing))
             while True:
                 message = await outgoing.get()
                 if message is None:
@@ -150,6 +119,47 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 if task is not None:
                     task.cancel()
 
+    @staticmethod
+    async def _receive_responses(
+        requests: AsyncIterator[container_pb2.ExecuteClientMessage],
+        provider: CallbackCredentialProvider,
+        close: Callable[[], None],
+        outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None],
+    ) -> None:
+        try:
+            async for message in requests:
+                if message.WhichOneof("message") != "credential_response":
+                    break
+                provider.receive(message.credential_response)
+        finally:
+            close()
+            outgoing.put_nowait(None)
+
+    async def _run_step(
+        self,
+        handler: ContainerStepHandler,
+        invocation: ContainerInvocation,
+        provider: CallbackCredentialProvider,
+        outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None],
+    ) -> None:
+        try:
+            result = await self._execute_step(handler, invocation)
+            event = terminal_execution_event(invocation, result)
+        except StepExecutionError as error:
+            event = failure_event(invocation.invocation_id, ContainerInvocationError(
+                error.failure_code, error.safe_message, outcome=error.outcome
+            ))
+        except ContainerInvocationError as error:
+            event = failure_event(invocation.invocation_id, error)
+        except Exception:
+            event = failure_event(invocation.invocation_id, ContainerInvocationError(
+                FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
+            ))
+        finally:
+            provider.close()
+        outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
+        outgoing.put_nowait(None)
+
     async def Cancel(
         self, request: container_pb2.CancelRequest, context: grpc.aio.ServicerContext,
     ) -> container_pb2.CancelResponse:
@@ -169,7 +179,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
 
     def shutdown(self) -> None:
         """Revoke all active reads immediately on shutdown."""
-        for invocation_id, (cancellation, provider, outgoing) in list(self._active.items()):
+        for invocation_id, (cancellation, provider, outgoing) in self._active.copy().items():
             cancellation.set()
             provider.close()
             outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(

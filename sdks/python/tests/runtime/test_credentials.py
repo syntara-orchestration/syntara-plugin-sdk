@@ -932,10 +932,11 @@ def test_success_status_message_cannot_expose_credential() -> None:
     scope = credentials_module._CredentialScope((_NAME,), _FakeProvider({"token": _SECRET}))
     try:
         scope.read(_NAME)
+        wrapper = StandardOutputWrapper.success(
+            {"result": "safe"}, status_message=_SECRET
+        )
         with pytest.raises(StepExecutionError) as error:
-            _reject_credential_output(
-                StandardOutputWrapper.success({"result": "safe"}, status_message=_SECRET), scope
-            )
+            _reject_credential_output(wrapper, scope)
         assert _SECRET not in str(error.value)
     finally:
         scope.close()
