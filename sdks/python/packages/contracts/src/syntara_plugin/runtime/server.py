@@ -43,6 +43,7 @@ _TLS_CERTIFICATE = "SYNTARA_RUNTIME_GRPC_TLS_CERT"
 _TLS_KEY = "SYNTARA_RUNTIME_GRPC_TLS_KEY"
 _TLS_CLIENT_CA = "SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA"
 _DEFAULT_ADDRESS = "127.0.0.1:50051"
+_CANCELLED_STEP_MESSAGE = "The step was cancelled."
 
 
 class RuntimeServerError(RuntimeError):
@@ -132,7 +133,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                     invocation.cancellation.set()
                     outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
                         invocation.invocation_id, ContainerInvocationError(
-                            FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+                            FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
                         )
                     )))
                     outgoing.put_nowait(None)
@@ -177,7 +178,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         provider.close()
         outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
             request.invocation_id, ContainerInvocationError(
-                FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+                FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
             )
         )))
         outgoing.put_nowait(None)
@@ -190,7 +191,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             provider.close()
             outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
                 invocation_id, ContainerInvocationError(
-                    FailureCode.CANCELLED, "The step was cancelled.", outcome="not_completed"
+                    FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
                 )
             )))
             outgoing.put_nowait(None)
