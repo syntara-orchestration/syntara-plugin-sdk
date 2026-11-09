@@ -40,7 +40,7 @@ The Python helper implementation is in
 [`container.py`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/container.py).
 
 The Application Binary Interface (ABI) is the boundary between an Execution
-Plane launcher and a workload. The `syntara.container/v1alpha2` bidirectional
+Plane launcher and a workload. The `syntara.container/v1alpha1` bidirectional
 invocation stream carries non-secret inputs and business events. For a
 credential read, the workload sends the declared CredentialRecipe ID as a
 logical name. The Execution Plane resolves that name within the current
@@ -77,7 +77,7 @@ with all adapter-specific bootstrap details under `adapter`:
 
 ```json
 {
-  "abi": "syntara.container/v1alpha2",
+  "abi": "syntara.container/v1alpha1",
   "adapter": {
     "bindingsFactory": "acme_plugin.runtime:create_bindings"
   }
@@ -134,7 +134,7 @@ resolved execution data as a read-only JSON file, named by
     "stepIdentity": "acme.plugin.echo",
     "runtimeKind": "custom-runner",
     "entryPoint": "acme_plugin.steps:EchoStep",
-    "abi": "syntara.container/v1alpha2",
+    "abi": "syntara.container/v1alpha1",
     "schemaDigests": {
       "input": "sha256:<64 lowercase hex digits>",
       "output": "sha256:<64 lowercase hex digits>"
@@ -179,7 +179,8 @@ this path for Action, Control, and Trigger. `make test-integration` builds its
 plugin wheel, installs it with the Python contracts distribution, and invokes
 all three manifest-declared entry points over the container ABI. The current
 standalone Execution Plane still vendors the older `syntara.node.v1` protocol;
-until that service adopts `syntara.container/v1alpha2`, this repository proves
+until that service implements the bidirectional `syntara.container/v1alpha1`
+callback protocol, this repository proves
 the SDK adapter path but does not claim end-to-end Execution Plane dispatch.
 Automation Orchestrator's workflow selection and platform-owned runners remain
 separate platform responsibilities.
@@ -225,11 +226,12 @@ Execution Plane and a step type container use to exchange execution requests,
 progress, results, and cancellation. It is not a CPU ABI. The current contract
 is defined in
 [`container.proto`](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
-and identified as `syntara.container/v1alpha2`.
+and identified as `syntara.container/v1alpha1`.
 
 The `Result` protobuf uses the structured error-result fields defined by this
-release. Existing images must be rebuilt or upgraded for `v1alpha2`; Health
-checks the ABI identifier exactly.
+release. Bidirectional Execute replaces the earlier unary-request protocol
+under the same `v1alpha1` identifier. Existing peers must be updated together;
+Health checks the identifier but cannot distinguish the two protocol shapes.
 
 Final workload images, rather than a reusable SDK base layer, are the OCI
 artifacts published for deployment. They must record their immutable

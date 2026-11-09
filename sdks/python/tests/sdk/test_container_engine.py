@@ -325,7 +325,7 @@ def test_managed_runtime_mounts_selected_resolved_revision(monkeypatch, tmp_path
             mounted.append(path)
             assert json.loads(path.read_text(encoding="utf-8")) == {"bindings": [{
                 "stepRevisionId": revision, "stepIdentity": "identity", "runtimeKind": "custom-runner",
-                "entryPoint": "example:Echo", "abi": "syntara.container/v1alpha2",
+                "entryPoint": "example:Echo", "abi": "syntara.container/v1alpha1",
                 "schemaDigests": {"input": revision, "output": revision},
             }]}
             assert volume.endswith(":ro,Z")

@@ -32,8 +32,11 @@ class ContainerServiceStub(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    Health negotiates the exact ABI and revision before Execute. The transport
-    must authenticate both peers and protect confidentiality (mTLS in production).
+    Health checks the ABI and step revision before Execute. This bidirectional
+    Execute replaces the earlier unary-request protocol under the same ABI
+    identifier; Health alone cannot distinguish them. Both peers must implement
+    this contract. The transport must authenticate both peers and protect
+    confidentiality (mTLS in production).
     """
 
     def __init__(self, channel):
@@ -43,17 +46,17 @@ class ContainerServiceStub(object):
             channel: A grpc.Channel.
         """
         self.Execute = channel.stream_stream(
-                '/syntara.container.v1alpha2.ContainerService/Execute',
+                '/syntara.container.v1alpha1.ContainerService/Execute',
                 request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteClientMessage.SerializeToString,
                 response_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteServerMessage.FromString,
                 _registered_method=True)
         self.Cancel = channel.unary_unary(
-                '/syntara.container.v1alpha2.ContainerService/Cancel',
+                '/syntara.container.v1alpha1.ContainerService/Cancel',
                 request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.CancelRequest.SerializeToString,
                 response_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.CancelResponse.FromString,
                 _registered_method=True)
         self.Health = channel.unary_unary(
-                '/syntara.container.v1alpha2.ContainerService/Health',
+                '/syntara.container.v1alpha1.ContainerService/Health',
                 request_serializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.HealthRequest.SerializeToString,
                 response_deserializer=syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.HealthResponse.FromString,
                 _registered_method=True)
@@ -66,8 +69,11 @@ class ContainerServiceServicer(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    Health negotiates the exact ABI and revision before Execute. The transport
-    must authenticate both peers and protect confidentiality (mTLS in production).
+    Health checks the ABI and step revision before Execute. This bidirectional
+    Execute replaces the earlier unary-request protocol under the same ABI
+    identifier; Health alone cannot distinguish them. Both peers must implement
+    this contract. The transport must authenticate both peers and protect
+    confidentiality (mTLS in production).
     """
 
     def Execute(self, request_iterator, context):
@@ -108,9 +114,9 @@ def add_ContainerServiceServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'syntara.container.v1alpha2.ContainerService', rpc_method_handlers)
+            'syntara.container.v1alpha1.ContainerService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('syntara.container.v1alpha2.ContainerService', rpc_method_handlers)
+    server.add_registered_method_handlers('syntara.container.v1alpha1.ContainerService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -121,8 +127,11 @@ class ContainerService(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    Health negotiates the exact ABI and revision before Execute. The transport
-    must authenticate both peers and protect confidentiality (mTLS in production).
+    Health checks the ABI and step revision before Execute. This bidirectional
+    Execute replaces the earlier unary-request protocol under the same ABI
+    identifier; Health alone cannot distinguish them. Both peers must implement
+    this contract. The transport must authenticate both peers and protect
+    confidentiality (mTLS in production).
     """
 
     @staticmethod
@@ -139,7 +148,7 @@ class ContainerService(object):
         return grpc.experimental.stream_stream(
             request_iterator,
             target,
-            '/syntara.container.v1alpha2.ContainerService/Execute',
+            '/syntara.container.v1alpha1.ContainerService/Execute',
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteClientMessage.SerializeToString,
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.ExecuteServerMessage.FromString,
             options,
@@ -166,7 +175,7 @@ class ContainerService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/syntara.container.v1alpha2.ContainerService/Cancel',
+            '/syntara.container.v1alpha1.ContainerService/Cancel',
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.CancelRequest.SerializeToString,
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.CancelResponse.FromString,
             options,
@@ -193,7 +202,7 @@ class ContainerService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/syntara.container.v1alpha2.ContainerService/Health',
+            '/syntara.container.v1alpha1.ContainerService/Health',
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.HealthRequest.SerializeToString,
             syntara__plugin_dot_runtime_dot_protocol_dot_container__pb2.HealthResponse.FromString,
             options,

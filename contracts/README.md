@@ -86,15 +86,17 @@ distribution contains the staged files only so that it can build without a
 checkout of this repository.
 
 The JSON Schemas are the normative durable artifact and work-item contracts.
-The protobuf defines the `syntara.container/v1alpha2` in-container ABI. An
+The protobuf defines the `syntara.container/v1alpha1` in-container ABI. An
 invocation is a bidirectional stream: after the start message, the workload
 may request a declared CredentialRecipe ID. The host resolves it within the
 current attempt and returns a bounded JSON object in a dedicated sensitive
 response; credential values never appear in business events, inputs, or
 runtime context. Requests and responses are correlated by invocation and
 request IDs. The host must authenticate the workload and provide transport
-confidentiality (mutual TLS in production). Earlier container ABI versions are
-not compatible. See [ADR 0011](../.sdlc/adrs/0011-credential-callback.md).
+confidentiality (mutual TLS in production). This replaces the earlier Execute
+protocol under the same ABI identifier. Old `v1alpha1` peers are incompatible,
+and Health cannot distinguish the two protocols. See
+[ADR 0011](../.sdlc/adrs/0011-credential-callback.md).
 
 `runtime.schema.json` defines the canonical `StandardOutputWrapper` JSON shape
 with exactly four required lower-camel keys: `result`, `statusCode`,

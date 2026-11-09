@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package syntara.container.v1alpha2;
+package syntara.container.v1alpha1;
 
 // ABI means Application Binary Interface. Here it is the versioned, language-
 // neutral gRPC protocol between the Execution Plane (the client/launcher) and
@@ -8,8 +8,11 @@ package syntara.container.v1alpha2;
 // operating-system compatibility. A workload in any language may participate
 // if it implements this service and the message semantics below.
 //
-// Health negotiates the exact ABI and revision before Execute. The transport
-// must authenticate both peers and protect confidentiality (mTLS in production).
+// Health checks the ABI and step revision before Execute. This bidirectional
+// Execute replaces the earlier unary-request protocol under the same ABI
+// identifier; Health alone cannot distinguish them. Both peers must implement
+// this contract. The transport must authenticate both peers and protect
+// confidentiality (mTLS in production).
 service ContainerService {
   rpc Execute(stream ExecuteClientMessage) returns (stream ExecuteServerMessage);
   rpc Cancel(CancelRequest) returns (CancelResponse);

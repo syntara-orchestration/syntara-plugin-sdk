@@ -198,7 +198,7 @@ def test_archive_reader_rejects_unpinned_workload_images(
 
     def add_invalid_workload(document: dict[str, Any]) -> None:
         document["spec"]["workloads"] = {
-            "runner": {"abi": "syntara.container/v1alpha2", "image": image}
+            "runner": {"abi": "syntara.container/v1alpha1", "image": image}
         }
         document["spec"]["plugin_revision_id"] = plugin_revision_id(document)
 
@@ -220,7 +220,7 @@ def test_archive_reader_rejects_a_custom_runner_without_a_workload_entry(
     def remove_referenced_workload(document: dict[str, Any]) -> None:
         target = document["spec"]["targets"][0]
         target["runtime"] = {
-            "abi": "syntara.container/v1alpha2",
+            "abi": "syntara.container/v1alpha1",
             "entryPoint": "example.x:Request",
             "kind": "custom-runner",
             "workload": "runner",

@@ -170,7 +170,7 @@ def _schema_digests(input_schema: Mapping[str, Any] | None = None) -> dict[str, 
 def write_runtime_config(
     tmp_path: Path,
     *,
-    abi: str = "syntara.container/v1alpha2",
+    abi: str = "syntara.container/v1alpha1",
     adapter: object | None = None,
 ) -> Path:
     document = {
@@ -206,7 +206,7 @@ def resolved_file(tmp_path: Path, step_class: type[BaseStep[EchoInput, EchoOutpu
         "stepIdentity": identities[step_class],
         "runtimeKind": "platform-runner",
         "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
-        "abi": "syntara.container/v1alpha2",
+        "abi": "syntara.container/v1alpha1",
         "schemaDigests": _schema_digests(),
     }]}), encoding="utf-8")
     return path
@@ -266,7 +266,7 @@ async def _service_events(
         invocation_id=invocation.invocation_id,
         workflow_run_id=invocation.workflow_run_id,
         step_revision_id=invocation.step_revision_id,
-        runtime_abi="syntara.container/v1alpha2",
+        runtime_abi="syntara.container/v1alpha1",
         inputs_json=json.dumps({"message": invocation.inputs["message"]}).encode(),
         timeout_seconds=invocation.timeout_seconds,
     )
@@ -511,7 +511,7 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
                 invocation_id=invocation.invocation_id,
                 workflow_run_id=invocation.workflow_run_id,
                 step_revision_id=invocation.step_revision_id,
-                runtime_abi="syntara.container/v1alpha2",
+                runtime_abi="syntara.container/v1alpha1",
                 inputs_json=json.dumps({"message": "disconnect"}).encode(),
                 timeout_seconds=30,
             )
@@ -753,7 +753,7 @@ def _resolved_record(kind: str = "custom-runner") -> dict[str, object]:
         "stepIdentity": "smoke.echo.v1",
         "runtimeKind": kind,
         "entryPoint": f"{__name__}:EchoStep",
-        "abi": "syntara.container/v1alpha2",
+        "abi": "syntara.container/v1alpha1",
         "schemaDigests": _schema_digests(),
     }
 
@@ -774,7 +774,7 @@ def _resolved_config(
             "steps": {REVISION: {
                 "stepIdentity": "smoke.echo.v1",
                 "entryPoint": f"{__name__}:EchoStep",
-                "abi": "syntara.container/v1alpha2",
+                "abi": "syntara.container/v1alpha1",
                 "schemaDigests": _schema_digests(),
             }},
         }

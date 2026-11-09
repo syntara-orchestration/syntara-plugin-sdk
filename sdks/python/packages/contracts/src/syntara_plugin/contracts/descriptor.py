@@ -102,7 +102,7 @@ def _validate_workloads(
             errors.append(
                 f"plugin descriptor provider {workload_id!r} must include its immutable image"
             )
-        if abi not in {"syntara.container/v1alpha2", "syntara.provider/v1alpha1"}:
+        if abi not in {"syntara.container/v1alpha1", "syntara.provider/v1alpha1"}:
             errors.append(f"plugin descriptor workload {workload_id!r} has an invalid ABI")
 
     for target in targets:
@@ -120,7 +120,7 @@ def _validate_workloads(
             errors.append(
                 f"custom-runner target {identity!r} references a missing workload"
             )
-        elif isinstance(workload, Mapping) and workload.get("abi") != "syntara.container/v1alpha2":
+        elif isinstance(workload, Mapping) and workload.get("abi") != "syntara.container/v1alpha1":
             errors.append(
                 f"custom-runner target {identity!r} workload has an invalid ABI"
             )

@@ -24,7 +24,12 @@ ERROR_RESULT = {"category": "dependency", "code": "REMOTE_REJECTED", "message": 
 
 
 def test_generated_protocol_package_matches_container_abi() -> None:
+    assert CONTAINER_ABI == "syntara.container/v1alpha1"
     assert container_pb2.DESCRIPTOR.package == CONTAINER_ABI.replace("/", ".")
+    execute = container_pb2.DESCRIPTOR.services_by_name["ContainerService"].methods_by_name["Execute"]
+    assert execute.client_streaming and execute.server_streaming
+    assert execute.input_type.name == "ExecuteClientMessage"
+    assert execute.output_type.name == "ExecuteServerMessage"
 
 
 @pytest.fixture
@@ -239,7 +244,7 @@ def test_missing_workflow_run_id_is_invalid_input(
     request = container_pb2.ExecuteRequest(
         invocation_id="invocation-1",
         step_revision_id="github.create-issue.v1",
-        runtime_abi="syntara.container/v1alpha2",
+        runtime_abi="syntara.container/v1alpha1",
         inputs_json=b"{}",
         timeout_seconds=30,
     )

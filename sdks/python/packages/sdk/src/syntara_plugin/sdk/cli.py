@@ -4507,7 +4507,7 @@ class ExampleAction(ActionStep[ExampleInput, ExampleOutput]):
         encoding="utf-8",
     )
     (directory / "runtime.json").write_text(
-        '{\n  "abi": "syntara.container/v1alpha2",\n  "adapter": {\n'
+        '{\n  "abi": "syntara.container/v1alpha1",\n  "adapter": {\n'
         f'    "bindingsFactory": "{package_name}.runtime:create_bindings"\n'
         "  }\n}\n",
         encoding="utf-8",

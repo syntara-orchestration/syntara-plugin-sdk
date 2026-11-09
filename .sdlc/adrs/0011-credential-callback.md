@@ -6,7 +6,7 @@
 
 ## Decision
 
-The `syntara.container/v1alpha2` ABI uses a bidirectional Execute stream.
+The `syntara.container/v1alpha1` ABI uses a bidirectional Execute stream.
 Its first client message starts the invocation. The workload sends a credential
 request with its invocation ID, a fresh request ID, and a logical name: the
 CredentialRecipe ID declared by the installed step's integration. The host
@@ -36,7 +36,8 @@ delivery files and keeps rejecting credentials for self-managed runtimes.
 
 ## Consequences
 
-The ABI is intentionally forward-only and old images must be rebuilt and
-registered with the new ABI. The Execution Plane must implement the matching
-stream and per-attempt name-to-credential mapping. The SDK does not call the
-credential authority or perform that mapping itself.
+This is an in-place breaking protocol change under the existing `v1alpha1`
+identifier. Earlier `v1alpha1` peers are incompatible; the Health ABI value
+does not distinguish them. Old images must be rebuilt and the Execution Plane
+must implement the matching stream and per-attempt name-to-credential mapping.
+The SDK does not call the credential authority or perform that mapping itself.

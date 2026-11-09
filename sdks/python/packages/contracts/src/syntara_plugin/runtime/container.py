@@ -612,7 +612,11 @@ class ContainerClient:
         self._stub = container_pb2_grpc.ContainerServiceStub(channel)
 
     def health(self, *, timeout_seconds: float | None = None) -> tuple[str, ...]:
-        """Confirm the container ABI and return the advertised step type identities."""
+        """Check the ABI identifier and return the advertised step type identities.
+
+        Matching identifiers do not distinguish the earlier unary Execute
+        protocol from the current bidirectional v1alpha1 protocol.
+        """
 
         rpc_failure: ContainerRemoteError | None = None
         try:

@@ -124,7 +124,7 @@ def write_custom_workspace(
         ),
         "runtime.json": _json(
             {
-                "abi": "syntara.container/v1alpha2",
+                "abi": "syntara.container/v1alpha1",
                 "adapter": {"bindingsFactory": f"{package}.runtime:create_bindings"},
             }
         ),

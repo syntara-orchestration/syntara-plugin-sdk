@@ -1132,7 +1132,7 @@ same single call to `run()`:
   [Minimal direct execution](runtime-and-oci.md#minimal-direct-execution).
 - **The container path** (`syntara-plugin run`, `invoke_step_in_container`,
   and the workload image) runs the same implementation behind the
-  `syntara.container/v1alpha2` gRPC protocol.
+  `syntara.container/v1alpha1` gRPC protocol.
 
 The two paths report outcomes differently:
 

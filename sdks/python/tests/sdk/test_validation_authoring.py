@@ -286,7 +286,7 @@ def test_compiled_trigger_binding_is_not_undeclared() -> None:
     ]
     assert compiled_trigger
     assert compiled_trigger[0]["runtime"] == {
-        "abi": "syntara.container/v1alpha2",
+        "abi": "syntara.container/v1alpha1",
         "entryPoint": f"{__name__}:IssueOpenedTrigger",
         "kind": "custom-runner",
         "workload": "plugin-workload",

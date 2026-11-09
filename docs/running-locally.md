@@ -275,9 +275,11 @@ the CLI only supplies credentials to a runtime it starts and authenticates.
 ## Execution modes
 
 Both modes execute through the SDK's `ContainerClient` over real gRPC, call
-`Health` first to verify the container ABI and that the runtime advertises the
+`Health` first to check the ABI identifier and that the runtime advertises the
 requested step type, and use a 60 second invocation timeout with an empty
 runtime context; credentials are supplied only when the step requests them.
+The identifier alone cannot distinguish the earlier unary `v1alpha1` protocol;
+the client and workload must both implement the current callback protocol.
 
 ### Source mode (default)
 
@@ -362,7 +364,7 @@ obtain such a runtime:
 
    ```json
    {
-     "abi": "syntara.container/v1alpha2",
+     "abi": "syntara.container/v1alpha1",
      "adapter": {"bindingsFactory": "my_plugin.workload_runtime:create_bindings"}
    }
    ```

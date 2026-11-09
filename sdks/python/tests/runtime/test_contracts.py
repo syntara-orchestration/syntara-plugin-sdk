@@ -91,9 +91,9 @@ def test_malicious_runtime_and_provider_fixtures_are_rejected() -> None:
     item["runtimeContext"] = ["not-an-object"]
     assert not harness.validate_runtime(item).valid
 
-    legacy_work_item = _work_item()
-    legacy_work_item["runtimeAbi"] = "syntara.container/v1alpha1"
-    assert not harness.validate_runtime(legacy_work_item).valid
+    unsupported_work_item = _work_item()
+    unsupported_work_item["runtimeAbi"] = "syntara.container/v1alpha2"
+    assert not harness.validate_runtime(unsupported_work_item).valid
 
     provider = _provider_request()
     provider["runtimeAbi"] = CONTAINER_ABI
