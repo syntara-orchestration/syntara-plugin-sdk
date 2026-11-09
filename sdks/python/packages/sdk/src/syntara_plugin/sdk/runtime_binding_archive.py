@@ -30,6 +30,7 @@ from .runtime_binding import (
 )
 
 _MAX_RUNTIME_BINDING_ARCHIVE_BYTES = 16 * 1024 * 1024
+_OCI_INDEX_FILENAME = "index.json"
 
 
 def write_runtime_binding_archive(
@@ -40,7 +41,9 @@ def write_runtime_binding_archive(
 
     destination = destination.expanduser()
     if destination.exists():
-        raise ArtifactArchiveError(f"refusing to overwrite existing artifact archive: {destination}")
+        raise ArtifactArchiveError(
+            f"refusing to overwrite existing artifact archive: {destination}"
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tarfile.open(destination, mode="x", format=tarfile.PAX_FORMAT) as archive:
@@ -51,7 +54,7 @@ def write_runtime_binding_archive(
             )
             _add_bytes(
                 archive,
-                "index.json",
+                _OCI_INDEX_FILENAME,
                 canonical_json_bytes(
                     {
                         "schemaVersion": 2,
@@ -92,7 +95,7 @@ def read_runtime_binding_archive(
     layout = _json_mapping(entries.get("oci-layout"), "OCI layout")
     if layout != {"imageLayoutVersion": OCI_LAYOUT_VERSION}:
         raise ArtifactArchiveError("RuntimeBinding archive has an unsupported OCI layout version")
-    index = _json_mapping(entries.get("index.json"), "OCI index")
+    index = _json_mapping(entries.get(_OCI_INDEX_FILENAME), "OCI index")
     manifests = index.get("manifests")
     if not isinstance(manifests, list) or len(manifests) != 1:
         raise ArtifactArchiveError("RuntimeBinding archive index must name one manifest")
@@ -110,13 +113,15 @@ def read_runtime_binding_archive(
     binding_document = _blob(entries, binding_descriptor)
     expected_paths = {
         "oci-layout",
-        "index.json",
+        _OCI_INDEX_FILENAME,
         _blob_path(indexed.digest),
         _blob_path(config_descriptor.digest),
         _blob_path(binding_descriptor.digest),
     }
     if set(entries) != expected_paths:
-        raise ArtifactArchiveError("RuntimeBinding archive contains unexpected or missing OCI members")
+        raise ArtifactArchiveError(
+            "RuntimeBinding archive contains unexpected or missing OCI members"
+        )
     _validate_runtime_binding_contents(
         manifest_document,
         config,
@@ -149,7 +154,9 @@ def _validate_runtime_binding_contents(
         config_document = json.loads(config.content.decode("utf-8"))
         binding = json.loads(binding_document.content.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ArtifactArchiveError("RuntimeBinding OCI content is not valid UTF-8 JSON/YAML") from error
+        raise ArtifactArchiveError(
+            "RuntimeBinding OCI content is not valid UTF-8 JSON/YAML"
+        ) from error
     if not isinstance(config_document, Mapping) or not isinstance(binding, Mapping):
         raise ArtifactArchiveError("RuntimeBinding OCI config and document must be objects")
     spec = binding.get("spec")
@@ -179,5 +186,8 @@ def _validate_runtime_binding_contents(
     )
     if diagnostics:
         raise ArtifactArchiveError("RuntimeBinding document violates the supported contract")
-    if f"sha256:{sha256(binding_document.content).hexdigest()}" != binding_document.descriptor.digest:
+    if (
+        f"sha256:{sha256(binding_document.content).hexdigest()}"
+        != binding_document.descriptor.digest
+    ):
         raise ArtifactArchiveError("RuntimeBinding document digest does not match its bytes")

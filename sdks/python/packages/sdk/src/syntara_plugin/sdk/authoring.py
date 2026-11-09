@@ -370,7 +370,9 @@ def _compile(
     for message in revision_errors(descriptor):
         diagnostics.append(
             _diagnostic(
-                "DESCRIPTOR_INVALID", message, PLUGIN_MANIFEST_FILENAME,
+                "DESCRIPTOR_INVALID",
+                message,
+                PLUGIN_MANIFEST_FILENAME,
                 "Correct the compiled revision metadata.",
             )
         )
@@ -610,19 +612,25 @@ def _normalize_runner_runtime(raw_runtime: object, plugin: Mapping[str, Any]) ->
     """Materialize runner metadata shared by every executable step type."""
 
     runtime = dict(raw_runtime) if isinstance(raw_runtime, Mapping) else {}
-    if runtime.get("kind") == "custom-runner":
-        plugin_spec = plugin.get("spec", {})
-        workload = plugin_spec.get("workload", {}) if isinstance(plugin_spec, Mapping) else {}
-        workloads = plugin_spec.get("workloads", {}) if isinstance(plugin_spec, Mapping) else {}
-        if isinstance(workloads, Mapping) and workloads:
-            selected_workload = runtime.get("workload")
-            if selected_workload is None and len(workloads) == 1:
-                selected_workload = next(iter(workloads))
-            runtime["workload"] = selected_workload
-        else:
-            runtime["workload"] = workload.get("image") if isinstance(workload, Mapping) else None
-        runtime["abi"] = DEFAULT_CONTAINER_ABI
+    if runtime.get("kind") != "custom-runner":
+        return runtime
+    plugin_spec = plugin.get("spec", {})
+    if not isinstance(plugin_spec, Mapping):
+        plugin_spec = {}
+    runtime["workload"] = _normalized_runner_workload(runtime, plugin_spec)
+    runtime["abi"] = DEFAULT_CONTAINER_ABI
     return runtime
+
+
+def _normalized_runner_workload(runtime: Mapping[str, Any], plugin_spec: Mapping[str, Any]) -> Any:
+    workloads = plugin_spec.get("workloads")
+    if isinstance(workloads, Mapping) and workloads:
+        selected = runtime.get("workload")
+        if selected is None and len(workloads) == 1:
+            return next(iter(workloads))
+        return selected
+    legacy_workload = plugin_spec.get("workload")
+    return legacy_workload.get("image") if isinstance(legacy_workload, Mapping) else None
 
 
 def _normalize_integration_type(
@@ -931,34 +939,58 @@ def _canonical_workloads(
 ) -> dict[str, object]:
     result: dict[str, object] = {}
     specification = plugin.get("spec", {})
-    workloads = specification.get("workloads") if isinstance(specification, Mapping) else None
+    if not isinstance(specification, Mapping):
+        specification = {}
+    workloads = specification.get("workloads")
     if isinstance(workloads, Mapping):
         for workload_id, workload in workloads.items():
-            image_id = workload.get("image") if isinstance(workload, Mapping) else None
-            image = bindings.get(image_id) if isinstance(image_id, str) else None
-            if not bind_workload_images:
-                result[str(workload_id)] = {"abi": DEFAULT_CONTAINER_ABI}
-            elif image is not None:
-                result[str(workload_id)] = {"image": image, "abi": DEFAULT_CONTAINER_ABI}
-    workload = specification.get("workload") if isinstance(specification, Mapping) else None
+            _add_workload_binding(
+                result,
+                str(workload_id),
+                workload.get("image") if isinstance(workload, Mapping) else None,
+                bindings,
+                bind_workload_images,
+            )
+    workload = specification.get("workload")
     if isinstance(workload, Mapping):
         identifier = str(workload.get("image"))
-        image = bindings.get(identifier)
-        if not bind_workload_images:
-            result[identifier] = {"abi": DEFAULT_CONTAINER_ABI}
-        elif image is not None:
-            result[identifier] = {"image": image, "abi": DEFAULT_CONTAINER_ABI}
-    for provider in plugin.get("spec", {}).get("providers", []):
-        if isinstance(provider, Mapping):
-            identifier = str(provider["image"])
-            image = bindings.get(identifier)
-            if image is not None:
-                result[identifier] = {
-                    "image": image,
-                    "abi": DEFAULT_PROVIDER_ABI,
-                    "provider": str(provider["id"]),
-                }
+        _add_workload_binding(result, identifier, identifier, bindings, bind_workload_images)
+    _add_provider_bindings(result, specification, bindings)
     return {key: result[key] for key in sorted(result)}
+
+
+def _add_workload_binding(
+    result: dict[str, object],
+    workload_id: str,
+    image_id: object,
+    bindings: Mapping[str, str],
+    bind_workload_images: bool,
+) -> None:
+    if not bind_workload_images:
+        result[workload_id] = {"abi": DEFAULT_CONTAINER_ABI}
+        return
+    image = bindings.get(image_id) if isinstance(image_id, str) else None
+    if image is not None:
+        result[workload_id] = {"image": image, "abi": DEFAULT_CONTAINER_ABI}
+
+
+def _add_provider_bindings(
+    result: dict[str, object], specification: Mapping[str, Any], bindings: Mapping[str, str]
+) -> None:
+    providers = specification.get("providers", [])
+    if not isinstance(providers, Sequence) or isinstance(providers, (str, bytes)):
+        return
+    for provider in providers:
+        if not isinstance(provider, Mapping):
+            continue
+        identifier = str(provider["image"])
+        image = bindings.get(identifier)
+        if image is not None:
+            result[identifier] = {
+                "image": image,
+                "abi": DEFAULT_PROVIDER_ABI,
+                "provider": str(provider["id"]),
+            }
 
 
 def _validate_bindings(
@@ -968,6 +1000,16 @@ def _validate_bindings(
     diagnostics: list[Diagnostic],
     *,
     require_image_bindings: bool,
+) -> None:
+    _validate_custom_workload_assignments(plugin, targets, diagnostics)
+    _validate_unique_workload_images(plugin, diagnostics)
+    _validate_required_image_bindings(plugin, bindings, diagnostics, require_image_bindings)
+
+
+def _validate_custom_workload_assignments(
+    plugin: Mapping[str, Any],
+    targets: Sequence[Mapping[str, Any]],
+    diagnostics: list[Diagnostic],
 ) -> None:
     workload_image = _root_workload_image(plugin)
     workloads = _root_workloads(plugin)
@@ -986,7 +1028,9 @@ def _validate_bindings(
                 "Declare spec.workload for one runtime or spec.workloads for named runtimes.",
             )
         )
-    declared_workload_ids = set(workloads) if workloads else ({workload_image} if workload_image else set())
+    declared_workload_ids = set(workloads)
+    if not declared_workload_ids and workload_image is not None:
+        declared_workload_ids = {workload_image}
     for target in custom_targets:
         runtime = target["runtime"]
         workload_id = runtime.get("workload")
@@ -1000,9 +1044,11 @@ def _validate_bindings(
                 )
             )
 
-    workload_image_ids = _workload_image_ids(plugin)
-    provider_image_ids = _provider_image_ids(plugin)
-    collisions = workload_image_ids & provider_image_ids
+
+def _validate_unique_workload_images(
+    plugin: Mapping[str, Any], diagnostics: list[Diagnostic]
+) -> None:
+    collisions = _workload_image_ids(plugin) & _provider_image_ids(plugin)
     for image_id in sorted(collisions):
         diagnostics.append(
             _diagnostic(
@@ -1012,8 +1058,15 @@ def _validate_bindings(
                 "Use a unique logical image build ID for the workload and each provider.",
             )
         )
-    required = _required_image_bindings(plugin)
-    for identifier in sorted(required):
+
+
+def _validate_required_image_bindings(
+    plugin: Mapping[str, Any],
+    bindings: Mapping[str, str],
+    diagnostics: list[Diagnostic],
+    require_image_bindings: bool,
+) -> None:
+    for identifier in sorted(_required_image_bindings(plugin)):
         image = bindings.get(identifier)
         if image is None and require_image_bindings:
             diagnostics.append(

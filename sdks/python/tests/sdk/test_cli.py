@@ -67,21 +67,26 @@ def test_runtime_binding_index_predecessor_requires_configured_trust(
         registry_origin="https://registry.example.test",
     )
 
+    untrusted_verifier = _runtime_binding_index_verifier(
+        arguments, "acme/plugins/issue-tracker"
+    )
     with pytest.raises(SettingsError, match="requires --cosign-verify-key"):
-        _runtime_binding_index_verifier(
-            arguments, "acme/plugins/issue-tracker"
-        )(digest)
+        untrusted_verifier(digest)
 
     arguments.allow_unverified_binding_index = True
     _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")(digest)
 
     arguments.allow_unverified_binding_index = False
     arguments.expected_binding_index_digest = digest
-    _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")(digest)
+    pinned_verifier = _runtime_binding_index_verifier(
+        arguments, "acme/plugins/issue-tracker"
+    )
+    pinned_verifier(digest)
+    mismatched_verifier = _runtime_binding_index_verifier(
+        arguments, "acme/plugins/issue-tracker"
+    )
     with pytest.raises(SettingsError, match="does not match the expected digest"):
-        _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")(
-            "sha256:" + "b" * 64
-        )
+        mismatched_verifier("sha256:" + "b" * 64)
 
     arguments.expected_binding_index_digest = None
     arguments.cosign_verify_key = Path("cosign.pub")

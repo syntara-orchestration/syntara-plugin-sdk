@@ -114,9 +114,10 @@ def test_successor_runtime_binding_index_uses_strong_etag_and_stops_on_conflict(
     )
     assert successor_document["metadata"]["previousIndexDigest"] == first_artifact.digest
     transport = _Transport(_upload_responses(successor, manifest_status=412))
+    publisher = RuntimeBindingIndexPublisher(_target(), transport=transport)
 
     with pytest.raises(CatalogIndexPublicationError, match="RUNTIME_BINDING_INDEX_CONFLICT"):
-        RuntimeBindingIndexPublisher(_target(), transport=transport).publish(
+        publisher.publish(
             successor,
             expected_current_digest=first_artifact.digest,
             expected_current_etag='"index-v1"',
@@ -135,12 +136,13 @@ def test_successor_rejects_missing_weak_or_invalid_etag_before_upload(etag: str 
         current_digest=first_artifact.digest,
     )
     transport = _Transport([])
+    publisher = RuntimeBindingIndexPublisher(_target(), transport=transport)
 
     with pytest.raises(
         CatalogIndexPublicationError,
         match="RUNTIME_BINDING_INDEX_CONDITIONAL_UPDATE_UNSUPPORTED",
     ):
-        RuntimeBindingIndexPublisher(_target(), transport=transport).publish(
+        publisher.publish(
             successor,
             expected_current_digest=first_artifact.digest,
             expected_current_etag=etag,
@@ -153,12 +155,13 @@ def test_runtime_binding_index_read_requires_trust_policy_or_explicit_dev_overri
     now = datetime.now(UTC).replace(microsecond=0)
     _, _, artifact = _index(now)
     untrusted_transport = _Transport(_read_responses(artifact))
+    untrusted_publisher = RuntimeBindingIndexPublisher(_target(), transport=untrusted_transport)
 
     with pytest.raises(
         CatalogIndexPublicationError,
         match="RUNTIME_BINDING_INDEX_TRUST_POLICY_REQUIRED",
     ):
-        RuntimeBindingIndexPublisher(_target(), transport=untrusted_transport).read_current()
+        untrusted_publisher.read_current()
 
     verified: list[str] = []
     trusted_transport = _Transport(_read_responses(artifact))

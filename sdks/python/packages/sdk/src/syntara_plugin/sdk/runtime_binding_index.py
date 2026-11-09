@@ -65,6 +65,41 @@ def next_runtime_binding_index(
 ) -> tuple[dict[str, Any], bool]:
     """Append or update one binding status in the next immutable index generation."""
 
+    issued_at = _validate_index_update_inputs(
+        plugin_digest, binding_repository, binding_digest, expires_in_hours, status, now
+    )
+    candidate = _binding_index_entry(binding_repository, binding_digest, release, status)
+    generation, previous_digest, entries, idempotent = _next_index_entries(
+        current,
+        current_manifest_digest,
+        plugin_digest,
+        binding_digest,
+        candidate,
+        issued_at,
+    )
+    if idempotent:
+        assert current is not None
+        return dict(current), True
+
+    document = _build_binding_index_document(
+        plugin_digest,
+        generation,
+        previous_digest,
+        entries,
+        issued_at,
+        expires_in_hours,
+    )
+    return document, False
+
+
+def _validate_index_update_inputs(
+    plugin_digest: str,
+    binding_repository: str,
+    binding_digest: str,
+    expires_in_hours: int,
+    status: str,
+    now: datetime | None,
+) -> datetime:
     if not binding_repository or not binding_digest.startswith("sha256:"):
         raise RuntimeBindingIndexError("binding repository and sha256 digest are required")
     if not plugin_digest.startswith("sha256:"):
@@ -76,7 +111,12 @@ def next_runtime_binding_index(
     issued_at = now or datetime.now(UTC)
     if issued_at.tzinfo is None or issued_at.utcoffset() is None:
         raise RuntimeBindingIndexError("index time must be timezone-aware")
+    return issued_at
 
+
+def _binding_index_entry(
+    binding_repository: str, binding_digest: str, release: str | None, status: str
+) -> dict[str, Any]:
     candidate: dict[str, Any] = {
         "bindingRepository": binding_repository,
         "bindingDigest": binding_digest,
@@ -86,48 +126,87 @@ def next_runtime_binding_index(
         if not release:
             raise RuntimeBindingIndexError("release label must be non-empty when supplied")
         candidate["release"] = release
+    return candidate
 
+
+def _next_index_entries(
+    current: Mapping[str, Any] | None,
+    current_manifest_digest: str | None,
+    plugin_digest: str,
+    binding_digest: str,
+    candidate: dict[str, Any],
+    issued_at: datetime,
+) -> tuple[int, str | None, list[dict[str, Any]], bool]:
     if current is None:
         if current_manifest_digest is not None:
             raise RuntimeBindingIndexError("a missing index cannot have a predecessor digest")
-        generation = 1
-        previous_digest = None
-        entries = [candidate]
-    else:
-        if current_manifest_digest is None:
-            raise RuntimeBindingIndexError("an existing index requires its manifest digest")
-        metadata = _mapping(current.get("metadata"), "current index metadata")
-        spec = _mapping(current.get("spec"), "current index spec")
-        if metadata.get("pluginDigest") != plugin_digest:
-            raise RuntimeBindingIndexError("current index belongs to a different plugin digest")
-        old_generation = metadata.get("generation")
-        if not isinstance(old_generation, int) or isinstance(old_generation, bool) or old_generation < 1:
-            raise RuntimeBindingIndexError("current index generation must be positive")
-        raw_entries = spec.get("entries")
-        if not isinstance(raw_entries, list):
-            raise RuntimeBindingIndexError("current index entries must be a list")
-        expires_at = metadata.get("expiresAt")
-        if not isinstance(expires_at, str):
-            raise RuntimeBindingIndexError("current index expiresAt must be a timestamp")
-        try:
-            current_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise RuntimeBindingIndexError("current index expiresAt must be a timestamp") from error
-        if current_expiry.tzinfo is None or current_expiry.utcoffset() is None:
-            raise RuntimeBindingIndexError("current index expiresAt must include a timezone")
-        entries = [dict(_mapping(item, "current index entry")) for item in raw_entries]
-        matches = [index for index, item in enumerate(entries) if item.get("bindingDigest") == binding_digest]
-        if len(matches) > 1:
-            raise RuntimeBindingIndexError("current index repeats a binding digest")
-        if matches:
-            if entries[matches[0]] == candidate and current_expiry > issued_at:
-                return dict(current), True
-            entries[matches[0]] = candidate
-        else:
-            entries.append(candidate)
-        generation = old_generation + 1
-        previous_digest = current_manifest_digest
+        return 1, None, [candidate], False
+    generation, current_expiry, entries = _read_current_index_state(
+        current, current_manifest_digest, plugin_digest
+    )
+    entries, idempotent = _replace_or_append_binding_entry(
+        entries, candidate, binding_digest, current_expiry, issued_at
+    )
+    return generation + 1, current_manifest_digest, entries, idempotent
 
+
+def _read_current_index_state(
+    current: Mapping[str, Any], current_manifest_digest: str | None, plugin_digest: str
+) -> tuple[int, datetime, list[dict[str, Any]]]:
+    if current_manifest_digest is None:
+        raise RuntimeBindingIndexError("an existing index requires its manifest digest")
+    metadata = _mapping(current.get("metadata"), "current index metadata")
+    spec = _mapping(current.get("spec"), "current index spec")
+    if metadata.get("pluginDigest") != plugin_digest:
+        raise RuntimeBindingIndexError("current index belongs to a different plugin digest")
+    generation = metadata.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        raise RuntimeBindingIndexError("current index generation must be positive")
+    raw_entries = spec.get("entries")
+    if not isinstance(raw_entries, list):
+        raise RuntimeBindingIndexError("current index entries must be a list")
+    expires_at = metadata.get("expiresAt")
+    if not isinstance(expires_at, str):
+        raise RuntimeBindingIndexError("current index expiresAt must be a timestamp")
+    try:
+        current_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RuntimeBindingIndexError("current index expiresAt must be a timestamp") from error
+    if current_expiry.tzinfo is None or current_expiry.utcoffset() is None:
+        raise RuntimeBindingIndexError("current index expiresAt must include a timezone")
+    entries = [dict(_mapping(item, "current index entry")) for item in raw_entries]
+    return generation, current_expiry, entries
+
+
+def _replace_or_append_binding_entry(
+    entries: list[dict[str, Any]],
+    candidate: dict[str, Any],
+    binding_digest: str,
+    current_expiry: datetime,
+    issued_at: datetime,
+) -> tuple[list[dict[str, Any]], bool]:
+    matches = [
+        index for index, item in enumerate(entries) if item.get("bindingDigest") == binding_digest
+    ]
+    if len(matches) > 1:
+        raise RuntimeBindingIndexError("current index repeats a binding digest")
+    if not matches:
+        return [*entries, candidate], False
+    match = matches[0]
+    if entries[match] == candidate and current_expiry > issued_at:
+        return entries, True
+    entries[match] = candidate
+    return entries, False
+
+
+def _build_binding_index_document(
+    plugin_digest: str,
+    generation: int,
+    previous_digest: str | None,
+    entries: list[dict[str, Any]],
+    issued_at: datetime,
+    expires_in_hours: int,
+) -> dict[str, Any]:
     document: dict[str, Any] = {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "RuntimeBindingIndex",
@@ -155,7 +234,7 @@ def next_runtime_binding_index(
     )
     if diagnostics:
         raise RuntimeBindingIndexError("; ".join(item.code for item in diagnostics))
-    return document, False
+    return document
 
 
 def build_runtime_binding_index_artifact(

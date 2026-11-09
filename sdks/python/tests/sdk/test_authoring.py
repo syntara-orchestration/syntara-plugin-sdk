@@ -1053,11 +1053,18 @@ def test_multiple_workloads_require_explicit_step_assignment() -> None:
         "python": {"image": "python-runtime"},
         "bash": {"image": "bash-runtime"},
     }
+    typed_plugin = _typed_plugin(plugin)
+    targets = [
+        Target(
+            "steps/create-issue/manifest.yaml",
+            _action({"kind": "inline", "value": {"type": "object"}}),
+        )
+    ]
 
     with pytest.raises(CompilationError) as error:
         compile_model(
-            _typed_plugin(plugin),
-            [Target("steps/create-issue/manifest.yaml", _action({"kind": "inline", "value": {"type": "object"}}))],
+            typed_plugin,
+            targets,
             image_bindings={"python-runtime": DIGEST, "bash-runtime": DIGEST},
         )
 

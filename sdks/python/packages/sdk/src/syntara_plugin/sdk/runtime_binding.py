@@ -16,6 +16,7 @@ from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciBlob, OciDescriptor, canonica
 OCI_RUNTIME_BINDING_ARTIFACT_TYPE = "application/vnd.syntara.runtime-binding.v1"
 OCI_RUNTIME_BINDING_CONFIG_MEDIA_TYPE = "application/vnd.syntara.runtime-binding.config.v1+json"
 OCI_RUNTIME_BINDING_DOCUMENT_MEDIA_TYPE = "application/vnd.syntara.runtime-binding.document.v1+yaml"
+_API_VERSION = "syntara.io/v1alpha1"
 
 
 class RuntimeBindingArtifactBuildError(ValueError):
@@ -103,9 +104,7 @@ def build_runtime_binding_artifact(
                 "subject": plugin_manifest_descriptor.as_dict(),
                 "annotations": {
                     "org.opencontainers.image.title": f"{namespace}/{name}-runtime",
-                    "org.opencontainers.image.version": str(
-                        metadata.get("release", "unversioned")
-                    ),
+                    "org.opencontainers.image.version": str(metadata.get("release", "unversioned")),
                 },
             }
         ),
@@ -140,41 +139,10 @@ def resolve_runtime_binding(
     if not isinstance(binding_metadata, Mapping):
         raise RuntimeBindingArtifactBuildError("RuntimeBinding metadata is required")
 
-    workloads: dict[str, Any] = {}
-    for workload_id, workload_source in source["spec"]["workloads"].items():
-        options: list[dict[str, Any]] = []
-        for option in workload_source["options"]:
-            image_source = option["image"]
-            if "buildTarget" in image_source:
-                image = image_bindings.get(image_source["buildTarget"])
-                if image is None:
-                    raise RuntimeBindingArtifactBuildError(
-                        f"no image binding was supplied for build target {image_source['buildTarget']!r}"
-                    )
-            else:
-                image = image_source["reference"]
-            options.append(
-                {
-                    key: option[key]
-                    for key in ("name", "displayName", "description")
-                    if key in option
-                }
-                | {"image": image}
-            )
-        workloads[workload_id] = {
-            "default": workload_source["default"],
-            "options": options,
-        }
-
-    step_revisions = sorted(
-        target["step_revision_id"]
-        for target in plugin_spec["targets"]
-        if target.get("kind") in {"Action", "Control", "Trigger"}
-        and isinstance(target.get("runtime"), Mapping)
-        and target["runtime"].get("kind") == "custom-runner"
-    )
+    workloads = _resolve_workload_options(source["spec"]["workloads"], image_bindings)
+    step_revisions = _custom_runner_step_revisions(plugin_spec["targets"])
     resolved = {
-        "apiVersion": "syntara.io/v1alpha1",
+        "apiVersion": _API_VERSION,
         "kind": "RuntimeBinding",
         "metadata": dict(binding_metadata),
         "spec": {
@@ -195,3 +163,43 @@ def resolve_runtime_binding(
             "; ".join(f"{item.code}: {item.message}" for item in diagnostics)
         )
     return resolved
+
+
+def _resolve_workload_options(
+    source_workloads: Mapping[str, Any], image_bindings: Mapping[str, str]
+) -> dict[str, Any]:
+    resolved: dict[str, Any] = {}
+    for workload_id, workload in source_workloads.items():
+        resolved[workload_id] = {
+            "default": workload["default"],
+            "options": [
+                _resolve_workload_option(option, image_bindings) for option in workload["options"]
+            ],
+        }
+    return resolved
+
+
+def _resolve_workload_option(
+    option: Mapping[str, Any], image_bindings: Mapping[str, str]
+) -> dict[str, Any]:
+    image_source = option["image"]
+    if "buildTarget" in image_source:
+        image = image_bindings.get(image_source["buildTarget"])
+        if image is None:
+            raise RuntimeBindingArtifactBuildError(
+                f"no image binding was supplied for build target {image_source['buildTarget']!r}"
+            )
+    else:
+        image = image_source["reference"]
+    metadata = {key: option[key] for key in ("name", "displayName", "description") if key in option}
+    return metadata | {"image": image}
+
+
+def _custom_runner_step_revisions(targets: list[Mapping[str, Any]]) -> list[str]:
+    return sorted(
+        target["step_revision_id"]
+        for target in targets
+        if target.get("kind") in {"Action", "Control", "Trigger"}
+        and isinstance(target.get("runtime"), Mapping)
+        and target["runtime"].get("kind") == "custom-runner"
+    )

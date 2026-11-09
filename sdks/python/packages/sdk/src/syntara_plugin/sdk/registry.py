@@ -341,9 +341,7 @@ class CatalogIndexPublisher:
             raise CatalogIndexPublicationError("CATALOG_INDEX_MANIFEST_DIGEST_INVALID")
         return snapshot
 
-    def _read_catalog(
-        self, reference: str, *, allow_missing: bool
-    ) -> CatalogIndexSnapshot | None:
+    def _read_catalog(self, reference: str, *, allow_missing: bool) -> CatalogIndexSnapshot | None:
         """Read and verify one channel or immutable catalog reference."""
 
         manifest_response = self._request(
@@ -553,8 +551,8 @@ class RuntimeBindingIndexPublisher(CatalogIndexPublisher):
         self,
         artifact: RuntimeBindingIndexArtifact,
         *,
-        expected_current_digest: str | None,
-        expected_current_etag: str | None,
+        expected_current_digest: str | None = None,
+        expected_current_etag: str | None = None,
     ) -> RuntimeBindingIndexPublication:  # type: ignore[override]
         """Upload an index and advance its channel with an HTTP precondition.
 
@@ -781,14 +779,19 @@ def _validate_runtime_binding_artifact(artifact: RuntimeBindingArtifact) -> None
         document = json.loads(artifact.binding_document.content.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CatalogIndexPublicationError("RUNTIME_BINDING_CONTENT_INVALID") from error
-    if not isinstance(manifest, Mapping) or not isinstance(config, Mapping) or not isinstance(document, Mapping):
+    if (
+        not isinstance(manifest, Mapping)
+        or not isinstance(config, Mapping)
+        or not isinstance(document, Mapping)
+    ):
         raise CatalogIndexPublicationError("RUNTIME_BINDING_CONTENT_INVALID")
     spec = document.get("spec")
     plugin_link = spec.get("plugin") if isinstance(spec, Mapping) else None
     plugin_digest = plugin_link.get("digest") if isinstance(plugin_link, Mapping) else None
     if (
         artifact.config.descriptor.media_type != OCI_RUNTIME_BINDING_CONFIG_MEDIA_TYPE
-        or artifact.binding_document.descriptor.media_type != OCI_RUNTIME_BINDING_DOCUMENT_MEDIA_TYPE
+        or artifact.binding_document.descriptor.media_type
+        != OCI_RUNTIME_BINDING_DOCUMENT_MEDIA_TYPE
         or manifest.get("schemaVersion") != 2
         or manifest.get("mediaType") != OCI_IMAGE_MANIFEST_MEDIA_TYPE
         or manifest.get("artifactType") != OCI_RUNTIME_BINDING_ARTIFACT_TYPE
@@ -824,7 +827,11 @@ def _validate_runtime_binding_index_artifact(artifact: RuntimeBindingIndexArtifa
         document = json.loads(artifact.document.content.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_CONTENT_INVALID") from error
-    if not isinstance(manifest, Mapping) or not isinstance(config, Mapping) or not isinstance(document, Mapping):
+    if (
+        not isinstance(manifest, Mapping)
+        or not isinstance(config, Mapping)
+        or not isinstance(document, Mapping)
+    ):
         raise CatalogIndexPublicationError("RUNTIME_BINDING_INDEX_CONTENT_INVALID")
     try:
         rebuilt = build_runtime_binding_index_artifact(document)
@@ -933,7 +940,9 @@ def _catalog_descriptor_digests(manifest: Mapping[str, Any]) -> tuple[str, str]:
         raise CatalogIndexPublicationError("CATALOG_INDEX_MANIFEST_INVALID")
     layer = layers[0]
     digest = layer.get("digest")
-    if layer.get("mediaType") != OCI_CATALOG_INDEX_CONTENT_MEDIA_TYPE or not _is_sha256_digest(digest):
+    if layer.get("mediaType") != OCI_CATALOG_INDEX_CONTENT_MEDIA_TYPE or not _is_sha256_digest(
+        digest
+    ):
         raise CatalogIndexPublicationError("CATALOG_INDEX_MANIFEST_INVALID")
     assert isinstance(config_digest, str)
     return config_digest, digest
@@ -976,9 +985,7 @@ def _is_strong_etag(value: str | None) -> bool:
     # RFC 9110 permits an empty opaque tag (``ETag: ""``). For non-empty tags,
     # etagc is %x21 / %x23-7E / obs-text (%x80-FF); quotes and DEL are excluded.
     return all(
-        ord(character) == 0x21
-        or 0x23 <= ord(character) <= 0x7E
-        or 0x80 <= ord(character) <= 0xFF
+        ord(character) == 0x21 or 0x23 <= ord(character) <= 0x7E or 0x80 <= ord(character) <= 0xFF
         for character in value[1:-1]
     )
 

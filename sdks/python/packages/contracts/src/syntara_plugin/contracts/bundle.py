@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.resources import files
@@ -72,6 +72,7 @@ _RFC3339_DATETIME = re.compile(
 )
 _FORMAT_CHECKER = FormatChecker()
 _STEP_TARGET_KINDS = frozenset({"Action", "Control", "Trigger"})
+_UTC_OFFSET_SUFFIX = "+00:00"
 
 
 @_FORMAT_CHECKER.checks("date-time", raises=ValueError)
@@ -80,7 +81,9 @@ def _is_rfc3339_datetime(value: object) -> bool:
 
     if not isinstance(value, str) or not _RFC3339_DATETIME.fullmatch(value):
         return False
-    datetime.fromisoformat(value.removesuffix("Z") + "+00:00" if value.endswith("Z") else value)
+    datetime.fromisoformat(
+        value.removesuffix("Z") + _UTC_OFFSET_SUFFIX if value.endswith("Z") else value
+    )
     return True
 
 
@@ -235,7 +238,9 @@ def validate_runtime_binding(
             )
 
     if plugin_descriptor is not None:
-        diagnostics.extend(_runtime_binding_plugin_link_errors(document, plugin_descriptor, resolved))
+        diagnostics.extend(
+            _runtime_binding_plugin_link_errors(document, plugin_descriptor, resolved)
+        )
     return tuple(sorted(diagnostics))
 
 
@@ -262,59 +267,9 @@ def _runtime_binding_plugin_link_errors(
         ]
 
     if resolved:
-        plugin_reference = binding_spec["plugin"]
-        expected_revision = plugin_spec.get("plugin_revision_id")
-        contract = binding_spec["contract"]
-        if contract.get("pluginRevisionId") != expected_revision:
-            errors.append(
-                RuntimeBindingDiagnostic(
-                    "RUNTIME_BINDING_PLUGIN_REVISION_MISMATCH",
-                    "spec/contract/pluginRevisionId",
-                    "binding does not reference this plugin contract revision.",
-                )
-            )
-        if contract.get("contractBundleDigest") != plugin_spec.get("contractBundleDigest"):
-            errors.append(
-                RuntimeBindingDiagnostic(
-                    "RUNTIME_BINDING_CONTRACT_BUNDLE_MISMATCH",
-                    "spec/contract/contractBundleDigest",
-                    "binding contract bundle digest differs from the plugin descriptor.",
-                )
-            )
-        expected_steps = sorted(
-            target["step_revision_id"]
-            for target in targets
-            if target.get("kind") in _STEP_TARGET_KINDS
-            and isinstance(target.get("runtime"), Mapping)
-            and target["runtime"].get("kind") == "custom-runner"
-        )
-        if contract.get("stepRevisionIds") != expected_steps:
-            errors.append(
-                RuntimeBindingDiagnostic(
-                    "RUNTIME_BINDING_STEP_SET_MISMATCH",
-                    "spec/contract/stepRevisionIds",
-                    "binding step revision set does not match the plugin's custom-runner steps.",
-                )
-            )
-        if not isinstance(plugin_reference, Mapping) or not isinstance(
-            plugin_reference.get("digest"), str
-        ):
-            errors.append(
-                RuntimeBindingDiagnostic(
-                    "RUNTIME_BINDING_PLUGIN_REFERENCE_INVALID",
-                    "spec/plugin",
-                    "resolved binding must identify the plugin artifact by repository and digest.",
-                )
-            )
+        errors.extend(_resolved_runtime_binding_errors(binding_spec, plugin_spec, targets))
 
-    target_workloads = {
-        str(target["runtime"]["workload"])
-        for target in targets
-        if target.get("kind") in _STEP_TARGET_KINDS
-        and isinstance(target.get("runtime"), Mapping)
-        and target["runtime"].get("kind") == "custom-runner"
-        and isinstance(target["runtime"].get("workload"), str)
-    }
+    target_workloads = _custom_runner_workload_ids(targets)
     if set(binding_workloads) != target_workloads:
         errors.append(
             RuntimeBindingDiagnostic(
@@ -324,32 +279,118 @@ def _runtime_binding_plugin_link_errors(
             )
         )
     for workload_id in sorted(target_workloads & set(binding_workloads)):
-        option_names = {option["name"] for option in binding_workloads[workload_id]["options"]}
-        for target in targets:
-            runtime = target.get("runtime")
-            if (
-                target.get("kind") in _STEP_TARGET_KINDS
-                and isinstance(runtime, Mapping)
-                and runtime.get("kind") == "custom-runner"
-                and runtime.get("workload") == workload_id
-                and not isinstance(runtime.get("entryPoint"), str)
-            ):
-                errors.append(
-                    RuntimeBindingDiagnostic(
-                        "RUNTIME_BINDING_ENTRY_POINT_MISSING",
-                        f"spec/workloads/{workload_id}",
-                        "a custom-runner step assigned to this workload has no entry point.",
-                    )
-                )
-        if not option_names:
-            errors.append(
-                RuntimeBindingDiagnostic(
-                    "RUNTIME_BINDING_OPTIONS_EMPTY",
-                    f"spec/workloads/{workload_id}/options",
-                    "every declared workload must have at least one image option.",
-                )
-            )
+        errors.extend(_workload_contract_errors(workload_id, binding_workloads, targets))
     return errors
+
+
+def _resolved_runtime_binding_errors(
+    binding_spec: Mapping[str, Any],
+    plugin_spec: Mapping[str, Any],
+    targets: Sequence[Mapping[str, Any]],
+) -> list[RuntimeBindingDiagnostic]:
+    errors: list[RuntimeBindingDiagnostic] = []
+    plugin_reference = binding_spec["plugin"]
+    contract = binding_spec["contract"]
+    checks = (
+        (
+            contract.get("pluginRevisionId") != plugin_spec.get("plugin_revision_id"),
+            "RUNTIME_BINDING_PLUGIN_REVISION_MISMATCH",
+            "spec/contract/pluginRevisionId",
+            "binding does not reference this plugin contract revision.",
+        ),
+        (
+            contract.get("contractBundleDigest") != plugin_spec.get("contractBundleDigest"),
+            "RUNTIME_BINDING_CONTRACT_BUNDLE_MISMATCH",
+            "spec/contract/contractBundleDigest",
+            "binding contract bundle digest differs from the plugin descriptor.",
+        ),
+        (
+            contract.get("stepRevisionIds") != _custom_runner_step_revision_ids(targets),
+            "RUNTIME_BINDING_STEP_SET_MISMATCH",
+            "spec/contract/stepRevisionIds",
+            "binding step revision set does not match the plugin's custom-runner steps.",
+        ),
+    )
+    errors.extend(_diagnostics_for_failed_checks(checks))
+    if not isinstance(plugin_reference, Mapping) or not isinstance(
+        plugin_reference.get("digest"), str
+    ):
+        errors.append(
+            RuntimeBindingDiagnostic(
+                "RUNTIME_BINDING_PLUGIN_REFERENCE_INVALID",
+                "spec/plugin",
+                "resolved binding must identify the plugin artifact by repository and digest.",
+            )
+        )
+    return errors
+
+
+def _diagnostics_for_failed_checks(
+    checks: Sequence[tuple[bool, str, str, str]],
+) -> list[RuntimeBindingDiagnostic]:
+    return [
+        RuntimeBindingDiagnostic(code, path, message)
+        for failed, code, path, message in checks
+        if failed
+    ]
+
+
+def _custom_runner_targets(
+    targets: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    return [
+        target
+        for target in targets
+        if target.get("kind") in _STEP_TARGET_KINDS
+        and isinstance(target.get("runtime"), Mapping)
+        and target["runtime"].get("kind") == "custom-runner"
+    ]
+
+
+def _custom_runner_step_revision_ids(targets: Sequence[Mapping[str, Any]]) -> list[str]:
+    return sorted(target["step_revision_id"] for target in _custom_runner_targets(targets))
+
+
+def _custom_runner_workload_ids(targets: Sequence[Mapping[str, Any]]) -> set[str]:
+    return {
+        str(target["runtime"]["workload"])
+        for target in _custom_runner_targets(targets)
+        if isinstance(target["runtime"].get("workload"), str)
+    }
+
+
+def _workload_contract_errors(
+    workload_id: str,
+    binding_workloads: Mapping[str, Any],
+    targets: Sequence[Mapping[str, Any]],
+) -> list[RuntimeBindingDiagnostic]:
+    errors: list[RuntimeBindingDiagnostic] = []
+    if _workload_needs_entry_point(workload_id, targets):
+        errors.append(
+            RuntimeBindingDiagnostic(
+                "RUNTIME_BINDING_ENTRY_POINT_MISSING",
+                f"spec/workloads/{workload_id}",
+                "a custom-runner step assigned to this workload has no entry point.",
+            )
+        )
+    options = binding_workloads[workload_id]["options"]
+    if not {option["name"] for option in options}:
+        errors.append(
+            RuntimeBindingDiagnostic(
+                "RUNTIME_BINDING_OPTIONS_EMPTY",
+                f"spec/workloads/{workload_id}/options",
+                "every declared workload must have at least one image option.",
+            )
+        )
+    return errors
+
+
+def _workload_needs_entry_point(workload_id: str, targets: Sequence[Mapping[str, Any]]) -> bool:
+    return any(
+        target["runtime"].get("workload") == workload_id
+        and not isinstance(target["runtime"].get("entryPoint"), str)
+        for target in _custom_runner_targets(targets)
+    )
 
 
 def validate_runtime_binding_index(
@@ -410,11 +451,13 @@ def validate_runtime_binding_index(
                 "runtime binding index does not extend the accepted index digest.",
             )
         )
-    issued_at = datetime.fromisoformat(metadata["issuedAt"].replace("Z", "+00:00"))
-    expires_at = datetime.fromisoformat(metadata["expiresAt"].replace("Z", "+00:00"))
-    if issued_at > now or (
-        expires_at <= now and not allow_expired_predecessor
-    ) or expires_at <= issued_at:
+    issued_at = datetime.fromisoformat(metadata["issuedAt"].replace("Z", _UTC_OFFSET_SUFFIX))
+    expires_at = datetime.fromisoformat(metadata["expiresAt"].replace("Z", _UTC_OFFSET_SUFFIX))
+    if (
+        issued_at > now
+        or (expires_at <= now and not allow_expired_predecessor)
+        or expires_at <= issued_at
+    ):
         diagnostics.append(
             RuntimeBindingDiagnostic(
                 "RUNTIME_BINDING_INDEX_TIME_INVALID",
@@ -552,5 +595,5 @@ def _parse_rfc3339(value: str) -> datetime:
     """Parse a value already checked by the bundle's strict date-time format."""
 
     return datetime.fromisoformat(
-        value.removesuffix("Z") + "+00:00" if value.endswith("Z") else value
+        value.removesuffix("Z") + _UTC_OFFSET_SUFFIX if value.endswith("Z") else value
     )

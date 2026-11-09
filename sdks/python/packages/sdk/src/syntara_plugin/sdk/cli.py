@@ -20,7 +20,7 @@ import tempfile
 import textwrap
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,8 +42,6 @@ from .artifact_archive import (
 )
 from .authoring import BuildRequest, CompilationError, CompilationResult, compile_workspace
 from .catalog import (
-    CatalogIndexArtifactBuildError,
-    CatalogIndexUpdateError,
     build_catalog_index_artifact,
     merge_catalog_entry,
     recover_catalog_entry,
@@ -61,13 +59,11 @@ from .registry import (
 )
 from .runtime_binding import (
     RuntimeBindingArtifact,
-    RuntimeBindingArtifactBuildError,
     build_runtime_binding_artifact,
     resolve_runtime_binding,
 )
 from .runtime_binding_archive import read_runtime_binding_archive, write_runtime_binding_archive
 from .runtime_binding_index import (
-    RuntimeBindingIndexError,
     build_runtime_binding_index_artifact,
     next_runtime_binding_index,
 )
@@ -103,6 +99,67 @@ _DIGEST_REFERENCE = re.compile(
 _MACHINE_READABLE_OUTPUT_HELP = "Print machine-readable output."
 _DEFAULT_MANIFEST_NAME = "plugin.yaml"
 _RUN_COMMAND_PREFIX = "syntara-plugin run "
+_API_VERSION = "syntara.io/v1alpha1"
+_RUNTIME_BINDING_SPEC_LABEL = "RuntimeBinding spec"
+_RUNTIME_BINDING_PLUGIN_LABEL = "RuntimeBinding plugin"
+_RUNTIME_BINDING_SPEC_PLUGIN_LABEL = "RuntimeBinding spec.plugin"
+_RELEASE_PLUGIN_LABEL = "release plugin"
+_PLUGIN_ARCHIVE_LABEL = "plugin archive"
+_PLUGIN_DESCRIPTOR_LABEL = "plugin descriptor"
+_RUNTIME_BINDINGS_FILENAME = "runtime-bindings.yaml"
+_EXPECTED_BINDING_INDEX_DIGEST_ERROR = (
+    "current runtime-binding index digest does not match the expected digest"
+)
+
+
+@dataclass(frozen=True)
+class _PluginReleaseBuild:
+    artifact: PluginArtifact
+    descriptor: Mapping[str, Any]
+    binding_source: Mapping[str, Any]
+    output: Path | None
+    repository: str
+    payload: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _RuntimeBindingReleasePaths:
+    dist_directory: Path
+    release_path: Path
+    resolved_path: Path
+
+
+@dataclass
+class _PreparedReleasePublication:
+    inventory_path: Path
+    credentials: RegistryCredentials
+    inventory: Mapping[str, Any]
+    plugin_record: Mapping[str, Any]
+    binding_record: Mapping[str, Any]
+    plugin_repository: str
+    plugin_digest: str
+    binding_repository: str
+    binding_digest: str
+    plugin_archive: Path
+    binding_artifact: RuntimeBindingArtifact
+    plugin_artifact: PluginArtifact
+    binding_document: Mapping[str, Any]
+    verified_images: list[tuple[Mapping[str, Any], Path]]
+    index_publisher: RuntimeBindingIndexPublisher
+    current_index: Any
+    receipt_path: Path
+    receipt: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _RuntimeBindingPublishState:
+    artifact: RuntimeBindingArtifact
+    document: Mapping[str, Any]
+    plugin_repository: str
+    plugin_digest: str
+    binding_publisher: RuntimeBindingArtifactPublisher
+    index_publisher: RuntimeBindingIndexPublisher
+    current_index: Any
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -114,11 +171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
     parser = _parser()
     arguments = parser.parse_args(argv)
-    if arguments.command == "run" and arguments.manifest is not None and arguments.manifest.is_dir():
-        # Settings discovery follows the manifest file's directory, so resolve
-        # a directory to its plugin.yaml: --manifest ws and
-        # --manifest ws/plugin.yaml must behave identically.
-        arguments.manifest = arguments.manifest / _DEFAULT_MANIFEST_NAME
+    _normalize_manifest_directory(arguments)
     if arguments.command == "init":
         return _init_workspace(arguments)
     if arguments.command == "test-init":
@@ -129,9 +182,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest=getattr(arguments, "manifest", None),
         )
         _resolve_arguments(arguments, settings)
-    except (SettingsError, ValueError) as error:
+    except ValueError as error:
         _print_settings_error(error, arguments)
         return 2
+    return _dispatch_command(arguments, parser)
+
+
+def _normalize_manifest_directory(arguments: argparse.Namespace) -> None:
+    if (
+        arguments.command == "run"
+        and arguments.manifest is not None
+        and arguments.manifest.is_dir()
+    ):
+        # Settings discovery follows the manifest file's directory, so resolve
+        # a directory to its plugin.yaml: --manifest ws and
+        # --manifest ws/plugin.yaml must behave identically.
+        arguments.manifest = arguments.manifest / _DEFAULT_MANIFEST_NAME
+
+
+def _dispatch_command(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if arguments.command == "validate":
         return _compile_workspace(arguments)
     if arguments.command == "inspect":
@@ -168,9 +237,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    init = commands.add_parser(
-        "init", help="Create one safe, compilable Action plugin workspace."
-    )
+    init = commands.add_parser("init", help="Create one safe, compilable Action plugin workspace.")
     init.add_argument("directory", type=Path, help="New empty directory for the plugin workspace.")
     init.add_argument("--namespace", default="example", help="Plugin namespace (default: example).")
     init.add_argument("--name", help="Plugin name (default: final directory name).")
@@ -324,7 +391,9 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Client private key for mutual TLS; --mode image only.",
     )
-    run.add_argument("--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP)
+    run.add_argument(
+        "--json", action="store_true", default=None, help=_MACHINE_READABLE_OUTPUT_HELP
+    )
     run.add_argument(
         "--verbose",
         action="store_true",
@@ -644,9 +713,7 @@ def _add_catalog_publication_arguments(command: argparse.ArgumentParser) -> None
         "--catalog-repository",
         help="Catalog OCI repository path; overrides registry.catalogRepository.",
     )
-    command.add_argument(
-        "--catalog-channel", help="Catalog OCI tag; overrides catalog.channel."
-    )
+    command.add_argument("--catalog-channel", help="Catalog OCI tag; overrides catalog.channel.")
     command.add_argument(
         "--expires-in-hours",
         type=int,
@@ -661,6 +728,35 @@ def _add_catalog_publication_arguments(command: argparse.ArgumentParser) -> None
 def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
     """Apply the documented command-line-over-settings precedence once."""
 
+    _resolve_common_arguments(arguments, settings)
+    _resolve_build_settings(arguments, settings)
+    _resolve_command_registry_settings(arguments, settings)
+    _resolve_command_paths(arguments, settings)
+
+
+def _resolve_common_arguments(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
+    if hasattr(arguments, "verbose"):
+        arguments.verbose = _boolean_option(
+            arguments.verbose, settings.output.verbose, default=False
+        )
+    if hasattr(arguments, "json"):
+        arguments.json = _boolean_option(arguments.json, settings.output.json, default=False)
+    for name in ("cosign_key", "cosign_verify_key"):
+        value = getattr(arguments, name, None)
+        if value is not None:
+            setattr(arguments, name, value.expanduser())
+    if arguments.command == "inspect":
+        _validate_inspect_signature_arguments(arguments)
+
+
+def _validate_inspect_signature_arguments(arguments: argparse.Namespace) -> None:
+    if arguments.verify and arguments.cosign_key is None:
+        raise SettingsError("inspect --verify requires --cosign-key")
+    if arguments.cosign_key is not None and not arguments.verify:
+        raise SettingsError("inspect --cosign-key requires --verify")
+
+
+def _resolve_build_settings(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
     if arguments.command in {"build", "validate"}:
         arguments.runtime_bindings = (
             arguments.runtime_bindings or settings.build.runtime_binding_manifest
@@ -669,31 +765,17 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
             arguments.runtime_bindings = arguments.runtime_bindings.expanduser()
 
     if arguments.command == "build":
-        arguments.binding_output = (
-            arguments.binding_output or settings.build.runtime_binding_output
-        )
+        arguments.binding_output = arguments.binding_output or settings.build.runtime_binding_output
         arguments.workload_targets = settings.build.workloads
-
-    if hasattr(arguments, "verbose"):
-        arguments.verbose = _boolean_option(
-            arguments.verbose, settings.output.verbose, default=False
-        )
-    if hasattr(arguments, "json"):
-        arguments.json = _boolean_option(arguments.json, settings.output.json, default=False)
-    if getattr(arguments, "cosign_key", None) is not None:
-        arguments.cosign_key = arguments.cosign_key.expanduser()
-    if getattr(arguments, "cosign_verify_key", None) is not None:
-        arguments.cosign_verify_key = arguments.cosign_verify_key.expanduser()
-    if arguments.command == "inspect":
-        if arguments.verify and arguments.cosign_key is None:
-            raise SettingsError("inspect --verify requires --cosign-key")
-        if arguments.cosign_key is not None and not arguments.verify:
-            raise SettingsError("inspect --cosign-key requires --verify")
-
     if arguments.command in {"validate", "inspect", "build"}:
         _resolve_compile_arguments(arguments, settings)
     if arguments.command == "run":
         _resolve_run_arguments(arguments, settings)
+
+
+def _resolve_command_registry_settings(
+    arguments: argparse.Namespace, settings: PluginBuildSettings
+) -> None:
     if arguments.command == "publish":
         arguments.artifact = _required_path(
             arguments.artifact
@@ -701,14 +783,16 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
             or (Path("dist/release.json") if arguments.artifact_kind == "release" else None),
             "artifact",
         )
-
     if arguments.command == "publish":
         _resolve_publication_arguments(arguments, settings)
         _resolve_catalog_publication_arguments(arguments, settings)
-        if arguments.plugin_artifact_archive is not None:
-            arguments.plugin_artifact_archive = arguments.plugin_artifact_archive.expanduser()
     if arguments.command == "catalog" and arguments.catalog_command in {"update", "recover"}:
         _resolve_catalog_arguments(arguments, settings)
+
+
+def _resolve_command_paths(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
+    if arguments.command == "publish" and arguments.plugin_artifact_archive is not None:
+        arguments.plugin_artifact_archive = arguments.plugin_artifact_archive.expanduser()
     if arguments.command == "build":
         _resolve_build_arguments(arguments, settings)
         if arguments.plugin_artifact_archive is None:
@@ -718,10 +802,10 @@ def _resolve_arguments(arguments: argparse.Namespace, settings: PluginBuildSetti
             )
         elif arguments.output is not None:
             arguments.output = arguments.output.expanduser()
-        if arguments.binding_output is not None:
-            arguments.binding_output = arguments.binding_output.expanduser()
-        if arguments.plugin_artifact_archive is not None:
-            arguments.plugin_artifact_archive = arguments.plugin_artifact_archive.expanduser()
+        for name in ("runtime_bindings", "binding_output", "plugin_artifact_archive"):
+            value = getattr(arguments, name, None)
+            if value is not None:
+                setattr(arguments, name, value.expanduser())
 
 
 def _resolve_build_arguments(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
@@ -729,9 +813,7 @@ def _resolve_build_arguments(arguments: argparse.Namespace, settings: PluginBuil
     registry = settings.registry
     arguments.registry_origin = arguments.registry_origin or registry.origin
     arguments.artifact_repository = registry.artifact_repository
-    arguments.workload_repository = (
-        arguments.workload_repository or registry.workload_repository
-    )
+    arguments.workload_repository = arguments.workload_repository or registry.workload_repository
     arguments.registry_auth_file = arguments.registry_auth_file or registry.auth_file
     if arguments.registry_auth_file is not None:
         arguments.registry_auth_file = arguments.registry_auth_file.expanduser()
@@ -754,15 +836,20 @@ def _resolve_compile_arguments(
     arguments.image_bindings = {**settings.build.image_bindings, **explicit_bindings}
 
 
-def _resolve_run_arguments(
-    arguments: argparse.Namespace, settings: PluginBuildSettings
-) -> None:
+def _resolve_run_arguments(arguments: argparse.Namespace, settings: PluginBuildSettings) -> None:
     """Resolve the run command's small option set with shared precedence."""
-
-    from .runner import is_loopback_address, is_runtime_address
 
     arguments.manifest = arguments.manifest or settings.manifest or Path(_DEFAULT_MANIFEST_NAME)
     transport_options = (arguments.address, arguments.tls_ca, arguments.tls_cert, arguments.tls_key)
+    if arguments.release is not None:
+        arguments.release = arguments.release.expanduser()
+    _validate_run_mode_options(arguments, transport_options)
+    _validate_run_transport_options(arguments, transport_options)
+
+
+def _validate_run_mode_options(
+    arguments: argparse.Namespace, transport_options: Sequence[object]
+) -> None:
     if arguments.mode == "source" and any(value is not None for value in transport_options):
         raise SettingsError("--address and the --tls-* options require --mode image")
     if arguments.mode == "source" and (
@@ -771,10 +858,17 @@ def _resolve_run_arguments(
         raise SettingsError("--image-option and --release require --mode image")
     if (arguments.image_option is None) != (arguments.release is None):
         raise SettingsError("--image-option and --release must be supplied together")
-    if arguments.release is not None:
-        arguments.release = arguments.release.expanduser()
     if arguments.image_option is not None and any(value is not None for value in transport_options):
-        raise SettingsError("--image-option and --release cannot be used with a separately managed runtime")
+        raise SettingsError(
+            "--image-option and --release cannot be used with a separately managed runtime"
+        )
+
+
+def _validate_run_transport_options(
+    arguments: argparse.Namespace, transport_options: Sequence[object]
+) -> None:
+    from .runner import is_loopback_address, is_runtime_address
+
     if arguments.address is not None and not is_runtime_address(arguments.address):
         raise SettingsError(
             "--address must be a HOST:PORT TCP address, for example 127.0.0.1:50051"
@@ -836,7 +930,9 @@ def _resolve_catalog_publication_arguments(
     )
     if not arguments.update_catalog:
         return
-    arguments.catalog_repository = arguments.catalog_repository or settings.registry.catalog_repository
+    arguments.catalog_repository = (
+        arguments.catalog_repository or settings.registry.catalog_repository
+    )
     arguments.catalog_channel = arguments.catalog_channel or catalog.channel
     arguments.catalog_source_id = arguments.catalog_source_id or catalog.source_id
     arguments.expires_in_hours = arguments.expires_in_hours or catalog.expires_in_hours
@@ -1136,8 +1232,7 @@ def _validate_fields_schema(document: dict[str, Any]) -> None:
     missing_required = sorted(set(required) - set(properties))
     if missing_required:
         raise ValueError(
-            "fields JSON schema must define every required property: "
-            + ", ".join(missing_required)
+            "fields JSON schema must define every required property: " + ", ".join(missing_required)
         )
     Draft202012Validator.check_schema(document)
 
@@ -1157,8 +1252,9 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
 
         payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
         schema = payload if isinstance(payload, dict) else _input_schema(payload)
-        write_custom_workspace(directory, arguments.namespace, name, arguments.version,
-                               arguments.action, schema)
+        write_custom_workspace(
+            directory, arguments.namespace, name, arguments.version, arguments.action, schema
+        )
         return
     action_path = Path("steps") / arguments.action / "manifest.yaml"
     input_path = Path("schemas") / f"{arguments.action}.input.yaml"
@@ -1194,9 +1290,7 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
         custom_workload=custom_workload,
         package_name=package_name,
     )
-    (directory / action_path).write_text(
-        action_manifest, encoding="utf-8"
-    )
+    (directory / action_path).write_text(action_manifest, encoding="utf-8")
     if not custom_workload:
         payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
         if isinstance(payload, dict):
@@ -1214,7 +1308,6 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
             directory,
             name=name,
             namespace=arguments.namespace,
-            action=arguments.action,
             version=arguments.version,
             package_name=package_name,
             action_path=action_path,
@@ -1239,40 +1332,50 @@ def _compile_workspace(arguments: argparse.Namespace) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
-    binding_validated = False
-    if arguments.command == "validate" and arguments.runtime_bindings is not None:
-        try:
-            binding_source = _read_runtime_binding_source(arguments.runtime_bindings)
-            binding_spec = _mapping(binding_source.get("spec"), "RuntimeBinding spec")
-            plugin_link = _mapping(binding_spec.get("plugin"), "RuntimeBinding plugin")
-            if "source" not in plugin_link:
-                raise SettingsError(
-                    "validate --runtime-bindings accepts a source manifest; use build or inspect "
-                    "for a RuntimeBinding linked to an existing plugin artifact"
-                )
-            binding_plugin = (
-                arguments.runtime_bindings.parent
-                / _required_string(plugin_link.get("source"), "RuntimeBinding plugin source")
-            ).resolve()
-            if binding_plugin != arguments.manifest.resolve():
-                raise SettingsError(
-                    "RuntimeBinding plugin.source must resolve to the selected plugin manifest"
-                )
-            diagnostics = validate_runtime_binding(
-                load_bundle(),
-                binding_source,
-                resolved=False,
-                plugin_descriptor=result.descriptor,
-            )
-        except (SettingsError, OSError, ValueError) as error:
-            print(f"error: {error}", file=sys.stderr)
-            return 2
-        if diagnostics:
-            for diagnostic in diagnostics:
-                print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)
-            return 1
-        binding_validated = True
+    binding_validated, failure_code = _validate_workspace_binding(arguments, result)
+    if failure_code is not None:
+        return failure_code
+    return _print_workspace_result(arguments, result, binding_validated)
 
+
+def _validate_workspace_binding(
+    arguments: argparse.Namespace, result: CompilationResult
+) -> tuple[bool, int | None]:
+    if arguments.command != "validate" or arguments.runtime_bindings is None:
+        return False, None
+    try:
+        binding_source = _read_runtime_binding_source(arguments.runtime_bindings)
+        binding_spec = _mapping(binding_source.get("spec"), _RUNTIME_BINDING_SPEC_LABEL)
+        plugin_link = _mapping(binding_spec.get("plugin"), _RUNTIME_BINDING_PLUGIN_LABEL)
+        if "source" not in plugin_link:
+            raise SettingsError(
+                "validate --runtime-bindings accepts a source manifest; use build or inspect "
+                "for a RuntimeBinding linked to an existing plugin artifact"
+            )
+        binding_plugin = (
+            arguments.runtime_bindings.parent
+            / _required_string(plugin_link.get("source"), f"{_RUNTIME_BINDING_PLUGIN_LABEL} source")
+        ).resolve()
+        if binding_plugin != arguments.manifest.resolve():
+            raise SettingsError(
+                "RuntimeBinding plugin.source must resolve to the selected plugin manifest"
+            )
+        diagnostics = validate_runtime_binding(
+            load_bundle(), binding_source, resolved=False, plugin_descriptor=result.descriptor
+        )
+    except (OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return False, 2
+    if diagnostics:
+        for diagnostic in diagnostics:
+            print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)
+        return False, 1
+    return True, None
+
+
+def _print_workspace_result(
+    arguments: argparse.Namespace, result: CompilationResult, binding_validated: bool
+) -> int:
     if arguments.command == "inspect":
         print(result.canonical_json().decode("utf-8"))
         return 0
@@ -1324,22 +1427,11 @@ def _run_command(arguments: argparse.Namespace) -> int:
     # The execution engine pulls gRPC; importing it here keeps every command
     # that never executes a step type free of that import cost. The template
     # helpers are grpc-free and stay at module scope.
-    from .runner import (
-        RunExecutionError,
-        RunUsageError,
-        load_credentials,
-        load_input,
-        parse_credential_options,
-        reachable_credential_recipes,
-        resolve_manifest,
-        resolve_run_target,
-        run_source,
-        validate_inputs,
-    )
+    from . import runner
 
     try:
-        manifest = resolve_manifest(arguments.manifest)
-    except RunUsageError as error:
+        manifest = runner.resolve_manifest(arguments.manifest)
+    except runner.RunUsageError as error:
         _print_run_error(_localized_error(error, arguments), arguments)
         return 2
     try:
@@ -1352,82 +1444,109 @@ def _run_command(arguments: argparse.Namespace) -> int:
         return 2
 
     try:
-        target = resolve_run_target(compiled, arguments.target)
-        # Parsing before the template check keeps a malformed --credential a
-        # usage error rather than something the template path silently drops.
-        specs = parse_credential_options(arguments.credential)
-        if arguments.input is None and arguments.input_file is None:
-            # Nothing executes, so no credential is read: --credential NAME=-
-            # must not block on stdin while printing a template.
-            _print_run_template(arguments, target)
+        invocation = _prepare_run_invocation(arguments, manifest, compiled, runner)
+        if invocation is None:
             return 2
-        if any(spec.kind == "stdin" for spec in specs) and str(arguments.input_file) == "-":
-            raise RunUsageError(
-                "only one of --input-file - and --credential NAME=- can read standard input",
-                next_steps=("supply the input in a file, or the credential with file: or env:",),
-            )
-        inputs, input_source = load_input(arguments.input, arguments.input_file)
-        errors = validate_inputs(target.input_schema, inputs)
-        if errors:
-            _print_input_errors(target, input_source, errors, arguments)
-            return 2
-        credentials, warnings = load_credentials(
-            specs, reachable_credential_recipes(compiled, target), target,
-            workspace=manifest.parent,
-        )
-        if credentials and arguments.mode == "source":
-            # Source mode cannot create the production mount without
-            # privileges, so a Step hardcoding it would silently miss the
-            # credential; the author should hear that before the run.
-            warnings = (
-                *warnings,
-                "warning: source mode delivers credential files at a temporary path, "
-                "not /var/run/syntara/secrets as in production; a Step must use "
-                "context.credential(name).read() rather than a mount path",
-            )
+        target, inputs, input_source, credentials, warnings = invocation
         _print_run_warnings(warnings)
-        progress = _progress_printer(arguments)
-        if arguments.mode == "source":
-            report = run_source(
-                manifest, target, inputs, input_source,
-                on_progress=progress, credentials=credentials,
-            )
-        elif arguments.image_option is not None and arguments.release is not None:
-            image_reference, image_archive, image_digest = _image_option_from_release(
-                arguments.release,
-                target=target,
-                option_name=arguments.image_option,
-            )
-            image_target = replace(target, workload_image=image_reference)
-            if image_archive is None:
-                report = _run_image_mode(
-                    arguments, image_target, inputs, input_source, progress, credentials
-                )
-            else:
-                from .container_engine import load_oci_archive
-
-                with load_oci_archive(image_archive, expected_digest=image_digest) as local_reference:
-                    report = _run_image_mode(
-                        arguments,
-                        replace(image_target, workload_image=local_reference),
-                        inputs,
-                        input_source,
-                        progress,
-                        credentials,
-                    )
-                report = replace(report, image=image_reference)
-        else:
-            report = _run_image_mode(
-                arguments, target, inputs, input_source, progress, credentials
-            )
-    except RunUsageError as error:
+        report = _execute_run_invocation(
+            arguments, manifest, target, inputs, input_source, credentials, runner
+        )
+    except runner.RunUsageError as error:
         _print_run_error(_localized_error(error, arguments), arguments)
         return 2
-    except RunExecutionError as error:
+    except runner.RunExecutionError as error:
         _print_run_error(_localized_error(error, arguments), arguments)
         return 1
     _print_run_report(arguments, report)
     return 0 if report.ok else 1
+
+
+def _prepare_run_invocation(
+    arguments: argparse.Namespace,
+    manifest: Path,
+    compiled: CompilationResult,
+    runner: Any,
+) -> tuple[Any, dict[str, Any], str, Any, Sequence[str]] | None:
+    target = runner.resolve_run_target(compiled, arguments.target)
+    # Parse before the template check so malformed credentials remain usage errors.
+    specs = runner.parse_credential_options(arguments.credential)
+    if arguments.input is None and arguments.input_file is None:
+        _print_run_template(arguments, target)
+        return None
+    if any(spec.kind == "stdin" for spec in specs) and str(arguments.input_file) == "-":
+        raise runner.RunUsageError(
+            "only one of --input-file - and --credential NAME=- can read standard input",
+            next_steps=("supply the input in a file, or the credential with file: or env:",),
+        )
+    inputs, input_source = runner.load_input(arguments.input, arguments.input_file)
+    errors = runner.validate_inputs(target.input_schema, inputs)
+    if errors:
+        _print_input_errors(target, input_source, errors, arguments)
+        return None
+    credentials, warnings = runner.load_credentials(
+        specs,
+        runner.reachable_credential_recipes(compiled, target),
+        target,
+        workspace=manifest.parent,
+    )
+    if credentials and arguments.mode == "source":
+        warnings = (
+            *warnings,
+            "warning: source mode delivers credential files at a temporary path, "
+            "not /var/run/syntara/secrets as in production; a Step must use "
+            "context.credential(name).read() rather than a mount path",
+        )
+    return target, inputs, input_source, credentials, warnings
+
+
+def _execute_run_invocation(
+    arguments: argparse.Namespace,
+    manifest: Path,
+    target: Any,
+    inputs: Mapping[str, Any],
+    input_source: str,
+    credentials: Any,
+    runner: Any,
+) -> Any:
+    progress = _progress_printer(arguments)
+    if arguments.mode == "source":
+        return runner.run_source(
+            manifest, target, inputs, input_source, on_progress=progress, credentials=credentials
+        )
+    if arguments.image_option is not None and arguments.release is not None:
+        return _run_selected_release_image(
+            arguments, target, inputs, input_source, credentials, progress
+        )
+    return _run_image_mode(arguments, target, inputs, input_source, progress, credentials)
+
+
+def _run_selected_release_image(
+    arguments: argparse.Namespace,
+    target: Any,
+    inputs: Mapping[str, Any],
+    input_source: str,
+    credentials: Any,
+    progress: Callable[[Any], None],
+) -> Any:
+    image_reference, image_archive, image_digest = _image_option_from_release(
+        arguments.release, target=target, option_name=arguments.image_option
+    )
+    image_target = replace(target, workload_image=image_reference)
+    if image_archive is None:
+        return _run_image_mode(arguments, image_target, inputs, input_source, progress, credentials)
+    from .container_engine import load_oci_archive
+
+    with load_oci_archive(image_archive, expected_digest=image_digest) as local_reference:
+        report = _run_image_mode(
+            arguments,
+            replace(image_target, workload_image=local_reference),
+            inputs,
+            input_source,
+            progress,
+            credentials,
+        )
+    return replace(report, image=image_reference)
 
 
 def _run_command_guarded(arguments: argparse.Namespace) -> int:
@@ -1449,112 +1568,19 @@ def _image_option_from_release(
     from .runner import RunUsageError
 
     try:
-        inventory = _read_release_inventory(inventory_path)
-        plugin_record = _mapping(inventory.get("plugin"), "release plugin")
-        binding_record = _mapping(inventory.get("runtimeBinding"), "release runtimeBinding")
-        plugin_digest = _required_string(plugin_record.get("digest"), "release plugin digest")
-        plugin_archive = _release_inventory_path(
-            inventory_path, plugin_record.get("archive"), "plugin archive"
+        inventory, plugin_descriptor, binding_document = _load_release_binding_documents(
+            inventory_path
         )
-        plugin_artifact = read_plugin_artifact_archive(plugin_archive)
-        if plugin_artifact.digest != plugin_digest:
-            raise ArtifactArchiveError("plugin archive digest does not match the release inventory")
-        plugin_descriptor = _decode_json_object(
-            plugin_artifact.plugin_manifest.content, "plugin descriptor"
+        image_reference, image_digest = _resolve_binding_image_option(
+            binding_document, plugin_descriptor, target, option_name
         )
-        binding_archive = _release_inventory_path(
-            inventory_path, binding_record.get("archive"), "runtime-binding archive"
+        image_archive = _find_release_image_archive(
+            inventory_path, inventory, image_reference, image_digest
         )
-        binding_artifact = read_runtime_binding_archive(
-            binding_archive,
-            plugin_descriptor=plugin_descriptor,
-            plugin_manifest_descriptor=plugin_artifact.manifest.descriptor,
-        )
-        binding_digest = _required_string(
-            binding_record.get("digest"), "release runtime-binding digest"
-        )
-        if binding_artifact.digest != binding_digest:
-            raise ArtifactArchiveError("RuntimeBinding digest does not match the release inventory")
-        binding_document = _decode_json_object(
-            binding_artifact.binding_document.content, "RuntimeBinding document"
-        )
-        specification = _mapping(binding_document.get("spec"), "RuntimeBinding spec")
-        plugin_link = _mapping(specification.get("plugin"), "RuntimeBinding plugin")
-        if plugin_link.get("digest") != plugin_digest:
-            raise ArtifactArchiveError("RuntimeBinding links a different plugin artifact")
-
-        contract = _mapping(specification.get("contract"), "RuntimeBinding contract")
-        step_revision_ids = contract.get("stepRevisionIds")
-        if not isinstance(step_revision_ids, list):
-            raise ArtifactArchiveError("RuntimeBinding contract has no step-revision list")
-        if target.workload_id is None or target.step_revision_id not in step_revision_ids:
-            raise SettingsError("the selected step is not included in this RuntimeBinding release")
-        descriptor_spec = _mapping(plugin_descriptor.get("spec"), "plugin descriptor spec")
-        descriptor_targets = descriptor_spec.get("targets")
-        if not isinstance(descriptor_targets, list):
-            raise ArtifactArchiveError("plugin descriptor has no target list")
-        plugin_target = next(
-            (
-                item
-                for item in descriptor_targets
-                if isinstance(item, Mapping)
-                and item.get("step_revision_id") == target.step_revision_id
-            ),
-            None,
-        )
-        runtime = (
-            _mapping(plugin_target.get("runtime"), "plugin target runtime")
-            if isinstance(plugin_target, Mapping)
-            else {}
-        )
-        if runtime.get("kind") != "custom-runner" or runtime.get("workload") != target.workload_id:
-            raise ArtifactArchiveError("RuntimeBinding workload does not match the selected step")
-
-        workloads = _mapping(specification.get("workloads"), "RuntimeBinding workloads")
-        workload = _mapping(workloads.get(target.workload_id), "selected RuntimeBinding workload")
-        options = workload.get("options")
-        if not isinstance(options, list):
-            raise ArtifactArchiveError("selected RuntimeBinding workload has no option list")
-        option = next(
-            (
-                item
-                for item in options
-                if isinstance(item, Mapping) and item.get("name") == option_name
-            ),
-            None,
-        )
-        if not isinstance(option, Mapping):
-            raise SettingsError(
-                f"image option {option_name!r} is not available for workload {target.workload_id!r}"
-            )
-        image_reference = _required_string(option.get("image"), "RuntimeBinding image reference")
-        match = _DIGEST_REFERENCE.fullmatch(image_reference)
-        if match is None:
-            raise ArtifactArchiveError("RuntimeBinding image is not an immutable digest reference")
-        image_digest = image_reference.rsplit("@", 1)[1]
-
-        image_archive: Path | None = None
-        images = inventory.get("images")
-        if not isinstance(images, list):
-            raise SettingsError("release inventory images must be a list")
-        for position, raw_image in enumerate(images):
-            image = _mapping(raw_image, f"release images[{position}]")
-            if image.get("reference") == image_reference:
-                candidate_digest = _required_string(image.get("digest"), "release image digest")
-                if candidate_digest != image_digest:
-                    raise ArtifactArchiveError("release image digest does not match its reference")
-                image_archive = _release_inventory_path(
-                    inventory_path,
-                    image.get("archive"),
-                    f"image archive {image.get('buildTarget', position)}",
-                )
-                if workload_archive_digest(image_archive) != image_digest:
-                    raise ArtifactArchiveError("workload archive digest does not match the RuntimeBinding")
-                break
         return image_reference, image_archive, image_digest
     except RunUsageError:
         raise
-    except (ArtifactArchiveError, SettingsError, ValueError, OSError, KeyError, TypeError) as error:
+    except (ValueError, OSError, KeyError, TypeError) as error:
         raise RunUsageError(
             "could not resolve the requested image option from the local release",
             detail=(str(error),),
@@ -1563,6 +1589,137 @@ def _image_option_from_release(
                 "run syntara-plugin build before using image mode",
             ),
         ) from error
+
+
+def _load_release_binding_documents(
+    inventory_path: Path,
+) -> tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
+    inventory = _read_release_inventory(inventory_path)
+    plugin_record = _mapping(inventory.get("plugin"), _RELEASE_PLUGIN_LABEL)
+    binding_record = _mapping(inventory.get("runtimeBinding"), "release runtimeBinding")
+    plugin_digest = _required_string(plugin_record.get("digest"), "release plugin digest")
+    plugin_archive = _release_inventory_path(
+        inventory_path, plugin_record.get("archive"), _PLUGIN_ARCHIVE_LABEL
+    )
+    plugin_artifact = read_plugin_artifact_archive(plugin_archive)
+    if plugin_artifact.digest != plugin_digest:
+        raise ArtifactArchiveError("plugin archive digest does not match the release inventory")
+    plugin_descriptor = _decode_json_object(
+        plugin_artifact.plugin_manifest.content, _PLUGIN_DESCRIPTOR_LABEL
+    )
+    binding_archive = _release_inventory_path(
+        inventory_path, binding_record.get("archive"), "runtime-binding archive"
+    )
+    binding_artifact = read_runtime_binding_archive(
+        binding_archive,
+        plugin_descriptor=plugin_descriptor,
+        plugin_manifest_descriptor=plugin_artifact.manifest.descriptor,
+    )
+    binding_digest = _required_string(
+        binding_record.get("digest"), "release runtime-binding digest"
+    )
+    if binding_artifact.digest != binding_digest:
+        raise ArtifactArchiveError("RuntimeBinding digest does not match the release inventory")
+    binding_document = _decode_json_object(
+        binding_artifact.binding_document.content, "RuntimeBinding document"
+    )
+    plugin_link = _mapping(
+        _mapping(binding_document.get("spec"), _RUNTIME_BINDING_SPEC_LABEL).get("plugin"),
+        _RUNTIME_BINDING_PLUGIN_LABEL,
+    )
+    if plugin_link.get("digest") != plugin_digest:
+        raise ArtifactArchiveError("RuntimeBinding links a different plugin artifact")
+    return inventory, plugin_descriptor, binding_document
+
+
+def _resolve_binding_image_option(
+    binding_document: Mapping[str, Any],
+    plugin_descriptor: Mapping[str, Any],
+    target: Any,
+    option_name: str,
+) -> tuple[str, str]:
+    specification = _mapping(binding_document.get("spec"), _RUNTIME_BINDING_SPEC_LABEL)
+    contract = _mapping(specification.get("contract"), "RuntimeBinding contract")
+    step_revision_ids = contract.get("stepRevisionIds")
+    if not isinstance(step_revision_ids, list):
+        raise ArtifactArchiveError("RuntimeBinding contract has no step-revision list")
+    if target.workload_id is None or target.step_revision_id not in step_revision_ids:
+        raise SettingsError("the selected step is not included in this RuntimeBinding release")
+    _validate_target_workload(plugin_descriptor, target)
+    workload_options = _binding_workload_options(specification, target.workload_id)
+    option = next((item for item in workload_options if item.get("name") == option_name), None)
+    if option is None:
+        raise SettingsError(
+            f"image option {option_name!r} is not available for workload {target.workload_id!r}"
+        )
+    image_reference = _required_string(option.get("image"), "RuntimeBinding image reference")
+    if _DIGEST_REFERENCE.fullmatch(image_reference) is None:
+        raise ArtifactArchiveError("RuntimeBinding image is not an immutable digest reference")
+    return image_reference, image_reference.rsplit("@", 1)[1]
+
+
+def _validate_target_workload(plugin_descriptor: Mapping[str, Any], target: Any) -> None:
+    descriptor_spec = _mapping(plugin_descriptor.get("spec"), "plugin descriptor spec")
+    descriptor_targets = descriptor_spec.get("targets")
+    if not isinstance(descriptor_targets, list):
+        raise ArtifactArchiveError("plugin descriptor has no target list")
+    plugin_target = next(
+        (
+            item
+            for item in descriptor_targets
+            if isinstance(item, Mapping) and item.get("step_revision_id") == target.step_revision_id
+        ),
+        None,
+    )
+    runtime = (
+        _mapping(plugin_target.get("runtime"), "plugin target runtime")
+        if isinstance(plugin_target, Mapping)
+        else {}
+    )
+    if runtime.get("kind") != "custom-runner" or runtime.get("workload") != target.workload_id:
+        raise ArtifactArchiveError("RuntimeBinding workload does not match the selected step")
+
+
+def _binding_workload_options(
+    specification: Mapping[str, Any], workload_id: str
+) -> list[Mapping[str, Any]]:
+    workloads = _mapping(specification.get("workloads"), "RuntimeBinding workloads")
+    workload = _mapping(workloads.get(workload_id), "selected RuntimeBinding workload")
+    options = workload.get("options")
+    if not isinstance(options, list):
+        raise ArtifactArchiveError("selected RuntimeBinding workload has no option list")
+    return [
+        _mapping(option, "RuntimeBinding image option")
+        for option in options
+        if isinstance(option, Mapping)
+    ]
+
+
+def _find_release_image_archive(
+    inventory_path: Path,
+    inventory: Mapping[str, Any],
+    image_reference: str,
+    image_digest: str,
+) -> Path | None:
+    images = inventory.get("images")
+    if not isinstance(images, list):
+        raise SettingsError("release inventory images must be a list")
+    for position, raw_image in enumerate(images):
+        image = _mapping(raw_image, f"release images[{position}]")
+        if image.get("reference") != image_reference:
+            continue
+        candidate_digest = _required_string(image.get("digest"), "release image digest")
+        if candidate_digest != image_digest:
+            raise ArtifactArchiveError("release image digest does not match its reference")
+        archive = _release_inventory_path(
+            inventory_path,
+            image.get("archive"),
+            f"image archive {image.get('buildTarget', position)}",
+        )
+        if workload_archive_digest(archive) != image_digest:
+            raise ArtifactArchiveError("workload archive digest does not match the RuntimeBinding")
+        return archive
+    return None
 
 
 def _print_run_warnings(warnings: Sequence[str]) -> None:
@@ -1688,10 +1845,15 @@ def _localized_error(
         else _RUN_COMMAND_PREFIX + step.removeprefix(_RUN_COMMAND_PREFIX) + run_prefix
         for step in error.next_steps
     )
-    return RunExecutionError(
-        error.message, failure_code=error.failure_code, detail=error.detail, next_steps=localized
-    ) if isinstance(error, RunExecutionError) else RunUsageError(
-        error.message, detail=error.detail, next_steps=localized
+    return (
+        RunExecutionError(
+            error.message,
+            failure_code=error.failure_code,
+            detail=error.detail,
+            next_steps=localized,
+        )
+        if isinstance(error, RunExecutionError)
+        else RunUsageError(error.message, detail=error.detail, next_steps=localized)
     )
 
 
@@ -1842,8 +2004,7 @@ def _print_run_report(arguments: argparse.Namespace, report: RunReport) -> None:
     elif _needs_uncaptured_hint(report):
         print()
         print(
-            _bold("Error detail:")
-            + " not captured; a remote runtime discards exception details. "
+            _bold("Error detail:") + " not captured; a remote runtime discards exception details. "
             "Rerun with --mode source to see the local traceback."
         )
 
@@ -2026,249 +2187,316 @@ def _build_artifact(arguments: argparse.Namespace) -> int:
 
 def _build_runtime_binding_release(arguments: argparse.Namespace) -> int:
     """Build P when requested, resolve a RuntimeBinding source, and package B locally."""
-    image_archives: list[dict[str, str]] = []
     try:
-        if arguments.plugin_artifact_archive is not None:
-            plugin_artifact = read_plugin_artifact_archive(arguments.plugin_artifact_archive)
-            descriptor = _decode_json_object(
-                plugin_artifact.plugin_manifest.content, "plugin descriptor"
-            )
-            binding_source = _read_runtime_binding_source(arguments.runtime_bindings)
-            plugin_link = _mapping(
-                _mapping(binding_source.get("spec"), "RuntimeBinding spec").get("plugin"),
-                "RuntimeBinding spec.plugin",
-            )
-            artifact_reference = plugin_link.get("artifact")
-            if artifact_reference is not None:
-                artifact_reference = _mapping(
-                    artifact_reference, "RuntimeBinding spec.plugin.artifact"
-                )
-                repository = _required_string(
-                    artifact_reference.get("repository"), "RuntimeBinding plugin repository"
-                )
-                if artifact_reference.get("digest") != plugin_artifact.digest:
-                    raise SettingsError(
-                        "RuntimeBinding plugin digest does not match --plugin-artifact-archive"
-                    )
-            elif isinstance(plugin_link.get("source"), str):
-                # Keep the author-maintained source manifest stable after the
-                # first plugin publication. The caller supplies the exact P
-                # archive, which is the authority for its digest during an
-                # image-only binding update.
-                repository = arguments.artifact_repository
-                if not repository:
-                    raise SettingsError(
-                        "registry.artifactRepository is required when resolving a RuntimeBinding "
-                        "source against --plugin-artifact-archive"
-                    )
-            else:
-                raise SettingsError(
-                    "RuntimeBinding plugin must identify a source manifest or immutable artifact"
-                )
-            output: Path | None = None
-            plugin_payload = _artifact_payload(
-                plugin_artifact.plugin_manifest.descriptor.digest, plugin_artifact
-            )
-        else:
-            if arguments.manifest is None:
-                raise SettingsError("a plugin manifest is required when no plugin archive is supplied")
-            if arguments.output is None:
-                raise SettingsError("--output is required to build the plugin artifact")
-            result = compile_workspace(
-                BuildRequest(
-                    arguments.manifest,
-                    image_bindings=arguments.image_bindings,
-                    require_image_bindings=False,
-                    bind_workload_images=False,
-                )
-            )
-            plugin_artifact = build_plugin_artifact(result)
-            descriptor = dict(result.descriptor)
-            output = arguments.output
-            binding_source = _read_runtime_binding_source(arguments.runtime_bindings)
-            plugin_link = _mapping(
-                _mapping(binding_source.get("spec"), "RuntimeBinding spec").get("plugin"),
-                "RuntimeBinding spec.plugin",
-            )
-            if "source" not in plugin_link:
-                raise SettingsError(
-                    "building a new plugin release requires RuntimeBinding spec.plugin.source"
-                )
-            referenced_source = (arguments.runtime_bindings.parent / plugin_link["source"]).resolve()
-            if referenced_source != arguments.manifest.resolve():
-                raise SettingsError(
-                    "RuntimeBinding plugin.source must resolve to the plugin manifest being built"
-                )
-            repository = arguments.artifact_repository
-            if not repository:
-                raise SettingsError(
-                    "registry.artifactRepository is required to link the RuntimeBinding to the plugin"
-                )
-            plugin_payload = _artifact_payload(result.digest, plugin_artifact)
-
-        workspace = arguments.runtime_bindings.parent.resolve()
-        dist_directory = workspace / "dist"
-        if dist_directory.is_symlink():
-            raise SettingsError("refusing to write generated files through a dist symlink")
-        dist_directory.mkdir(parents=True, exist_ok=True)
-        if output is not None:
-            output = _release_output_path(output, dist_directory, "plugin archive")
-        if arguments.plugin_artifact_archive is not None:
-            arguments.plugin_artifact_archive = _release_output_path(
-                arguments.plugin_artifact_archive, dist_directory, "plugin archive"
-            )
-        if arguments.binding_output is not None:
-            arguments.binding_output = _release_output_path(
-                arguments.binding_output, dist_directory, "RuntimeBinding archive"
-            )
-        release_path = _release_output_path(
-            dist_directory / "release.json", dist_directory, "release inventory"
+        plugin_build = _prepare_plugin_release_build(arguments)
+        paths, plugin_archive = _prepare_runtime_binding_release_paths(
+            arguments, plugin_build.output
         )
-        resolved_path = _release_output_path(
-            dist_directory / "runtime-bindings.yaml", dist_directory, "resolved RuntimeBinding"
+        output, binding_output, binding_artifact, resolved_document, image_archives = (
+            _create_runtime_binding_release_artifacts(
+                arguments, plugin_build, paths, plugin_archive
+            )
         )
-        if arguments.runtime_bindings.resolve() == (dist_directory / "runtime-bindings.yaml").resolve():
-            raise SettingsError(
-                "the source RuntimeBinding cannot be dist/runtime-bindings.yaml because build writes the resolved manifest there"
-            )
-        if release_path.exists():
-            _read_release_inventory(release_path)
-        known_outputs = [
-            path
-            for path in (
-                output,
-                arguments.plugin_artifact_archive,
-                arguments.binding_output,
-                resolved_path,
-                release_path,
-            )
-            if path is not None
-        ]
-        if len({path.resolve() for path in known_outputs}) != len(known_outputs):
-            raise SettingsError("release inventory, manifests, and archives must use different paths")
-        if output is not None and output.exists():
-            existing_plugin = read_plugin_artifact_archive(output)
-            if existing_plugin.digest != plugin_artifact.digest:
-                raise ArtifactArchiveError(
-                    f"refusing to replace a different plugin artifact at {output}; "
-                    "choose a new build.artifactOutput path"
-                )
-        image_archives = _build_runtime_binding_images(
-            binding_source,
-            descriptor,
+        _write_runtime_binding_release_outputs(
             arguments,
-            dist_directory=dist_directory,
+            plugin_build,
+            paths,
+            output,
+            binding_output,
+            binding_artifact,
+            resolved_document,
+            image_archives,
         )
-        image_bindings = dict(arguments.image_bindings)
-        image_bindings.update({item["buildTarget"]: item["reference"] for item in image_archives})
-        resolved_document = resolve_runtime_binding(
-            binding_source,
-            descriptor,
-            plugin_repository=repository,
-            plugin_digest=plugin_artifact.digest,
-            image_bindings=image_bindings,
+        payload = _runtime_binding_release_payload(
+            plugin_build,
+            paths,
+            output,
+            binding_output,
+            binding_artifact,
+            resolved_document,
+            image_archives,
+            output or arguments.plugin_artifact_archive,
         )
-        binding_artifact = build_runtime_binding_artifact(
-            resolved_document, descriptor, plugin_artifact.manifest.descriptor
-        )
-        binding_output = arguments.binding_output or (
-            dist_directory
-            / f"runtime-bindings-{binding_artifact.digest.removeprefix('sha256:')}.oci.tar"
-        )
-        binding_output = _release_output_path(
-            binding_output, dist_directory, "RuntimeBinding archive"
-        )
-
-        # Check every requested output before writing any of them. The source
-        # manifest is never rewritten; only generated outputs under dist are
-        # replaced atomically.
-        outputs = [
-            path
-            for path in (
-                output,
-                arguments.plugin_artifact_archive,
-                binding_output,
-                resolved_path,
-                release_path,
-                *(Path(item["archive"]) for item in image_archives),
-            )
-            if path is not None
-        ]
-        if len({path.resolve() for path in outputs}) != len(outputs):
-            raise SettingsError("release inventory, manifests, and archives must use different paths")
-        if output is not None:
-            if output.exists():
-                existing_plugin = read_plugin_artifact_archive(output)
-                if existing_plugin.digest != plugin_artifact.digest:
-                    raise ArtifactArchiveError(
-                        f"refusing to replace a different plugin artifact at {output}; "
-                        "choose a new build.artifactOutput path"
-                    )
-            else:
-                write_plugin_artifact_archive(plugin_artifact, output)
-        if binding_output.exists():
-            existing_binding = read_runtime_binding_archive(
-                binding_output,
-                plugin_descriptor=descriptor,
-                plugin_manifest_descriptor=plugin_artifact.manifest.descriptor,
-            )
-            if existing_binding.digest != binding_artifact.digest:
-                raise ArtifactArchiveError(
-                    f"refusing to replace a different RuntimeBinding archive at {binding_output}; "
-                    "choose a new --binding-output path"
-                )
-        else:
-            write_runtime_binding_archive(binding_artifact, binding_output)
-        _write_generated_yaml(resolved_path, resolved_document)
-        _write_release_inventory(
-            release_path,
-            plugin_repository=repository,
-            plugin_digest=plugin_artifact.digest,
-            plugin_archive=output or arguments.plugin_artifact_archive,
-            binding_repository=arguments.artifact_repository or repository,
-            binding_digest=binding_artifact.digest,
-            binding_archive=binding_output,
-            images=image_archives,
-            publish_plugin=output is not None,
-        )
-        payload = {
-            "bindingArtifactDigest": binding_artifact.digest,
-            "bindingArchive": str(binding_output),
-            "bindingDocument": str(resolved_path),
-            "bindingDocumentDigest": binding_artifact.binding_document.descriptor.digest,
-            "contractBundleDigest": load_bundle().digest,
-            "ok": True,
-            "plugin": plugin_payload,
-            "pluginArtifactDigest": plugin_artifact.digest,
-            "pluginArchive": str(output) if output is not None else str(arguments.plugin_artifact_archive),
-            "releaseInventory": str(release_path),
-            "images": image_archives,
-            "workloads": resolved_document["spec"]["workloads"],
-        }
-    except (
-        ArtifactArchiveError,
-        ArtifactBuildError,
-        CompilationError,
-        RuntimeBindingArtifactBuildError,
-        SettingsError,
-        ValueError,
-        OSError,
-        WorkloadBuildError,
-    ) as error:
+    except (CompilationError, ValueError, OSError, WorkloadBuildError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
     if arguments.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     else:
-        print(f"Plugin artifact: {plugin_artifact.digest}")
+        print(f"Plugin artifact: {plugin_build.artifact.digest}")
         if output is not None:
             print(f"Plugin archive: {output}")
         print(f"Runtime binding: {binding_artifact.digest}")
-        print(f"Resolved manifest: {resolved_path}")
+        print(f"Resolved manifest: {paths.resolved_path}")
         print(f"Runtime binding archive: {binding_output}")
         print("No registry content was published.")
     return 0
+
+
+def _prepare_plugin_release_build(arguments: argparse.Namespace) -> _PluginReleaseBuild:
+    if arguments.plugin_artifact_archive is not None:
+        artifact = read_plugin_artifact_archive(arguments.plugin_artifact_archive)
+        descriptor = _decode_json_object(artifact.plugin_manifest.content, _PLUGIN_DESCRIPTOR_LABEL)
+        binding_source = _read_runtime_binding_source(arguments.runtime_bindings)
+        plugin_link = _runtime_binding_plugin_link(binding_source)
+        repository = _release_plugin_repository(arguments, plugin_link, artifact.digest)
+        payload = _artifact_payload(artifact.plugin_manifest.descriptor.digest, artifact)
+        return _PluginReleaseBuild(artifact, descriptor, binding_source, None, repository, payload)
+    if arguments.manifest is None:
+        raise SettingsError("a plugin manifest is required when no plugin archive is supplied")
+    if arguments.output is None:
+        raise SettingsError("--output is required to build the plugin artifact")
+    result = compile_workspace(
+        BuildRequest(
+            arguments.manifest,
+            image_bindings=arguments.image_bindings,
+            require_image_bindings=False,
+            bind_workload_images=False,
+        )
+    )
+    artifact = build_plugin_artifact(result)
+    binding_source = _read_runtime_binding_source(arguments.runtime_bindings)
+    plugin_link = _runtime_binding_plugin_link(binding_source)
+    source_path = plugin_link.get("source")
+    if not isinstance(source_path, str):
+        raise SettingsError(
+            "building a new plugin release requires RuntimeBinding spec.plugin.source"
+        )
+    if (arguments.runtime_bindings.parent / source_path).resolve() != arguments.manifest.resolve():
+        raise SettingsError(
+            "RuntimeBinding plugin.source must resolve to the plugin manifest being built"
+        )
+    repository = arguments.artifact_repository
+    if not repository:
+        raise SettingsError(
+            "registry.artifactRepository is required to link the RuntimeBinding to the plugin"
+        )
+    return _PluginReleaseBuild(
+        artifact,
+        dict(result.descriptor),
+        binding_source,
+        arguments.output,
+        repository,
+        _artifact_payload(result.digest, artifact),
+    )
+
+
+def _runtime_binding_plugin_link(binding_source: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _mapping(
+        _mapping(binding_source.get("spec"), _RUNTIME_BINDING_SPEC_LABEL).get("plugin"),
+        _RUNTIME_BINDING_SPEC_PLUGIN_LABEL,
+    )
+
+
+def _release_plugin_repository(
+    arguments: argparse.Namespace, plugin_link: Mapping[str, Any], plugin_digest: str
+) -> str:
+    artifact_reference = plugin_link.get("artifact")
+    if artifact_reference is not None:
+        artifact_reference = _mapping(artifact_reference, "RuntimeBinding spec.plugin.artifact")
+        repository = _required_string(
+            artifact_reference.get("repository"), "RuntimeBinding plugin repository"
+        )
+        if artifact_reference.get("digest") != plugin_digest:
+            raise SettingsError(
+                "RuntimeBinding plugin digest does not match --plugin-artifact-archive"
+            )
+        return repository
+    if isinstance(plugin_link.get("source"), str):
+        repository = arguments.artifact_repository
+        if repository:
+            return repository
+        raise SettingsError(
+            "registry.artifactRepository is required when resolving a RuntimeBinding "
+            "source against --plugin-artifact-archive"
+        )
+    raise SettingsError(
+        "RuntimeBinding plugin must identify a source manifest or immutable artifact"
+    )
+
+
+def _prepare_runtime_binding_release_paths(
+    arguments: argparse.Namespace, output: Path | None
+) -> tuple[_RuntimeBindingReleasePaths, Path | None]:
+    dist_directory = arguments.runtime_bindings.parent.resolve() / "dist"
+    if dist_directory.is_symlink():
+        raise SettingsError("refusing to write generated files through a dist symlink")
+    dist_directory.mkdir(parents=True, exist_ok=True)
+    if output is not None:
+        output = _release_output_path(output, dist_directory, _PLUGIN_ARCHIVE_LABEL)
+        arguments.output = output
+    if arguments.plugin_artifact_archive is not None:
+        arguments.plugin_artifact_archive = _release_output_path(
+            arguments.plugin_artifact_archive, dist_directory, _PLUGIN_ARCHIVE_LABEL
+        )
+    if arguments.binding_output is not None:
+        arguments.binding_output = _release_output_path(
+            arguments.binding_output, dist_directory, "RuntimeBinding archive"
+        )
+    release_path = _release_output_path(
+        dist_directory / "release.json", dist_directory, "release inventory"
+    )
+    resolved_path = _release_output_path(
+        dist_directory / _RUNTIME_BINDINGS_FILENAME, dist_directory, "resolved RuntimeBinding"
+    )
+    if arguments.runtime_bindings.resolve() == resolved_path.resolve():
+        raise SettingsError(
+            f"the source RuntimeBinding cannot be dist/{_RUNTIME_BINDINGS_FILENAME} because build writes the resolved manifest there"
+        )
+    if release_path.exists():
+        _read_release_inventory(release_path)
+    known_outputs = [
+        path
+        for path in (
+            output,
+            arguments.plugin_artifact_archive,
+            arguments.binding_output,
+            resolved_path,
+            release_path,
+        )
+        if path is not None
+    ]
+    _validate_distinct_paths(known_outputs)
+    return _RuntimeBindingReleasePaths(dist_directory, release_path, resolved_path), output
+
+
+def _validate_distinct_paths(paths: Sequence[Path]) -> None:
+    if len({path.resolve() for path in paths}) != len(paths):
+        raise SettingsError("release inventory, manifests, and archives must use different paths")
+
+
+def _create_runtime_binding_release_artifacts(
+    arguments: argparse.Namespace,
+    plugin_build: _PluginReleaseBuild,
+    paths: _RuntimeBindingReleasePaths,
+    output: Path | None,
+) -> tuple[Path | None, Path, RuntimeBindingArtifact, Mapping[str, Any], list[dict[str, str]]]:
+    _validate_existing_plugin_output(output, plugin_build.artifact)
+    images = _build_runtime_binding_images(
+        plugin_build.binding_source,
+        plugin_build.descriptor,
+        arguments,
+        dist_directory=paths.dist_directory,
+    )
+    image_bindings = dict(arguments.image_bindings)
+    image_bindings.update({item["buildTarget"]: item["reference"] for item in images})
+    resolved_document = resolve_runtime_binding(
+        plugin_build.binding_source,
+        plugin_build.descriptor,
+        plugin_repository=plugin_build.repository,
+        plugin_digest=plugin_build.artifact.digest,
+        image_bindings=image_bindings,
+    )
+    artifact = build_runtime_binding_artifact(
+        resolved_document,
+        plugin_build.descriptor,
+        plugin_build.artifact.manifest.descriptor,
+    )
+    binding_output = arguments.binding_output or (
+        paths.dist_directory / f"runtime-bindings-{artifact.digest.removeprefix('sha256:')}.oci.tar"
+    )
+    binding_output = _release_output_path(
+        binding_output, paths.dist_directory, "RuntimeBinding archive"
+    )
+    output_paths = [
+        path
+        for path in (
+            output,
+            arguments.plugin_artifact_archive,
+            binding_output,
+            paths.resolved_path,
+            paths.release_path,
+            *(Path(item["archive"]) for item in images),
+        )
+        if path is not None
+    ]
+    _validate_distinct_paths(output_paths)
+    return output, binding_output, artifact, resolved_document, images
+
+
+def _validate_existing_plugin_output(output: Path | None, artifact: PluginArtifact) -> None:
+    if output is None or not output.exists():
+        return
+    existing = read_plugin_artifact_archive(output)
+    if existing.digest != artifact.digest:
+        raise ArtifactArchiveError(
+            f"refusing to replace a different plugin artifact at {output}; "
+            "choose a new build.artifactOutput path"
+        )
+
+
+def _write_runtime_binding_release_outputs(
+    arguments: argparse.Namespace,
+    plugin_build: _PluginReleaseBuild,
+    paths: _RuntimeBindingReleasePaths,
+    output: Path | None,
+    binding_output: Path,
+    binding_artifact: RuntimeBindingArtifact,
+    resolved_document: Mapping[str, Any],
+    images: Sequence[Mapping[str, str]],
+) -> None:
+    if output is not None and not output.exists():
+        write_plugin_artifact_archive(plugin_build.artifact, output)
+    _write_or_verify_binding_archive(binding_output, binding_artifact, plugin_build)
+    _write_generated_yaml(paths.resolved_path, resolved_document)
+    _write_release_inventory(
+        paths.release_path,
+        plugin_repository=plugin_build.repository,
+        plugin_digest=plugin_build.artifact.digest,
+        plugin_archive=output or arguments.plugin_artifact_archive,
+        binding_repository=arguments.artifact_repository or plugin_build.repository,
+        binding_digest=binding_artifact.digest,
+        binding_archive=binding_output,
+        images=images,
+        publish_plugin=output is not None,
+    )
+
+
+def _write_or_verify_binding_archive(
+    binding_output: Path,
+    binding_artifact: RuntimeBindingArtifact,
+    plugin_build: _PluginReleaseBuild,
+) -> None:
+    if binding_output.exists():
+        existing = read_runtime_binding_archive(
+            binding_output,
+            plugin_descriptor=plugin_build.descriptor,
+            plugin_manifest_descriptor=plugin_build.artifact.manifest.descriptor,
+        )
+        if existing.digest != binding_artifact.digest:
+            raise ArtifactArchiveError(
+                f"refusing to replace a different RuntimeBinding archive at {binding_output}; "
+                "choose a new --binding-output path"
+            )
+    else:
+        write_runtime_binding_archive(binding_artifact, binding_output)
+
+
+def _runtime_binding_release_payload(
+    plugin_build: _PluginReleaseBuild,
+    paths: _RuntimeBindingReleasePaths,
+    output: Path | None,
+    binding_output: Path,
+    binding_artifact: RuntimeBindingArtifact,
+    resolved_document: Mapping[str, Any],
+    images: Sequence[Mapping[str, str]],
+    plugin_archive: Path | None,
+) -> dict[str, Any]:
+    return {
+        "bindingArtifactDigest": binding_artifact.digest,
+        "bindingArchive": str(binding_output),
+        "bindingDocument": str(paths.resolved_path),
+        "bindingDocumentDigest": binding_artifact.binding_document.descriptor.digest,
+        "contractBundleDigest": load_bundle().digest,
+        "ok": True,
+        "plugin": plugin_build.payload,
+        "pluginArtifactDigest": plugin_build.artifact.digest,
+        "pluginArchive": str(output or plugin_archive),
+        "releaseInventory": str(paths.release_path),
+        "images": list(images),
+        "workloads": resolved_document["spec"]["workloads"],
+    }
 
 
 def _build_runtime_binding_images(
@@ -2279,7 +2507,30 @@ def _build_runtime_binding_images(
     dist_directory: Path,
 ) -> list[dict[str, str]]:
     """Build each locally configured binding target as a registered OCI archive."""
-    specification = _mapping(source.get("spec"), "RuntimeBinding spec")
+    targets = _runtime_binding_build_targets(source)
+    configured = getattr(arguments, "workload_targets", {})
+    if not isinstance(configured, Mapping):
+        configured = {}
+    if not targets or not configured:
+        return []
+    image_directory = _prepare_workload_image_directory(dist_directory)
+    selected = _select_workload_builds(targets, configured, arguments)
+    return [
+        _build_one_workload_image(
+            build_target,
+            workload_id,
+            settings,
+            repository,
+            descriptor,
+            arguments,
+            image_directory,
+        )
+        for build_target, workload_id, settings, repository in selected
+    ]
+
+
+def _runtime_binding_build_targets(source: Mapping[str, Any]) -> dict[str, str]:
+    specification = _mapping(source.get("spec"), _RUNTIME_BINDING_SPEC_LABEL)
     workloads = _mapping(specification.get("workloads"), "RuntimeBinding workloads")
     targets: dict[str, str] = {}
     for workload_id, workload_value in workloads.items():
@@ -2288,8 +2539,10 @@ def _build_runtime_binding_images(
         if not isinstance(options, list):
             raise SettingsError(f"RuntimeBinding workload {workload_id} options must be a list")
         for option in options:
-            item = _mapping(option, f"RuntimeBinding workload {workload_id} option")
-            image = _mapping(item.get("image"), "RuntimeBinding option image")
+            image = _mapping(
+                _mapping(option, "RuntimeBinding workload option").get("image"),
+                "RuntimeBinding option image",
+            )
             build_target = image.get("buildTarget")
             if not isinstance(build_target, str):
                 continue
@@ -2298,12 +2551,10 @@ def _build_runtime_binding_images(
                 raise SettingsError(
                     f"buildTarget {build_target!r} cannot serve multiple logical workloads"
                 )
+    return targets
 
-    configured = getattr(arguments, "workload_targets", {})
-    if not isinstance(configured, Mapping):
-        configured = {}
-    if not targets or not configured:
-        return []
+
+def _prepare_workload_image_directory(dist_directory: Path) -> Path:
     dist_directory.mkdir(parents=True, exist_ok=True)
     if dist_directory.is_symlink():
         raise SettingsError("refusing to write generated files through a dist symlink")
@@ -2311,92 +2562,104 @@ def _build_runtime_binding_images(
     if image_directory.is_symlink():
         raise SettingsError("refusing to write generated files through an images symlink")
     image_directory.mkdir(parents=True, exist_ok=True)
-    results: list[dict[str, str]] = []
+    return image_directory
+
+
+def _select_workload_builds(
+    targets: Mapping[str, str], configured: Mapping[str, Any], arguments: argparse.Namespace
+) -> list[tuple[str, str, Any, str]]:
     selected: list[tuple[str, str, Any, str]] = []
     for build_target, workload_id in sorted(targets.items()):
         settings = configured.get(build_target)
         if settings is None:
             continue
-        missing = [
-            name
-            for name, value in (
-                ("context", settings.context),
-                ("containerfile", settings.containerfile),
-                ("tag", settings.tag),
-                ("platform", settings.platform),
-            )
-            if value is None
-        ]
-        repository = settings.repository
-        if repository is None:
-            repository = _registry_workload_reference(
-                arguments.registry_origin,
-                getattr(arguments, "workload_repository", None),
-            )
-        if repository is None:
-            missing.append("repository")
-        if missing:
-            raise SettingsError(
-                f"build.workloads.{build_target} requires: " + ", ".join(missing)
-            )
-        if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", build_target):
-            raise SettingsError(f"buildTarget {build_target!r} is not a safe archive filename")
-        selected.append((build_target, workload_id, settings, repository))
-
-    for build_target, workload_id, settings, repository in selected:
-        request = WorkloadBuildRequest(
-            engine=settings.engine or "podman",
-            context=settings.context,
-            containerfile=settings.containerfile,
-            repository=repository,
-            tag=settings.tag,
-            platform=settings.platform,
-            allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
-            auth_file=arguments.registry_auth_file,
-            registration_descriptor=descriptor,
-            workload_id=workload_id,
+        repository = settings.repository or _registry_workload_reference(
+            arguments.registry_origin, getattr(arguments, "workload_repository", None)
         )
-        with tempfile.TemporaryDirectory(
-            prefix=f".{build_target}-", dir=image_directory
-        ) as temporary_directory:
-            temporary_archive = Path(temporary_directory) / "image.oci.tar"
-            reference = build_workload_archive(
-                request, temporary_archive, verbose=arguments.verbose
+        _validate_workload_build_settings(build_target, settings, repository)
+        selected.append((build_target, workload_id, settings, repository))
+    return selected
+
+
+def _validate_workload_build_settings(
+    build_target: str, settings: Any, repository: str | None
+) -> None:
+    missing = [
+        name
+        for name, value in (
+            ("context", settings.context),
+            ("containerfile", settings.containerfile),
+            ("tag", settings.tag),
+            ("platform", settings.platform),
+            ("repository", repository),
+        )
+        if value is None
+    ]
+    if missing:
+        raise SettingsError(f"build.workloads.{build_target} requires: " + ", ".join(missing))
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", build_target):
+        raise SettingsError(f"buildTarget {build_target!r} is not a safe archive filename")
+
+
+def _build_one_workload_image(
+    build_target: str,
+    workload_id: str,
+    settings: Any,
+    repository: str,
+    descriptor: Mapping[str, Any],
+    arguments: argparse.Namespace,
+    image_directory: Path,
+) -> dict[str, str]:
+    request = WorkloadBuildRequest(
+        engine=settings.engine or "podman",
+        context=settings.context,
+        containerfile=settings.containerfile,
+        repository=repository,
+        tag=settings.tag,
+        platform=settings.platform,
+        allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
+        auth_file=arguments.registry_auth_file,
+        registration_descriptor=descriptor,
+        workload_id=workload_id,
+    )
+    with tempfile.TemporaryDirectory(prefix=f".{build_target}-", dir=image_directory) as directory:
+        temporary_archive = Path(directory) / "image.oci.tar"
+        reference = build_workload_archive(request, temporary_archive, verbose=arguments.verbose)
+        if not temporary_archive.is_file():
+            raise WorkloadBuildError(
+                f"container engine did not create workload archive for {build_target!r}"
             )
-            if not temporary_archive.is_file():
-                raise WorkloadBuildError(
-                    f"container engine did not create workload archive for {build_target!r}"
-                )
-            digest = workload_archive_digest(temporary_archive)
-            if reference != f"{repository}@{digest}":
-                raise WorkloadBuildError(
-                    f"container engine returned an inconsistent digest for {build_target!r}"
-                )
-            destination = image_directory / f"{build_target}-{digest.removeprefix('sha256:')}.oci.tar"
-            if destination.is_symlink():
-                raise SettingsError(
-                    f"refusing to reuse a workload archive through a symlink: {destination}"
-                )
-            if destination.exists():
-                if workload_archive_digest(destination) != digest:
-                    raise WorkloadBuildError(
-                        f"content-addressed workload archive has the wrong digest: {destination}"
-                    )
-            else:
-                os.replace(temporary_archive, destination)
-            results.append(
-                {
-                    "archive": str(destination),
-                    "buildTarget": build_target,
-                    "digest": digest,
-                    "platform": settings.platform,
-                    "reference": reference,
-                    "repository": repository,
-                    "tag": settings.tag,
-                    "workload": workload_id,
-                }
+        digest = workload_archive_digest(temporary_archive)
+        if reference != f"{repository}@{digest}":
+            raise WorkloadBuildError(
+                f"container engine returned an inconsistent digest for {build_target!r}"
             )
-    return results
+        destination = image_directory / f"{build_target}-{digest.removeprefix('sha256:')}.oci.tar"
+        _store_workload_image_archive(temporary_archive, destination, digest)
+    return {
+        "archive": str(destination),
+        "buildTarget": build_target,
+        "digest": digest,
+        "platform": settings.platform,
+        "reference": reference,
+        "repository": repository,
+        "tag": settings.tag,
+        "workload": workload_id,
+    }
+
+
+def _store_workload_image_archive(temporary_archive: Path, destination: Path, digest: str) -> None:
+    if destination.is_symlink():
+        raise SettingsError(
+            f"refusing to reuse a workload archive through a symlink: {destination}"
+        )
+    if destination.exists():
+        if workload_archive_digest(destination) != digest:
+            raise WorkloadBuildError(
+                f"content-addressed workload archive has the wrong digest: {destination}"
+            )
+        return
+    os.replace(temporary_archive, destination)
 
 
 def _write_release_inventory(
@@ -2421,7 +2684,7 @@ def _write_release_inventory(
         return resolved.relative_to(root).as_posix()
 
     value = {
-        "apiVersion": "syntara.io/v1alpha1",
+        "apiVersion": _API_VERSION,
         "kind": "PluginReleaseInventory",
         "images": [dict(item) for item in images],
         "plugin": {
@@ -2504,49 +2767,66 @@ def _print_build_result(
 
 def _publish_artifact(arguments: argparse.Namespace) -> int:
     """Publish one verified archive and normally advance its configured catalog."""
+    if arguments.artifact_kind == "release":
+        return _publish_release_command(arguments)
+    if arguments.artifact_kind == "runtime-binding":
+        return _publish_runtime_binding_command(arguments)
+    return _publish_metadata_artifact(arguments)
+
+
+def _publish_release_command(arguments: argparse.Namespace) -> int:
     try:
-        if arguments.artifact_kind == "release":
-            payload = _publish_release(arguments, arguments.artifact)
-            if arguments.json:
-                print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-            else:
-                print(f"Published release inventory: {payload['releaseInventory']}")
-                for publication in payload["publications"]:
-                    print(f"  {publication['kind']}: {publication['immutableReference']}")
-                if "catalog" in payload:
-                    print(f"Catalog index: {payload['catalog']['immutableReference']}")
-            return 0
-        if arguments.artifact_kind == "runtime-binding":
-            payload = _publish_runtime_binding_release(arguments, arguments.artifact)
-            if arguments.json:
-                print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-            else:
-                print(f"Published runtime binding: {payload['immutableReference']}")
-                print(f"Channel: {payload['repository']}:{payload['channel']}")
-            return 0
-        _phase(arguments, "Publishing the metadata artifact")
-        payload = _publish_archive(arguments, arguments.artifact)
-        payload["signature"] = (
-            "signed" if _sign_reference(arguments, str(payload["immutableReference"])) else "unsigned"
-        )
-        if arguments.update_catalog:
-            _phase(arguments, "Updating the catalog index")
-            payload["catalog"] = _run_catalog_update(
-                arguments, artifact_path=arguments.artifact
-            )
+        payload = _publish_release(arguments, arguments.artifact)
     except SettingsError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    except (
-        ArtifactArchiveError,
-        CatalogIndexArtifactBuildError,
-        CatalogIndexPublicationError,
-        CatalogIndexUpdateError,
-        RuntimeBindingIndexError,
-        ValueError,
-        WorkloadBuildError,
-        OSError,
-    ) as error:
+    except (CatalogIndexPublicationError, ValueError, WorkloadBuildError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    if arguments.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"Published release inventory: {payload['releaseInventory']}")
+        for publication in payload["publications"]:
+            print(f"  {publication['kind']}: {publication['immutableReference']}")
+        if "catalog" in payload:
+            print(f"Catalog index: {payload['catalog']['immutableReference']}")
+    return 0
+
+
+def _publish_runtime_binding_command(arguments: argparse.Namespace) -> int:
+    try:
+        payload = _publish_runtime_binding_release(arguments, arguments.artifact)
+    except SettingsError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    except (ValueError, OSError, CatalogIndexPublicationError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    if arguments.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"Published runtime binding: {payload['immutableReference']}")
+        print(f"Channel: {payload['repository']}:{payload['channel']}")
+    return 0
+
+
+def _publish_metadata_artifact(arguments: argparse.Namespace) -> int:
+    try:
+        _phase(arguments, "Publishing the metadata artifact")
+        payload = _publish_archive(arguments, arguments.artifact)
+        payload["signature"] = (
+            "signed"
+            if _sign_reference(arguments, str(payload["immutableReference"]))
+            else "unsigned"
+        )
+        if arguments.update_catalog:
+            _phase(arguments, "Updating the catalog index")
+            payload["catalog"] = _run_catalog_update(arguments, artifact_path=arguments.artifact)
+    except SettingsError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    except (CatalogIndexPublicationError, ValueError, WorkloadBuildError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -2560,11 +2840,107 @@ def _publish_artifact(arguments: argparse.Namespace) -> int:
 
 def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dict[str, Any]:
     """Publish one verified local release inventory in dependency order."""
+    prepared = _prepare_release_publication(arguments, inventory_path)
+    _write_release_publication_receipt(prepared.receipt_path, prepared.receipt)
+    _publish_release_images(arguments, prepared)
+    _publish_release_plugin(arguments, prepared)
+    _publish_release_binding(arguments, prepared)
+    index_reference, index_digest, idempotent = _publish_release_binding_index(arguments, prepared)
+    signature = _sign_reference(
+        arguments,
+        _cosign_immutable_reference(arguments, prepared.plugin_repository, index_digest),
+    )
+    prepared.receipt["publications"].append(
+        {
+            "kind": "runtime-binding-index",
+            "immutableReference": index_reference,
+            "idempotent": idempotent,
+            "signature": "signed" if signature else "unsigned",
+        }
+    )
+    _write_release_publication_receipt(prepared.receipt_path, prepared.receipt)
+    result: dict[str, Any] = {
+        "bindingIndexDigest": index_digest,
+        "bindingIndexReference": index_reference,
+        "ok": True,
+        "publications": prepared.receipt["publications"],
+        "signature": "signed" if signature else "unsigned",
+        "releaseInventory": str(inventory_path),
+        "receipt": str(prepared.receipt_path),
+    }
+    _update_release_catalog(arguments, prepared, result)
+    prepared.receipt["ok"] = True
+    _write_release_publication_receipt(prepared.receipt_path, prepared.receipt)
+    return result
+
+
+def _prepare_release_publication(
+    arguments: argparse.Namespace, inventory_path: Path
+) -> _PreparedReleasePublication:
     credentials = _publication_credentials(arguments, operation="release publish")
     if not arguments.registry_origin or not arguments.username:
         raise SettingsError("release publish requires registry.origin and registry.username")
     inventory = _read_release_inventory(inventory_path)
-    plugin_record = _mapping(inventory["plugin"], "release plugin")
+    plugin_record, binding_record = _release_records(inventory)
+    (
+        plugin_repository,
+        plugin_digest,
+        binding_repository,
+        binding_digest,
+        plugin_archive,
+        binding_archive,
+    ) = _release_identity_and_paths(inventory_path, plugin_record, binding_record)
+    _validate_release_publication_settings(
+        arguments, plugin_record, plugin_repository, binding_repository
+    )
+    binding_artifact, plugin_artifact, binding_document = _read_linked_runtime_binding_archive(
+        binding_archive, plugin_archive, expected_plugin_repository=plugin_repository
+    )
+    _verify_release_artifact_identity(
+        plugin_repository,
+        plugin_digest,
+        binding_digest,
+        plugin_artifact,
+        binding_artifact,
+        binding_document,
+    )
+    verified_images = _verify_release_images(inventory_path, inventory, binding_document)
+    index_publisher, current_index = _prepare_release_binding_index(
+        arguments, credentials, plugin_repository, plugin_digest
+    )
+    receipt_path = inventory_path.with_name("release-publication.json")
+    receipt: dict[str, Any] = {
+        "apiVersion": _API_VERSION,
+        "kind": "PluginReleasePublication",
+        "releaseInventory": str(inventory_path),
+        "publications": [],
+    }
+    return _PreparedReleasePublication(
+        inventory_path,
+        credentials,
+        inventory,
+        plugin_record,
+        binding_record,
+        plugin_repository,
+        plugin_digest,
+        binding_repository,
+        binding_digest,
+        plugin_archive,
+        binding_artifact,
+        plugin_artifact,
+        binding_document,
+        verified_images,
+        index_publisher,
+        current_index,
+        receipt_path,
+        receipt,
+    )
+
+
+def _release_records(
+    inventory: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    plugin_record = _mapping(inventory["plugin"], _RELEASE_PLUGIN_LABEL)
     binding_record = _mapping(inventory["runtimeBinding"], "release runtimeBinding")
     if set(plugin_record) != {"archive", "digest", "publish", "repository"}:
         raise SettingsError("release plugin has unknown or missing fields")
@@ -2572,23 +2948,45 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
         raise SettingsError("release runtimeBinding has unknown or missing fields")
     if not isinstance(plugin_record.get("publish"), bool):
         raise SettingsError("release plugin publish must be a boolean")
+    return plugin_record, binding_record
+
+
+def _release_identity_and_paths(
+    inventory_path: Path,
+    plugin_record: Mapping[str, Any],
+    binding_record: Mapping[str, Any],
+) -> tuple[str, str, str, str, Path, Path]:
     plugin_repository = _required_string(plugin_record.get("repository"), "plugin repository")
     plugin_digest = _required_string(plugin_record.get("digest"), "plugin digest")
     binding_repository = _required_string(binding_record.get("repository"), "binding repository")
     binding_digest = _required_string(binding_record.get("digest"), "binding digest")
     plugin_archive_value = plugin_record.get("archive")
-    plugin_archive = (
-        _release_inventory_path(inventory_path, plugin_archive_value, "plugin archive")
-        if plugin_archive_value is not None
-        else None
+    if plugin_archive_value is None:
+        raise SettingsError(
+            "release publish requires the exact plugin archive to verify its RuntimeBinding"
+        )
+    plugin_archive = _release_inventory_path(
+        inventory_path, plugin_archive_value, _PLUGIN_ARCHIVE_LABEL
     )
     binding_archive = _release_inventory_path(
         inventory_path, binding_record.get("archive"), "runtime-binding archive"
     )
-    if plugin_archive is None:
-        raise SettingsError(
-            "release publish requires the exact plugin archive to verify its RuntimeBinding"
-        )
+    return (
+        plugin_repository,
+        plugin_digest,
+        binding_repository,
+        binding_digest,
+        plugin_archive,
+        binding_archive,
+    )
+
+
+def _validate_release_publication_settings(
+    arguments: argparse.Namespace,
+    plugin_record: Mapping[str, Any],
+    plugin_repository: str,
+    binding_repository: str,
+) -> None:
     if plugin_record.get("publish") and (
         arguments.repository != plugin_repository or not arguments.channel
     ):
@@ -2602,253 +3000,276 @@ def _publish_release(arguments: argparse.Namespace, inventory_path: Path) -> dic
     if plugin_record.get("publish") and arguments.update_catalog:
         _require_catalog_configuration(arguments)
 
-    binding_artifact, plugin_artifact, binding_document = _read_linked_runtime_binding_archive(
-        binding_archive,
-        plugin_archive,
-        expected_plugin_repository=plugin_repository,
-    )
+
+def _verify_release_artifact_identity(
+    plugin_repository: str,
+    plugin_digest: str,
+    binding_digest: str,
+    plugin_artifact: PluginArtifact,
+    binding_artifact: RuntimeBindingArtifact,
+    binding_document: Mapping[str, Any],
+) -> None:
     if plugin_artifact.digest != plugin_digest:
         raise ArtifactArchiveError("plugin archive digest does not match the release inventory")
     if binding_artifact.digest != binding_digest:
-        raise ArtifactArchiveError("runtime-binding archive digest does not match the release inventory")
-    linked_plugin = _mapping(
-        _mapping(binding_document.get("spec"), "RuntimeBinding spec").get("plugin"),
-        "RuntimeBinding spec.plugin",
-    )
+        raise ArtifactArchiveError(
+            "runtime-binding archive digest does not match the release inventory"
+        )
+    plugin_link = _runtime_binding_plugin_link(binding_document)
     if (
-        linked_plugin.get("repository") != plugin_repository
-        or linked_plugin.get("digest") != plugin_digest
+        plugin_link.get("repository") != plugin_repository
+        or plugin_link.get("digest") != plugin_digest
     ):
         raise ArtifactArchiveError("RuntimeBinding points to a different plugin artifact")
 
-    images_value = inventory.get("images")
-    if not isinstance(images_value, list):
-        raise SettingsError("release inventory images must be a list")
-    binding_image_refs: set[str] = set()
-    for workload in _mapping(binding_document.get("spec"), "RuntimeBinding spec")["workloads"].values():
-        for option in _mapping(workload, "RuntimeBinding workload")["options"]:
-            image_ref = _mapping(option, "RuntimeBinding image option")["image"]
-            if isinstance(image_ref, str):
-                binding_image_refs.add(image_ref)
 
-    verified_images: list[tuple[Mapping[str, Any], Path]] = []
-    seen_build_targets: set[str] = set()
-    for position, raw_image in enumerate(images_value):
-        image = _mapping(raw_image, f"release images[{position}]")
-        if set(image) != {
-            "archive",
-            "buildTarget",
-            "digest",
-            "platform",
-            "reference",
-            "repository",
-            "tag",
-            "workload",
-        }:
-            raise SettingsError(f"release images[{position}] has unknown or missing fields")
-        build_target = _required_string(image.get("buildTarget"), "image buildTarget")
-        if build_target in seen_build_targets:
-            raise SettingsError(f"release inventory repeats image build target {build_target!r}")
-        seen_build_targets.add(build_target)
-        archive = _release_inventory_path(
-            inventory_path, image.get("archive"), f"image archive {build_target}"
+def _release_binding_image_references(binding_document: Mapping[str, Any]) -> set[str]:
+    specification = _mapping(binding_document.get("spec"), _RUNTIME_BINDING_SPEC_LABEL)
+    workloads = _mapping(specification.get("workloads"), "RuntimeBinding workloads")
+    return {
+        _required_string(
+            _mapping(option, "RuntimeBinding image option").get("image"), "image reference"
         )
-        digest = workload_archive_digest(archive)
-        if digest != image.get("digest"):
-            raise WorkloadBuildError(f"workload archive {build_target!r} changed after build")
-        repository = _required_string(image.get("repository"), "image repository")
-        _required_string(image.get("tag"), "image tag")
-        reference = f"{repository}@{digest}"
-        if image.get("reference") != reference or reference not in binding_image_refs:
-            raise ArtifactArchiveError(
-                f"workload archive {build_target!r} is not linked by the RuntimeBinding"
-            )
-        verified_images.append((image, archive))
+        for workload in workloads.values()
+        for option in _mapping(workload, "RuntimeBinding workload")["options"]
+    }
 
-    index_channel = _runtime_binding_index_channel(plugin_digest)
-    index_publisher = RuntimeBindingIndexPublisher(
+
+def _verify_release_images(
+    inventory_path: Path, inventory: Mapping[str, Any], binding_document: Mapping[str, Any]
+) -> list[tuple[Mapping[str, Any], Path]]:
+    images = inventory.get("images")
+    if not isinstance(images, list):
+        raise SettingsError("release inventory images must be a list")
+    binding_references = _release_binding_image_references(binding_document)
+    verified: list[tuple[Mapping[str, Any], Path]] = []
+    seen_targets: set[str] = set()
+    for position, raw in enumerate(images):
+        image = _verify_release_image(
+            inventory_path, position, raw, seen_targets, binding_references
+        )
+        verified.append(image)
+    return verified
+
+
+def _verify_release_image(
+    inventory_path: Path,
+    position: int,
+    raw_image: Any,
+    seen_targets: set[str],
+    binding_references: set[str],
+) -> tuple[Mapping[str, Any], Path]:
+    image = _mapping(raw_image, f"release images[{position}]")
+    expected_keys = {
+        "archive",
+        "buildTarget",
+        "digest",
+        "platform",
+        "reference",
+        "repository",
+        "tag",
+        "workload",
+    }
+    if set(image) != expected_keys:
+        raise SettingsError(f"release images[{position}] has unknown or missing fields")
+    build_target = _required_string(image.get("buildTarget"), "image buildTarget")
+    if build_target in seen_targets:
+        raise SettingsError(f"release inventory repeats image build target {build_target!r}")
+    seen_targets.add(build_target)
+    archive = _release_inventory_path(
+        inventory_path, image.get("archive"), f"image archive {build_target}"
+    )
+    digest = workload_archive_digest(archive)
+    if digest != image.get("digest"):
+        raise WorkloadBuildError(f"workload archive {build_target!r} changed after build")
+    repository = _required_string(image.get("repository"), "image repository")
+    _required_string(image.get("tag"), "image tag")
+    reference = f"{repository}@{digest}"
+    if image.get("reference") != reference or reference not in binding_references:
+        raise ArtifactArchiveError(
+            f"workload archive {build_target!r} is not linked by the RuntimeBinding"
+        )
+    return image, archive
+
+
+def _prepare_release_binding_index(
+    arguments: argparse.Namespace,
+    credentials: RegistryCredentials,
+    plugin_repository: str,
+    plugin_digest: str,
+) -> tuple[RuntimeBindingIndexPublisher, Any]:
+    publisher = RuntimeBindingIndexPublisher(
         CatalogIndexPublicationTarget(
             registry_origin=arguments.registry_origin,
             repository=plugin_repository,
-            channel=index_channel,
+            channel=_runtime_binding_index_channel(plugin_digest),
             allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         ),
         credentials=credentials,
         verify_current_index=_runtime_binding_index_verifier(arguments, plugin_repository),
         allow_unverified_current=arguments.allow_unverified_binding_index,
     )
-    current_binding_index = index_publisher.read_current()
-    if arguments.expected_binding_index_digest is not None:
-        actual = (
-            current_binding_index.manifest_digest if current_binding_index is not None else None
-        )
-        if actual != arguments.expected_binding_index_digest:
-            raise SettingsError("current runtime-binding index digest does not match the expected digest")
+    current = publisher.read_current()
+    actual_digest = current.manifest_digest if current is not None else None
+    if (
+        arguments.expected_binding_index_digest is not None
+        and actual_digest != arguments.expected_binding_index_digest
+    ):
+        raise SettingsError(_EXPECTED_BINDING_INDEX_DIGEST_ERROR)
+    return publisher, current
 
-    receipt_path = inventory_path.with_name("release-publication.json")
-    publication_receipt: dict[str, Any] = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "PluginReleasePublication",
-        "releaseInventory": str(inventory_path),
-        "publications": [],
-    }
-    _write_release_publication_receipt(receipt_path, publication_receipt)
-    with _temporary_skopeo_auth_file(arguments, credentials) as workload_auth_file:
-        for image, archive in verified_images:
-            destination = f"{image['repository']}:{image['tag']}"
-            _phase(arguments, f"Publishing workload image {image['buildTarget']}")
-            published_ref = publish_workload_archive(
-                archive,
-                destination,
-                auth_file=workload_auth_file,
-                allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
-                verbose=arguments.verbose,
-            )
-            if published_ref != image["reference"]:
-                raise WorkloadBuildError(
-                    f"registry did not preserve workload digest for {image['buildTarget']}"
-                )
-            publication_receipt["publications"].append(
-                {
-                    "kind": "workload-image",
-                    "immutableReference": published_ref,
-                    "signature": (
-                        "signed"
-                        if _sign_reference(
-                            arguments,
-                            _cosign_immutable_reference(
-                                arguments,
-                                str(image["repository"]),
-                                str(image["digest"]),
-                            ),
-                        )
-                        else "unsigned"
-                    ),
-                }
-            )
-            _write_release_publication_receipt(receipt_path, publication_receipt)
 
-    if plugin_artifact is not None and plugin_record.get("publish"):
-        _phase(arguments, "Publishing plugin metadata")
-        published_plugin = _publish_archive(
-            arguments, plugin_archive, credentials=credentials
-        )
-        if published_plugin["immutableReference"] != f"{plugin_repository}@{plugin_digest}":
-            raise ArtifactArchiveError("published plugin digest differs from the prepared release")
-        publication_receipt["publications"].append(
-            {
-                "kind": "plugin",
-                "immutableReference": published_plugin["immutableReference"],
-                "signature": (
-                    "signed"
-                    if _sign_reference(
-                        arguments,
-                        _cosign_immutable_reference(arguments, plugin_repository, plugin_digest),
-                    )
-                    else "unsigned"
-                ),
-            }
-        )
-        _write_release_publication_receipt(receipt_path, publication_receipt)
+def _record_release_publication(
+    prepared: _PreparedReleasePublication,
+    publication: Mapping[str, Any],
+) -> None:
+    prepared.receipt["publications"].append(dict(publication))
+    _write_release_publication_receipt(prepared.receipt_path, prepared.receipt)
 
-    binding_channel = f"binding-{binding_digest.removeprefix('sha256:')}"
-    binding_publisher = RuntimeBindingArtifactPublisher(
+
+def _publish_release_images(
+    arguments: argparse.Namespace, prepared: _PreparedReleasePublication
+) -> None:
+    with _temporary_skopeo_auth_file(arguments, prepared.credentials) as auth_file:
+        for image, archive in prepared.verified_images:
+            _publish_release_image(arguments, prepared, image, archive, auth_file)
+
+
+def _publish_release_image(
+    arguments: argparse.Namespace,
+    prepared: _PreparedReleasePublication,
+    image: Mapping[str, Any],
+    archive: Path,
+    auth_file: Path,
+) -> None:
+    _phase(arguments, f"Publishing workload image {image['buildTarget']}")
+    published_reference = publish_workload_archive(
+        archive,
+        f"{image['repository']}:{image['tag']}",
+        auth_file=auth_file,
+        allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
+        verbose=arguments.verbose,
+    )
+    if published_reference != image["reference"]:
+        raise WorkloadBuildError(
+            f"registry did not preserve workload digest for {image['buildTarget']}"
+        )
+    signature = _sign_reference(
+        arguments,
+        _cosign_immutable_reference(arguments, str(image["repository"]), str(image["digest"])),
+    )
+    _record_release_publication(
+        prepared,
+        {
+            "kind": "workload-image",
+            "immutableReference": published_reference,
+            "signature": "signed" if signature else "unsigned",
+        },
+    )
+
+
+def _publish_release_plugin(
+    arguments: argparse.Namespace, prepared: _PreparedReleasePublication
+) -> None:
+    if not prepared.plugin_record.get("publish"):
+        return
+    _phase(arguments, "Publishing plugin metadata")
+    published = _publish_archive(
+        arguments, prepared.plugin_archive, credentials=prepared.credentials
+    )
+    expected = f"{prepared.plugin_repository}@{prepared.plugin_digest}"
+    if published["immutableReference"] != expected:
+        raise ArtifactArchiveError("published plugin digest differs from the prepared release")
+    signature = _sign_reference(
+        arguments,
+        _cosign_immutable_reference(arguments, prepared.plugin_repository, prepared.plugin_digest),
+    )
+    _record_release_publication(
+        prepared,
+        {
+            "kind": "plugin",
+            "immutableReference": published["immutableReference"],
+            "signature": "signed" if signature else "unsigned",
+        },
+    )
+
+
+def _publish_release_binding(
+    arguments: argparse.Namespace, prepared: _PreparedReleasePublication
+) -> None:
+    publisher = RuntimeBindingArtifactPublisher(
         PluginArtifactPublicationTarget(
             registry_origin=arguments.registry_origin,
-            repository=binding_repository,
-            channel=binding_channel,
+            repository=prepared.binding_repository,
+            channel=f"binding-{prepared.binding_digest.removeprefix('sha256:')}",
             allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         ),
-        credentials=credentials,
+        credentials=prepared.credentials,
     )
     _phase(arguments, "Publishing RuntimeBinding")
-    published_binding = binding_publisher.publish(binding_artifact)
-    if published_binding.manifest_digest != binding_digest:
-        raise ArtifactArchiveError("published RuntimeBinding digest differs from the prepared release")
-    publication_receipt["publications"].append(
+    published = publisher.publish(prepared.binding_artifact)
+    if published.manifest_digest != prepared.binding_digest:
+        raise ArtifactArchiveError(
+            "published RuntimeBinding digest differs from the prepared release"
+        )
+    signature = _sign_reference(
+        arguments,
+        _cosign_immutable_reference(
+            arguments, prepared.binding_repository, prepared.binding_digest
+        ),
+    )
+    _record_release_publication(
+        prepared,
         {
             "kind": "runtime-binding",
-            "immutableReference": published_binding.immutable_reference,
-            "signature": (
-                "signed"
-                if _sign_reference(
-                    arguments,
-                    _cosign_immutable_reference(arguments, binding_repository, binding_digest),
-                )
-                else "unsigned"
-            ),
-        }
+            "immutableReference": published.immutable_reference,
+            "signature": "signed" if signature else "unsigned",
+        },
     )
-    _write_release_publication_receipt(receipt_path, publication_receipt)
 
-    index_document, index_idempotent = next_runtime_binding_index(
-        current=current_binding_index.document if current_binding_index is not None else None,
-        current_manifest_digest=(
-            current_binding_index.manifest_digest if current_binding_index is not None else None
-        ),
-        plugin_digest=plugin_digest,
-        binding_repository=binding_repository,
-        binding_digest=binding_digest,
+
+def _publish_release_binding_index(
+    arguments: argparse.Namespace, prepared: _PreparedReleasePublication
+) -> tuple[str, str, bool]:
+    current = prepared.current_index
+    index_document, idempotent = next_runtime_binding_index(
+        current=current.document if current is not None else None,
+        current_manifest_digest=current.manifest_digest if current is not None else None,
+        plugin_digest=prepared.plugin_digest,
+        binding_repository=prepared.binding_repository,
+        binding_digest=prepared.binding_digest,
         expires_in_hours=arguments.expires_in_hours,
-        release=_mapping(binding_document.get("metadata"), "RuntimeBinding metadata").get("release"),
+        release=_mapping(prepared.binding_document.get("metadata"), "RuntimeBinding metadata").get(
+            "release"
+        ),
     )
-    if index_idempotent:
-        assert current_binding_index is not None
-        binding_index_reference = f"{plugin_repository}@{current_binding_index.manifest_digest}"
-        binding_index_digest = current_binding_index.manifest_digest
+    if idempotent:
+        assert current is not None
+        digest = current.manifest_digest
+        reference = f"{prepared.plugin_repository}@{digest}"
     else:
-        index_artifact = build_runtime_binding_index_artifact(index_document)
+        artifact = build_runtime_binding_index_artifact(index_document)
         _phase(arguments, "Publishing runtime-binding index")
-        publication = index_publisher.publish(
-            index_artifact,
-            expected_current_digest=(
-                current_binding_index.manifest_digest
-                if current_binding_index is not None
-                else None
-            ),
-            expected_current_etag=(
-                current_binding_index.etag if current_binding_index is not None else None
-            ),
+        publication = prepared.index_publisher.publish(
+            artifact,
+            expected_current_digest=current.manifest_digest if current is not None else None,
+            expected_current_etag=current.etag if current is not None else None,
         )
-        binding_index_reference = publication.immutable_reference
-        binding_index_digest = publication.manifest_digest
-    binding_index_signature = (
-        "signed"
-        if _sign_reference(
-            arguments,
-            _cosign_immutable_reference(arguments, plugin_repository, binding_index_digest),
-        )
-        else "unsigned"
-    )
-    publication_receipt["publications"].append(
-        {
-            "kind": "runtime-binding-index",
-            "immutableReference": binding_index_reference,
-            "idempotent": index_idempotent,
-            "signature": binding_index_signature,
-        }
-    )
-    _write_release_publication_receipt(receipt_path, publication_receipt)
+        reference, digest = publication.immutable_reference, publication.manifest_digest
+    return reference, digest, idempotent
 
-    result: dict[str, Any] = {
-        "bindingIndexDigest": binding_index_digest,
-        "bindingIndexReference": binding_index_reference,
-        "ok": True,
-        "publications": publication_receipt["publications"],
-        "signature": binding_index_signature,
-        "releaseInventory": str(inventory_path),
-        "receipt": str(receipt_path),
-    }
-    if plugin_artifact is not None and plugin_record.get("publish") and arguments.update_catalog:
-        _phase(arguments, "Updating plugin catalog after all release dependencies")
-        result["catalog"] = _run_catalog_update(
-            arguments,
-            artifact_path=plugin_archive,
-            credentials=credentials,
-        )
-    publication_receipt["ok"] = True
-    _write_release_publication_receipt(receipt_path, publication_receipt)
-    return result
+
+def _update_release_catalog(
+    arguments: argparse.Namespace,
+    prepared: _PreparedReleasePublication,
+    result: dict[str, Any],
+) -> None:
+    if not (prepared.plugin_record.get("publish") and arguments.update_catalog):
+        return
+    _phase(arguments, "Updating plugin catalog after all release dependencies")
+    result["catalog"] = _run_catalog_update(
+        arguments, artifact_path=prepared.plugin_archive, credentials=prepared.credentials
+    )
 
 
 def _read_release_inventory(path: Path) -> Mapping[str, Any]:
@@ -2869,7 +3290,10 @@ def _read_release_inventory(path: Path) -> Mapping[str, Any]:
     inventory = _mapping(value, "release inventory")
     if set(inventory) != {"apiVersion", "kind", "images", "plugin", "runtimeBinding"}:
         raise SettingsError("release inventory has unknown or missing top-level fields")
-    if inventory.get("apiVersion") != "syntara.io/v1alpha1" or inventory.get("kind") != "PluginReleaseInventory":
+    if (
+        inventory.get("apiVersion") != _API_VERSION
+        or inventory.get("kind") != "PluginReleaseInventory"
+    ):
         raise SettingsError("unsupported release inventory kind or apiVersion")
     return inventory
 
@@ -2891,7 +3315,9 @@ def _release_inventory_path(inventory_path: Path, raw_path: object, label: str) 
     root = inventory_path.expanduser().resolve().parent
     candidate = Path(raw_path).expanduser()
     if candidate.is_absolute() or ".." in candidate.parts:
-        raise SettingsError(f"release inventory {label} path must be relative and stay under {root}")
+        raise SettingsError(
+            f"release inventory {label} path must be relative and stay under {root}"
+        )
     candidate = root / candidate
     current = root
     for part in candidate.relative_to(root).parts:
@@ -2919,7 +3345,9 @@ def _release_output_path(path: Path, dist_directory: Path, label: str) -> Path:
         lexical = Path(os.path.abspath(candidate))
         relative = lexical.relative_to(root)
     except ValueError as error:
-        raise SettingsError(f"{label} must be under {root} so the release inventory stays portable") from error
+        raise SettingsError(
+            f"{label} must be under {root} so the release inventory stays portable"
+        ) from error
     current = root
     for part in relative.parts:
         current = current / part
@@ -2973,9 +3401,9 @@ def _temporary_skopeo_auth_file(
     parsed = urlparse(arguments.registry_origin)
     if not parsed.netloc:
         raise SettingsError("registry.origin must include a host for image publication")
-    encoded = base64.b64encode(
-        f"{credentials.username}:{credentials.password}".encode()
-    ).decode("ascii")
+    encoded = base64.b64encode(f"{credentials.username}:{credentials.password}".encode()).decode(
+        "ascii"
+    )
     with tempfile.TemporaryDirectory(prefix="syntara-registry-auth-") as directory:
         auth_path = Path(directory) / "auth.json"
         auth_path.write_text(
@@ -3024,6 +3452,33 @@ def _publish_runtime_binding_release(
     arguments: argparse.Namespace, archive: Path
 ) -> dict[str, Any]:
     """Publish one binding by digest and advance only its plugin-scoped index."""
+    state = _prepare_runtime_binding_publish(arguments, archive)
+    binding_publication = state.binding_publisher.publish(state.artifact)
+    index_reference, index_digest, idempotent = _advance_runtime_binding_index(arguments, state)
+    binding_signature = _signature_status(
+        arguments,
+        state.plugin_repository,
+        state.artifact.digest,
+    )
+    index_signature = _signature_status(arguments, state.plugin_repository, index_digest)
+    return {
+        "archive": str(archive),
+        "bindingIndexDigest": index_digest,
+        "bindingIndexReference": index_reference,
+        "bindingSignature": binding_signature,
+        "bindingManifestDigest": binding_publication.manifest_digest,
+        "channel": binding_publication.channel,
+        "immutableReference": binding_publication.immutable_reference,
+        "indexSignature": index_signature,
+        "indexIdempotent": idempotent,
+        "ok": True,
+        "repository": binding_publication.repository,
+    }
+
+
+def _prepare_runtime_binding_publish(
+    arguments: argparse.Namespace, archive: Path
+) -> _RuntimeBindingPublishState:
     plugin_archive = getattr(arguments, "plugin_artifact_archive", None)
     if plugin_archive is None:
         raise SettingsError(
@@ -3031,17 +3486,25 @@ def _publish_runtime_binding_release(
         )
     credentials = _publication_credentials(arguments, operation="runtime-binding publish")
     if not arguments.registry_origin or not arguments.repository:
-        raise SettingsError("runtime-binding publish requires registry.origin and artifactRepository")
+        raise SettingsError(
+            "runtime-binding publish requires registry.origin and artifactRepository"
+        )
     if arguments.expires_in_hours is None or arguments.expires_in_hours <= 0:
-        raise SettingsError("runtime-binding publish requires catalog.expiresInHours for the binding index")
+        raise SettingsError(
+            "runtime-binding publish requires catalog.expiresInHours for the binding index"
+        )
     artifact, plugin_artifact, document = _read_linked_runtime_binding_archive(
         archive, plugin_archive, expected_plugin_repository=arguments.repository
     )
-    plugin_link = _mapping(_mapping(document.get("spec"), "RuntimeBinding spec").get("plugin"), "RuntimeBinding plugin")
-    plugin_repository = _required_string(plugin_link.get("repository"), "RuntimeBinding plugin repository")
+    plugin_link = _runtime_binding_plugin_link(document)
+    plugin_repository = _required_string(
+        plugin_link.get("repository"), "RuntimeBinding plugin repository"
+    )
     plugin_digest = _required_string(plugin_link.get("digest"), "RuntimeBinding plugin digest")
     if plugin_artifact.digest != plugin_digest:
-        raise ArtifactArchiveError("RuntimeBinding does not reference the supplied plugin artifact digest")
+        raise ArtifactArchiveError(
+            "RuntimeBinding does not reference the supplied plugin artifact digest"
+        )
 
     binding_channel = f"binding-{artifact.digest.removeprefix('sha256:')}"
     binding_publisher = RuntimeBindingArtifactPublisher(
@@ -3066,62 +3529,55 @@ def _publish_runtime_binding_release(
         allow_unverified_current=arguments.allow_unverified_binding_index,
     )
     current = index_publisher.read_current()
-    if arguments.expected_binding_index_digest is not None and (
-        current.manifest_digest if current is not None else None
-    ) != arguments.expected_binding_index_digest:
-        raise SettingsError("current runtime-binding index digest does not match the expected digest")
-    binding_publication = binding_publisher.publish(artifact)
+    if (
+        arguments.expected_binding_index_digest is not None
+        and (current.manifest_digest if current is not None else None)
+        != arguments.expected_binding_index_digest
+    ):
+        raise SettingsError(_EXPECTED_BINDING_INDEX_DIGEST_ERROR)
+    return _RuntimeBindingPublishState(
+        artifact,
+        document,
+        plugin_repository,
+        plugin_digest,
+        binding_publisher,
+        index_publisher,
+        current,
+    )
+
+
+def _advance_runtime_binding_index(
+    arguments: argparse.Namespace, state: _RuntimeBindingPublishState
+) -> tuple[str, str, bool]:
+    current = state.current_index
     index_document, idempotent = next_runtime_binding_index(
         current=current.document if current is not None else None,
         current_manifest_digest=current.manifest_digest if current is not None else None,
-        plugin_digest=plugin_digest,
-        binding_repository=plugin_repository,
-        binding_digest=artifact.digest,
+        plugin_digest=state.plugin_digest,
+        binding_repository=state.plugin_repository,
+        binding_digest=state.artifact.digest,
         expires_in_hours=arguments.expires_in_hours,
-        release=_mapping(document.get("metadata"), "RuntimeBinding metadata").get("release"),
+        release=_mapping(state.document.get("metadata"), "RuntimeBinding metadata").get("release"),
     )
     if idempotent:
         assert current is not None
         index_digest = current.manifest_digest
-        index_reference = f"{plugin_repository}@{index_digest}"
+        index_reference = f"{state.plugin_repository}@{index_digest}"
     else:
         index_artifact = build_runtime_binding_index_artifact(index_document)
-        index_publication = index_publisher.publish(
+        index_publication = state.index_publisher.publish(
             index_artifact,
             expected_current_digest=current.manifest_digest if current is not None else None,
             expected_current_etag=current.etag if current is not None else None,
         )
         index_digest = index_publication.manifest_digest
         index_reference = index_publication.immutable_reference
-    binding_signature = (
-        "signed"
-        if _sign_reference(
-            arguments,
-            _cosign_immutable_reference(arguments, plugin_repository, artifact.digest),
-        )
-        else "unsigned"
-    )
-    index_signature = (
-        "signed"
-        if _sign_reference(
-            arguments,
-            _cosign_immutable_reference(arguments, plugin_repository, index_digest),
-        )
-        else "unsigned"
-    )
-    return {
-        "archive": str(archive),
-        "bindingIndexDigest": index_digest,
-        "bindingIndexReference": index_reference,
-        "bindingSignature": binding_signature,
-        "bindingManifestDigest": binding_publication.manifest_digest,
-        "channel": binding_publication.channel,
-        "immutableReference": binding_publication.immutable_reference,
-        "indexSignature": index_signature,
-        "indexIdempotent": idempotent,
-        "ok": True,
-        "repository": binding_publication.repository,
-    }
+    return index_reference, index_digest, idempotent
+
+
+def _signature_status(arguments: argparse.Namespace, repository: str, digest: str) -> str:
+    reference = _cosign_immutable_reference(arguments, repository, digest)
+    return "signed" if _sign_reference(arguments, reference) else "unsigned"
 
 
 def _read_linked_runtime_binding_archive(
@@ -3133,7 +3589,7 @@ def _read_linked_runtime_binding_archive(
     """Verify a binding archive against the exact plugin archive it names."""
     plugin_artifact = read_plugin_artifact_archive(plugin_archive)
     plugin_descriptor = _decode_json_object(
-        plugin_artifact.plugin_manifest.content, "plugin descriptor"
+        plugin_artifact.plugin_manifest.content, _PLUGIN_DESCRIPTOR_LABEL
     )
     binding_artifact = read_runtime_binding_archive(
         binding_archive,
@@ -3144,13 +3600,11 @@ def _read_linked_runtime_binding_archive(
         binding_artifact.binding_document.content, "RuntimeBinding document"
     )
     plugin_link = _mapping(
-        _mapping(binding_document.get("spec"), "RuntimeBinding spec").get("plugin"),
-        "RuntimeBinding spec.plugin",
+        _mapping(binding_document.get("spec"), _RUNTIME_BINDING_SPEC_LABEL).get("plugin"),
+        _RUNTIME_BINDING_SPEC_PLUGIN_LABEL,
     )
     if plugin_link.get("repository") != expected_plugin_repository:
-        raise ArtifactArchiveError(
-            "RuntimeBinding and plugin must use registry.artifactRepository"
-        )
+        raise ArtifactArchiveError("RuntimeBinding and plugin must use registry.artifactRepository")
     if plugin_link.get("digest") != plugin_artifact.digest:
         raise ArtifactArchiveError(
             "RuntimeBinding does not reference the supplied plugin artifact digest"
@@ -3168,9 +3622,7 @@ def _runtime_binding_index_verifier(
 
     def verify(digest: str) -> None:
         if expected_digest is not None and digest != expected_digest:
-            raise SettingsError(
-                "current runtime-binding index digest does not match the expected digest"
-            )
+            raise SettingsError(_EXPECTED_BINDING_INDEX_DIGEST_ERROR)
         if verification_key is not None:
             verify_oci_reference(
                 _cosign_immutable_reference(arguments, repository, digest),
@@ -3194,13 +3646,7 @@ def _update_catalog(arguments: argparse.Namespace) -> int:
     except SettingsError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    except (
-        ArtifactArchiveError,
-        CatalogIndexArtifactBuildError,
-        CatalogIndexPublicationError,
-        CatalogIndexUpdateError,
-        ValueError,
-    ) as error:
+    except (CatalogIndexPublicationError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -3226,13 +3672,7 @@ def _recover_catalog(arguments: argparse.Namespace) -> int:
     except SettingsError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    except (
-        ArtifactArchiveError,
-        CatalogIndexArtifactBuildError,
-        CatalogIndexPublicationError,
-        CatalogIndexUpdateError,
-        ValueError,
-    ) as error:
+    except (CatalogIndexPublicationError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -3520,11 +3960,7 @@ def _credentials_from_auth_file(path: Path, registry_origin: str | None) -> Regi
     auths = document["auths"]
     candidates = (host, registry_origin.rstrip("/"), f"https://{host}")
     record = next(
-        (
-            auths[candidate]
-            for candidate in candidates
-            if isinstance(auths.get(candidate), Mapping)
-        ),
+        (auths[candidate] for candidate in candidates if isinstance(auths.get(candidate), Mapping)),
         None,
     )
     if not isinstance(record, Mapping) or not isinstance(record.get("auth"), str):
@@ -3533,7 +3969,9 @@ def _credentials_from_auth_file(path: Path, registry_origin: str | None) -> Regi
         decoded = base64.b64decode(record["auth"], validate=True).decode("utf-8")
         username, password = decoded.split(":", 1)
     except (UnicodeDecodeError, ValueError, binascii.Error) as error:
-        raise SettingsError(f"registry auth file has an invalid Basic credential for {host}") from error
+        raise SettingsError(
+            f"registry auth file has an invalid Basic credential for {host}"
+        ) from error
     if not username or not password:
         raise SettingsError(f"registry auth file has an empty Basic credential for {host}")
     return RegistryCredentials(username, password)
@@ -3608,9 +4046,7 @@ def _sign_reference(arguments: argparse.Namespace, reference: str) -> bool:
     return True
 
 
-def _cosign_immutable_reference(
-    arguments: argparse.Namespace, repository: str, digest: str
-) -> str:
+def _cosign_immutable_reference(arguments: argparse.Namespace, repository: str, digest: str) -> str:
     """Build Cosign's fully-qualified registry reference from a repository and digest."""
     if _SHA256_DIGEST.fullmatch(digest) is None:
         raise SettingsError("Cosign signing requires a sha256 manifest digest")
@@ -3629,103 +4065,122 @@ def _cosign_immutable_reference(
 def _inspect(arguments: argparse.Namespace) -> int:
     """Inspect either source metadata or a verified portable artifact archive."""
     if arguments.verify:
-        if arguments.manifest.exists():
-            print("error: Cosign verification requires an immutable remote OCI reference", file=sys.stderr)
-            return 2
-        try:
-            verify_oci_reference(str(arguments.manifest), key=arguments.cosign_key)
-        except CosignError as error:
-            print(f"error: {error}", file=sys.stderr)
-            return 1
-        print(
-            json.dumps(
-                {
-                    "kind": "CosignVerification",
-                    "reference": str(arguments.manifest),
-                    "verified": True,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                indent=2,
-            )
-        )
-        return 0
+        return _inspect_signature(arguments)
     if arguments.manifest.name == "release.json":
-        try:
-            payload = dict(_read_release_inventory(arguments.manifest))
-        except SettingsError as error:
-            print(f"error: {error}", file=sys.stderr)
-            return 1
-        if arguments.json:
-            print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
-        else:
-            plugin = _mapping(payload["plugin"], "release plugin")
-            binding = _mapping(payload["runtimeBinding"], "release RuntimeBinding")
-            print(f"Plugin: {plugin['repository']}@{plugin['digest']}")
-            print(f"Plugin archive will publish: {plugin['publish']}")
-            print(f"RuntimeBinding: {binding['repository']}@{binding['digest']}")
-            print(f"Workload images: {len(payload['images'])}")
-            for image in payload["images"]:
-                print(f"  {image['workload']}/{image['buildTarget']}: {image['reference']}")
-        return 0
+        return _inspect_release(arguments)
     if arguments.manifest.name.endswith(".oci.tar"):
-        if arguments.image_binding:
-            print(
-                "error: --image-binding applies only when inspecting a source plugin manifest",
-                file=sys.stderr,
-            )
-            return 2
-        try:
-            artifact = read_plugin_artifact_archive(arguments.manifest)
-        except ArtifactArchiveError as plugin_error:
-            try:
-                binding = read_runtime_binding_archive(arguments.manifest)
-            except ArtifactArchiveError as binding_error:
-                try:
-                    payload = inspect_workload_archive(arguments.manifest)
-                except WorkloadBuildError as image_error:
-                    print(
-                        f"error: not a plugin, RuntimeBinding, or supported workload image archive: "
-                        f"{plugin_error}; {binding_error}; {image_error}",
-                        file=sys.stderr,
-                    )
-                    return 1
-            else:
-                payload = {
-                    "artifactDigest": binding.digest,
-                    "bindingDocument": json.loads(binding.binding_document.content),
-                    "bindingDocumentDigest": binding.binding_document.descriptor.digest,
-                    "kind": "RuntimeBinding",
-                }
-        else:
-            payload = _artifact_payload(artifact.plugin_manifest.descriptor.digest, artifact)
+        return _inspect_oci_archive(arguments)
+    if arguments.manifest.suffix in {".yaml", ".yml"}:
+        result = _inspect_runtime_binding_source(arguments)
+        if result is not None:
+            return result
+    return _compile_workspace(arguments)
+
+
+def _inspect_signature(arguments: argparse.Namespace) -> int:
+    if arguments.manifest.exists():
+        print(
+            "error: Cosign verification requires an immutable remote OCI reference",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        verify_oci_reference(str(arguments.manifest), key=arguments.cosign_key)
+    except CosignError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {"kind": "CosignVerification", "reference": str(arguments.manifest), "verified": True},
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _inspect_release(arguments: argparse.Namespace) -> int:
+    try:
+        payload = dict(_read_release_inventory(arguments.manifest))
+    except SettingsError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    if arguments.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
-    if arguments.manifest.suffix in {".yaml", ".yml"}:
+    plugin = _mapping(payload["plugin"], _RELEASE_PLUGIN_LABEL)
+    binding = _mapping(payload["runtimeBinding"], "release RuntimeBinding")
+    print(f"Plugin: {plugin['repository']}@{plugin['digest']}")
+    print(f"Plugin archive will publish: {plugin['publish']}")
+    print(f"RuntimeBinding: {binding['repository']}@{binding['digest']}")
+    print(f"Workload images: {len(payload['images'])}")
+    for image in payload["images"]:
+        print(f"  {image['workload']}/{image['buildTarget']}: {image['reference']}")
+    return 0
+
+
+def _inspect_oci_archive(arguments: argparse.Namespace) -> int:
+    if arguments.image_binding:
+        print(
+            "error: --image-binding applies only when inspecting a source plugin manifest",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        artifact = read_plugin_artifact_archive(arguments.manifest)
+    except ArtifactArchiveError as plugin_error:
+        return _inspect_non_plugin_archive(arguments.manifest, plugin_error)
+    payload = _artifact_payload(artifact.plugin_manifest.descriptor.digest, artifact)
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+    return 0
+
+
+def _inspect_non_plugin_archive(path: Path, plugin_error: ArtifactArchiveError) -> int:
+    try:
+        binding = read_runtime_binding_archive(path)
+    except ArtifactArchiveError as binding_error:
         try:
-            source = _read_runtime_binding_source(arguments.manifest)
-        except SettingsError:
-            source = None
-        if source is not None and source.get("kind") == "RuntimeBinding":
-            spec = _mapping(source.get("spec"), "RuntimeBinding spec")
-            resolved = "contract" in spec
-            diagnostics = validate_runtime_binding(
-                load_bundle(),
-                source,
-                resolved=resolved,
+            payload = inspect_workload_archive(path)
+        except WorkloadBuildError as image_error:
+            print(
+                "error: not a plugin, RuntimeBinding, or supported workload image archive: "
+                f"{plugin_error}; {binding_error}; {image_error}",
+                file=sys.stderr,
             )
-            if diagnostics:
-                for diagnostic in diagnostics:
-                    print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)
-                return 1
-            payload = {"kind": "RuntimeBinding", "valid": True, "document": source}
-            if arguments.json:
-                print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
-            else:
-                print(f"Valid RuntimeBinding: {arguments.manifest}")
-                print("State: resolved" if resolved else "State: source")
-            return 0
-    return _compile_workspace(arguments)
+            return 1
+    else:
+        payload = {
+            "artifactDigest": binding.digest,
+            "bindingDocument": json.loads(binding.binding_document.content),
+            "bindingDocumentDigest": binding.binding_document.descriptor.digest,
+            "kind": "RuntimeBinding",
+        }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+    return 0
+
+
+def _inspect_runtime_binding_source(arguments: argparse.Namespace) -> int | None:
+    try:
+        source = _read_runtime_binding_source(arguments.manifest)
+    except SettingsError:
+        return None
+    if source.get("kind") != "RuntimeBinding":
+        return None
+    spec = _mapping(source.get("spec"), _RUNTIME_BINDING_SPEC_LABEL)
+    resolved = "contract" in spec
+    diagnostics = validate_runtime_binding(load_bundle(), source, resolved=resolved)
+    if diagnostics:
+        for diagnostic in diagnostics:
+            print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)
+        return 1
+    payload = {"kind": "RuntimeBinding", "valid": True, "document": source}
+    if arguments.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+    else:
+        print(f"Valid RuntimeBinding: {arguments.manifest}")
+        print("State: resolved" if resolved else "State: source")
+    return 0
 
 
 def _artifact_payload(compiled_digest: str, artifact: PluginArtifact) -> dict[str, object]:
@@ -3772,15 +4227,9 @@ def _plugin_template(
     custom_workload: bool = False,
 ) -> str:
     """Return a minimal plugin manifest for the selected init template."""
-    workload = (
-        "  workloads:\n"
-        "    python:\n"
-        "      image: python-runtime\n"
-        if custom_workload
-        else ""
-    )
+    workload = "  workloads:\n    python:\n      image: python-runtime\n" if custom_workload else ""
     return (
-        "apiVersion: syntara.io/v1alpha1\n"
+        f"apiVersion: {_API_VERSION}\n"
         "kind: Plugin\n"
         "metadata:\n"
         f"  namespace: {namespace}\n"
@@ -3806,7 +4255,7 @@ def _settings_template(
 ) -> str:
     """Return plugin-root settings without duplicating manifest target selection."""
     base = (
-        "apiVersion: syntara.io/v1alpha1\n"
+        f"apiVersion: {_API_VERSION}\n"
         "kind: PluginBuildSettings\n"
         "manifest: plugin.yaml\n"
         "build:\n"
@@ -3817,7 +4266,7 @@ def _settings_template(
     return (
         base.rstrip("\n")
         + "\n"
-        + "  runtimeBindings: runtime-bindings.yaml\n"
+        + f"  runtimeBindings: {_RUNTIME_BINDINGS_FILENAME}\n"
         + "  workloads:\n"
         + "    python-runtime:\n"
         + "      engine: podman\n"
@@ -3849,7 +4298,7 @@ def _action_template(
     """Return a compilable example action referencing a registered implementation."""
     if custom_workload:
         return (
-            "apiVersion: syntara.io/v1alpha1\n"
+            f"apiVersion: {_API_VERSION}\n"
             "kind: Action\n"
             "metadata:\n"
             f"  name: {action}\n"
@@ -3886,7 +4335,7 @@ def _action_template(
             "      additionalProperties: true\n"
         )
     return (
-        "apiVersion: syntara.io/v1alpha1\n"
+        f"apiVersion: {_API_VERSION}\n"
         "kind: Action\n"
         "metadata:\n"
         f"  name: {action}\n"
@@ -3962,14 +4411,14 @@ def _readme_template(name: str, action: str, *, custom_workload: bool = False) -
             f"# {_display_name(name)}\n\n"
             "This workspace contains a Python custom-runner example. The plugin contract, "
             "runtime binding, and workload image have separate digests and release lifecycles.\n\n"
-            "Review and update `syntara-plugin.yaml`, `runtime-bindings.yaml`, and the `Containerfile` "
+            f"Review and update `syntara-plugin.yaml`, `{_RUNTIME_BINDINGS_FILENAME}`, and the `Containerfile` "
             "before building. The `src/` package contains the workload implementation and the "
             "runtime's packaged manifest copy. Keep those packaged manifests aligned with the "
             "workspace manifests.\n\n"
             "```sh\n"
             "syntara-plugin validate plugin.yaml\n"
             "syntara-plugin run "
-            f"{action} --mode source --input '{{\"message\":\"hello\"}}'\n"
+            f'{action} --mode source --input \'{{"message":"hello"}}\'\n'
             "syntara-plugin build\n"
             "syntara-plugin inspect dist/release.json\n"
             "```\n"
@@ -3991,7 +4440,6 @@ def _write_custom_workload_scaffold(
     *,
     name: str,
     namespace: str,
-    action: str,
     version: str,
     package_name: str,
     action_path: Path,
@@ -4004,7 +4452,9 @@ def _write_custom_workload_scaffold(
     package = directory / "src" / package_name
     manifests = package / "manifests"
     (manifests / action_path.parent).mkdir(parents=True)
-    (package / "__init__.py").write_text('"""Custom workload implementation."""\n', encoding="utf-8")
+    (package / "__init__.py").write_text(
+        '"""Custom workload implementation."""\n', encoding="utf-8"
+    )
     (package / "action.py").write_text(
         """from __future__ import annotations
 
@@ -4031,7 +4481,7 @@ class ExampleAction(ActionStep[ExampleInput, ExampleOutput]):
     (package / "runtime.py").write_text(
         "from syntara_plugin.runtime import load_plugin_bindings\n\n"
         "def create_bindings():\n"
-        f"    return load_plugin_bindings({package_name!r}, workload_id=\"python\")\n",
+        f'    return load_plugin_bindings({package_name!r}, workload_id="python")\n',
         encoding="utf-8",
     )
     (manifests / "plugin.yaml").write_text(
@@ -4049,8 +4499,8 @@ class ExampleAction(ActionStep[ExampleInput, ExampleOutput]):
     (manifests / "docs" / "README.md").write_text(
         f"# {_display_name(name)}\n\nGenerated custom workload example.\n", encoding="utf-8"
     )
-    (directory / "runtime-bindings.yaml").write_text(
-        "apiVersion: syntara.io/v1alpha1\n"
+    (directory / _RUNTIME_BINDINGS_FILENAME).write_text(
+        f"apiVersion: {_API_VERSION}\n"
         "kind: RuntimeBinding\n"
         "metadata:\n"
         f"  namespace: {namespace}\n  name: {binding_name}\n"
@@ -4067,17 +4517,17 @@ class ExampleAction(ActionStep[ExampleInput, ExampleOutput]):
         encoding="utf-8",
     )
     (directory / "pyproject.toml").write_text(
-        f"[project]\nname = \"{name}\"\nversion = \"{version}\"\n"
-        "requires-python = \">=3.12\"\ndependencies = [\"syntara-plugin-contracts==0.1.0a3\"]\n\n"
-        "[build-system]\nrequires = [\"hatchling>=1.25\"]\n"
-        "build-backend = \"hatchling.build\"\n\n"
+        f'[project]\nname = "{name}"\nversion = "{version}"\n'
+        'requires-python = ">=3.12"\ndependencies = ["syntara-plugin-contracts==0.1.0a3"]\n\n'
+        '[build-system]\nrequires = ["hatchling>=1.25"]\n'
+        'build-backend = "hatchling.build"\n\n'
         "[tool.hatch.build.targets.wheel]\n"
-        f"packages = [\"src/{package_name}\"]\n",
+        f'packages = ["src/{package_name}"]\n',
         encoding="utf-8",
     )
     (directory / "runtime.json").write_text(
-        "{\n  \"abi\": \"syntara.container/v1alpha1\",\n  \"adapter\": {\n"
-        f"    \"bindingsFactory\": \"{package_name}.runtime:create_bindings\"\n"
+        '{\n  "abi": "syntara.container/v1alpha1",\n  "adapter": {\n'
+        f'    "bindingsFactory": "{package_name}.runtime:create_bindings"\n'
         "  }\n}\n",
         encoding="utf-8",
     )
@@ -4100,7 +4550,7 @@ class ExampleAction(ActionStep[ExampleInput, ExampleOutput]):
         "    PYTHONUNBUFFERED=1 \\\n"
         "    PYTHONDONTWRITEBYTECODE=1\n"
         "EXPOSE 50051\n"
-        "ENTRYPOINT [\"python3.12\", \"-m\", \"syntara_plugin.runtime.server\"]\n",
+        'ENTRYPOINT ["python3.12", "-m", "syntara_plugin.runtime.server"]\n',
         encoding="utf-8",
     )
 
