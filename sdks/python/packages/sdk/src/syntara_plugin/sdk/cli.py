@@ -101,6 +101,7 @@ _DEFAULT_MANIFEST_NAME = "plugin.yaml"
 _RUN_COMMAND_PREFIX = "syntara-plugin run "
 _API_VERSION = "syntara.io/v1alpha1"
 _RUNTIME_BINDING_SPEC_LABEL = "RuntimeBinding spec"
+_RUNTIME_BINDING_WORKLOADS_LABEL = "RuntimeBinding workloads"
 _RUNTIME_BINDING_PLUGIN_LABEL = "RuntimeBinding plugin"
 _RUNTIME_BINDING_SPEC_PLUGIN_LABEL = "RuntimeBinding spec.plugin"
 _RELEASE_PLUGIN_LABEL = "release plugin"
@@ -1335,7 +1336,8 @@ def _compile_workspace(arguments: argparse.Namespace) -> int:
     binding_validated, failure_code = _validate_workspace_binding(arguments, result)
     if failure_code is not None:
         return failure_code
-    return _print_workspace_result(arguments, result, binding_validated)
+    _print_workspace_result(arguments, result, binding_validated)
+    return 0
 
 
 def _validate_workspace_binding(
@@ -1375,10 +1377,10 @@ def _validate_workspace_binding(
 
 def _print_workspace_result(
     arguments: argparse.Namespace, result: CompilationResult, binding_validated: bool
-) -> int:
+) -> None:
     if arguments.command == "inspect":
         print(result.canonical_json().decode("utf-8"))
-        return 0
+        return
     payload = {"ok": True, "digest": result.digest, "assetCount": len(result.assets)}
     if binding_validated:
         payload["runtimeBinding"] = {"valid": True, "path": str(arguments.runtime_bindings)}
@@ -1388,7 +1390,6 @@ def _print_workspace_result(
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     else:
         print(f"Valid: {arguments.manifest} ({result.digest}, {len(result.assets)} bundled assets)")
-    return 0
 
 
 def _print_compilation_failure(
@@ -1683,7 +1684,7 @@ def _validate_target_workload(plugin_descriptor: Mapping[str, Any], target: Any)
 def _binding_workload_options(
     specification: Mapping[str, Any], workload_id: str
 ) -> list[Mapping[str, Any]]:
-    workloads = _mapping(specification.get("workloads"), "RuntimeBinding workloads")
+    workloads = _mapping(specification.get("workloads"), _RUNTIME_BINDING_WORKLOADS_LABEL)
     workload = _mapping(workloads.get(workload_id), "selected RuntimeBinding workload")
     options = workload.get("options")
     if not isinstance(options, list):
@@ -2531,7 +2532,7 @@ def _build_runtime_binding_images(
 
 def _runtime_binding_build_targets(source: Mapping[str, Any]) -> dict[str, str]:
     specification = _mapping(source.get("spec"), _RUNTIME_BINDING_SPEC_LABEL)
-    workloads = _mapping(specification.get("workloads"), "RuntimeBinding workloads")
+    workloads = _mapping(specification.get("workloads"), _RUNTIME_BINDING_WORKLOADS_LABEL)
     targets: dict[str, str] = {}
     for workload_id, workload_value in workloads.items():
         workload = _mapping(workload_value, f"RuntimeBinding workload {workload_id}")
@@ -3025,7 +3026,7 @@ def _verify_release_artifact_identity(
 
 def _release_binding_image_references(binding_document: Mapping[str, Any]) -> set[str]:
     specification = _mapping(binding_document.get("spec"), _RUNTIME_BINDING_SPEC_LABEL)
-    workloads = _mapping(specification.get("workloads"), "RuntimeBinding workloads")
+    workloads = _mapping(specification.get("workloads"), _RUNTIME_BINDING_WORKLOADS_LABEL)
     return {
         _required_string(
             _mapping(option, "RuntimeBinding image option").get("image"), "image reference"
