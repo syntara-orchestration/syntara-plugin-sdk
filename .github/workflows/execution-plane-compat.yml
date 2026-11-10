@@ -48,6 +48,7 @@ jobs:
       EP_COMPAT_BASH_IMAGE: ${{ inputs.bash_image }}
       EP_COMPAT_HTTP_IMAGE: ${{ inputs.http_image }}
       UV_NO_SYNC: "true"
+      PYTHONPATH: ${{ github.workspace }}/sdks/python/packages/contracts/src:${{ github.workspace }}/execution-plane/src
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -68,9 +69,19 @@ jobs:
       - name: Install Execution Plane with checkout contracts
         working-directory: execution-plane
         run: |
-          uv sync --locked --all-groups
-          uv pip install --python .venv/bin/python --no-deps -e ../sdks/python/packages/contracts
-          uv run --no-sync python -c 'from pathlib import Path; import syntara_plugin.runtime; assert Path(syntara_plugin.runtime.__file__).resolve().is_relative_to(Path("../sdks/python/packages/contracts").resolve())'
+          uv sync --locked --all-groups --no-build --no-install-project --no-install-package execution-plane-client
+          uv run --no-sync python - <<'PY'
+          from pathlib import Path
+          import execution_plane
+          import execution_plane_client
+          import syntara_plugin.runtime
+          from syntara_plugin.contracts import load_bundle
+
+          assert Path(execution_plane.__file__).resolve().is_relative_to(Path("src").resolve())
+          assert Path(execution_plane_client.__file__).resolve().is_relative_to(Path("src").resolve())
+          assert Path(syntara_plugin.runtime.__file__).resolve().is_relative_to(Path("../sdks/python/packages/contracts/src").resolve())
+          assert load_bundle().digest
+          PY
       - name: Bootstrap database and secrets
         working-directory: execution-plane
         run: |
@@ -128,7 +139,7 @@ jobs:
         working-directory: execution-plane
         run: |
           mkdir -p integration-test-logs
-          uv run --no-sync execution-plane-api > integration-test-logs/api.log 2>&1 &
+          uv run --no-sync python -c 'from execution_plane.api.main import main; main()' > integration-test-logs/api.log 2>&1 &
           uv run --no-sync python -m tools.deploy_kind_execution_target \
             --cluster-name integration-test --credential-ref "$EP_KIND_CREDENTIAL_REF" --wait-for-api 60
           kubectl patch serviceaccount default -n execution-plane --type=merge \
