@@ -461,7 +461,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
 
     def __init__(self, steps: StepRegistry) -> None:
         self._steps = steps
-        self._active: dict[str, tuple[Event, CallbackCredentialProvider, Queue[container_pb2.ExecuteServerMessage | None]]] = {}
+        self._active: dict[str, tuple[Event, CallbackCredentialProvider, Queue[container_pb2.ExecuteServerMessage | None], LockType]] = {}
         self._active_lock = Lock()
         self._shutdown = Event()
         self._worker_threads: set[Thread] = set()
@@ -474,7 +474,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         cancellation: Event | None = None
         provider: CallbackCredentialProvider | None = None
         outgoing: Queue[container_pb2.ExecuteServerMessage | None] = Queue()
-        # Order malformed-message cancellation against the worker's terminal event.
+        # Keep each terminal event adjacent to its stream terminator.
         terminal_lock = Lock()
         try:
             first = next(requests)
@@ -491,7 +491,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 invocation.timeout_seconds,
             )
             object.__setattr__(invocation, "credential_provider", provider)
-            self._register_invocation(invocation_id, cancellation, provider, outgoing)
+            self._register_invocation(invocation_id, cancellation, provider, outgoing, terminal_lock)
 
             def close() -> None:
                 _close_sync_invocation(invocation.cancellation, provider, outgoing)
@@ -531,15 +531,16 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             active = self._active.get(request.invocation_id)
         if active is None:
             return container_pb2.CancelResponse(accepted=False)
-        cancellation, provider, outgoing = active
-        cancellation.set()
-        provider.close()
-        outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
-            request.invocation_id, ContainerInvocationError(
-                FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-            )
-        )))
-        outgoing.put(None)
+        cancellation, provider, outgoing, terminal_lock = active
+        with terminal_lock:
+            cancellation.set()
+            provider.close()
+            outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
+                request.invocation_id, ContainerInvocationError(
+                    FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+                )
+            )))
+            outgoing.put(None)
         return container_pb2.CancelResponse(accepted=True)
 
     def shutdown(self) -> None:
@@ -554,15 +555,16 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             workers = tuple(self._worker_threads)
         with self._active_lock:
             active = list(self._active.items())
-        for invocation_id, (cancellation, provider, outgoing) in active:
-            cancellation.set()
-            provider.close()
-            outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
-                invocation_id, ContainerInvocationError(
-                    FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-                )
-            )))
-            outgoing.put(None)
+        for invocation_id, (cancellation, provider, outgoing, terminal_lock) in active:
+            with terminal_lock:
+                cancellation.set()
+                provider.close()
+                outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
+                    invocation_id, ContainerInvocationError(
+                        FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+                    )
+                )))
+                outgoing.put(None)
         deadline = monotonic() + 1.0
         for worker in workers:
             if worker is not current_thread() and worker.ident is not None:
@@ -575,7 +577,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         invocation: ContainerInvocation,
         provider: CallbackCredentialProvider,
         outgoing: Queue[container_pb2.ExecuteServerMessage | None],
-        terminal_lock: Lock,
+        terminal_lock: LockType,
     ) -> None:
         group = _SyncWorkerGroup()
         try:
@@ -656,7 +658,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             step_revision_ids=self._steps.step_revision_ids,
         )
 
-    def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: Queue[container_pb2.ExecuteServerMessage | None]) -> None:
+    def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: Queue[container_pb2.ExecuteServerMessage | None], terminal_lock: LockType) -> None:
         with self._active_lock:
             if self._shutdown.is_set():
                 raise ContainerInvocationError(
@@ -678,7 +680,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                     retryable=True,
                     outcome="not_started",
                 )
-            self._active[invocation_id] = (cancellation, provider, outgoing)
+            self._active[invocation_id] = (cancellation, provider, outgoing, terminal_lock)
 
     def _unregister_invocation(self, invocation_id: str, cancellation: Event) -> None:
         with self._active_lock:

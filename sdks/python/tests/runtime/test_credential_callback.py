@@ -432,8 +432,9 @@ def test_sync_shutdown_prevents_worker_start_after_startup_pause(monkeypatch: An
     provider = CallbackCredentialProvider(
         invocation.invocation_id, outgoing.put, invocation.cancellation, invocation.timeout_seconds
     )
+    terminal_lock = runtime_container.Lock()
     service._register_invocation(
-        invocation.invocation_id, invocation.cancellation, provider, outgoing
+        invocation.invocation_id, invocation.cancellation, provider, outgoing, terminal_lock
     )
 
     startup_paused = Event()
@@ -460,7 +461,7 @@ def test_sync_shutdown_prevents_worker_start_after_startup_pause(monkeypatch: An
     def start_workers() -> None:
         try:
             service._start_invocation_workers(
-                iter(()), handler, invocation, provider, outgoing, runtime_container.Lock()
+                iter(()), handler, invocation, provider, outgoing, terminal_lock
             )
         except BaseException as error:
             startup_errors.append(error)
@@ -1006,3 +1007,153 @@ def test_malformed_message_observed_before_sync_terminal_commit_wins(monkeypatch
         release_result.set()
         release_failure.set()
         server.stop(0).wait()
+
+
+@pytest.mark.parametrize("action", ["cancel", "shutdown"])
+def test_sync_terminal_publication_cannot_interleave_with_cancel_or_shutdown(
+    action: str, monkeypatch: Any,
+) -> None:
+    result_queued = Event()
+    release_result = Event()
+    failure_queued = Event()
+    release_requests = Event()
+
+    class PausingQueue(Queue):
+        def put(self, item: Any, *args: Any, **kwargs: Any) -> None:
+            super().put(item, *args, **kwargs)
+            if item is None or not item.HasField("event"):
+                return
+            if item.event.WhichOneof("event") == "result":
+                result_queued.set()
+                assert release_result.wait(3)
+            elif item.event.WhichOneof("event") == "failure":
+                failure_queued.set()
+
+    class Context:
+        def add_callback(self, callback: Any) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return True
+
+    def requests():
+        yield container_pb2.ExecuteClientMessage(start=runtime_container._request_from_invocation(_invocation()))
+        release_requests.wait(3)
+
+    monkeypatch.setattr(runtime_container, "Queue", PausingQueue)
+    service = runtime_container.ContainerRuntimeService(
+        StepRegistry({"example.step": lambda _: ContainerResult(_DIGEST, output={"ok": True})})
+    )
+    stream = service.Execute(requests(), Context())
+    try:
+        first = next(stream)
+        assert first.event.WhichOneof("event") == "result"
+        assert result_queued.wait(2)
+
+        def interrupt() -> None:
+            if action == "cancel":
+                service.Cancel(container_pb2.CancelRequest(invocation_id="invocation-1"), Context())
+            else:
+                service.shutdown()
+
+        thread = Thread(target=interrupt)
+        thread.start()
+        try:
+            assert not failure_queued.wait(0.5)
+        finally:
+            release_result.set()
+        thread.join(2)
+        assert not thread.is_alive()
+        assert list(stream) == []
+    finally:
+        release_result.set()
+        release_requests.set()
+        stream.close()
+        service.shutdown()
+
+
+@pytest.mark.parametrize("second_action", ["cancel", "shutdown"])
+def test_sync_cancel_terminal_publication_cannot_interleave_with_another_cancellation(
+    second_action: str, monkeypatch: Any,
+) -> None:
+    handler_started = Event()
+    release_handler = Event()
+    release_requests = Event()
+    first_failure_queued = Event()
+    release_first_failure = Event()
+    second_failure_queued = Event()
+    failure_count = 0
+
+    class PausingQueue(Queue):
+        def put(self, item: Any, *args: Any, **kwargs: Any) -> None:
+            nonlocal failure_count
+            super().put(item, *args, **kwargs)
+            if item is not None and item.HasField("event") and item.event.WhichOneof("event") == "failure":
+                failure_count += 1
+                if failure_count == 1:
+                    first_failure_queued.set()
+                    assert release_first_failure.wait(3)
+                else:
+                    second_failure_queued.set()
+
+    class Context:
+        def add_callback(self, callback: Any) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return True
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        handler_started.set()
+        release_handler.wait(3)
+        return ContainerResult(_DIGEST, output={})
+
+    def requests():
+        yield container_pb2.ExecuteClientMessage(start=runtime_container._request_from_invocation(_invocation()))
+        release_requests.wait(3)
+
+    monkeypatch.setattr(runtime_container, "Queue", PausingQueue)
+    service = runtime_container.ContainerRuntimeService(StepRegistry({"example.step": handler}))
+    stream = service.Execute(requests(), Context())
+    started = Event()
+    first_message: Queue[Any] = Queue()
+
+    def consume_first() -> None:
+        started.set()
+        first_message.put(next(stream))
+
+    consumer = Thread(target=consume_first)
+    first_cancel = Thread(target=lambda: service.Cancel(
+        container_pb2.CancelRequest(invocation_id="invocation-1"), Context()
+    ))
+    second = None
+    try:
+        consumer.start()
+        assert started.wait(2) and handler_started.wait(2)
+        first_cancel.start()
+        assert first_failure_queued.wait(2)
+        assert first_message.get(timeout=2).event.failure.code == FailureCode.CANCELLED
+        if second_action == "cancel":
+            second = Thread(target=lambda: service.Cancel(
+                container_pb2.CancelRequest(invocation_id="invocation-1"), Context()
+            ))
+        else:
+            second = Thread(target=service.shutdown)
+        second.start()
+        assert not second_failure_queued.wait(0.5)
+        release_first_failure.set()
+        first_cancel.join(2)
+        second.join(2)
+        consumer.join(2)
+        assert not first_cancel.is_alive() and not second.is_alive()
+        assert list(stream) == []
+    finally:
+        release_first_failure.set()
+        release_handler.set()
+        release_requests.set()
+        first_cancel.join(2) if first_cancel.ident is not None else None
+        if second is not None:
+            second.join(2)
+        consumer.join(2)
+        stream.close()
+        service.shutdown()
