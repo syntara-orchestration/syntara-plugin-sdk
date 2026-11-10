@@ -1,6 +1,9 @@
 name: Execution Plane compatibility
 
 on:
+  pull_request:
+  push:
+    branches: [devel]
   workflow_dispatch:
 
 permissions:
