@@ -81,8 +81,9 @@ registry_started=1
 printf 'server = "http://localhost:%s"\n[host."http://%s:5000"]\n  capabilities = ["pull", "resolve"]\n' "$port" "$registry" | "$engine" exec -i "$node" tee "/etc/containerd/certs.d/localhost:$port/hosts.toml" >/dev/null
 image="localhost:$port/sdk-existing-step:compat"
 "$engine" build -f "$tmp/context/Containerfile" -t "$image" "$tmp/context"
-"$engine" push "$image"
-digest="$(curl --fail --silent --show-error --head -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' "http://127.0.0.1:$port/v2/sdk-existing-step/manifests/compat" | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2}')"
+push_output="$("$engine" push "$image")"
+printf '%s\n' "$push_output"
+digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}).*$/\1/p' | tail -n 1)"
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Registry did not return a valid immutable image digest' >&2; exit 1; }
 export EP_COMPAT_IMAGE="localhost:$port/sdk-existing-step@$digest"
 export EP_COMPAT_REGISTRATION="$tmp/context/registration.json"
