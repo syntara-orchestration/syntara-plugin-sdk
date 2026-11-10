@@ -1129,7 +1129,8 @@ def test_sync_cancel_terminal_publication_cannot_interleave_with_another_cancell
     second = None
     try:
         consumer.start()
-        assert started.wait(2) and handler_started.wait(2)
+        assert started.wait(2)
+        assert handler_started.wait(2)
         first_cancel.start()
         assert first_failure_queued.wait(2)
         assert first_message.get(timeout=2).event.failure.code == FailureCode.CANCELLED
@@ -1145,7 +1146,8 @@ def test_sync_cancel_terminal_publication_cannot_interleave_with_another_cancell
         first_cancel.join(2)
         second.join(2)
         consumer.join(2)
-        assert not first_cancel.is_alive() and not second.is_alive()
+        assert not first_cancel.is_alive()
+        assert not second.is_alive()
         assert list(stream) == []
     finally:
         release_first_failure.set()
