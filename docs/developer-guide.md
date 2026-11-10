@@ -42,9 +42,9 @@ plugin from local wheels, starts the server with mutual TLS, and invokes its
 Action, Control, and Trigger steps over gRPC. It does not require the backend,
 Kubernetes, or the Execution Plane.
 
-For compatibility with the Execution Plane, run the **Execution Plane
-compatibility** GitHub Actions workflow manually against the SDK branch under
-test. It builds the [Existing step types](../examples/existing-step) plugin
+The **Execution Plane compatibility** GitHub Actions workflow runs on pull
+requests and pushes to `devel`. It builds the
+[Existing step types](../examples/existing-step) plugin
 from this checkout, pushes it to a disposable registry, and dispatches its
 Action, Control, and Trigger through the pinned Execution Plane Kubernetes
 worker using the registry-resolved image digest. The workload advertises exact generated step revisions, and the tests select
