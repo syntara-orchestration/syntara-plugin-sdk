@@ -21,14 +21,32 @@ leases. Its existing opaque work-item credential handles remain platform-side;
 the callback protocol does not send them to the workload or prescribe their
 mapping to requested names.
 
-The runtime accepts at most 16 concurrent reads, bounds documents to 1 MiB,
-and limits each read to 30 seconds and the invocation deadline. Scope closure,
-cancellation, deadline, disconnect, and shutdown revoke pending reads. Late,
-duplicate, and mismatched responses are discarded. Successful reads are recorded
-before the step can observe them so the existing bounded output scanner can
-reject leaks. An access failure never includes provider details. Hosts must not
-log sensitive messages. The callback grants access only for the invocation;
-it is not a sandbox for arbitrary Python code.
+The runtime accepts at most 16 concurrent reads per invocation, bounds
+documents to 1 MiB, and limits each read to 30 seconds and the invocation
+deadline. Scope closure, cancellation, deadline, disconnect, and shutdown
+revoke pending reads. Late, duplicate, and mismatched responses are discarded.
+Successful reads are recorded before the step can observe them so the existing
+bounded output scanner can reject leaks. An access failure never includes
+provider details. Hosts must not log sensitive messages. The callback grants
+access only for the invocation; it is not a sandbox for arbitrary Python code.
+
+The synchronous client owns a process-wide pool of eight daemon resolver
+workers and a queue of 32 requests. A host-supplied resolver must enforce
+finite operation and network timeouts that fit within the invocation deadline.
+Python cannot preempt arbitrary resolver code after a timeout or disconnect; a
+resolver that ignores its own timeout retains one bounded worker until it
+returns. When the worker queue is full, the client responds with an unavailable
+credential error. The synchronous runtime owns at most 16 reader/step worker
+pairs across the process. It rejects additional invocations with a retryable
+`RATE_LIMITED` failure and retains a capacity slot while either worker remains
+blocked. Shutdown signals cancellation and waits briefly for these owned
+workers, but does not attempt unsafe thread termination.
+
+The async `AsyncContainerRuntimeService` used by the image runtime owns a
+per-service pool of eight daemon step workers by default. A running handler
+retains its service capacity slot until it returns, even after cancellation or
+a timeout. Shutdown signals cancellation and rejects new work, but daemon
+workers do not prevent the Python process from exiting.
 
 Closing the client's send stream revokes credential reads but leaves the
 invocation running so it can return a terminal event. A malformed follow-up

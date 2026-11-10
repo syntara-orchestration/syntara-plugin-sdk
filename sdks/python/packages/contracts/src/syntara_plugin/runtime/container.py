@@ -15,8 +15,9 @@ import signal
 from _thread import LockType
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from queue import Queue
-from threading import Event, Lock, Thread
+from queue import Full, Queue
+from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
+from time import monotonic
 from typing import Any, Literal, NoReturn
 
 import grpc
@@ -43,6 +44,10 @@ _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
 _MAX_STATUS_CODE = 4_294_967_295
+_MAX_SYNC_INVOCATIONS = 16
+_CREDENTIAL_RESOLVER_WORKERS = 8
+_CREDENTIAL_RESOLVER_QUEUE_CAPACITY = 32
+_SYNC_RUNTIME_WORKER_SLOTS = BoundedSemaphore(_MAX_SYNC_INVOCATIONS)
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
 INCOMPLETE_STEP_MESSAGE = "The step did not complete."
 _CANCELLED_STEP_MESSAGE = "The step was cancelled."
@@ -418,6 +423,11 @@ def _run_sync_step(
         outgoing.put(None)
 
 
+@dataclass
+class _SyncWorkerGroup:
+    remaining: int = 2
+
+
 class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     """Bidirectional invocation service on an authenticated, confidential channel."""
 
@@ -425,6 +435,9 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         self._steps = steps
         self._active: dict[str, tuple[Event, CallbackCredentialProvider, Queue[container_pb2.ExecuteServerMessage | None]]] = {}
         self._active_lock = Lock()
+        self._shutdown = Event()
+        self._worker_threads: set[Thread] = set()
+        self._worker_threads_lock = Lock()
 
     def Execute(
         self, requests: Iterator[container_pb2.ExecuteClientMessage], context: grpc.ServicerContext
@@ -458,8 +471,9 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             if not context.add_callback(close):
                 close()
 
-            Thread(target=_receive_sync_responses, args=(requests, provider, invocation, outgoing, terminal_lock), daemon=True).start()
-            Thread(target=_run_sync_step, args=(handler, invocation, provider, outgoing, terminal_lock), daemon=True).start()
+            self._start_invocation_workers(
+                requests, handler, invocation, provider, outgoing, terminal_lock
+            )
             while context.is_active():
                 message = outgoing.get()
                 if message is None:
@@ -501,7 +515,15 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         return container_pb2.CancelResponse(accepted=True)
 
     def shutdown(self) -> None:
-        """Revoke every active callback before stopping the server."""
+        """Revoke callbacks and wait briefly for owned sync workers to stop.
+
+        Worker threads are daemon threads with a fixed process-wide concurrency
+        cap. Python cannot stop arbitrary handler code, so a blocked handler
+        retains its capacity slot until it returns.
+        """
+        with self._worker_threads_lock:
+            self._shutdown.set()
+            workers = tuple(self._worker_threads)
         with self._active_lock:
             active = list(self._active.items())
         for invocation_id, (cancellation, provider, outgoing) in active:
@@ -513,6 +535,89 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 )
             )))
             outgoing.put(None)
+        deadline = monotonic() + 1.0
+        for worker in workers:
+            if worker is not current_thread() and worker.ident is not None:
+                worker.join(timeout=max(0.0, deadline - monotonic()))
+
+    def _start_invocation_workers(
+        self,
+        requests: Iterator[container_pb2.ExecuteClientMessage],
+        handler: ContainerStepHandler,
+        invocation: ContainerInvocation,
+        provider: CallbackCredentialProvider,
+        outgoing: Queue[container_pb2.ExecuteServerMessage | None],
+        terminal_lock: Lock,
+    ) -> None:
+        group = _SyncWorkerGroup()
+        try:
+            reader = Thread(
+                target=self._run_owned_sync_worker,
+                args=(
+                    group,
+                    _receive_sync_responses,
+                    (requests, provider, invocation, outgoing, terminal_lock),
+                ),
+                daemon=True,
+                name="syntara-runtime-reader",
+            )
+            step = Thread(
+                target=self._run_owned_sync_worker,
+                args=(
+                    group,
+                    _run_sync_step,
+                    (handler, invocation, provider, outgoing, terminal_lock),
+                ),
+                daemon=True,
+                name="syntara-runtime-step",
+            )
+        except Exception:
+            _SYNC_RUNTIME_WORKER_SLOTS.release()
+            raise
+        startup_error: Exception | None = None
+        unstarted: tuple[Thread, ...] = ()
+        try:
+            with self._worker_threads_lock:
+                if self._shutdown.is_set():
+                    _SYNC_RUNTIME_WORKER_SLOTS.release()
+                    return
+                self._worker_threads.update((reader, step))
+                started = 0
+                try:
+                    reader.start()
+                    started += 1
+                    step.start()
+                    started += 1
+                except Exception as error:
+                    startup_error = error
+                    unstarted = (reader, step)[started:]
+                    self._worker_threads.difference_update(unstarted)
+        except Exception:
+            _SYNC_RUNTIME_WORKER_SLOTS.release()
+            raise
+        if startup_error is not None:
+            for _worker in unstarted:
+                self._finish_sync_worker(group)
+            raise startup_error
+
+    def _run_owned_sync_worker(
+        self,
+        group: _SyncWorkerGroup,
+        target: Callable[..., None],
+        args: tuple[Any, ...],
+    ) -> None:
+        try:
+            target(*args)
+        finally:
+            with self._worker_threads_lock:
+                self._worker_threads.discard(current_thread())
+            self._finish_sync_worker(group)
+
+    def _finish_sync_worker(self, group: _SyncWorkerGroup) -> None:
+        with self._worker_threads_lock:
+            group.remaining -= 1
+            if group.remaining == 0:
+                _SYNC_RUNTIME_WORKER_SLOTS.release()
 
     def Health(
         self, request: container_pb2.HealthRequest, context: grpc.ServicerContext
@@ -525,10 +630,24 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
 
     def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: Queue[container_pb2.ExecuteServerMessage | None]) -> None:
         with self._active_lock:
+            if self._shutdown.is_set():
+                raise ContainerInvocationError(
+                    FailureCode.RATE_LIMITED,
+                    "The runtime is shutting down.",
+                    retryable=True,
+                    outcome="not_started",
+                )
             if invocation_id in self._active:
                 raise ContainerInvocationError(
                     FailureCode.CONFLICT,
                     "The step is already running.",
+                    outcome="not_started",
+                )
+            if not _SYNC_RUNTIME_WORKER_SLOTS.acquire(blocking=False):
+                raise ContainerInvocationError(
+                    FailureCode.RATE_LIMITED,
+                    "The runtime is at its concurrency limit.",
+                    retryable=True,
                     outcome="not_started",
                 )
             self._active[invocation_id] = (cancellation, provider, outgoing)
@@ -594,7 +713,9 @@ def add_container_runtime_service(
     harness call inside a pytest session must not stop the session from
     terminating on SIGTERM). Host-process callers such as testing harnesses
     pass ``install_sigterm_shutdown=False`` to make the opt-out explicit.
-    A handler the caller installed itself is never overridden.
+    A handler the caller installed itself is never overridden. The returned
+    service owns its invocation workers; call ``service.shutdown()`` during
+    server teardown to revoke callbacks and wait briefly for those workers.
     """
 
     service = ContainerRuntimeService(steps)
@@ -668,22 +789,42 @@ class _CredentialRequestBridge:
                 raise _protocol_error()
             self._pending.add(request.request_id)
             self._seen.add(request.request_id)
-        Thread(target=self._respond, args=(request,), daemon=True).start()
+        if not _CREDENTIAL_RESOLVER_POOL.submit(self, request):
+            self._respond_unavailable(request)
 
     def _respond(self, request: container_pb2.CredentialRequest) -> None:
         response = container_pb2.CredentialResponse(
             invocation_id=self._invocation_id, request_id=request.request_id
         )
+        with self._lock:
+            credential_handler = (
+                self._credential_handler if self._active.is_set() else None
+            )
         try:
-            if self._credential_handler is None:
+            if credential_handler is None:
                 raise CredentialAccessError("missing")
-            value = self._credential_handler(request.name)
+            value = credential_handler(request.name)
             response.document_json = _encode_json_object(value, "credential")
         except CredentialAccessError as error:
             response.error = (container_pb2.CREDENTIAL_ERROR_MISSING
                 if error.reason == "missing" else container_pb2.CREDENTIAL_ERROR_UNAVAILABLE)
         except Exception:
             response.error = container_pb2.CREDENTIAL_ERROR_UNAVAILABLE
+        self._complete_response(request, response)
+
+    def _respond_unavailable(self, request: container_pb2.CredentialRequest) -> None:
+        response = container_pb2.CredentialResponse(
+            invocation_id=self._invocation_id,
+            request_id=request.request_id,
+            error=container_pb2.CREDENTIAL_ERROR_UNAVAILABLE,
+        )
+        self._complete_response(request, response)
+
+    def _complete_response(
+        self,
+        request: container_pb2.CredentialRequest,
+        response: container_pb2.CredentialResponse,
+    ) -> None:
         with self._lock:
             self._pending.discard(request.request_id)
             if self._active.is_set():
@@ -692,7 +833,70 @@ class _CredentialRequestBridge:
     def close(self) -> None:
         with self._lock:
             self._active.clear()
+            self._pending.clear()
+            self._credential_handler = None
             self._outgoing.put(None)
+
+
+@dataclass(frozen=True)
+class _CredentialResolverJob:
+    bridge: _CredentialRequestBridge
+    request: container_pb2.CredentialRequest
+
+
+class _CredentialResolverPool:
+    """Own a fixed process-wide set of daemon workers and a bounded queue."""
+
+    def __init__(self) -> None:
+        self._jobs: Queue[_CredentialResolverJob] = Queue(
+            maxsize=_CREDENTIAL_RESOLVER_QUEUE_CAPACITY
+        )
+        self._start_lock = Lock()
+        self._started = False
+        self._workers: tuple[Thread, ...] = ()
+
+    def submit(
+        self,
+        bridge: _CredentialRequestBridge,
+        request: container_pb2.CredentialRequest,
+    ) -> bool:
+        if not self._start_workers():
+            return False
+        try:
+            self._jobs.put_nowait(_CredentialResolverJob(bridge, request))
+        except Full:
+            return False
+        return True
+
+    def _start_workers(self) -> bool:
+        with self._start_lock:
+            if self._started:
+                return True
+            while len(self._workers) < _CREDENTIAL_RESOLVER_WORKERS:
+                try:
+                    worker = Thread(
+                        target=self._work,
+                        daemon=True,
+                        name=f"syntara-credential-resolver-{len(self._workers)}",
+                    )
+                    worker.start()
+                except Exception:
+                    return False
+                self._workers += (worker,)
+            self._started = True
+            return True
+
+    def _work(self) -> None:
+        while True:
+            job = self._jobs.get()
+            try:
+                if job.bridge._active.is_set():
+                    job.bridge._respond(job.request)
+            finally:
+                self._jobs.task_done()
+
+
+_CREDENTIAL_RESOLVER_POOL = _CredentialResolverPool()
 
 
 def _execution_event_from_stream(
@@ -720,6 +924,9 @@ class ContainerClient:
 
     Each invocation can supply a credential handler that resolves a declared
     recipe ID within that invocation's authority and returns a JSON object.
+    Resolver handlers must enforce finite operation and network timeouts. The
+    process-wide resolver pool has eight workers and a bounded queue; Python
+    cannot preempt a handler that ignores its timeout after an invocation ends.
     """
 
     def __init__(self, channel: grpc.Channel) -> None:

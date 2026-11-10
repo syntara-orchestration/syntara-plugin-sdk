@@ -183,23 +183,215 @@ def test_cancel_revokes_pending_read_and_discards_late_host_response() -> None:
         server.stop(0).wait()
 
 
-def test_closed_credential_bridge_discards_late_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repeated_timeouts_bound_blocked_credential_resolvers() -> None:
+    from threading import Lock
+
+    release = Event()
+    started: list[str] = []
+    started_lock = Lock()
+    resolver_limit_reached = Event()
+
+    def read(name: str) -> dict[str, str]:
+        assert name == _NAME
+        with started_lock:
+            started.append(name)
+            if len(started) == 8:
+                resolver_limit_reached.set()
+        release.wait()
+        return {"token": _SECRET}
+
+    bridges: list[runtime_container._CredentialRequestBridge] = []
+    try:
+        for index in range(8):
+            bridge = runtime_container._CredentialRequestBridge(
+                f"invocation-{index}",
+                read,
+                container_pb2.ExecuteRequest(invocation_id=f"invocation-{index}"),
+            )
+            bridges.append(bridge)
+            next(bridge.requests())
+            bridge.accept(container_pb2.CredentialRequest(
+                invocation_id=f"invocation-{index}",
+                request_id="request-1",
+                name=_NAME,
+            ))
+        assert resolver_limit_reached.wait(2)
+        for index in range(8, 41):
+            bridge = runtime_container._CredentialRequestBridge(
+                f"invocation-{index}",
+                read,
+                container_pb2.ExecuteRequest(invocation_id=f"invocation-{index}"),
+            )
+            bridges.append(bridge)
+            next(bridge.requests())
+            bridge.accept(container_pb2.CredentialRequest(
+                invocation_id=f"invocation-{index}",
+                request_id="request-1",
+                name=_NAME,
+            ))
+        overloaded = bridges[-1]._outgoing.get_nowait()
+        assert overloaded.credential_response.error == container_pb2.CREDENTIAL_ERROR_UNAVAILABLE
+        assert len(started) == 8
+    finally:
+        release.set()
+        for bridge in bridges:
+            bridge.close()
+        runtime_container._CREDENTIAL_RESOLVER_POOL._jobs.join()
+
+
+def test_repeated_timeouts_bound_blocked_sync_step_workers() -> None:
+    from dataclasses import replace
+    from threading import Condition, Lock
+
+    release = Event()
+    started: list[str] = []
+    recovered: list[str] = []
+    started_condition = Condition(Lock())
+    recovery_release = Event()
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        if invocation.invocation_id.startswith("recovery-"):
+            with started_condition:
+                recovered.append(invocation.invocation_id)
+                started_condition.notify_all()
+            recovery_release.wait()
+            return ContainerResult(_DIGEST, output={"ok": True})
+        with started_condition:
+            started.append(invocation.invocation_id)
+            started_condition.notify_all()
+        release.wait()
+        return ContainerResult(_DIGEST, output={"ok": True})
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=20))
+    service = add_container_runtime_service(server, StepRegistry({"example.step": handler}))
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    client = ContainerClient(channel)
+    try:
+        for index in range(24):
+            invocation = replace(_invocation(), invocation_id=f"invocation-{index}")
+            with pytest.raises(ContainerRemoteError) as error:
+                client.execute(invocation, timeout_seconds=0.05)
+            if index < 16:
+                assert error.value.code is FailureCode.TIMEOUT
+                expected_count = index + 1
+                with started_condition:
+                    assert started_condition.wait_for(
+                        lambda count=expected_count: len(started) >= count, timeout=1
+                    )
+            else:
+                assert error.value.code is FailureCode.RATE_LIMITED
+        assert len(started) == 16
+
+        with service._worker_threads_lock:
+            blocked_workers = tuple(service._worker_threads)
+        release.set()
+        for worker in blocked_workers:
+            worker.join(timeout=2)
+        assert all(not worker.is_alive() for worker in blocked_workers)
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            recovery_calls = [
+                pool.submit(
+                    client.execute,
+                    replace(_invocation(), invocation_id=f"recovery-{index}"),
+                    timeout_seconds=5,
+                )
+                for index in range(16)
+            ]
+            with started_condition:
+                all_slots_recovered = started_condition.wait_for(
+                    lambda: len(recovered) == 16, timeout=2
+                )
+            recovery_release.set()
+            recovery_results = [call.result(timeout=6) for call in recovery_calls]
+
+        assert all_slots_recovered
+        assert len(recovered) == 16
+        assert all(result.output == {"ok": True} for result in recovery_results)
+    finally:
+        release.set()
+        recovery_release.set()
+        channel.close()
+        server.stop(0).wait()
+
+
+def test_sync_shutdown_prevents_worker_start_after_startup_pause(monkeypatch: Any) -> None:
+    invocation = _invocation()
+    outgoing: Queue[Any] = Queue()
+    service = runtime_container.ContainerRuntimeService(StepRegistry({
+        "example.step": lambda _: ContainerResult(_DIGEST, output={"ok": True}),
+    }))
+    provider = CallbackCredentialProvider(
+        invocation.invocation_id, outgoing.put, invocation.cancellation, invocation.timeout_seconds
+    )
+    service._register_invocation(
+        invocation.invocation_id, invocation.cancellation, provider, outgoing
+    )
+
+    startup_paused = Event()
+    resume_startup = Event()
+    handler_started = Event()
+    release_handler = Event()
+    real_thread = runtime_container.Thread
+
+    def make_thread(*args: Any, **kwargs: Any) -> Thread:
+        if kwargs.get("name") == "syntara-runtime-reader":
+            startup_paused.set()
+            assert resume_startup.wait(2)
+        return real_thread(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_container, "Thread", make_thread)
+
+    def handler(_: ContainerInvocation) -> ContainerResult:
+        handler_started.set()
+        release_handler.wait(2)
+        return ContainerResult(_DIGEST, output={"ok": True})
+
+    startup_errors: list[BaseException] = []
+
+    def start_workers() -> None:
+        try:
+            service._start_invocation_workers(
+                iter(()), handler, invocation, provider, outgoing, runtime_container.Lock()
+            )
+        except BaseException as error:
+            startup_errors.append(error)
+
+    startup = Thread(target=start_workers)
+    try:
+        startup.start()
+        assert startup_paused.wait(1)
+        service.shutdown()
+        resume_startup.set()
+        startup.join(1)
+
+        assert not startup.is_alive()
+        assert startup_errors == []
+        assert not handler_started.wait(0.1)
+        assert service._worker_threads == set()
+    finally:
+        resume_startup.set()
+        release_handler.set()
+        startup.join(2)
+        service.shutdown()
+        provider.close()
+        service._unregister_invocation(invocation.invocation_id, invocation.cancellation)
+
+
+def test_closed_credential_bridge_discards_late_response() -> None:
     started = Event()
     release = Event()
-    workers: list[Thread] = []
+    finished = Event()
 
     def read(name: str) -> dict[str, str]:
         assert name == _NAME
         started.set()
         assert release.wait(1)
+        finished.set()
         return {"token": _SECRET}
 
-    def track_worker(*args: Any, **kwargs: Any) -> Thread:
-        worker = Thread(*args, **kwargs)
-        workers.append(worker)
-        return worker
-
-    monkeypatch.setattr(runtime_container, "Thread", track_worker)
     bridge = runtime_container._CredentialRequestBridge(
         "invocation-1",
         read,
@@ -211,16 +403,163 @@ def test_closed_credential_bridge_discards_late_response(monkeypatch: pytest.Mon
         invocation_id="invocation-1", request_id="request-1", name=_NAME,
     ))
     assert started.wait(1)
-    assert len(workers) == 1
 
     bridge.close()
     release.set()
-    workers[0].join(1)
-    assert not workers[0].is_alive()
+    assert finished.wait(1)
+    runtime_container._CREDENTIAL_RESOLVER_POOL._jobs.join()
     assert list(requests) == []
     assert bridge._outgoing.get_nowait() is None
     with pytest.raises(Empty):
         bridge._outgoing.get_nowait()
+
+
+def test_credential_resolver_pool_retries_after_worker_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = runtime_container._CredentialResolverPool()
+    monkeypatch.setattr(runtime_container, "_CREDENTIAL_RESOLVER_WORKERS", 1)
+    monkeypatch.setattr(runtime_container, "_CREDENTIAL_RESOLVER_POOL", pool)
+    real_thread = runtime_container.Thread
+    start_failures = 1
+
+    class FlakyThread(real_thread):
+        def start(self) -> None:
+            nonlocal start_failures
+            if start_failures:
+                start_failures -= 1
+                raise RuntimeError("worker startup failed")
+            super().start()
+
+    monkeypatch.setattr(runtime_container, "Thread", FlakyThread)
+    called = Event()
+    bridge = runtime_container._CredentialRequestBridge(
+        "invocation-1",
+        lambda name: (called.set() or {"token": _SECRET}),
+        container_pb2.ExecuteRequest(invocation_id="invocation-1"),
+    )
+    try:
+        next(bridge.requests())
+        bridge.accept(container_pb2.CredentialRequest(
+            invocation_id="invocation-1", request_id="request-1", name=_NAME,
+        ))
+
+        unavailable = bridge._outgoing.get_nowait().credential_response
+        assert unavailable.error == container_pb2.CREDENTIAL_ERROR_UNAVAILABLE
+        assert pool._started is False
+
+        bridge.accept(container_pb2.CredentialRequest(
+            invocation_id="invocation-1", request_id="request-2", name=_NAME,
+        ))
+        pool._jobs.join()
+
+        assert called.is_set()
+        response = bridge._outgoing.get_nowait().credential_response
+        assert response.document_json == b'{"token":"callback-secret-sentinel"}'
+        assert pool._started is True
+    finally:
+        bridge.close()
+        pool._jobs.join()
+
+
+def test_close_releases_queued_credential_handler() -> None:
+    import gc
+    import weakref
+    from threading import Condition, Lock
+
+    release_workers = Event()
+    started: list[str] = []
+    started_condition = Condition(Lock())
+
+    def blocking_read(name: str) -> dict[str, str]:
+        assert name == _NAME
+        with started_condition:
+            started.append(name)
+            started_condition.notify_all()
+        release_workers.wait(3)
+        return {"token": _SECRET}
+
+    bridges: list[runtime_container._CredentialRequestBridge] = []
+    queued_bridge: runtime_container._CredentialRequestBridge | None = None
+    healthy_bridge: runtime_container._CredentialRequestBridge | None = None
+    healthy_called = Event()
+    queued_calls: list[str] = []
+
+    class CapturedCredential:
+        def __init__(self) -> None:
+            self.used = False
+
+    try:
+        for index in range(runtime_container._CREDENTIAL_RESOLVER_WORKERS):
+            bridge = runtime_container._CredentialRequestBridge(
+                f"blocked-{index}",
+                blocking_read,
+                container_pb2.ExecuteRequest(invocation_id=f"blocked-{index}"),
+            )
+            bridges.append(bridge)
+            next(bridge.requests())
+            bridge.accept(container_pb2.CredentialRequest(
+                invocation_id=f"blocked-{index}", request_id="request-1", name=_NAME,
+            ))
+
+        with started_condition:
+            assert started_condition.wait_for(
+                lambda: len(started) == runtime_container._CREDENTIAL_RESOLVER_WORKERS,
+                timeout=2,
+            )
+
+        captured = CapturedCredential()
+
+        def queued_read(name: str, value: CapturedCredential = captured) -> dict[str, str]:
+            queued_calls.append(name)
+            value.used = True
+            return {"token": _SECRET}
+
+        handler_ref = weakref.ref(queued_read)
+        captured_ref = weakref.ref(captured)
+        queued_bridge = runtime_container._CredentialRequestBridge(
+            "queued",
+            queued_read,
+            container_pb2.ExecuteRequest(invocation_id="queued"),
+        )
+        bridges.append(queued_bridge)
+        next(queued_bridge.requests())
+        queued_bridge.accept(container_pb2.CredentialRequest(
+            invocation_id="queued", request_id="request-1", name=_NAME,
+        ))
+        del queued_read, captured
+
+        queued_bridge.close()
+        gc.collect()
+        assert handler_ref() is None
+        assert captured_ref() is None
+
+        release_workers.set()
+        runtime_container._CREDENTIAL_RESOLVER_POOL._jobs.join()
+        assert queued_calls == []
+        assert queued_bridge._outgoing.get_nowait() is None
+        with pytest.raises(Empty):
+            queued_bridge._outgoing.get_nowait()
+
+        healthy_bridge = runtime_container._CredentialRequestBridge(
+            "healthy",
+            lambda name: (healthy_called.set() or {"token": _SECRET}),
+            container_pb2.ExecuteRequest(invocation_id="healthy"),
+        )
+        bridges.append(healthy_bridge)
+        next(healthy_bridge.requests())
+        healthy_bridge.accept(container_pb2.CredentialRequest(
+            invocation_id="healthy", request_id="request-1", name=_NAME,
+        ))
+        runtime_container._CREDENTIAL_RESOLVER_POOL._jobs.join()
+        assert healthy_called.is_set()
+        response = healthy_bridge._outgoing.get_nowait().credential_response
+        assert response.document_json == b'{"token":"callback-secret-sentinel"}'
+    finally:
+        release_workers.set()
+        for bridge in bridges:
+            bridge.close()
+        runtime_container._CREDENTIAL_RESOLVER_POOL._jobs.join()
 
 
 @pytest.mark.parametrize("payload", [b'{"key":1,"key":2}', b'{"key":NaN}', b"[]", b"x" * 1_048_577])

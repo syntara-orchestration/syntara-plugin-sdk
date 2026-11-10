@@ -7,10 +7,13 @@ import importlib
 import json
 import os
 import signal
+import weakref
 from collections.abc import AsyncIterator, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Event
+from queue import Empty, Queue
+from threading import BoundedSemaphore, Event, Lock, Thread
 from typing import Any
 
 import grpc
@@ -43,7 +46,99 @@ _TLS_CERTIFICATE = "SYNTARA_RUNTIME_GRPC_TLS_CERT"
 _TLS_KEY = "SYNTARA_RUNTIME_GRPC_TLS_KEY"
 _TLS_CLIENT_CA = "SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA"
 _DEFAULT_ADDRESS = "127.0.0.1:50051"
+_DEFAULT_MAX_CONCURRENT_STEPS = 8
 _CANCELLED_STEP_MESSAGE = "The step was cancelled."
+_StepWorkItem = tuple[Future[ContainerResult], ContainerStepHandler, ContainerInvocation] | None
+
+
+class _DaemonStepWorkerPool:
+    """Run bounded synchronous step handlers on daemon threads."""
+
+    def __init__(self, max_workers: int) -> None:
+        self._work: Queue[_StepWorkItem] = Queue()
+        self._shutdown_lock = Lock()
+        self._shutdown = False
+        self._sentinels_enqueued = False
+        self._max_workers = max_workers
+        self._threads: list[Thread] = []
+
+    def submit(
+        self, handler: ContainerStepHandler, invocation: ContainerInvocation,
+    ) -> Future[ContainerResult]:
+        future: Future[ContainerResult] = Future()
+        with self._shutdown_lock:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new step work after shutdown")
+            if not self._threads:
+                self._threads = [
+                    Thread(
+                        target=self._worker,
+                        args=(self._work, weakref.ref(self)),
+                        name=f"syntara-step_{index}",
+                        daemon=True,
+                    )
+                    for index in range(self._max_workers)
+                ]
+            # Keep the full list so a later submit can retry threads whose
+            # start failed. Do not queue work until every worker has started.
+            for thread in self._threads:
+                if thread.ident is None:
+                    thread.start()
+            self._work.put((future, handler, invocation))
+        return future
+
+    def shutdown(self, *, wait: bool = False, cancel_futures: bool = False) -> None:
+        with self._shutdown_lock:
+            first_shutdown = not self._shutdown
+            self._shutdown = True
+            if first_shutdown:
+                if cancel_futures:
+                    while True:
+                        try:
+                            item = self._work.get_nowait()
+                        except Empty:
+                            break
+                        if item is not None:
+                            item[0].cancel()
+                        self._work.task_done()
+                started_threads = [thread for thread in self._threads if thread.ident is not None]
+                if started_threads and not self._sentinels_enqueued:
+                    self._sentinels_enqueued = True
+                    for _thread in started_threads:
+                        self._work.put(None)
+        if wait:
+            for thread in self._threads:
+                if thread.ident is not None:
+                    thread.join()
+
+    @staticmethod
+    def _worker(
+        work: Queue[_StepWorkItem],
+        pool: weakref.ReferenceType[_DaemonStepWorkerPool],
+    ) -> None:
+        while True:
+            try:
+                item = work.get(timeout=1)
+            except Empty:
+                if pool() is None:
+                    return
+                continue
+            if item is None:
+                work.task_done()
+                return
+            try:
+                future, handler, invocation = item
+                if not future.set_running_or_notify_cancel():
+                    continue
+                try:
+                    result = handler(invocation)
+                except BaseException as error:
+                    future.set_exception(error)
+                else:
+                    future.set_result(result)
+            finally:
+                work.task_done()
+                del item, future, handler, invocation
 
 
 class RuntimeServerError(RuntimeError):
@@ -51,11 +146,25 @@ class RuntimeServerError(RuntimeError):
 
 
 class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
-    """Async invocation stream; step code runs on a separate thread."""
+    """Async invocation stream with bounded, service-owned step workers.
 
-    def __init__(self, steps: StepRegistry) -> None:
+    Synchronous step code cannot be force-stopped when an invocation is
+    cancelled. A worker slot remains occupied until that code returns, so
+    timed-out or disconnected invocations cannot accumulate unbounded threads.
+    """
+
+    def __init__(
+        self, steps: StepRegistry, *, max_concurrent_steps: int = _DEFAULT_MAX_CONCURRENT_STEPS,
+    ) -> None:
+        if not isinstance(max_concurrent_steps, int) or isinstance(max_concurrent_steps, bool):
+            raise TypeError("max_concurrent_steps must be an integer")
+        if max_concurrent_steps < 1:
+            raise ValueError("max_concurrent_steps must be positive")
         self._steps = steps
         self._active: dict[str, tuple[Event, CallbackCredentialProvider, asyncio.Queue[Any]]] = {}
+        self._step_executor = _DaemonStepWorkerPool(max_concurrent_steps)
+        self._step_slots = BoundedSemaphore(max_concurrent_steps)
+        self._shutdown = False
 
     async def Execute(
         self, requests: AsyncIterator[container_pb2.ExecuteClientMessage],
@@ -185,7 +294,10 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         return container_pb2.CancelResponse(accepted=True)
 
     def shutdown(self) -> None:
-        """Revoke all active reads immediately on shutdown."""
+        """Revoke active reads and stop accepting step work."""
+        if self._shutdown:
+            return
+        self._shutdown = True
         for invocation_id, (cancellation, provider, outgoing) in self._active.copy().items():
             cancellation.set()
             provider.close()
@@ -195,6 +307,9 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 )
             )))
             outgoing.put_nowait(None)
+        # Running Python code cannot be stopped safely. Daemon workers keep it
+        # bounded without making interpreter shutdown wait for it to return.
+        self._step_executor.shutdown(wait=False, cancel_futures=True)
 
     async def Health(
         self,
@@ -224,7 +339,24 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     async def _execute_step(
         self, handler: ContainerStepHandler, invocation: ContainerInvocation
     ) -> ContainerResult:
-        task = asyncio.create_task(asyncio.to_thread(handler, invocation))
+        if self._shutdown:
+            raise ContainerInvocationError(
+                FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_started"
+            )
+        if not self._step_slots.acquire(blocking=False):
+            raise ContainerInvocationError(
+                FailureCode.RATE_LIMITED,
+                "The runtime is at capacity.",
+                retryable=True,
+                outcome="not_started",
+            )
+        try:
+            worker = self._step_executor.submit(handler, invocation)
+        except Exception:
+            self._step_slots.release()
+            raise
+        worker.add_done_callback(self._release_step_slot)
+        task = asyncio.wrap_future(worker)
         task.add_done_callback(_discard_step_result)
         try:
             return await asyncio.wait_for(
@@ -240,9 +372,17 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 retryable=True,
                 outcome="not_completed",
             ) from None
+        except asyncio.CancelledError:
+            invocation.cancellation.set()
+            raise
 
 
-def _discard_step_result(task: asyncio.Task[ContainerResult]) -> None:
+    def _release_step_slot(self, worker: Future[ContainerResult]) -> None:
+        del worker
+        self._step_slots.release()
+
+
+def _discard_step_result(task: asyncio.Future[ContainerResult]) -> None:
     if not task.cancelled():
         task.exception()
 

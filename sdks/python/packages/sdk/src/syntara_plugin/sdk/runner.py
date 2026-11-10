@@ -942,8 +942,8 @@ def load_credentials(
     """Read, shape, and validate every supplied credential before execution.
 
     Returns the loaded credentials and any warnings for the CLI to render.
-    Values are held in memory: nothing is written until the delivery file is
-    created for the invocation itself.
+    Values are held in memory and delivered to the runtime only when the step
+    requests a declared recipe over the invocation-scoped callback.
     """
 
     loaded: list[LoadedCredential] = []
@@ -1253,11 +1253,12 @@ def run_source(
     runtime_directory = tempfile.mkdtemp(prefix="syntara-run-runtime-")
     socket_path = Path(runtime_directory) / "runtime.sock"
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
-    add_container_runtime_service(
+    runtime_service = add_container_runtime_service(
         server, registry, install_sigterm_shutdown=False
     )
     if server.add_insecure_port(f"unix:{socket_path}") == 0:
         server.stop(None)
+        runtime_service.shutdown()
         shutil.rmtree(runtime_directory, ignore_errors=True)
         raise RunExecutionError("could not start the local runtime server")
     server.start()
@@ -1294,6 +1295,7 @@ def run_source(
     finally:
         channel.close()
         server.stop(None)
+        runtime_service.shutdown()
         shutil.rmtree(runtime_directory, ignore_errors=True)
 
 class _LocalErrorCapture:

@@ -190,6 +190,65 @@ def test_source_mode_runs_the_python_steps_example(capsys) -> None:
     assert _output_json(captured.out) == {"issue_url": "https://issues.example.test/run-e2e"}
 
 
+def test_source_mode_shuts_down_the_runtime_service_after_stopping_server(
+    monkeypatch,
+) -> None:
+    """Source mode revokes its runtime service after gRPC server teardown."""
+    from syntara_plugin.sdk import runner
+
+    events: list[str] = []
+    class LocalServer:
+        def add_insecure_port(self, address: str) -> int:
+            return 1
+
+        def start(self) -> None:
+            events.append("server.start")
+
+        def stop(self, grace: float | None) -> None:
+            events.append("server.stop")
+
+    class LocalChannel:
+        def close(self) -> None:
+            events.append("channel.close")
+
+    class LocalService:
+        def shutdown(self) -> None:
+            events.append("service.shutdown")
+
+    server = LocalServer()
+    service = LocalService()
+    result = object()
+    monkeypatch.setattr(runner, "_make_importable", lambda _workspace: None)
+    monkeypatch.setattr(runner, "_bind_target", lambda _manifest, _target: object())
+    monkeypatch.setattr(
+        runner, "container_step_for_binding", lambda _binding: lambda _invocation: None
+    )
+    monkeypatch.setattr(runner.grpc, "server", lambda _executor: server)
+    monkeypatch.setattr(runner.grpc, "insecure_channel", lambda _address: LocalChannel())
+    monkeypatch.setattr(
+        runner, "add_container_runtime_service", lambda *_args, **_kwargs: service
+    )
+    monkeypatch.setattr(runner, "_execute_over_channel", lambda _execution: result)
+
+    target = runner.RunTarget(
+        identity="example.step",
+        kind="Action",
+        entry_point="example:Step",
+        metadata_name="step",
+        input_schema={},
+        schema_digests={},
+    )
+    report = runner.run_source(Path("plugin.yaml"), target, {}, "inline")
+
+    assert report is result
+    assert events == [
+        "server.start",
+        "channel.close",
+        "server.stop",
+        "service.shutdown",
+    ]
+
+
 def test_source_mode_runs_a_trigger_target(capsys) -> None:
     """Trigger targets run through the same source-mode path as Actions."""
 
