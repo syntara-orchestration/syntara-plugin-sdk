@@ -65,6 +65,75 @@ def test_image_context_derives_resolved_bindings_and_avoids_checkout_build_hooks
 
 
 @pytest.mark.parametrize(
+    "source",
+    [
+        "package",
+        "package-root",
+        "package-parent",
+        "contracts-source",
+        "contract-data",
+        "runtime-metadata",
+        "containerfile",
+    ],
+)
+def test_image_context_rejects_symlinked_sources_before_staging(
+    tmp_path, monkeypatch, source
+):
+    helper = _load("prepare_image")
+    root = tmp_path / "checkout"
+    example = root / "examples/existing-step"
+    contracts = root / "sdks/python/packages/contracts"
+    (example / "src/existing_step").mkdir(parents=True)
+    (contracts / "src/syntara_plugin").mkdir(parents=True)
+    (root / "contracts").mkdir()
+    for directory in ("schemas", "fixtures", "proto"):
+        (root / "contracts" / directory).mkdir()
+    (example / "pyproject.toml").write_text("[project]\n")
+    (contracts / "pyproject.toml").write_text("[project]\n")
+    (example / "runtime.json").write_text("{}")
+    (example / "Containerfile").write_text("FROM scratch\n")
+    target = tmp_path / "runner-secret"
+    target.write_text("must not be staged")
+    if source == "package":
+        (example / "src/existing_step/leak.py").symlink_to(target)
+    elif source == "package-root":
+        (example / "src/existing_step").rmdir()
+        (example / "src/existing_step").symlink_to(target)
+    elif source == "package-parent":
+        external = tmp_path / "external"
+        (external / "existing_step").mkdir(parents=True)
+        (external / "existing_step/leak.py").write_text("must not be staged")
+        (example / "src/existing_step").rmdir()
+        (example / "src").rmdir()
+        (example / "src").symlink_to(external, target_is_directory=True)
+    elif source == "contracts-source":
+        (contracts / "src/syntara_plugin").rmdir()
+        (contracts / "src/syntara_plugin").symlink_to(target)
+    elif source == "contract-data":
+        (root / "contracts/fixtures/leak.json").symlink_to(target)
+    elif source == "runtime-metadata":
+        (example / "runtime.json").unlink()
+        (example / "runtime.json").symlink_to(target)
+    else:
+        (example / "Containerfile").unlink()
+        (example / "Containerfile").symlink_to(target)
+    monkeypatch.setattr(helper, "ROOT", root)
+    monkeypatch.setattr(helper, "EXAMPLE", example)
+    monkeypatch.setattr(helper, "CONTRACTS", contracts)
+    commands = []
+    monkeypatch.setattr(
+        helper.subprocess, "run", lambda command, **kwargs: commands.append(command)
+    )
+    context = tmp_path / "context"
+
+    with pytest.raises(ValueError, match="symlink"):
+        helper.prepare(context)
+
+    assert commands == []
+    assert not context.exists()
+
+
+@pytest.mark.parametrize(
     "content",
     [
         "<testsuite/>",
@@ -92,6 +161,43 @@ def test_runner_rejects_dirty_checkout_before_running_any_other_command(tmp_path
     result, calls = _run_preflight(tmp_path, dirty=True, context="kind-integration-test")
     assert result.returncode != 0
     assert "clean" in result.stderr
+    assert "kubectl" not in calls
+    assert "uv" not in calls
+
+
+def test_runner_requires_full_execution_plane_revision(tmp_path):
+    result, calls = _run_preflight(
+        tmp_path,
+        dirty=False,
+        context="kind-integration-test",
+        revision="main",
+    )
+    assert result.returncode != 0
+    assert "full 40-character commit SHA" in result.stderr
+    assert calls == ""
+
+
+def test_runner_requires_execution_plane_revision(tmp_path):
+    result, calls = _run_preflight(
+        tmp_path,
+        dirty=False,
+        context="kind-integration-test",
+        revision=None,
+    )
+    assert result.returncode != 0
+    assert "Set EP_REVISION" in result.stderr
+    assert calls == ""
+
+
+def test_runner_rejects_execution_plane_checkout_at_different_revision(tmp_path):
+    result, calls = _run_preflight(
+        tmp_path,
+        dirty=False,
+        context="kind-integration-test",
+        revision="b" * 40,
+    )
+    assert result.returncode != 0
+    assert "EP_PATH must be at" in result.stderr
     assert "kubectl" not in calls
     assert "uv" not in calls
 
@@ -171,7 +277,7 @@ def test_egress_firewall_blocks_new_pod_connections(tmp_path):
     assert commands.count("nc -z -w 3 10.244.0.8 80") == 2
 
 
-def _run_preflight(tmp_path, *, dirty, context, after_context=None):
+def _run_preflight(tmp_path, *, dirty, context, after_context=None, revision="a" * 40):
     import os
     import subprocess
 
@@ -181,7 +287,7 @@ def _run_preflight(tmp_path, *, dirty, context, after_context=None):
     ep.mkdir()
     calls = tmp_path / "calls"
     scripts = {
-        "git": 'if [[ "$*" == *"rev-parse HEAD"* ]]; then echo 67bea4e48dcb15063fcdce1b98b7bd7d443da961; else [[ "$DIRTY" != 1 ]] || echo " M suspect.py"; fi',
+        "git": 'if [[ "$*" == *"rev-parse HEAD"* ]]; then echo "$ACTUAL_REVISION"; else [[ "$DIRTY" != 1 ]] || echo " M suspect.py"; fi',
         "kubectl": 'echo "kubectl $*" >> "$CALLS"; if [[ "$*" == "config current-context" ]]; then if [[ -e "$STATE" ]]; then echo "$AFTER_CONTEXT"; else touch "$STATE"; echo "$CONTEXT"; fi; fi',
         "uv": 'echo uv >> "$CALLS"; exit 1',
     }
@@ -192,6 +298,7 @@ def _run_preflight(tmp_path, *, dirty, context, after_context=None):
     env = os.environ | {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "EP_PATH": str(ep),
+        "ACTUAL_REVISION": "a" * 40,
         "EP_TEST_DATABASE_URL": "postgresql://example",
         "EP_COMPAT_LOG_DIR": str(tmp_path / "logs"),
         "DIRTY": "1" if dirty else "0",
@@ -200,6 +307,9 @@ def _run_preflight(tmp_path, *, dirty, context, after_context=None):
         "CALLS": str(calls),
         "STATE": str(tmp_path / "state"),
     }
+    env.pop("EP_REVISION", None)
+    if revision is not None:
+        env["EP_REVISION"] = revision
     result = subprocess.run(
         ["bash", str(Path(__file__).with_name("run_compat.sh"))],
         env=env,
@@ -237,7 +347,7 @@ def _run_with_fake_secrets(tmp_path, *, failure, preexisting=False):
         (ep / ".secrets/existing").write_text("keep")
     secret_path = tmp_path / "key-path"
     scripts = {
-        "git": 'if [[ "$*" == *"rev-parse HEAD"* ]]; then echo 67bea4e48dcb15063fcdce1b98b7bd7d443da961; fi',
+        "git": 'if [[ "$*" == *"rev-parse HEAD"* ]]; then echo "$EP_REVISION"; fi',
         "kubectl": (
             'if [[ "$*" == "config current-context" ]]; then echo kind-integration-test; exit; fi\n'
             'case "$*" in\n'
@@ -272,6 +382,7 @@ def _run_with_fake_secrets(tmp_path, *, failure, preexisting=False):
     env = os.environ | {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "EP_PATH": str(ep),
+        "EP_REVISION": "a" * 40,
         "EP_TEST_DATABASE_URL": "postgresql://example",
         "EP_COMPAT_LOG_DIR": str(tmp_path / "logs"),
         "CONTAINER_ENGINE": "engine",

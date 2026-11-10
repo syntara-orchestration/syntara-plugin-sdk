@@ -31,8 +31,30 @@ def write_project(
     )
 
 
+def _reject_symlinked_sources() -> None:
+    """Reject symlinks in every checkout path copied into the image context."""
+    sources = [
+        CONTRACTS / "src" / "syntara_plugin",
+        EXAMPLE / "src" / "existing_step",
+        *(ROOT / "contracts" / directory for directory in ("schemas", "fixtures", "proto")),
+        EXAMPLE / "runtime.json",
+        EXAMPLE / "Containerfile",
+    ]
+    for source in sources:
+        for candidate in (source, *source.parents):
+            if candidate.is_symlink():
+                raise ValueError(f"Staged source contains a symlink: {candidate}")
+            if candidate == ROOT:
+                break
+        if source.is_dir():
+            for nested in source.rglob("*"):
+                if nested.is_symlink():
+                    raise ValueError(f"Staged source contains a symlink: {nested}")
+
+
 def prepare(context: Path) -> dict[str, object]:
     """Stage source trees, generate the registration and build both wheels."""
+    _reject_symlinked_sources()
     context.mkdir(parents=True, exist_ok=False)
     wheels = context / "wheels"
     wheels.mkdir()

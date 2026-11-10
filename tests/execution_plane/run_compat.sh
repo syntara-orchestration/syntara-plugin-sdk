@@ -5,13 +5,14 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 ep="${EP_PATH:?Set EP_PATH to the pinned Execution Plane checkout}"
 ep="$(cd "$ep" && pwd)"
+revision="${EP_REVISION:?Set EP_REVISION to the full Execution Plane commit SHA}"
+[[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'EP_REVISION must be a full 40-character commit SHA' >&2; exit 1; }
 engine="${CONTAINER_ENGINE:-docker}"
 cluster="${EP_KIND_CLUSTER_NAME:-integration-test}"
 node="${cluster}-control-plane"
 registry="${EP_REGISTRY_NAME:-sdk-compat-registry}"
 port="${EP_REGISTRY_PORT:-5001}"
 logs="${EP_COMPAT_LOG_DIR:-$root/execution-plane-compat-logs}"
-revision=67bea4e48dcb15063fcdce1b98b7bd7d443da961
 [[ "$(git -C "$ep" rev-parse HEAD)" == "$revision" ]] || { echo "EP_PATH must be at $revision" >&2; exit 1; }
 checkout_status="$(git -C "$ep" status --porcelain=v1 --untracked-files=all --ignored)"
 [[ -z "$checkout_status" ]] || { echo 'EP_PATH must be a clean checkout, including ignored files' >&2; exit 1; }
