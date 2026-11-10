@@ -1,4 +1,4 @@
-.PHONY: install test test-examples test-integration test-step-types-helpers test-step-types lint check generate-container-protocol
+.PHONY: install test test-examples test-integration test-step-types-helpers test-step-types test-execution-plane-helpers test-execution-plane lint check generate-container-protocol
 
 install:
 	uv sync --locked --all-groups
@@ -19,6 +19,14 @@ test-step-types-helpers:
 
 test-step-types:
 	bash tests/step_types/run_local.sh
+
+test-execution-plane-helpers:
+	uv run --no-sync pytest tests/execution_plane/test_helpers.py -q
+	uv run --no-sync ruff check tests/execution_plane
+	for script in tests/execution_plane/*.sh; do bash -n "$$script" || exit; done
+
+test-execution-plane:
+	bash tests/execution_plane/run_compat.sh
 
 lint:
 	uv run --no-sync pre-commit run ruff --all-files
