@@ -50,16 +50,18 @@ accepts a `credential_handler` per execution or stream, so the host can bind
 each resolver to its own attempt. The channel must authenticate both peers
 and protect confidentiality (mTLS in production).
 
-Credential handlers must apply their own finite network and operation
-timeouts within the invocation deadline. The synchronous client runs at most
-eight handlers at once and queues at most 32 more across the process. Python
-cannot stop a handler that ignores its timeout after an invocation ends; it
-keeps its worker until it returns, so requests beyond the bounded capacity
-receive an unavailable response. The synchronous runtime admits at most 16
+Each credential handler receives a `CredentialRequestContext` with the
+declared name, invocation ID, cancellation signal, and monotonic deadline.
+Use `remaining_seconds` to bound network and operation timeouts, and observe
+`cancellation` while waiting on work. `ContainerClient` invokes the handler on
+the thread consuming the Execute stream and does not own a resolver executor
+or queue. The Execution Plane or local runner owns resolver concurrency and
+queue limits. Python cannot stop handler code that ignores its cancellation
+signal or deadline. The synchronous runtime separately admits at most 16
 active invocation worker pairs across the process. Call the synchronous
 `ContainerRuntimeService.shutdown()` during server teardown; it signals
 cancellation and waits up to one second for owned workers. Arbitrary blocked
-Python handler code cannot be preempted.
+Python step handlers cannot be preempted.
 
 The async `AsyncContainerRuntimeService` used by the image runtime owns a
 per-service pool of eight daemon step workers by default. A running handler

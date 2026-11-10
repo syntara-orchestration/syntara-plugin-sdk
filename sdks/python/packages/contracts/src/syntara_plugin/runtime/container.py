@@ -15,7 +15,7 @@ import signal
 from _thread import LockType
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from queue import Full, Queue
+from queue import Queue
 from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
 from time import monotonic
 from typing import Any, Literal, NoReturn
@@ -45,8 +45,6 @@ _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
 _MAX_STATUS_CODE = 4_294_967_295
 _MAX_SYNC_INVOCATIONS = 16
-_CREDENTIAL_RESOLVER_WORKERS = 8
-_CREDENTIAL_RESOLVER_QUEUE_CAPACITY = 32
 _SYNC_RUNTIME_WORKER_SLOTS = BoundedSemaphore(_MAX_SYNC_INVOCATIONS)
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
 INCOMPLETE_STEP_MESSAGE = "The step did not complete."
@@ -86,6 +84,36 @@ class ContainerInvocation:
         """Whether the Execution Plane has requested cooperative cancellation."""
 
         return self.cancellation.is_set()
+
+
+@dataclass(frozen=True)
+class CredentialRequestContext:
+    """Invocation-scoped information supplied to one host credential resolver.
+
+    ``deadline`` is an absolute timestamp from :func:`time.monotonic`. Resolver
+    code should use ``remaining_seconds`` for finite downstream timeouts and
+    check ``cancellation`` while waiting on cancellable work.
+    """
+
+    invocation_id: str
+    name: str
+    cancellation: Event = field(compare=False, repr=False)
+    deadline: float
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether the invocation ended or its deadline has elapsed."""
+
+        return self.cancellation.is_set() or self.remaining_seconds <= 0
+
+    @property
+    def remaining_seconds(self) -> float:
+        """Seconds remaining before the invocation deadline, clamped at zero."""
+
+        return max(0.0, self.deadline - monotonic())
+
+
+CredentialResolver = Callable[[CredentialRequestContext], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -758,11 +786,15 @@ class _CredentialRequestBridge:
 
     def __init__(
         self, invocation_id: str,
-        credential_handler: Callable[[str], Mapping[str, Any]] | None,
+        credential_handler: CredentialResolver | None,
         start: container_pb2.ExecuteRequest,
+        cancellation: Event,
+        deadline: float,
     ) -> None:
         self._invocation_id = invocation_id
         self._credential_handler = credential_handler
+        self._cancellation = cancellation
+        self._deadline = deadline
         self._outgoing: Queue[container_pb2.ExecuteClientMessage | None] = Queue()
         self._outgoing.put(container_pb2.ExecuteClientMessage(start=start))
         self._active = Event()
@@ -772,11 +804,28 @@ class _CredentialRequestBridge:
         self._lock = Lock()
 
     def requests(self) -> Iterator[container_pb2.ExecuteClientMessage]:
-        while self._active.is_set():
+        while True:
             message = self._outgoing.get()
             if message is None:
                 return
-            yield message
+            if message.WhichOneof("message") == "credential_response":
+                # Serialize the credential handoff with close(): once close
+                # returns, no response can still be crossing this boundary.
+                with self._lock:
+                    if not self._active.is_set():
+                        return
+                    yield message
+            else:
+                if not self._active.is_set():
+                    return
+                yield message
+
+    @property
+    def has_pending(self) -> bool:
+        """Whether a credential resolver is still running for this invocation."""
+
+        with self._lock:
+            return bool(self._pending)
 
     def accept(self, request: container_pb2.CredentialRequest) -> None:
         if (request.invocation_id != self._invocation_id
@@ -789,114 +838,53 @@ class _CredentialRequestBridge:
                 raise _protocol_error()
             self._pending.add(request.request_id)
             self._seen.add(request.request_id)
-        if not _CREDENTIAL_RESOLVER_POOL.submit(self, request):
-            self._respond_unavailable(request)
+        self._respond(request)
 
     def _respond(self, request: container_pb2.CredentialRequest) -> None:
         response = container_pb2.CredentialResponse(
             invocation_id=self._invocation_id, request_id=request.request_id
+        )
+        context = CredentialRequestContext(
+            invocation_id=self._invocation_id,
+            name=request.name,
+            cancellation=self._cancellation,
+            deadline=self._deadline,
         )
         with self._lock:
             credential_handler = (
                 self._credential_handler if self._active.is_set() else None
             )
         try:
-            if credential_handler is None:
+            if credential_handler is None or context.cancelled:
                 raise CredentialAccessError("missing")
-            value = credential_handler(request.name)
+            value = credential_handler(context)
             response.document_json = _encode_json_object(value, "credential")
         except CredentialAccessError as error:
             response.error = (container_pb2.CREDENTIAL_ERROR_MISSING
                 if error.reason == "missing" else container_pb2.CREDENTIAL_ERROR_UNAVAILABLE)
         except Exception:
             response.error = container_pb2.CREDENTIAL_ERROR_UNAVAILABLE
-        self._complete_response(request, response)
-
-    def _respond_unavailable(self, request: container_pb2.CredentialRequest) -> None:
-        response = container_pb2.CredentialResponse(
-            invocation_id=self._invocation_id,
-            request_id=request.request_id,
-            error=container_pb2.CREDENTIAL_ERROR_UNAVAILABLE,
-        )
-        self._complete_response(request, response)
+        self._complete_response(request, response, context)
 
     def _complete_response(
         self,
         request: container_pb2.CredentialRequest,
         response: container_pb2.CredentialResponse,
+        context: CredentialRequestContext,
     ) -> None:
         with self._lock:
             self._pending.discard(request.request_id)
-            if self._active.is_set():
+            if self._active.is_set() and not context.cancelled:
                 self._outgoing.put(container_pb2.ExecuteClientMessage(credential_response=response))
 
-    def close(self) -> None:
+    def close(self, *, cancelled: bool = False) -> None:
         with self._lock:
             self._active.clear()
             self._pending.clear()
             self._credential_handler = None
             self._outgoing.put(None)
-
-
-@dataclass(frozen=True)
-class _CredentialResolverJob:
-    bridge: _CredentialRequestBridge
-    request: container_pb2.CredentialRequest
-
-
-class _CredentialResolverPool:
-    """Own a fixed process-wide set of daemon workers and a bounded queue."""
-
-    def __init__(self) -> None:
-        self._jobs: Queue[_CredentialResolverJob] = Queue(
-            maxsize=_CREDENTIAL_RESOLVER_QUEUE_CAPACITY
-        )
-        self._start_lock = Lock()
-        self._started = False
-        self._workers: tuple[Thread, ...] = ()
-
-    def submit(
-        self,
-        bridge: _CredentialRequestBridge,
-        request: container_pb2.CredentialRequest,
-    ) -> bool:
-        if not self._start_workers():
-            return False
-        try:
-            self._jobs.put_nowait(_CredentialResolverJob(bridge, request))
-        except Full:
-            return False
-        return True
-
-    def _start_workers(self) -> bool:
-        with self._start_lock:
-            if self._started:
-                return True
-            while len(self._workers) < _CREDENTIAL_RESOLVER_WORKERS:
-                try:
-                    worker = Thread(
-                        target=self._work,
-                        daemon=True,
-                        name=f"syntara-credential-resolver-{len(self._workers)}",
-                    )
-                    worker.start()
-                except Exception:
-                    return False
-                self._workers += (worker,)
-            self._started = True
-            return True
-
-    def _work(self) -> None:
-        while True:
-            job = self._jobs.get()
-            try:
-                if job.bridge._active.is_set():
-                    job.bridge._respond(job.request)
-            finally:
-                self._jobs.task_done()
-
-
-_CREDENTIAL_RESOLVER_POOL = _CredentialResolverPool()
+            if cancelled:
+                self._cancellation.set()
 
 
 def _execution_event_from_stream(
@@ -924,14 +912,47 @@ class ContainerClient:
 
     Each invocation can supply a credential handler that resolves a declared
     recipe ID within that invocation's authority and returns a JSON object.
-    Resolver handlers must enforce finite operation and network timeouts. The
-    process-wide resolver pool has eight workers and a bounded queue; Python
-    cannot preempt a handler that ignores its timeout after an invocation ends.
+    The handler receives a :class:`CredentialRequestContext` with the request
+    name, cancellation signal, and invocation deadline. It should use the
+    remaining time to bound its operation and network calls. The client invokes
+    the handler on the caller's stream-consumption thread; caller-owned runners
+    should apply their own executor and queue limits.
     """
 
     def __init__(self, channel: grpc.Channel) -> None:
         self._channel = channel
         self._stub = container_pb2_grpc.ContainerServiceStub(channel)
+        self._active_bridges: dict[str, set[_CredentialRequestBridge]] = {}
+        self._active_bridges_lock = Lock()
+
+    def _ensure_bridge_state(self) -> None:
+        """Initialize bridge tracking for lightweight test doubles too."""
+
+        if not hasattr(self, "_active_bridges_lock"):
+            self._active_bridges = {}
+            self._active_bridges_lock = Lock()
+
+    def _register_bridge(self, bridge: _CredentialRequestBridge) -> None:
+        self._ensure_bridge_state()
+        with self._active_bridges_lock:
+            self._active_bridges.setdefault(bridge._invocation_id, set()).add(bridge)
+
+    def _unregister_bridge(self, bridge: _CredentialRequestBridge) -> None:
+        self._ensure_bridge_state()
+        with self._active_bridges_lock:
+            bridges = self._active_bridges.get(bridge._invocation_id)
+            if bridges is None:
+                return
+            bridges.discard(bridge)
+            if not bridges:
+                self._active_bridges.pop(bridge._invocation_id, None)
+
+    def _close_local_bridges(self, invocation_id: str) -> None:
+        self._ensure_bridge_state()
+        with self._active_bridges_lock:
+            bridges = tuple(self._active_bridges.get(invocation_id, ()))
+        for bridge in bridges:
+            bridge.close(cancelled=True)
 
     def health(self, *, timeout_seconds: float | None = None) -> tuple[str, ...]:
         """Check the ABI identifier and return the advertised step type identities.
@@ -958,7 +979,7 @@ class ContainerClient:
 
     def execute(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,
-        credential_handler: Callable[[str], Mapping[str, Any]] | None = None,
+        credential_handler: CredentialResolver | None = None,
     ) -> ContainerResult:
         """Invoke a step type and return its sole terminal result."""
 
@@ -982,7 +1003,7 @@ class ContainerClient:
         error_schema: Mapping[str, Any] | None = None,
         timeout_seconds: float | None = None,
         resolve_object_reference: Callable[[str], Mapping[str, Any]] | None = None,
-        credential_handler: Callable[[str], Mapping[str, Any]] | None = None,
+        credential_handler: CredentialResolver | None = None,
     ) -> StandardOutputWrapper:
         """Invoke a step type and reconstruct its SDK-owned output wrapper.
 
@@ -1006,18 +1027,28 @@ class ContainerClient:
 
     def stream(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,
-        credential_handler: Callable[[str], Mapping[str, Any]] | None = None,
+        credential_handler: CredentialResolver | None = None,
     ) -> Iterator[ContainerProgress | ContainerResult]:
         """Invoke a step type and yield progress followed by exactly one result."""
 
         request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)
-        bridge = _CredentialRequestBridge(invocation.invocation_id, credential_handler, request)
+        bridge = _CredentialRequestBridge(
+            invocation.invocation_id,
+            credential_handler,
+            request,
+            invocation.cancellation,
+            monotonic() + deadline,
+        )
+        self._register_bridge(bridge)
         saw_terminal = False
         rpc_failure: ContainerRemoteError | None = None
         call = None
         try:
             call = self._stub.Execute(bridge.requests(), timeout=deadline)
+            add_done_callback = getattr(call, "add_callback", None)
+            if callable(add_done_callback):
+                add_done_callback(lambda: bridge.close(cancelled=bridge.has_pending))
             for message in call:
                 kind = message.WhichOneof("message")
                 if kind == "credential_request":
@@ -1036,7 +1067,8 @@ class ContainerClient:
         except grpc.RpcError as error:
             rpc_failure = _rpc_error(error)
         finally:
-            bridge.close()
+            bridge.close(cancelled=not saw_terminal or rpc_failure is not None)
+            self._unregister_bridge(bridge)
             if call is not None:
                 call.cancel()
         if rpc_failure is not None:
@@ -1059,6 +1091,8 @@ class ContainerClient:
             rpc_failure = _rpc_error(error)
         if rpc_failure is not None:
             raise rpc_failure
+        if response.accepted:
+            self._close_local_bridges(invocation_id)
         return response.accepted
 
 

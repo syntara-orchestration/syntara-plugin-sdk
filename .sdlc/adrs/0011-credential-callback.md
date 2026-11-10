@@ -30,17 +30,19 @@ bounded output scanner can reject leaks. An access failure never includes
 provider details. Hosts must not log sensitive messages. The callback grants
 access only for the invocation; it is not a sandbox for arbitrary Python code.
 
-The synchronous client owns a process-wide pool of eight daemon resolver
-workers and a queue of 32 requests. A host-supplied resolver must enforce
-finite operation and network timeouts that fit within the invocation deadline.
-Python cannot preempt arbitrary resolver code after a timeout or disconnect; a
-resolver that ignores its own timeout retains one bounded worker until it
-returns. When the worker queue is full, the client responds with an unavailable
-credential error. The synchronous runtime owns at most 16 reader/step worker
-pairs across the process. It rejects additional invocations with a retryable
-`RATE_LIMITED` failure and retains a capacity slot while either worker remains
-blocked. Shutdown signals cancellation and waits briefly for these owned
-workers, but does not attempt unsafe thread termination.
+The synchronous client invokes the host-supplied resolver on the thread
+consuming the Execute stream. Each resolver receives its declared name,
+invocation ID, cancellation signal, and monotonic deadline through a
+`CredentialRequestContext`; it should use the remaining time to bound network
+and operation timeouts and observe cancellation while waiting. The client
+does not own a resolver executor or queue. The Execution Plane or local runner
+owns resolver concurrency and queue limits. Python cannot preempt arbitrary
+resolver code that ignores cancellation or its deadline. The synchronous
+runtime owns at most 16 reader/step worker pairs across the process. It rejects
+additional invocations with a retryable `RATE_LIMITED` failure and retains a
+capacity slot while either worker remains blocked. Shutdown signals
+cancellation and waits briefly for these owned workers, but does not attempt
+unsafe thread termination.
 
 The async `AsyncContainerRuntimeService` used by the image runtime owns a
 per-service pool of eight daemon step workers by default. A running handler
@@ -66,3 +68,6 @@ identifier. Earlier `v1alpha1` peers are incompatible; the Health ABI value
 does not distinguish them. Old images must be rebuilt and the Execution Plane
 must implement the matching stream and per-attempt name-to-credential mapping.
 The SDK does not call the credential authority or perform that mapping itself.
+Callers using `ContainerClient` provide a context-aware resolver and own its
+concurrency policy. The Execution Plane and local runner should apply their
+invocation cancellation and deadline to downstream resolver work.

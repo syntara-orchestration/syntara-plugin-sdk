@@ -39,6 +39,8 @@ from syntara_plugin.runtime.container import (
     ContainerRemoteError,
     ContainerResult,
     ContainerStepHandler,
+    CredentialRequestContext,
+    CredentialResolver,
     StepRegistry,
     add_container_runtime_service,
 )
@@ -1407,10 +1409,12 @@ class _ChannelExecution:
 def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     documents = {credential.name: credential.document for credential in execution.credentials}
 
-    def read_credential(name: str) -> Mapping[str, Any]:
-        if name not in documents:
+    def read_credential(context: CredentialRequestContext) -> Mapping[str, Any]:
+        if context.cancelled:
+            raise CredentialAccessError("expired")
+        if context.name not in documents:
             raise CredentialAccessError("missing")
-        return documents[name]
+        return documents[context.name]
 
     client = ContainerClient(execution.channel)
     target = execution.target
@@ -1652,7 +1656,7 @@ def run_secret_scrubber(
 
 def _consume(
     client: ContainerClient, invocation: ContainerInvocation, on_progress: ProgressCallback | None,
-    credential_handler: Callable[[str], Mapping[str, Any]] | None = None,
+    credential_handler: CredentialResolver | None = None,
 ) -> ContainerResult | _WorkloadFailure:
     """Consume the event stream, returning the terminal outcome.
 

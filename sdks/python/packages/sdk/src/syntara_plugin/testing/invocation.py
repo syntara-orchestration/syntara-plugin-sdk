@@ -15,6 +15,7 @@ import grpc
 from syntara_plugin.runtime import (
     BaseStep,
     ContainerInvocationError,
+    CredentialAccessError,
     ErrorResult,
     ExecutionContext,
     FailureCode,
@@ -31,6 +32,7 @@ from syntara_plugin.runtime.container import (
     ContainerRemoteError,
     ContainerResult,
     ContainerStepHandler,
+    CredentialRequestContext,
     StepRegistry,
     add_container_runtime_service,
 )
@@ -359,6 +361,12 @@ def invoke_step_in_container(
         scoped_provider = context._provider.restrict(
             frozenset(binding.descriptor.credential_names), lambda document: None
         )
+
+    def read_credential(request: CredentialRequestContext) -> Mapping[str, Any]:
+        assert scoped_provider is not None
+        if request.cancelled:
+            raise CredentialAccessError("expired")
+        return scoped_provider.read(request.name)
     bounded_handler = BoundedStepHandler(
         container_step_for_binding(binding), timeout_seconds
     )
@@ -387,7 +395,8 @@ def invoke_step_in_container(
         with _counting_run(binding.step) as spy:
             try:
                 result = client.execute(
-                    invocation, credential_handler=scoped_provider.read if scoped_provider else None
+                    invocation,
+                    credential_handler=read_credential if scoped_provider is not None else None,
                 )
             except ContainerRemoteError as remote_error:
                 return _raised_outcome(spy, remote_error, "container")
