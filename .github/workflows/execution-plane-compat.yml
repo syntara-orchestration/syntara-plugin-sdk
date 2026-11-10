@@ -148,7 +148,7 @@ jobs:
         run: |
           kubectl apply -f tests/execution_plane/http-fixture.yaml
           kubectl rollout status deployment/compat-http --timeout=120s
-          kubectl exec compat-network-probe -- wget -qO- -T 3 http://100.64.0.100/result.json
+          kubectl exec compat-network-probe -- wget -qO- -T 3 http://100.64.0.100/result.json # NOSONAR: intentional plaintext request to the isolated in-cluster HTTP fixture.
           kubectl delete pod compat-network-probe --wait=false
       - name: Export cluster credentials
         run: |
