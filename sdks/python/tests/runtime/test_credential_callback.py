@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from queue import Queue
+from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Any
 
 import grpc
 import pytest
+import syntara_plugin.runtime.container as runtime_container
 from syntara_plugin.runtime import (
     ContainerClient,
     ContainerInvocation,
@@ -180,6 +181,46 @@ def test_cancel_revokes_pending_read_and_discards_late_host_response() -> None:
         release.set()
         channel.close()
         server.stop(0).wait()
+
+
+def test_closed_credential_bridge_discards_late_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = Event()
+    release = Event()
+    workers: list[Thread] = []
+
+    def read(name: str) -> dict[str, str]:
+        assert name == _NAME
+        started.set()
+        assert release.wait(1)
+        return {"token": _SECRET}
+
+    def track_worker(*args: Any, **kwargs: Any) -> Thread:
+        worker = Thread(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(runtime_container, "Thread", track_worker)
+    bridge = runtime_container._CredentialRequestBridge(
+        "invocation-1",
+        read,
+        container_pb2.ExecuteRequest(invocation_id="invocation-1"),
+    )
+    requests = bridge.requests()
+    assert next(requests).WhichOneof("message") == "start"
+    bridge.accept(container_pb2.CredentialRequest(
+        invocation_id="invocation-1", request_id="request-1", name=_NAME,
+    ))
+    assert started.wait(1)
+    assert len(workers) == 1
+
+    bridge.close()
+    release.set()
+    workers[0].join(1)
+    assert not workers[0].is_alive()
+    assert list(requests) == []
+    assert bridge._outgoing.get_nowait() is None
+    with pytest.raises(Empty):
+        bridge._outgoing.get_nowait()
 
 
 @pytest.mark.parametrize("payload", [b'{"key":1,"key":2}', b'{"key":NaN}', b"[]", b"x" * 1_048_577])
