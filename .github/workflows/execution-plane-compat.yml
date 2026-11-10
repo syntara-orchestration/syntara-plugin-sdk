@@ -1,0 +1,167 @@
+name: Execution Plane compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_image:
+        description: Public Quay Python step image, pinned by sha256 digest
+        required: true
+        type: string
+      bash_image:
+        description: Public Quay Bash step image, pinned by sha256 digest
+        required: true
+        type: string
+      http_image:
+        description: Public Quay HTTP step image, pinned by sha256 digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      EP_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/execution_plane
+      EP_TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/execution_plane
+      EP_CREDENTIAL_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      EP_KIND_CREDENTIAL_REF: 3679517c-ba49-5f27-868e-37e42d1184c1
+      EP_API_URL: http://127.0.0.1:8001
+      EP_DEFAULT_WORKLOAD_NAMESPACE: execution-plane
+      EP_AO_JWT_PUBLIC_KEY_PATH: .secrets/ao-jwt-public.pem
+      EP_AO_JWT_ISSUER: http://localhost:8000
+      EP_COMPAT_PYTHON_IMAGE: ${{ inputs.python_image }}
+      EP_COMPAT_BASH_IMAGE: ${{ inputs.bash_image }}
+      EP_COMPAT_HTTP_IMAGE: ${{ inputs.http_image }}
+      UV_NO_SYNC: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate image references
+        run: python tests/execution_plane/validate_images.py
+      - name: Check out Execution Plane
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: syntara-orchestration/syntara-execution-plane
+          ref: 67bea4e48dcb15063fcdce1b98b7bd7d443da961
+          path: execution-plane
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          version: "0.12.3"
+      - name: Install Execution Plane with checkout contracts
+        working-directory: execution-plane
+        run: |
+          uv sync --locked --all-groups
+          uv pip install --python .venv/bin/python --no-deps -e ../sdks/python/packages/contracts
+          uv run --no-sync python -c 'from pathlib import Path; import syntara_plugin.runtime; assert Path(syntara_plugin.runtime.__file__).resolve().is_relative_to(Path("../sdks/python/packages/contracts").resolve())'
+      - name: Bootstrap database and secrets
+        working-directory: execution-plane
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres postgres \
+            -c "CREATE ROLE execution_plane_runtime LOGIN" \
+            -c "CREATE DATABASE execution_plane OWNER postgres"
+          DATABASE_URL="$EP_DATABASE_URL" uv run --no-sync alembic -c alembic.ini upgrade head
+          make secrets
+      - name: Create kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: integration-test
+          config: tests/execution_plane/kind.yaml
+      - name: Probe node access before restricting egress
+        run: |
+          kubectl apply -f tests/execution_plane/network-probe.yaml
+          kubectl wait --for=condition=Ready pod/compat-network-probe --timeout=120s
+          peer_index="$(kubectl exec compat-network-probe -- cat /sys/class/net/eth0/iflink | tr -d '\r')"
+          docker exec integration-test-control-plane ip -o link show | grep -Eq "^${peer_index}: veth[^:]*:"
+          node_ip="$(kubectl get node integration-test-control-plane -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
+          api_ip="$(kubectl get service kubernetes -o jsonpath='{.spec.clusterIP}')"
+          kubectl exec compat-network-probe -- nc -z -w 3 "$node_ip" 6443
+          kubectl exec compat-network-probe -- nc -z -w 3 "$api_ip" 443
+      - name: Restrict pod egress
+        run: |
+          # Kind's ptp CNI attaches pods through veth interfaces. Block traffic
+          # to node-local sockets in INPUT as well as forwarded external traffic.
+          # The pod CIDR rule also covers traffic if the interface naming changes.
+          docker exec integration-test-control-plane iptables -N COMPAT-EGRESS
+          docker exec integration-test-control-plane iptables -A COMPAT-EGRESS -d 10.244.0.0/16 -j RETURN
+          docker exec integration-test-control-plane iptables -A COMPAT-EGRESS -j REJECT
+          docker exec integration-test-control-plane iptables -I FORWARD 1 -s 10.244.0.0/16 -j COMPAT-EGRESS
+          docker exec integration-test-control-plane iptables -I FORWARD 1 -i veth+ -j COMPAT-EGRESS
+          docker exec integration-test-control-plane iptables -I INPUT 1 -s 10.244.0.0/16 -j REJECT
+          docker exec integration-test-control-plane iptables -I INPUT 1 -i veth+ -j REJECT
+          # IPv4-only Kind can still give pod interfaces IPv6 link-local addresses.
+          docker exec integration-test-control-plane ip6tables -I INPUT 1 -i veth+ -j REJECT
+          docker exec integration-test-control-plane ip6tables -I FORWARD 1 -i veth+ -j REJECT
+          # Let node-initiated connections, such as kubelet probes, receive replies.
+          # Pod-initiated connections are ORIGINAL direction and still rejected.
+          docker exec integration-test-control-plane iptables -I INPUT 1 -s 10.244.0.0/16 -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
+          docker exec integration-test-control-plane iptables -I INPUT 1 -i veth+ -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
+          docker exec integration-test-control-plane ip6tables -I INPUT 1 -i veth+ -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
+          node_ip="$(kubectl get node integration-test-control-plane -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
+          api_ip="$(kubectl get service kubernetes -o jsonpath='{.spec.clusterIP}')"
+          if kubectl exec compat-network-probe -- nc -z -w 3 "$node_ip" 6443; then
+            echo "Pod unexpectedly reached the node API endpoint" >&2
+            exit 1
+          fi
+          if kubectl exec compat-network-probe -- nc -z -w 3 "$api_ip" 443; then
+            echo "Pod unexpectedly reached the Kubernetes API service" >&2
+            exit 1
+          fi
+      - name: Start API and register cluster
+        working-directory: execution-plane
+        run: |
+          mkdir -p integration-test-logs
+          uv run --no-sync execution-plane-api > integration-test-logs/api.log 2>&1 &
+          uv run --no-sync python -m tools.deploy_kind_execution_target \
+            --cluster-name integration-test --credential-ref "$EP_KIND_CREDENTIAL_REF" --wait-for-api 60
+          kubectl patch serviceaccount default -n execution-plane --type=merge \
+            -p '{"automountServiceAccountToken":false}'
+      - name: Start fixture
+        run: |
+          kubectl apply -f tests/execution_plane/http-fixture.yaml
+          kubectl rollout status deployment/compat-http --timeout=120s
+          kubectl exec compat-network-probe -- wget -qO- -T 3 http://100.64.0.100/result.json
+          kubectl delete pod compat-network-probe --wait=false
+      - name: Export cluster credentials
+        run: |
+          endpoint="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+          token="$(kubectl create token syntara-dispatcher -n execution-plane --duration=2h)"
+          echo "::add-mask::${token}"
+          ca_cert_pem="$(kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)"
+          {
+            echo "EP_IT_K8S_ENDPOINT=${endpoint}"
+            echo "EP_IT_K8S_TOKEN=${token}"
+            echo "EP_IT_K8S_NAMESPACE=execution-plane"
+            printf 'EP_IT_K8S_CA_CERT<<EOF\n%s\nEOF\n' "$ca_cert_pem"
+          } >> "$GITHUB_ENV"
+      - name: Dispatch step images
+        run: |
+          cp tests/execution_plane/test_compat.py execution-plane/tests/integration/kind/test_sdk_compat.py
+          cd execution-plane
+          uv run --no-sync pytest tests/integration/kind/test_sdk_compat.py -v --timeout=600 --junitxml=compat-results.xml
+          uv run --no-sync python ../tests/execution_plane/check_results.py compat-results.xml
+      - name: Upload API log on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: execution-plane-compat-logs
+          path: execution-plane/integration-test-logs/
+          if-no-files-found: ignore
+          retention-days: 7
