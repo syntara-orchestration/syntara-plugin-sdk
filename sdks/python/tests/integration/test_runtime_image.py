@@ -13,6 +13,7 @@ from pathlib import Path
 
 import grpc
 import pytest
+import yaml
 from syntara_plugin.runtime import ContainerClient, ContainerInvocation
 
 pytestmark = [
@@ -200,7 +201,7 @@ def _build_example_wheel(output: Path) -> None:
     )
 
 
-def _write_sample_step(context: Path) -> None:
+def _write_sample_step(context: Path, *, credential_workspace: Path | None = None) -> None:
     package = context / "sample-step"
     source = package / "src" / "syntara_sample_step"
     source.mkdir(parents=True)
@@ -222,8 +223,8 @@ packages = ["src/syntara_sample_step"]
     (source / "__init__.py").write_text("", encoding="utf-8")
     (source / "runtime.py").write_text(
         """import hashlib
-from pathlib import Path
 
+from syntara_plugin.contracts import canonical_json_bytes
 from pydantic import BaseModel
 from syntara_plugin.runtime import (
     ActionStep,
@@ -232,9 +233,6 @@ from syntara_plugin.runtime import (
     StepBindings,
     StepDescriptor,
 )
-
-CREDENTIAL = Path("/var/run/syntara/secrets/integration.echo.token")
-
 
 class EchoInput(BaseModel):
     message: str
@@ -246,18 +244,7 @@ class EchoOutput(BaseModel):
 
 class EchoStep(ActionStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
-        # The step-side accessor is a later story, so this reads the delivered
-        # file directly. It reports a digest and whether the mount is
-        # writable, never the value: proving delivery must not print a secret.
-        if not CREDENTIAL.exists():
-            return EchoOutput(message=inputs.message)
-        digest = hashlib.sha256(CREDENTIAL.read_bytes()).hexdigest()
-        try:
-            with CREDENTIAL.open("a"):
-                writable = True
-        except OSError:
-            writable = False
-        return EchoOutput(message=f"{inputs.message}|{digest}|writable={writable}")
+        return EchoOutput(message=inputs.message)
 
 
 def create_bindings() -> StepBindings:
@@ -290,6 +277,25 @@ def create_bindings() -> StepBindings:
 """,
         encoding="utf-8",
     )
+    if credential_workspace is not None:
+        runtime = source / "runtime.py"
+        code = runtime.read_text(encoding="utf-8")
+        code = code.replace(
+            "        return EchoOutput(message=inputs.message)",
+            "        document = context.credential('integration.echo.token').read()\n"
+            "        digest = hashlib.sha256(canonical_json_bytes(document)).hexdigest()\n"
+            "        return EchoOutput(message=f'{inputs.message}|{digest}')",
+        )
+        code = code.replace(
+            '            "spec": {\n                "runtime": {',
+            '            "spec": {\n                "integrationType": "integration.echo.connection",\n                "runtime": {',
+        )
+        targets = [
+            yaml.safe_load((credential_workspace / f"steps/{name}/manifest.yaml").read_text())
+            for name in ("connection", "recipe")
+        ]
+        code = code.replace("        {},\n    )", f"        {{}},\n        credential_targets={targets!r},\n    )")
+        runtime.write_text(code, encoding="utf-8")
 
 
 def _build_sample_wheel(context: Path, output: Path) -> None:
@@ -350,7 +356,6 @@ def _invocation(
         workflow_run_id="existing-run",
         step_revision_id=step_revision_id,
         inputs=inputs,
-        credential_file_paths={},
         timeout_seconds=30,
         runtime_context={},
     )
@@ -725,15 +730,10 @@ spec:
     (workspace / "docs/README.md").write_text("# Echo\n", encoding="utf-8")
 
 
-def test_managed_image_mode_delivers_a_credential_as_a_read_only_file(
+def test_managed_image_mode_delivers_a_credential_over_callback(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
-    """The whole chain in a real container: stdin to a read-only ABI mount.
-
-    The Step reads the approved mount path it was given over the ABI and
-    reports a digest of the file, so this proves the value arrived intact,
-    read-only, and without ever being printed.
-    """
+    """A managed image receives a credential over the authenticated callback."""
 
     import hashlib
     from io import StringIO
@@ -741,18 +741,17 @@ def test_managed_image_mode_delivers_a_credential_as_a_read_only_file(
     from syntara_plugin.contracts import canonical_json_bytes
     from syntara_plugin.sdk.cli import main
 
+    image_tag = f"syntara-plugin-credential-it-{uuid.uuid4().hex}"
+    workspace = tmp_path / "ws"
+    _write_credential_workspace(workspace, image_tag)
     context = tmp_path / "image-context"
     wheels = context / "wheels"
     wheels.mkdir(parents=True)
     _build_workspace_wheel("syntara-plugin-contracts", wheels)
-    _write_sample_step(context)
+    _write_sample_step(context, credential_workspace=workspace)
     _build_sample_wheel(context, wheels)
     _write_runtime_config(context)
     _write_managed_containerfile(context)
-    image_tag = f"syntara-plugin-credential-it-{uuid.uuid4().hex}"
-
-    workspace = tmp_path / "ws"
-    _write_credential_workspace(workspace, image_tag)
     _write_registration(context, workspace, image_tag)
     _build_image(context, image_tag)
 
@@ -785,8 +784,8 @@ def test_managed_image_mode_delivers_a_credential_as_a_read_only_file(
 
     assert status == 0
     captured = capsys.readouterr()
-    # The file the Step read holds exactly the document the CLI delivered...
-    assert f"hello credential|{expected}|writable=False" in captured.out
+    # The callback returned exactly the supplied document.
+    assert f"hello credential|{expected}" in captured.out
     # ...the report names the credential without its value...
     assert any(
         line.startswith("Credentials:") and _CREDENTIAL_RECIPE in line

@@ -1,13 +1,13 @@
 [project]
 name = "syntara-plugin-sdk"
-version = "0.1.0a3"
+version = "0.1.0a4"
 description = "Authoring SDK for Syntara plugins, including the local test harness"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
   "PyYAML>=6.0",
-  "syntara-plugin-contracts==0.1.0a3",
+  "syntara-plugin-contracts==0.1.0a4",
 ]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",

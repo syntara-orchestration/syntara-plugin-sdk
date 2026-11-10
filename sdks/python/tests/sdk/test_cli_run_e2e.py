@@ -15,10 +15,12 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
 import grpc
+import pytest
 from syntara_plugin.runtime import (
     ContainerInvocation,
     ContainerInvocationError,
@@ -30,6 +32,38 @@ from syntara_plugin.runtime import (
 from syntara_plugin.runtime.container import ContainerRuntimeService
 from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
 from syntara_plugin.sdk.cli import main
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _runtime_tls(tmp_path_factory: Any) -> None:
+    from syntara_plugin.sdk.container_engine import _generate_tls_material
+
+    global _TLS_MATERIAL
+    _TLS_MATERIAL = _generate_tls_material(tmp_path_factory.mktemp("runtime-tls"))
+
+
+_TLS_MATERIAL: Any = None
+
+
+def _secure_port(server: grpc.Server) -> int:
+    material = _TLS_MATERIAL
+    if material is None:
+        pytest.skip("openssl is required for authenticated runtime tests")
+    credentials = grpc.ssl_server_credentials(
+        [(material.server_key.read_bytes(), material.server_certificate.read_bytes())],
+        root_certificates=material.client_ca.read_bytes(), require_client_auth=True,
+    )
+    return server.add_secure_port("127.0.0.1:0", credentials)
+
+
+def _client_tls_args() -> list[str]:
+    material = _TLS_MATERIAL
+    return [
+        "--tls-ca", str(material.client_ca),
+        "--tls-cert", str(material.client_certificate),
+        "--tls-key", str(material.client_key),
+    ]
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 PYTHON_STEPS = _REPO_ROOT / "examples" / "python-steps"
@@ -107,7 +141,7 @@ def _start_server(
         container_pb2_grpc.add_ContainerServiceServicer_to_server(
             _AbiMismatchService(registry, abi), server
         )
-    port = server.add_insecure_port("127.0.0.1:0")
+    port = _secure_port(server)
     server.start()
     return port, server
 
@@ -154,6 +188,65 @@ def test_source_mode_runs_the_python_steps_example(capsys) -> None:
     assert _report_field(captured.out, "Mode") == "source"
     assert _report_field(captured.out, "Status") == "0"
     assert _output_json(captured.out) == {"issue_url": "https://issues.example.test/run-e2e"}
+
+
+def test_source_mode_shuts_down_the_runtime_service_after_stopping_server(
+    monkeypatch,
+) -> None:
+    """Source mode revokes its runtime service after gRPC server teardown."""
+    from syntara_plugin.sdk import runner
+
+    events: list[str] = []
+    class LocalServer:
+        def add_insecure_port(self, address: str) -> int:
+            return 1
+
+        def start(self) -> None:
+            events.append("server.start")
+
+        def stop(self, grace: float | None) -> None:
+            events.append("server.stop")
+
+    class LocalChannel:
+        def close(self) -> None:
+            events.append("channel.close")
+
+    class LocalService:
+        def shutdown(self) -> None:
+            events.append("service.shutdown")
+
+    server = LocalServer()
+    service = LocalService()
+    result = object()
+    monkeypatch.setattr(runner, "_make_importable", lambda _workspace: None)
+    monkeypatch.setattr(runner, "_bind_target", lambda _manifest, _target: object())
+    monkeypatch.setattr(
+        runner, "container_step_for_binding", lambda _binding: lambda _invocation: None
+    )
+    monkeypatch.setattr(runner.grpc, "server", lambda _executor: server)
+    monkeypatch.setattr(runner.grpc, "insecure_channel", lambda _address: LocalChannel())
+    monkeypatch.setattr(
+        runner, "add_container_runtime_service", lambda *_args, **_kwargs: service
+    )
+    monkeypatch.setattr(runner, "_execute_over_channel", lambda _execution: result)
+
+    target = runner.RunTarget(
+        identity="example.step",
+        kind="Action",
+        entry_point="example:Step",
+        metadata_name="step",
+        input_schema={},
+        schema_digests={},
+    )
+    report = runner.run_source(Path("plugin.yaml"), target, {}, "inline")
+
+    assert report is result
+    assert events == [
+        "server.start",
+        "channel.close",
+        "server.stop",
+        "service.shutdown",
+    ]
 
 
 def test_source_mode_runs_a_trigger_target(capsys) -> None:
@@ -205,6 +298,7 @@ def test_image_mode_runs_against_a_real_runtime_server(capsys) -> None:
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--input",
                 '{"title": "hi"}',
             ]
@@ -234,6 +328,7 @@ def test_image_mode_reports_a_deliberate_failure(capsys) -> None:
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--input",
                 '{"title": "hi"}',
             ]
@@ -264,6 +359,7 @@ def test_image_mode_reports_an_unexpected_exception_safely(capsys) -> None:
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--input",
                 '{"title": "hi"}',
             ]
@@ -298,6 +394,7 @@ def test_image_mode_rejects_an_unadvertised_identity(capsys) -> None:
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--input",
                 '{"repository": "ansible/syntara"}',
             ]
@@ -327,6 +424,7 @@ def test_image_mode_rejects_an_abi_mismatch(capsys) -> None:
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--input",
                 '{"title": "hi"}',
             ]
@@ -355,6 +453,7 @@ def test_image_mode_scrubs_a_remote_object_reference(capsys) -> None:
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--input",
                 '{"title": "hi", "api_token": "GHPTOKEN123XYZ"}',
             ]
@@ -383,6 +482,7 @@ def test_image_mode_scrubs_a_remote_error_code(capsys) -> None:
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--input",
                 '{"title": "hi", "api_token": "GHPTOKEN123XYZ"}',
             ]
@@ -535,7 +635,7 @@ def _serve_real_steps(
         revisions[identity]: container_step_for_binding(bindings.binding(identity), step_revision_id=revisions[identity])
         for identity in bindings.step_identities
     }))
-    port = server.add_insecure_port("127.0.0.1:0")
+    port = _secure_port(server)
     server.start()
     return port, server
 
@@ -553,6 +653,7 @@ def _run_real_step(
             "image",
             "--address",
             f"127.0.0.1:{port}",
+            *_client_tls_args(),
             "--input",
             '{"title": "Hello"}',
         ]
@@ -625,20 +726,21 @@ class _RecordingService(ContainerRuntimeService):
         self.rpc_order.append("Health")
         return super().Health(request, context)
 
-    def Execute(self, request, context):
+    def Execute(self, requests, context):
         self.rpc_order.append("Execute")
+        first = next(requests)
         invocation, _cancellation = __import__(
             "syntara_plugin.runtime.container", fromlist=["invocation_from_request"]
-        ).invocation_from_request(request)
+        ).invocation_from_request(first.start)
         self.invocations.append(invocation)
-        return super().Execute(request, context)
+        return super().Execute(chain([first], requests), context)
 
 
 def _start_recording_server(handlers: dict[str, Any]) -> tuple[_RecordingService, int, grpc.Server]:
     service = _RecordingService(StepRegistry(handlers))
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
-    port = server.add_insecure_port("127.0.0.1:0")
+    port = _secure_port(server)
     server.start()
     return service, port, server
 
@@ -663,7 +765,7 @@ def test_health_precedes_execute_and_the_invocation_contract_holds(
     revision = next(str(t["step_revision_id"]) for t in _compiled_targets(workspace) if t["identity"] == f"run.{plugin_name}.ok")
     service = _RecordingService(StepRegistry({revision: container_step_for_binding(binding, step_revision_id=revision)}))
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
-    port = server.add_insecure_port("127.0.0.1:0")
+    port = _secure_port(server)
     server.start()
     try:
         status = main(
@@ -676,6 +778,7 @@ def test_health_precedes_execute_and_the_invocation_contract_holds(
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--input",
                 '{"title": "Hello"}',
             ]
@@ -689,7 +792,6 @@ def test_health_precedes_execute_and_the_invocation_contract_holds(
     assert invocation.step_revision_id == revision
     assert invocation.timeout_seconds == 60
     assert invocation.runtime_context == {}
-    assert invocation.credential_file_paths == {}
     assert invocation.inputs == {"title": "Hello"}
 
 
@@ -791,12 +893,13 @@ def _start_progress_server(identity: str, monkeypatch: Any) -> tuple[int, grpc.S
     # Wrap Execute to prepend a progress event carrying the supplied secret.
     original_execute = service.Execute
 
-    def execute_with_progress(request, context):
+    def execute_with_progress(requests, context):
         from syntara_plugin.runtime.container import invocation_from_request
 
-        invocation, _ = invocation_from_request(request)
+        first = next(requests)
+        invocation, _ = invocation_from_request(first.start)
         secret = invocation.inputs.get("api_token", "")
-        yield container_pb2.ExecutionEvent(
+        yield container_pb2.ExecuteServerMessage(event=container_pb2.ExecutionEvent(
             invocation_id=invocation.invocation_id,
             progress=container_pb2.Progress(
                 sequence=1,
@@ -805,12 +908,12 @@ def _start_progress_server(identity: str, monkeypatch: Any) -> tuple[int, grpc.S
                 percent=10.0,
                 has_percent=True,
             ),
-        )
-        yield from original_execute(request, context)
+        ))
+        yield from original_execute(chain([first], requests), context)
 
     monkeypatch.setattr(service, "Execute", execute_with_progress)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
-    port = server.add_insecure_port("127.0.0.1:0")
+    port = _secure_port(server)
     server.start()
     return port, server
 
@@ -839,6 +942,7 @@ def test_progress_events_are_scrubbed_on_stderr(
                 "image",
                 "--address",
                 f"127.0.0.1:{port}",
+                *_client_tls_args(),
                 "--verbose",
                 "--input",
                 '{"title": "x", "api_token": "PROGRESS-SECRET-42"}',
@@ -965,60 +1069,34 @@ spec:
     )
     (root / "docs/README.md").write_text("# Credential e2e\n", encoding="utf-8")
     (root / f"{package}/__init__.py").write_text("", encoding="utf-8")
-    (root / f"{package}/steps.py").write_text(_E2E_STEPS_SOURCE, encoding="utf-8")
+    source = _E2E_STEPS_SOURCE.replace(
+        "        return StepOutput(slug=inputs.title.lower())",
+        "        context.credential('run.tracker.api-token').read()\n        return StepOutput(slug=inputs.title.lower())",
+        1,
+    )
+    (root / f"{package}/steps.py").write_text(source, encoding="utf-8")
     return root, package, plugin_name
 
 
-def _recording_handler(seen: dict[str, Any]) -> Any:
-    """Wrap the real step handler, inspecting the delivery as the Step would.
-
-    This reads the delivered file directly to prove that the ABI path names a real,
-    readable file holding the supplied value for exactly the invocation's
-    lifetime.
-    """
-
-    from syntara_plugin.sdk import runner as runner_module
-
-    original = runner_module.container_step_for_binding
-
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        handler = original(*args, **kwargs)
-
-        def recording(invocation: ContainerInvocation) -> ContainerResult:
-            seen["credential_file_paths"] = dict(invocation.credential_file_paths)
-            seen["files"] = {
-                name: Path(path).read_bytes()
-                for name, path in invocation.credential_file_paths.items()
-            }
-            seen["modes"] = {
-                name: Path(path).stat().st_mode & 0o777
-                for name, path in invocation.credential_file_paths.items()
-            }
-            seen["directory_modes"] = {
-                name: Path(path).parent.stat().st_mode & 0o777
-                for name, path in invocation.credential_file_paths.items()
-            }
-            return handler(invocation)
-
-        return recording
-
-    return wrapper
-
-
-def test_source_mode_delivers_the_credential_as_a_file_on_the_abi(
+def test_source_mode_delivers_the_credential_over_the_callback(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
-    """The Step is reached with a path, and that path holds the supplied value."""
-
-    from syntara_plugin.sdk import runner as runner_module
+    """The step reads the supplied credential over the callback."""
+    from syntara_plugin.sdk import runner
 
     workspace, _package, _plugin = _write_credential_e2e_workspace(tmp_path / "ws")
-    seen: dict[str, Any] = {}
-    monkeypatch.setattr(
-        runner_module, "container_step_for_binding", _recording_handler(seen)
-    )
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO(_CREDENTIAL_TOKEN))
+    execute = runner._execute_over_channel
+    addresses: list[str] = []
 
+    def check_transport(execution: Any) -> Any:
+        addresses.append(execution.address)
+        assert execution.address.startswith("unix:")
+        socket_path = Path(execution.address.removeprefix("unix:"))
+        assert socket_path.parent.stat().st_mode & 0o777 == 0o700
+        return execute(execution)
+
+    monkeypatch.setattr(runner, "_execute_over_channel", check_transport)
     status = main(
         [
             "run",
@@ -1033,23 +1111,17 @@ def test_source_mode_delivers_the_credential_as_a_file_on_the_abi(
     )
 
     assert status == 0
-    delivered = seen["credential_file_paths"]
-    assert list(delivered) == [_CREDENTIAL_NAME]
-    assert json.loads(seen["files"][_CREDENTIAL_NAME]) == {"token": _CREDENTIAL_TOKEN}
-    # Owner-only in source mode: the Step runs as this user.
-    assert seen["modes"][_CREDENTIAL_NAME] == 0o600
-    assert seen["directory_modes"][_CREDENTIAL_NAME] == 0o700
-    # The file exists only for the invocation.
-    assert not Path(delivered[_CREDENTIAL_NAME]).exists()
+    assert len(addresses) == 1
+    assert not Path(addresses[0].removeprefix("unix:")).parent.exists()
     captured = capsys.readouterr()
     assert _CREDENTIAL_TOKEN not in captured.out
     assert _CREDENTIAL_TOKEN not in captured.err
 
 
-def test_image_mode_sends_the_approved_mount_path_and_mounts_the_file(
+def test_image_mode_delivers_the_credential_over_the_callback(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
-    """Image mode sends the in-container path and hands the engine the host file."""
+    """Image mode uses the same callback without mounting credential files."""
 
     from syntara_plugin.sdk import container_engine as engine_module
     from syntara_plugin.sdk.container_engine import ContainerEngine, ManagedRuntime
@@ -1057,14 +1129,12 @@ def test_image_mode_sends_the_approved_mount_path_and_mounts_the_file(
     workspace, package, plugin_name = _write_credential_e2e_workspace(tmp_path / "ws")
     monkeypatch.syspath_prepend(str(workspace))
     module = importlib.import_module(f"{package}.steps")
-    from syntara_plugin.runtime import StepBindings
     from syntara_plugin.runtime.adapter import container_step_for_binding
-    from syntara_plugin.testing.bindings_factory import installed_binding
+    from syntara_plugin.testing import StepBindingsFactory
 
-    bindings = StepBindings()
-    step = module.OkStep()
-    binding = installed_binding(step, identity=f"run.{plugin_name}.ok")
-    bindings.bind(binding.descriptor, step)
+    binding = StepBindingsFactory().bind_step(
+        module.OkStep(), workspace=workspace, identity=f"run.{plugin_name}.ok"
+    )
     revision = next(
         str(t["step_revision_id"])
         for t in _compiled_targets(workspace)
@@ -1079,20 +1149,8 @@ def test_image_mode_sends_the_approved_mount_path_and_mounts_the_file(
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
-    mounted: dict[str, Any] = {}
-
     @contextmanager
-    def fake_managed_runtime(
-        image: str, target: Any = None, credential_files: Any = None, **_kwargs: Any
-    ) -> Any:
-        mounted["files"] = dict(credential_files or {})
-        mounted["contents"] = {
-            name: Path(path).read_bytes() for name, path in (credential_files or {}).items()
-        }
-        mounted["modes"] = {
-            name: Path(path).stat().st_mode & 0o777
-            for name, path in (credential_files or {}).items()
-        }
+    def fake_managed_runtime(image: str, target: Any = None, **_kwargs: Any) -> Any:
         yield ManagedRuntime(
             engine=ContainerEngine(command="podman"),
             image=image,
@@ -1122,16 +1180,6 @@ def test_image_mode_sends_the_approved_mount_path_and_mounts_the_file(
         _stop(server)
 
     assert status == 0
-    # The ABI carries the approved mount path, exactly as production does.
-    assert service.invocations[0].credential_file_paths == {
-        _CREDENTIAL_NAME: f"/var/run/syntara/secrets/{_CREDENTIAL_NAME}"
-    }
-    # The engine is handed a host file holding the value...
-    assert json.loads(mounted["contents"][_CREDENTIAL_NAME]) == {"token": _CREDENTIAL_TOKEN}
-    # ...readable by the container's runtime user, as the TLS material is.
-    assert mounted["modes"][_CREDENTIAL_NAME] == 0o644
-    # ...and gone once the run ends.
-    assert not Path(mounted["files"][_CREDENTIAL_NAME]).exists()
     captured = capsys.readouterr()
     assert _CREDENTIAL_TOKEN not in captured.out
     assert _CREDENTIAL_TOKEN not in captured.err

@@ -50,10 +50,9 @@ Use a private temporary directory and fake JSON credential documents. The path
 must be directly inside that directory. Bind the step type with `bind_step` so its
 compiled integration and recipe declarations authorize the identifier. The
 same context works with `invoke_step` and `invoke_step_in_container`; the latter
-passes only paths over its loopback ABI. Custom in-process providers are accepted
-by the direct path when they implement the restricted provider contract described
-in [credential access](runtime-and-oci.md#credential-access); the container helper
-requires `FileCredentialProvider`.
+sends a fake document over its loopback callback. Custom in-process providers
+must implement the restricted provider contract described in
+[credential access](runtime-and-oci.md#credential-access).
 
 ## Invocation helpers
 
@@ -188,10 +187,8 @@ the SDK does not redact records emitted by step code. Authors must keep returned
 credentials out of their exception text and log messages on both invocation paths.
 
 Use `secret_sentinel()` to create a synthetic value for a leak assertion. This
-is separate from credential delivery. The current step-facing `ExecutionContext`
-has no credential accessor; approved credential file paths are tested at the
-[container ABI boundary](runtime-and-oci.md#container-abi), including rejection
-of unapproved paths. Do not put credential values in inputs or runtime context.
+is separate from credential delivery. `ExecutionContext.credential(name).read()`
+uses declared recipe names and the container harness exercises the callback. Do not put credential values in inputs or runtime context.
 
 ## Conformance in one call
 

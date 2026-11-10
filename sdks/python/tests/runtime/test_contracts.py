@@ -70,17 +70,6 @@ def test_runtime_and_provider_positive_fixtures_conform() -> None:
         ).valid
         is False
     )
-    assert harness.validate_runtime(
-        {
-            "apiVersion": "syntara.io/v1alpha1",
-            "kind": "CredentialLease",
-            "leaseId": "lease-1",
-            "credentialHandle": "credential-1",
-            "audience": "execution-plane",
-            "expiresAt": "2026-10-06T12:00:00Z",
-            "secretFiles": [{"name": "token", "path": "/var/run/syntara/secrets/token"}],
-        }
-    ).valid
     assert harness.validate_provider(_provider_request()).valid
     assert harness.validate_provider(
         {
@@ -102,42 +91,23 @@ def test_malicious_runtime_and_provider_fixtures_are_rejected() -> None:
     item["runtimeContext"] = ["not-an-object"]
     assert not harness.validate_runtime(item).valid
 
-    legacy_work_item = _work_item()
-    legacy_work_item["runtimeAbi"] = "syntara.container/v1alpha2"
-    assert not harness.validate_runtime(legacy_work_item).valid
-
-    lease = {
-        "apiVersion": "syntara.io/v1alpha1",
-        "kind": "CredentialLease",
-        "leaseId": "lease-1",
-        "credentialHandle": "credential-1",
-        "audience": "execution-plane",
-        "expiresAt": "2026-10-06T12:00:00Z",
-        "secretFiles": [],
-        "token": "plaintext-secret",
-    }
-    assert not harness.validate_runtime(lease).valid
+    unsupported_work_item = _work_item()
+    unsupported_work_item["runtimeAbi"] = "syntara.container/v1alpha2"
+    assert not harness.validate_runtime(unsupported_work_item).valid
 
     provider = _provider_request()
     provider["runtimeAbi"] = CONTAINER_ABI
     assert not harness.validate_provider(provider).valid
 
-    expired = _work_item()
-    expired["timeoutSeconds"] = 10
-    assert (
-        harness.validate_runtime(
-            {
-                "apiVersion": "syntara.io/v1alpha1",
-                "kind": "CredentialLease",
-                "leaseId": "lease-1",
-                "credentialHandle": "credential-1",
-                "audience": "execution-plane",
-                "expiresAt": "not-a-time",
-                "secretFiles": [],
-            }
-        ).valid
-        is False
-    )
+    assert not harness.validate_runtime(
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "ContainerCancellation",
+            "invocationId": "invoke-1",
+            "fenceToken": "fence-1",
+            "requestedAt": "not-a-time",
+        }
+    ).valid
 
     deadline = _provider_request()
     deadline["deadline"] = "not-a-time"
@@ -342,3 +312,32 @@ def test_standard_output_wrapper_conformance_fixtures() -> None:
         document = json.loads((fixtures / fixture_name).read_text(encoding="utf-8"))
         validation = harness.validate_runtime(document)
         assert validation.valid is expected_valid, f"{fixture_name}: {validation.errors}"
+
+
+def test_workload_request_rejects_legacy_file_leases() -> None:
+    harness = ConformanceHarness()
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+    valid = json.loads((fixtures / "runtime-workload-request.valid.json").read_text())
+    legacy = json.loads(
+        (fixtures / "runtime-workload-request-file-lease.invalid.json").read_text()
+    )
+    from syntara_plugin.contracts import container_workload_request_digest
+
+    assert harness.validate_runtime(valid).valid
+    for request in (valid, legacy):
+        digest = container_workload_request_digest(request)
+        assert request["workItem"]["requestHash"] == digest
+        assert request["policySnapshot"]["requestHash"] == digest
+    assert not harness.validate_runtime(legacy).valid
+    assert not harness.validate_runtime(legacy["credentialLeases"][0]).valid
+    assert not harness.validate_runtime({**valid, "credentialLeases": []}).valid
+
+    from jsonschema import Draft202012Validator
+    from syntara_plugin.contracts import load_bundle
+
+    schema = load_bundle().documents["runtime.schema.json"]
+    validator = Draft202012Validator({**schema, "oneOf": [{"$ref": "#/$defs/workloadRequest"}]})
+    errors = list(validator.iter_errors(legacy))
+    assert len(errors) == 1
+    assert len(errors[0].context) == 1
+    assert errors[0].context[0].validator == "additionalProperties"

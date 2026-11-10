@@ -29,7 +29,6 @@ from typing import Any
 
 import grpc
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
-from syntara_plugin.contracts import canonical_json_bytes
 from syntara_plugin.runtime.abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from syntara_plugin.runtime.adapter import container_step_for_binding
 from syntara_plugin.runtime.bindings import StepBinding
@@ -40,10 +39,13 @@ from syntara_plugin.runtime.container import (
     ContainerRemoteError,
     ContainerResult,
     ContainerStepHandler,
+    CredentialRequestContext,
+    CredentialResolver,
     StepRegistry,
     add_container_runtime_service,
 )
 from syntara_plugin.runtime.contract_validation import SchemaDriftError
+from syntara_plugin.runtime.credentials import CredentialAccessError
 from syntara_plugin.runtime.execution import StepExecutionError
 from syntara_plugin.testing import BoundedStepHandler, HarnessUsageError, StepBindingsFactory
 
@@ -105,17 +107,8 @@ _INSTANCE_EMBEDDING_VALIDATORS = frozenset(
     {"anyOf", "contains", "dependencies", "dependentRequired", "dependentSchemas", "enum",
      "maxProperties", "minProperties", "not", "oneOf", "uniqueItems"}
 )
-# The container ABI's approved secret mount: the only directory a deployed
-# workload ever reads a credential from, and the path image mode mounts into.
-CREDENTIAL_MOUNT_DIRECTORY = "/var/run/syntara/secrets"
-# The file names the ABI's secret mount allows (runtime/container.py); a name
-# outside it can never be delivered as a mounted credential file, so it is
-# refused at parse time instead of failing mid-run on a malformed mount.
-_CREDENTIAL_FILE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-# The common filesystem limit for one filename component (Linux NAME_MAX);
-# the approved secret mount path keeps the credential name, so a longer one
-# cannot be delivered at all.
-_CREDENTIAL_NAME_MAX_BYTES = 255
+# The callback ABI bounds logical names to 256 ASCII characters.
+_CREDENTIAL_NAME = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _CREDENTIAL_SOURCE_STEPS = (
     "--credential NAME=- to read one value from standard input",
     "--credential NAME=file:PATH to read a file outside the workspace",
@@ -216,7 +209,7 @@ class RunReport:
 
 @dataclass(frozen=True)
 class TlsOptions:
-    """The mutual-TLS client material required by non-loopback runtimes."""
+    """The mutual-TLS client material required by TCP runtimes."""
 
     ca: Path
     certificate: Path
@@ -887,25 +880,8 @@ def parse_credential_options(raw: Sequence[str] | None) -> tuple[CredentialSpec,
 def _credential_spec(name: str, source: str) -> CredentialSpec:
     """Classify one credential source, refusing an inline value."""
 
-    if not _CREDENTIAL_FILE_NAME.fullmatch(name):
-        raise RunUsageError(
-            f"--credential {name} cannot be delivered as a credential file",
-            detail=(
-                "A credential name may contain only letters, digits, '.', '_', and '-':",
-                "the ABI's secret mount has no path for anything else.",
-            ),
-            next_steps=("rename the CredentialRecipe, or supply a mount-safe name",),
-        )
-    if len(name.encode("utf-8")) > _CREDENTIAL_NAME_MAX_BYTES:
-        raise RunUsageError(
-            f"--credential {name} cannot be delivered as a credential file",
-            detail=(
-                f"A credential name longer than {_CREDENTIAL_NAME_MAX_BYTES} bytes cannot be "
-                "represented as one filename component:",
-                "the delivery filesystem rejects it with ENAMETOOLONG.",
-            ),
-            next_steps=("rename the CredentialRecipe, or supply a mount-safe name",),
-        )
+    if not _CREDENTIAL_NAME.fullmatch(name):
+        raise RunUsageError("--credential name must be a bounded recipe identifier")
     if source == "-":
         return CredentialSpec(name, "stdin", "")
     for prefix, kind in (("file:", "file"), ("env:", "env")):
@@ -968,8 +944,8 @@ def load_credentials(
     """Read, shape, and validate every supplied credential before execution.
 
     Returns the loaded credentials and any warnings for the CLI to render.
-    Values are held in memory: nothing is written until the delivery file is
-    created for the invocation itself.
+    Values are held in memory and delivered to the runtime only when the step
+    requests a declared recipe over the invocation-scoped callback.
     """
 
     loaded: list[LoadedCredential] = []
@@ -1205,57 +1181,6 @@ def _collect_nested_scalars(value: Any, picked: list[Any]) -> None:
             _collect_nested_scalars(item, picked)
 
 
-@contextlib.contextmanager
-def credential_files(
-    credentials: Sequence[LoadedCredential], *, container_readable: bool
-) -> Iterator[tuple[Path | None, dict[str, str]]]:
-    """Deliver every credential as a read-only file for one invocation.
-
-    ``mkdtemp`` creates the directory readable only by its owner, which is
-    what protects the values on this machine; the files inside it must still
-    be readable by the container's runtime user in image mode, exactly as the
-    managed container's TLS material is. The directory is removed when the
-    invocation ends, so nothing outlives the run.
-
-    A run without credentials creates no directory and so grants no local
-    path exception at all.
-    """
-
-    if not credentials:
-        yield None, {}
-        return
-    directory = Path(tempfile.mkdtemp(prefix="syntara-run-secrets-"))
-    try:
-        paths: dict[str, str] = {}
-        for credential in credentials:
-            path = directory / credential.name
-            try:
-                path.write_bytes(canonical_json_bytes(dict(credential.document)))
-                path.chmod(0o644 if container_readable else 0o600)
-            except OSError as error:
-                # Name and failure category only: the value that failed to be
-                # written is the one that must never reach the error surface.
-                raise RunExecutionError(
-                    f"the credential file for {credential.name} could not be created",
-                    next_steps=(
-                        "check the permissions and available space in the temporary directory",
-                    ),
-                ) from error
-            paths[credential.name] = str(path)
-        yield directory, paths
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
-
-
-def mounted_credential_paths(credentials: Sequence[LoadedCredential]) -> dict[str, str]:
-    """Return the in-container path each credential is mounted at."""
-
-    return {
-        credential.name: f"{CREDENTIAL_MOUNT_DIRECTORY}/{credential.name}"
-        for credential in credentials
-    }
-
-
 def credential_secret_values(credentials: Sequence[LoadedCredential]) -> tuple[str, ...]:
     """Return every value across the supplied credentials that must be scrubbed."""
 
@@ -1316,15 +1241,8 @@ def run_source(
     exceptions are captured locally (the ABI never carries exception text)
     and attached to the report as its error detail.
 
-    Credentials are delivered as read-only files in a second private directory
-    and reach the step type through ``invocation.credential_file_paths``. Those are
-    temporary host paths, not the production mount: this process cannot create
-    ``/var/run/syntara/secrets`` without privileges, so step type code that
-    hardcodes the mount path instead of reading the invocation finds no
-    credential here. Nothing here can write under the approved secret mount,
-    so this one loopback transport (client and runtime are the same process)
-    is told to accept that directory as well; every other client and runtime
-    keeps the production rule.
+    Credentials are returned to the runtime by the invocation callback over
+    the private local socket when the step requests a declared recipe.
     """
 
     _make_importable(manifest.parent)
@@ -1334,55 +1252,53 @@ def run_source(
         _LocalErrorCapture(container_step_for_binding(binding), captured), timeout_seconds
     )
     registry = StepRegistry({target.identity: handler})
-    with credential_files(credentials, container_readable=False) as (secrets_directory, paths):
-        runtime_directory = tempfile.mkdtemp(prefix="syntara-run-runtime-")
-        socket_path = Path(runtime_directory) / "runtime.sock"
-        server = grpc.server(ThreadPoolExecutor(max_workers=2))
-        add_container_runtime_service(
-            server, registry, secrets_directory, install_sigterm_shutdown=False
-        )
-        if server.add_insecure_port(f"unix:{socket_path}") == 0:
-            server.stop(None)
-            shutil.rmtree(runtime_directory, ignore_errors=True)
-            raise RunExecutionError("could not start the local runtime server")
-        server.start()
-        channel = grpc.insecure_channel(f"unix:{socket_path}")
-        scrubbing_stderr = _ScrubbingWriter(
-            sys.stderr,
-            _secret_values(target.input_schema, inputs) + credential_secret_values(credentials),
-        )
-        try:
-            # The step type runs in this process; anything it prints belongs on
-            # stderr, scrubbed of supplied secrets, so stdout keeps carrying only the
-            # report (or the --json document). Both streams are redirected:
-            # wrapping only stdout would let a step type that writes to sys.stderr
-            # directly — print(..., file=sys.stderr), logging — print a supplied
-            # secret verbatim.
-            with (
-                contextlib.redirect_stdout(scrubbing_stderr),
-                contextlib.redirect_stderr(scrubbing_stderr),
-            ):
-                return _execute_over_channel(
-                    _ChannelExecution(
-                        channel=channel,
-                        target=target,
-                        inputs=inputs,
-                        input_source=input_source,
-                        mode="source",
-                        address=f"unix:{socket_path}",
-                        timeout_seconds=timeout_seconds,
-                        on_progress=on_progress,
-                        captured_detail=captured,
-                        credentials=credentials,
-                        credential_file_paths=paths,
-                        local_credential_directory=secrets_directory,
-                    )
+    runtime_directory = tempfile.mkdtemp(prefix="syntara-run-runtime-")
+    socket_path = Path(runtime_directory) / "runtime.sock"
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    runtime_service = add_container_runtime_service(
+        server, registry, install_sigterm_shutdown=False
+    )
+    if server.add_insecure_port(f"unix:{socket_path}") == 0:
+        server.stop(None)
+        runtime_service.shutdown()
+        shutil.rmtree(runtime_directory, ignore_errors=True)
+        raise RunExecutionError("could not start the local runtime server")
+    server.start()
+    channel = grpc.insecure_channel(f"unix:{socket_path}")
+    scrubbing_stderr = _ScrubbingWriter(
+        sys.stderr,
+        _secret_values(target.input_schema, inputs) + credential_secret_values(credentials),
+    )
+    try:
+        # The step type runs in this process; anything it prints belongs on
+        # stderr, scrubbed of supplied secrets, so stdout keeps carrying only the
+        # report (or the --json document). Both streams are redirected:
+        # wrapping only stdout would let a step type that writes to sys.stderr
+        # directly — print(..., file=sys.stderr), logging — print a supplied
+        # secret verbatim.
+        with (
+            contextlib.redirect_stdout(scrubbing_stderr),
+            contextlib.redirect_stderr(scrubbing_stderr),
+        ):
+            return _execute_over_channel(
+                _ChannelExecution(
+                    channel=channel,
+                    target=target,
+                    inputs=inputs,
+                    input_source=input_source,
+                    mode="source",
+                    address=f"unix:{socket_path}",
+                    timeout_seconds=timeout_seconds,
+                    on_progress=on_progress,
+                    captured_detail=captured,
+                    credentials=credentials,
                 )
-        finally:
-            channel.close()
-            server.stop(None)
-            shutil.rmtree(runtime_directory, ignore_errors=True)
-
+            )
+    finally:
+        channel.close()
+        server.stop(None)
+        runtime_service.shutdown()
+        shutil.rmtree(runtime_directory, ignore_errors=True)
 
 class _LocalErrorCapture:
     """Capture unexpected step type exceptions locally for the run report.
@@ -1441,9 +1357,7 @@ def run_image(
     container that exited is reported with its own failure instead of
     consuming the whole window.
 
-    ``credentials`` names what the caller has already mounted into the
-    container: the paths sent here are the approved in-container mount paths,
-    so this path needs no exception to the ABI rule.
+    Supplied credentials are served through the invocation callback.
     """
 
     channel = _channel(address, tls)
@@ -1462,7 +1376,6 @@ def run_image(
                 startup_seconds=startup_seconds,
                 liveness=liveness,
                 credentials=credentials,
-                credential_file_paths=mounted_credential_paths(credentials),
             )
         )
     finally:
@@ -1491,12 +1404,19 @@ class _ChannelExecution:
     startup_seconds: float = 10.0
     liveness: Callable[[], None] | None = None
     credentials: Sequence[LoadedCredential] = ()
-    credential_file_paths: Mapping[str, str] | None = None
-    local_credential_directory: Path | None = None
 
 
 def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
-    client = ContainerClient(execution.channel, execution.local_credential_directory)
+    documents = {credential.name: credential.document for credential in execution.credentials}
+
+    def read_credential(context: CredentialRequestContext) -> Mapping[str, Any]:
+        if context.cancelled:
+            raise CredentialAccessError("expired")
+        if context.name not in documents:
+            raise CredentialAccessError("missing")
+        return documents[context.name]
+
+    client = ContainerClient(execution.channel)
     target = execution.target
     inputs = execution.inputs
     # The scrub set exists before the health check, not after it: a managed
@@ -1530,7 +1450,6 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         workflow_run_id=workflow_run_id,
         step_revision_id=dispatch_id,
         inputs=inputs,
-        credential_file_paths=execution.credential_file_paths or {},
         timeout_seconds=execution.timeout_seconds,
         runtime_context={},
     )
@@ -1538,7 +1457,9 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     redacted_inputs = _scrub_structure(
         redact_inputs(target.input_schema, inputs), secrets, scalars
     )
-    terminal = _consume(client, invocation, _scrubbing_progress(execution.on_progress, secrets))
+    terminal = _consume(
+        client, invocation, _scrubbing_progress(execution.on_progress, secrets), read_credential
+    )
     detail = (
         _scrub_text("\n\n".join(execution.captured_detail).rstrip(), secrets)
         if execution.captured_detail
@@ -1734,7 +1655,8 @@ def run_secret_scrubber(
 
 
 def _consume(
-    client: ContainerClient, invocation: ContainerInvocation, on_progress: ProgressCallback | None
+    client: ContainerClient, invocation: ContainerInvocation, on_progress: ProgressCallback | None,
+    credential_handler: CredentialResolver | None = None,
 ) -> ContainerResult | _WorkloadFailure:
     """Consume the event stream, returning the terminal outcome.
 
@@ -1744,7 +1666,7 @@ def _consume(
     """
 
     try:
-        for event in client.stream(invocation):
+        for event in client.stream(invocation, credential_handler=credential_handler):
             if isinstance(event, ContainerResult):
                 return event
             if on_progress is not None:

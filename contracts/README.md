@@ -25,6 +25,14 @@ The generic work item retains this as an optional bounded non-secret
 `runtimeContext` object so other approved runners can later define their own
 constrained context contract.
 
+A `ContainerWorkloadRequest` contains a work item and a policy snapshot. The
+work item's `credentialHandles` are opaque platform-side references; they are
+not sent to the workload. The request carries no credential leases, delivery
+paths, or secret values. The Execution Plane resolves callback requests within
+the attempt as described in [ADR 0011](../.sdlc/adrs/0011-credential-callback.md).
+The runtime workload-request fixtures cover this shape and rejection of the
+legacy file-lease field.
+
 The generic `ContainerWorkloadRequest` has two mirrored `requestHash` fields:
 one on the work item and one on its policy snapshot. They are the SHA-256
 digest of the complete request after removing only those two fields, using
@@ -77,16 +85,18 @@ distribution. It does not commit a second source copy: an extracted source
 distribution contains the staged files only so that it can build without a
 checkout of this repository.
 
-The JSON Schema documents remain the normative durable artifact and work-item
-contracts. The protobuf file is the normative in-container application-data
-protocol: it selects a step type revision, carries bounded JSON input, bounded
-non-secret runtime context, and mounted credential-file paths, and returns
-progress or one terminal result/failure. It does not select an image, command,
-execution pool, endpoint, or credential value. A credential-file path must be
-under the approved secret mount `/var/run/syntara/secrets/`, enforced when the
-request is both encoded and decoded; the one default-off exception, used by
-`syntara-plugin run` in source mode, is described in
-[ADR 0009](../.sdlc/adrs/0009-local-credential-delivery.md).
+The JSON Schemas are the normative durable artifact and work-item contracts.
+The protobuf defines the `syntara.container/v1alpha1` in-container ABI. An
+invocation is a bidirectional stream: after the start message, the workload
+may request a declared CredentialRecipe ID. The host resolves it within the
+current attempt and returns a bounded JSON object in a dedicated sensitive
+response; credential values never appear in business events, inputs, or
+runtime context. Requests and responses are correlated by invocation and
+request IDs. The host must authenticate the workload and provide transport
+confidentiality (mutual TLS in production). This replaces the earlier Execute
+protocol under the same ABI identifier. Old `v1alpha1` peers are incompatible,
+and Health cannot distinguish the two protocols. See
+[ADR 0011](../.sdlc/adrs/0011-credential-callback.md).
 
 `runtime.schema.json` defines the canonical `StandardOutputWrapper` JSON shape
 with exactly four required lower-camel keys: `result`, `statusCode`,

@@ -7,10 +7,13 @@ import logging
 import pickle
 import traceback
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
+from queue import Queue
 from typing import Any, ClassVar
 
+import grpc
 import pytest
 import syntara_plugin.runtime.credentials as credentials_module
 from pydantic import BaseModel, ValidationError
@@ -19,7 +22,6 @@ from syntara_plugin.runtime import (
     ContainerInvocation,
     ContainerInvocationError,
     ContainerRemoteError,
-    ContainerRuntimeService,
     ControlStep,
     CredentialAccessError,
     CredentialBinding,
@@ -37,10 +39,12 @@ from syntara_plugin.runtime import (
     StepFailure,
     StepRegistry,
     TriggerStep,
+    add_container_runtime_service,
     container_step_for_binding,
     invoke,
 )
 from syntara_plugin.runtime.container import _request_from_invocation
+from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
 from syntara_plugin.testing import build_execution_context, invoke_step, invoke_step_in_container
 
 _SECRET = "sample-credential-value-keep-private"
@@ -347,32 +351,46 @@ def test_denied_missing_file_and_secret_leaks_are_safe(tmp_path: Path) -> None:
         assert _SECRET not in str(error.value)
 
 
-class _ServicerContext:
-    def add_callback(self, callback: Any) -> bool:
-        del callback
-        return True
-
-
 def _terminal_failure_event(
     binding: StepBinding, inputs: Mapping[str, Any], credential_path: Path, root: Path
 ) -> Any:
-    """Run one invocation against the real sync service and return its event."""
-
+    """Exercise sensitive responses separately from terminal business events."""
+    del root
     invocation = ContainerInvocation(
-        invocation_id="terminal-leak-probe",
-        workflow_run_id="terminal-leak-probe-run",
-        step_revision_id=binding.descriptor.step_identity,
-        inputs=dict(inputs),
-        credential_file_paths={_NAME: str(credential_path)},
-        timeout_seconds=30,
-        runtime_context={},
+        invocation_id="terminal-leak-probe", workflow_run_id="terminal-leak-probe-run",
+        step_revision_id=binding.descriptor.step_identity, inputs=dict(inputs), timeout_seconds=30,
     )
-    service = ContainerRuntimeService(
-        StepRegistry({binding.descriptor.step_identity: container_step_for_binding(binding)}),
-        root,
-    )
-    request = _request_from_invocation(invocation, root)
-    return next(service.Execute(request, _ServicerContext()))
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    add_container_runtime_service(server, StepRegistry({
+        binding.descriptor.step_identity: container_step_for_binding(binding)
+    }))
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    queue: Queue[Any] = Queue()
+    queue.put(container_pb2.ExecuteClientMessage(start=_request_from_invocation(invocation)))
+
+    def messages():
+        while (message := queue.get()) is not None:
+            yield message
+
+    try:
+        call = container_pb2_grpc.ContainerServiceStub(channel).Execute(messages())
+        for message in call:
+            if message.WhichOneof("message") == "credential_request":
+                request = message.credential_request
+                assert request.name == _NAME
+                queue.put(container_pb2.ExecuteClientMessage(credential_response=container_pb2.CredentialResponse(
+                    invocation_id=request.invocation_id, request_id=request.request_id,
+                    document_json=credential_path.read_bytes(),
+                )))
+            else:
+                return message.event
+        raise AssertionError("missing terminal event")
+    finally:
+        queue.put(None)
+        channel.close()
+        server.stop(0).wait()
 
 
 def test_a_terminal_failure_after_a_read_keeps_its_fields(tmp_path: Path) -> None:
@@ -905,3 +923,20 @@ def test_unscopable_host_provider_is_denied_safely(mode: str) -> None:
     assert outcome.ok
     assert outcome.output == {"result": "unauthorized"}
     assert _SECRET not in repr(outcome)
+
+
+def test_success_status_message_cannot_expose_credential() -> None:
+    from syntara_plugin.runtime.execution import _reject_credential_output
+    from syntara_plugin.runtime.outcome import StandardOutputWrapper
+
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider({"token": _SECRET}))
+    try:
+        scope.read(_NAME)
+        wrapper = StandardOutputWrapper.success(
+            {"result": "safe"}, status_message=_SECRET
+        )
+        with pytest.raises(StepExecutionError) as error:
+            _reject_credential_output(wrapper, scope)
+        assert _SECRET not in str(error.value)
+    finally:
+        scope.close()

@@ -9,7 +9,6 @@
     {"$ref": "#/$defs/result"},
     {"$ref": "#/$defs/failure"},
     {"$ref": "#/$defs/cancellation"},
-    {"$ref": "#/$defs/credentialLease"},
     {"$ref": "#/$defs/policySnapshot"}
   ],
   "$defs": {
@@ -83,7 +82,7 @@
       ]
     },
     "workloadRequest": {
-      "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "workItem", "policySnapshot", "credentialLeases"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerWorkloadRequest"}, "workItem": {"$ref": "#/$defs/workItem"}, "policySnapshot": {"$ref": "#/$defs/policySnapshot"}, "credentialLeases": {"type": "array", "items": {"$ref": "#/$defs/credentialLease"}}}}]
+      "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "workItem", "policySnapshot"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerWorkloadRequest"}, "workItem": {"$ref": "#/$defs/workItem"}, "policySnapshot": {"$ref": "#/$defs/policySnapshot"}}}]
     },
     "progress": {
       "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "sequence", "state"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerProgress"}, "invocationId": {"$ref": "#/$defs/id"}, "sequence": {"type": "integer", "minimum": 1}, "state": {"enum": ["started", "heartbeat", "progress"]}, "message": {"type": "string", "maxLength": 4096}, "percent": {"type": "number", "minimum": 0, "maximum": 100}}}]
@@ -102,9 +101,6 @@
     },
     "cancellation": {
       "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "fenceToken", "requestedAt"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerCancellation"}, "invocationId": {"$ref": "#/$defs/id"}, "fenceToken": {"$ref": "#/$defs/id"}, "requestedAt": {"type": "string", "format": "date-time"}}}]
-    },
-    "credentialLease": {
-      "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "leaseId", "credentialHandle", "audience", "expiresAt", "secretFiles"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "CredentialLease"}, "leaseId": {"$ref": "#/$defs/id"}, "credentialHandle": {"$ref": "#/$defs/id"}, "audience": {"$ref": "#/$defs/id"}, "expiresAt": {"type": "string", "format": "date-time"}, "secretFiles": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["name", "path"], "properties": {"name": {"$ref": "#/$defs/id"}, "path": {"type": "string", "pattern": "^/var/run/syntara/secrets/[A-Za-z0-9._-]+$"}}}}}}]
     },
     "policySnapshot": {
       "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "policyId", "revision", "requestHash", "effectiveCapabilities"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ExecutionPolicySnapshot"}, "policyId": {"$ref": "#/$defs/id"}, "revision": {"$ref": "#/$defs/id"}, "requestHash": {"$ref": "#/$defs/sha256"}, "effectiveCapabilities": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}}}]

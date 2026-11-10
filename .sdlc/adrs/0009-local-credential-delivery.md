@@ -1,6 +1,6 @@
 # ADR 0009: Local credential delivery for `syntara-plugin run`
 
-- Status: Accepted
+- Status: Superseded by [ADR 0011](0011-credential-callback.md)
 - Date: 2026-10-30
 
 ## Context

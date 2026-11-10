@@ -224,11 +224,8 @@ printf '%s' "$TOKEN" | syntara-plugin run --manifest plugin.yaml create-issue \
 ```
 
 Everything is checked before anything executes: `NAME` must resolve to a
-reachable recipe, must contain only the characters the secret mount allows
-(letters, digits, `.`, `_`, `-` — anything else could never be delivered as a
-mounted file), must fit in one filename component at that mount (at most 255
-bytes — a longer name could never be delivered, so it is refused as usage),
-and the value must satisfy that recipe's
+reachable recipe, fit the callback ABI's 256-character bound, and the value
+must satisfy that recipe's
 `credentialSchema`. A value that parses as a JSON object is taken as the
 complete credential document; any other text is a raw value, wrapped into the
 recipe's only declared field, required or optional. A recipe that declares
@@ -245,27 +242,12 @@ and the violated constraint and never the value.
 
 ### How it is delivered
 
-Both modes deliver the credential the way production will: as a **read-only
-file**, with only its path crossing the container ABI. The value is never an
-environment variable inside the step type implementation or the container,
-and never travels on the wire, so step type code behaves the same locally and
-in production.
-
-- **image mode** writes the document into a private per-invocation directory
-  and bind-mounts it read-only at `/var/run/syntara/secrets/<name>`, the
-  ABI's approved secret mount. Nothing is copied into the image.
-- **source mode** runs the step type in this process, which cannot write under
-  `/var/run` without privilege, so the file stays in that private directory
-  and its real path crosses the loopback ABI. The Step uses
-  `context.credential(name).read()` in both modes; it does not need to know
-  either path. This one
-  in-process transport is told to accept that directory; every other client
-  and runtime keeps the production rule. See the
-  [local credential delivery ADR](../.sdlc/adrs/0009-local-credential-delivery.md).
-
-The directory is created readable only by you and removed when the invocation
-ends. The value is held in memory until then and is written nowhere else: not
-into the workspace, the artifact, or any other file.
+Both modes hold the supplied document in memory and deliver it through the
+same invocation callback used in production. The step calls
+`context.credential(name).read()`; no credential delivery file is written or
+mounted. Source mode uses a private local socket; a CLI-managed image uses
+mutually authenticated TLS. The response is separate from business events.
+See [ADR 0011](../.sdlc/adrs/0011-credential-callback.md).
 
 The report names what was supplied, never its value, and `--json` carries the
 same list under `credentials`:
@@ -288,15 +270,16 @@ report, `--json`, errors, hints, progress, step output, and tracebacks
 exactly as a sensitive input is.
 
 `--credential` cannot be combined with `--address` or the `--tls-*` options:
-that runtime is yours, and the command cannot mount anything into it.
+the CLI only supplies credentials to a runtime it starts and authenticates.
 
 ## Execution modes
 
 Both modes execute through the SDK's `ContainerClient` over real gRPC, call
-`Health` first to verify the container ABI and that the runtime advertises the
+`Health` first to check the ABI identifier and that the runtime advertises the
 requested step type, and use a 60 second invocation timeout with an empty
-runtime context and the credential file paths described above (none unless
-`--credential` is supplied).
+runtime context; credentials are supplied only when the step requests them.
+The identifier alone cannot distinguish the earlier unary `v1alpha1` protocol;
+the client and workload must both implement the current callback protocol.
 
 ### Source mode (default)
 
@@ -307,8 +290,7 @@ syntara-plugin run --manifest examples/python-steps/plugin.yaml create-issue --i
 Source mode compiles the workspace with the same compiler as `validate`,
 makes the workspace importable, binds the implementation through the trusted
 installed-manifest path (the same compile, install, and drift-check used by
-the [testing harness](testing.md)), and serves an in-process gRPC runtime on
-loopback. The step type executes over the container ABI exactly as the platform
+the [testing harness](testing.md)), and serves an in-process gRPC runtime over a private Unix socket. The step type executes over the container ABI exactly as the platform
 would invoke it, and the runtime stops when the result arrives.
 
 Making the workspace importable means its root directory is inserted at the
@@ -373,8 +355,8 @@ directory (`syntara-run-tls-*`), or a source-mode runtime directory
 with `podman ps --filter name=syntara-run-` and `podman rm -f <name>`, and
 the directories from your temporary directory.
 
-To manage the runtime yourself, pass `--address` (and `--tls-*` for mutual
-TLS); then the CLI only connects and never starts anything. Two ways to
+To manage the runtime yourself, pass `--address` and all three `--tls-*`
+options for mutual TLS; then the CLI only connects and never starts anything. Two ways to
 obtain such a runtime:
 
 1. **The runtime server console script**, entirely on your machine. Write a
@@ -389,7 +371,8 @@ obtain such a runtime:
 
    ```sh
    SYNTARA_RUNTIME_CONFIG=runtime.json SYNTARA_RESOLVED_EXECUTION=resolved.json \
-     PYTHONPATH=. syntara-plugin-runtime-server
+     SYNTARA_RUNTIME_GRPC_TLS_CERT=server.crt SYNTARA_RUNTIME_GRPC_TLS_KEY=server.key \
+     SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=ca.crt PYTHONPATH=. syntara-plugin-runtime-server
    ```
 
    The factory is a one-line delegation to `load_plugin_bindings`, which
@@ -406,7 +389,7 @@ obtain such a runtime:
    and installed step type identity must match the local compiled target, and custom
    runners must match the image's packaged registration manifest. This bootstrap
    file identifies installed bindings only; the gRPC request supplies the
-   invocation/run IDs, input, timeout, credential file paths, and runtime
+   invocation/run IDs, input, timeout, and runtime
    context. A runtime you start this way cannot be given `--credential`: the
    command does not own it and cannot mount a file into it. This is also the image pattern the managed path expects:
    install the `syntara-plugin-contracts` wheel on a Python base image, copy
@@ -414,7 +397,7 @@ obtain such a runtime:
    and `PYTHONPATH`. Managed image mode supplies the selected local compiled
    revision as read-only execution data when starting the container.
 
-2. **A Podman container with a published port and mutual TLS.** A non-loopback
+2. **A Podman container with a published port and mutual TLS.** Every TCP
    runtime listener requires mTLS by design. Publish
    `127.0.0.1:<host-port>:50051`, configure the server's TLS material through
    `SYNTARA_RUNTIME_GRPC_TLS_CERT`, `SYNTARA_RUNTIME_GRPC_TLS_KEY`, and
@@ -437,7 +420,7 @@ advertised-identity check produce an actionable error instead of a confusing
 failure.
 
 `--address` and the `--tls-*` options are rejected in source mode: source mode
-owns its loopback transport.
+owns its private Unix socket transport.
 
 ## Reading the output
 
@@ -550,7 +533,7 @@ Every failure prints the problem and the next command. The complete map:
 | Input not a JSON object, malformed, or oversized | The expectation and the limit. | 2 |
 | Transport options in source mode | `--address` and `--tls-*` require `--mode image`. | 2 |
 | Partial TLS material | The three options must be supplied together. | 2 |
-| `--credential` with `--address`/`--tls-*` | The CLI cannot mount into a runtime you manage. | 2 |
+| `--credential` with `--address`/`--tls-*` | The CLI supplies credentials only to runtimes it starts. | 2 |
 | Inline credential value | The three sources, and why an inline value is refused. | 2 |
 | Unknown credential name | The recipes reachable through the step type's integration type. | 2 |
 | Credential fails its schema | Each violated field and constraint, never the value. | 2 |

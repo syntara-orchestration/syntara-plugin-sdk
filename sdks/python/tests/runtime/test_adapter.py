@@ -248,7 +248,6 @@ def _invocation(
         workflow_run_id="workflow-run-1",
         step_revision_id=step_revision_id,
         inputs=inputs or {"message": "hello"},
-        credential_file_paths={},
         timeout_seconds=30,
         runtime_context=runtime_context or {"environment": "test"},
     )
@@ -985,7 +984,6 @@ def test_large_invalid_payloads_remain_invalid_input_over_grpc() -> None:
             workflow_run_id="workflow-run-2",
             step_revision_id="acme.plugin.bulk",
             inputs={"items": ["leaked-secret-value"] * 200},
-            credential_file_paths={},
             timeout_seconds=30,
         )
         result = client.execute(invocation)

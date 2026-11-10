@@ -17,9 +17,9 @@ from syntara_plugin.contracts import ContractBundle, load_bundle, validate_docum
 from .outcome import MAX_MESSAGE_LENGTH
 
 # ABI means Application Binary Interface. In this package an ABI value is a
-# compatibility marker for a versioned, language-neutral runtime protocol; it
-# is not the OCI image architecture. The Execution Plane and workload compare
-# this exact value during Health before exchanging Execute/Cancel messages.
+# identifier for a language-neutral runtime protocol, not the OCI image
+# architecture. Health compares this value but cannot distinguish the earlier
+# unary Execute protocol from the current bidirectional v1alpha1 protocol.
 CONTAINER_ABI = "syntara.container/v1alpha1"
 PROVIDER_ABI = "syntara.provider/v1alpha1"
 

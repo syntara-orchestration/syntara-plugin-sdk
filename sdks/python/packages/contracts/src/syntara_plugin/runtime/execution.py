@@ -481,13 +481,10 @@ def _scoped_terminal_failure(
 def _reject_credential_output(
     wrapper: StandardOutputWrapper[Mapping[str, Any]], scope: _CredentialScope
 ) -> None:
-    # Successful status metadata is fixed by the protocol, not step output.
-    # Failure metadata can be supplied by the step and must also be checked.
-    checked_fields: list[Any] = [wrapper.result]
+    checked_fields: list[Any] = [wrapper.result, wrapper.status_message]
     if wrapper.status_code != 0:
         checked_fields.extend((
             wrapper.status_code,
-            wrapper.status_message,
             wrapper.error_result.model_dump() if wrapper.error_result is not None else None,
         ))
     scan_status = scope.scan(checked_fields)

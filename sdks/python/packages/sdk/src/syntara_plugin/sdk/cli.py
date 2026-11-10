@@ -306,15 +306,14 @@ def _parser() -> argparse.ArgumentParser:
             selected workload image through Podman or Docker and removes it
             afterwards. For a RuntimeBinding release, select an option with
             --image-option and its local inventory with --release. Pass
-            --address (and --tls-* for mutual TLS) to use a runtime you
+            --address and --tls-* for mutual TLS to use a runtime you
             started yourself instead.
 
             --credential NAME=SOURCE supplies a credential the Step's
             integration type declares, reading it from standard input (-), a
             file outside the workspace (file:PATH), or the environment
-            (env:VAR). It is delivered as a read-only file at the approved
-            secret mount, exactly as production delivers it, and never as an
-            environment variable inside the Step.
+            (env:VAR). It is delivered through an invocation callback, never
+            as an environment variable inside the Step.
 
             example:
               syntara-plugin run create-issue --input '{"title": "Broken build"}'
@@ -868,34 +867,28 @@ def _validate_run_mode_options(
 def _validate_run_transport_options(
     arguments: argparse.Namespace, transport_options: Sequence[object]
 ) -> None:
-    from .runner import is_loopback_address, is_runtime_address
+    from .runner import is_runtime_address
 
     if arguments.address is not None and not is_runtime_address(arguments.address):
         raise SettingsError(
             "--address must be a HOST:PORT TCP address, for example 127.0.0.1:50051"
         )
     tls_files = transport_options[1:]
-    if (
-        arguments.mode == "image"
-        and arguments.address is not None
-        and not is_loopback_address(arguments.address)
-        and not any(value is not None for value in tls_files)
-    ):
+    if arguments.credential and any(value is not None for value in transport_options):
+        # Credential callbacks are limited to runtimes the CLI starts.
         raise SettingsError(
-            "a non-loopback --address requires mutual TLS "
-            "(--tls-ca, --tls-cert, --tls-key); the runtime server refuses "
-            "cleartext listeners off loopback"
+            "--credential cannot be used with --address or the --tls-* options: "
+            "the CLI only supplies credentials to a runtime it starts"
         )
     if any(value is not None for value in tls_files) and not all(
         value is not None for value in tls_files
     ):
         raise SettingsError("--tls-ca, --tls-cert, and --tls-key must be supplied together")
-    if arguments.credential and any(value is not None for value in transport_options):
-        # Only a container this command started can be given a mount; a
-        # runtime the author manages must be given its own credential files.
+    if arguments.mode == "image" and arguments.address is not None and not all(
+        value is not None for value in tls_files
+    ):
         raise SettingsError(
-            "--credential cannot be used with --address or the --tls-* options: "
-            "the CLI does not own that runtime and cannot mount a credential into it"
+            "--address requires mutual TLS (--tls-ca, --tls-cert, --tls-key)"
         )
 
 
@@ -1491,13 +1484,6 @@ def _prepare_run_invocation(
         target,
         workspace=manifest.parent,
     )
-    if credentials and arguments.mode == "source":
-        warnings = (
-            *warnings,
-            "warning: source mode delivers credential files at a temporary path, "
-            "not /var/run/syntara/secrets as in production; a Step must use "
-            "context.credential(name).read() rather than a mount path",
-        )
     return target, inputs, input_source, credentials, warnings
 
 
@@ -1757,18 +1743,14 @@ def _run_image_mode(
     declared workload image itself (Podman or Docker) and removes it
     afterwards; passing either option means the author manages the runtime.
 
-    Credentials exist as files only while the container runs: they are
-    written into a private directory, mounted read-only at the approved
-    secret mount, and removed when the block ends. ``--credential`` is
-    rejected earlier for a runtime the author manages, which this command
-    cannot mount anything into.
+    Credentials are served in memory through the invocation callback. The CLI
+    only supplies them to runtimes it starts and authenticates itself.
     """
 
     from .container_engine import managed_runtime
     from .runner import (
         DEFAULT_ADDRESS,
         RunExecutionError,
-        credential_files,
         run_image,
         run_secret_scrubber,
     )
@@ -1796,11 +1778,9 @@ def _run_image_mode(
     if arguments.verbose and not arguments.json:
         print(f"==> starting workload container {target.workload_image}", file=sys.stderr)
     with (
-        credential_files(credentials, container_readable=True) as (_, host_paths),
         managed_runtime(
             target.workload_image,
             target,
-            host_paths,
             # The engine reads a dead container's logs before the runner's
             # health check exists, so it scrubs them as it reads them.
             scrub=run_secret_scrubber(target.input_schema, inputs, credentials),
