@@ -107,6 +107,12 @@ class FakeServicerContext:
         del callback
 
 
+class FailingServicerContext(FakeServicerContext):
+    def add_done_callback(self, callback: object) -> None:
+        del callback
+        raise RuntimeError("callback registration failed")
+
+
 def installed_action_bindings(
     step_identity: str,
     step: BaseStep[EchoInput, EchoOutput],
@@ -564,6 +570,35 @@ def test_runtime_server_times_out_a_cooperative_step() -> None:
     assert cancellation_response.accepted is False
 
 
+def test_async_execute_propagates_unexpected_setup_errors() -> None:
+    service = AsyncContainerRuntimeService(
+        StepRegistry({REVISION: lambda _invocation: ContainerResult(REVISION, output={})})
+    )
+    invocation = _invocation()
+    request = container_pb2.ExecuteRequest(
+        invocation_id=invocation.invocation_id,
+        workflow_run_id=invocation.workflow_run_id,
+        step_revision_id=invocation.step_revision_id,
+        runtime_abi="syntara.container/v1alpha1",
+        inputs_json=json.dumps(invocation.inputs).encode(),
+        timeout_seconds=invocation.timeout_seconds,
+    )
+
+    async def requests():
+        yield container_pb2.ExecuteClientMessage(start=request)
+
+    async def scenario() -> None:
+        with pytest.raises(RuntimeError, match="callback registration failed"):
+            _ = [
+                message
+                async for message in service.Execute(requests(), FailingServicerContext())
+            ]
+        assert service._active == {}
+        service.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_runtime_server_times_out_an_uncancellable_step() -> None:
     service = AsyncContainerRuntimeService(
         step_registry_from_bindings(create_uncancellable_timeout_bindings())
@@ -592,10 +627,15 @@ def test_runtime_server_times_out_an_uncancellable_step() -> None:
     assert cancellation_response.accepted is False
 
 
-def test_daemon_worker_pool_retries_after_first_thread_start_failure(
+@pytest.mark.parametrize(
+    ("worker_limit", "failed_start_attempt"),
+    ((2, 1), (3, 2)),
+)
+def test_daemon_worker_pool_retries_after_thread_start_failure(
     monkeypatch: pytest.MonkeyPatch,
+    worker_limit: int,
+    failed_start_attempt: int,
 ) -> None:
-    worker_limit = 2
     pool = _DaemonStepWorkerPool(worker_limit)
     start_attempts = 0
     original_start = threading.Thread.start
@@ -604,7 +644,7 @@ def test_daemon_worker_pool_retries_after_first_thread_start_failure(
         nonlocal start_attempts
         if thread.name.startswith("syntara-step_"):
             start_attempts += 1
-            if start_attempts == 1:
+            if start_attempts == failed_start_attempt:
                 raise RuntimeError("simulated thread start failure")
         original_start(thread)
 
@@ -613,46 +653,11 @@ def test_daemon_worker_pool_retries_after_first_thread_start_failure(
 
     monkeypatch.setattr(threading.Thread, "start", start_with_one_failure)
     try:
+        invocation = _invocation()
         with pytest.raises(RuntimeError, match="simulated thread start failure"):
-            pool.submit(handler, _invocation())
+            pool.submit(handler, invocation)
 
-        result = pool.submit(handler, _invocation()).result(timeout=2)
-
-        assert result.output == {"ok": True}
-        assert start_attempts == worker_limit + 1
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
-        for thread in pool._threads:
-            if thread.ident is not None:
-                thread.join(timeout=2)
-                assert not thread.is_alive()
-
-
-def test_daemon_worker_pool_retries_after_partial_thread_start_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker_limit = 3
-    pool = _DaemonStepWorkerPool(worker_limit)
-    start_attempts = 0
-    original_start = threading.Thread.start
-
-    def start_with_one_failure(thread: threading.Thread) -> None:
-        nonlocal start_attempts
-        if thread.name.startswith("syntara-step_"):
-            start_attempts += 1
-            if start_attempts == 2:
-                raise RuntimeError("simulated thread start failure")
-        original_start(thread)
-
-    def handler(invocation: ContainerInvocation) -> ContainerResult:
-        return ContainerResult(invocation.step_revision_id, output={"ok": True})
-
-    monkeypatch.setattr(threading.Thread, "start", start_with_one_failure)
-    try:
-        with pytest.raises(RuntimeError, match="simulated thread start failure"):
-            pool.submit(handler, _invocation())
-
-        result = pool.submit(handler, _invocation()).result(timeout=2)
+        result = pool.submit(handler, invocation).result(timeout=2)
 
         assert result.output == {"ok": True}
         assert start_attempts == worker_limit + 1
@@ -696,8 +701,9 @@ def test_daemon_worker_pool_shutdown_wait_after_partial_thread_start_failure(
     monkeypatch.setattr(threading.Thread, "start", start_with_one_failure)
     monkeypatch.setattr(threading.Thread, "join", join_only_started_threads)
 
+    invocation = _invocation()
     with pytest.raises(RuntimeError, match="simulated thread start failure"):
-        pool.submit(handler, _invocation())
+        pool.submit(handler, invocation)
 
     assert start_attempts == 2
     started_threads = [thread.name for thread in pool._threads if thread.ident is not None]
@@ -810,11 +816,15 @@ def test_async_runtime_shutdown_does_not_wait_for_blocked_handlers() -> None:
 import asyncio
 import threading
 
-from syntara_plugin.runtime import ContainerInvocation, ContainerInvocationError, ContainerResult, StepRegistry
+from syntara_plugin.runtime import ContainerInvocation, ContainerInvocationError, ContainerResult, FailureCode, StepRegistry
 from syntara_plugin.runtime.server import AsyncContainerRuntimeService
 
+handler_started = threading.Event()
+release_handler = threading.Event()
+
 def blocked_handler(invocation):
-    threading.Event().wait()
+    handler_started.set()
+    release_handler.wait()
     return ContainerResult(invocation.step_revision_id, output={})
 
 service = AsyncContainerRuntimeService(StepRegistry({"blocked": blocked_handler}))
@@ -823,16 +833,25 @@ invocation = ContainerInvocation(
     workflow_run_id="workflow-run",
     step_revision_id="blocked",
     inputs={},
-    timeout_seconds=0.05,
+    timeout_seconds=1,
     runtime_context={},
 )
 
 async def run_step():
+    task = asyncio.create_task(service._execute_step(blocked_handler, invocation))
+    if not await asyncio.to_thread(handler_started.wait, 2):
+        raise AssertionError("blocked handler did not start")
     try:
-        await service._execute_step(blocked_handler, invocation)
-    except ContainerInvocationError:
-        pass
+        await task
+    except ContainerInvocationError as error:
+        if error.code is not FailureCode.TIMEOUT:
+            raise
+    else:
+        raise AssertionError("blocked handler did not time out")
+    if release_handler.is_set():
+        raise AssertionError("handler was released before shutdown")
     service.shutdown()
+    release_handler.set()
 
 asyncio.run(run_step())
 print("shutdown complete", flush=True)

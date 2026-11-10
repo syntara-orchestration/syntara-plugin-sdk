@@ -145,6 +145,18 @@ class RuntimeServerError(RuntimeError):
     """Raised when the runtime adapter cannot start its gRPC server."""
 
 
+@dataclass
+class _ExecutionSession:
+    """Mutable state owned by one async Execute request."""
+
+    outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None]
+    invocation_id: str = ""
+    cancellation: Event | None = None
+    provider: CallbackCredentialProvider | None = None
+    receiver: asyncio.Task[None] | None = None
+    worker: asyncio.Task[None] | None = None
+
+
 class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     """Async invocation stream with bounded, service-owned step workers.
 
@@ -170,64 +182,86 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         self, requests: AsyncIterator[container_pb2.ExecuteClientMessage],
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[container_pb2.ExecuteServerMessage]:
-        invocation_id = ""
-        cancellation: Event | None = None
-        provider: CallbackCredentialProvider | None = None
-        receiver: asyncio.Task[None] | None = None
-        worker: asyncio.Task[None] | None = None
-        outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None] = asyncio.Queue()
-        loop = asyncio.get_running_loop()
+        session = _ExecutionSession(asyncio.Queue())
         try:
-            first = await anext(requests)
-            if first.WhichOneof("message") != "start":
-                raise ContainerInvocationError(FailureCode.INVALID_INPUT, "The invocation is invalid.", outcome="not_started")
-            invocation_id = first.start.invocation_id
-            invocation, cancellation = invocation_from_request(first.start)
-            handler = self._steps.resolve(invocation.step_revision_id)
-
-            def send(request: container_pb2.CredentialRequest) -> None:
-                try:
-                    loop.call_soon_threadsafe(outgoing.put_nowait, container_pb2.ExecuteServerMessage(credential_request=request))
-                except RuntimeError:
-                    pass
-
-            provider = CallbackCredentialProvider(invocation_id, send, cancellation, invocation.timeout_seconds)
-            object.__setattr__(invocation, "credential_provider", provider)
-            self._register_invocation(invocation_id, cancellation, provider, outgoing)
-            bound_provider = provider
-
-            def close() -> None:
-                invocation.cancellation.set()
-                bound_provider.close()
-
-            context.add_done_callback(lambda _context: close())
-
-            receiver = asyncio.create_task(self._receive_responses(requests, bound_provider, invocation, outgoing))
-            worker = asyncio.create_task(self._run_step(handler, invocation, bound_provider, outgoing))
-            while True:
-                message = await outgoing.get()
-                if message is None:
-                    break
+            await self._prepare_execution(requests, context, session)
+            async for message in self._stream_messages(session.outgoing):
                 yield message
         except StopAsyncIteration:
             return
         except ContainerInvocationError as error:
-            yield container_pb2.ExecuteServerMessage(event=failure_event(invocation_id, error))
-        except Exception:
-            yield container_pb2.ExecuteServerMessage(event=failure_event(
-                invocation_id, ContainerInvocationError(
-                    FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
-                )
-            ))
+            yield container_pb2.ExecuteServerMessage(event=failure_event(session.invocation_id, error))
         finally:
-            if cancellation is not None:
-                cancellation.set()
-                if provider is not None:
-                    provider.close()
-                self._unregister_invocation(invocation_id, cancellation)
-            for task in (receiver, worker):
-                if task is not None:
-                    task.cancel()
+            self._finish_execution(session)
+
+    async def _prepare_execution(
+        self,
+        requests: AsyncIterator[container_pb2.ExecuteClientMessage],
+        context: grpc.aio.ServicerContext,
+        session: _ExecutionSession,
+    ) -> None:
+        first = await anext(requests)
+        if first.WhichOneof("message") != "start":
+            raise ContainerInvocationError(
+                FailureCode.INVALID_INPUT,
+                "The invocation is invalid.",
+                outcome="not_started",
+            )
+        session.invocation_id = first.start.invocation_id
+        invocation, cancellation = invocation_from_request(first.start)
+        session.cancellation = cancellation
+        handler = self._steps.resolve(invocation.step_revision_id)
+        loop = asyncio.get_running_loop()
+
+        def send(request: container_pb2.CredentialRequest) -> None:
+            try:
+                loop.call_soon_threadsafe(
+                    session.outgoing.put_nowait,
+                    container_pb2.ExecuteServerMessage(credential_request=request),
+                )
+            except RuntimeError:
+                pass
+
+        provider = CallbackCredentialProvider(
+            session.invocation_id, send, cancellation, invocation.timeout_seconds
+        )
+        session.provider = provider
+        object.__setattr__(invocation, "credential_provider", provider)
+        self._register_invocation(
+            session.invocation_id, cancellation, provider, session.outgoing
+        )
+
+        def close() -> None:
+            invocation.cancellation.set()
+            provider.close()
+
+        context.add_done_callback(lambda _context: close())
+        session.receiver = asyncio.create_task(
+            self._receive_responses(requests, provider, invocation, session.outgoing)
+        )
+        session.worker = asyncio.create_task(
+            self._run_step(handler, invocation, provider, session.outgoing)
+        )
+
+    @staticmethod
+    async def _stream_messages(
+        outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None],
+    ) -> AsyncIterator[container_pb2.ExecuteServerMessage]:
+        while True:
+            message = await outgoing.get()
+            if message is None:
+                return
+            yield message
+
+    def _finish_execution(self, session: _ExecutionSession) -> None:
+        if session.cancellation is not None:
+            session.cancellation.set()
+            if session.provider is not None:
+                session.provider.close()
+            self._unregister_invocation(session.invocation_id, session.cancellation)
+        for task in (session.receiver, session.worker):
+            if task is not None:
+                task.cancel()
 
     @staticmethod
     async def _receive_responses(
