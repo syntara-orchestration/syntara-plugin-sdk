@@ -258,11 +258,11 @@ def _run_with_fake_secrets(tmp_path, *, failure, preexisting=False):
         ),
         "engine": (
             'if [[ "$FAILURE" == later ]]; then exit 1; fi\n'
+            'if [[ "$*" == "push "* ]]; then echo "compat: digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa size: 856"; exit; fi\n'
             'if [[ "$*" == *"ip -o link show"* ]]; then echo "7: vethabc: <UP>"; fi\n'
             'if [[ "$*" == *"iptables -I FORWARD"* ]]; then touch "$FIREWALL"; fi\n'
             'exit 0'
         ),
-        "curl": 'echo "Docker-Content-Digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
     }
     for name, script in scripts.items():
         command = bin_dir / name
