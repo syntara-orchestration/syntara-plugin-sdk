@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compat-http
+data:
+  result.json: '{"fixture":"execution-plane-compat","value":42}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compat-http
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: compat-http
+  template:
+    metadata:
+      labels:
+        app: compat-http
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: http
+          image: nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+      volumes:
+        - name: content
+          configMap:
+            name: compat-http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compat-http
+spec:
+  clusterIP: 100.64.0.100
+  selector:
+    app: compat-http
+  ports:
+    - port: 80
+      targetPort: 80

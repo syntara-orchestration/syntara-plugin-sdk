@@ -42,6 +42,24 @@ plugin from local wheels, starts the server with mutual TLS, and invokes its
 Action, Control, and Trigger steps over gRPC. It does not require the backend,
 Kubernetes, or the Execution Plane.
 
+For compatibility with the Execution Plane, run the **Execution Plane
+compatibility** GitHub Actions workflow manually against the SDK branch under
+test. Supply publicly pullable Quay image references pinned by SHA-256 digest
+for the Python, Bash, and HTTP step types. The images must advertise the
+identities and schemas from the current `syntara-step-types` manifests; a tag
+alone is not accepted. No registry credentials are used.
+
+The workflow pins an Execution Plane revision and installs this checkout's
+contracts into its environment. It registers a disposable Kind target through
+the Execution Plane's cluster command tooling, then dispatches the three
+images through its Kubernetes worker and container gRPC client. The HTTP
+request uses an in-cluster fixture; the isolated Kind service range uses shared
+address space because the HTTP step rejects private addresses. The test node
+rejects pod forwarding outside the pod network while allowing node image pulls.
+All three cases must execute and return their expected business results; missing
+cluster prerequisites or skipped tests fail the workflow. Update the pinned
+Execution Plane revision and the harness together when its test helpers change.
+
 ## Repository map
 
 | Location | Responsibility |
