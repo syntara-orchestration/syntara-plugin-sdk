@@ -57,7 +57,7 @@ make test-execution-plane-helpers
 ```
 
 For the full test, use a disposable PostgreSQL database, an Execution Plane
-checkout at `67bea4e48dcb15063fcdce1b98b7bd7d443da961`, and a disposable Kind
+checkout at the commit in `EP_REVISION`, and a disposable Kind
 cluster created with `tests/execution_plane/kind.yaml`. Install uv, Docker (or
 a compatible engine), Kind, kubectl, psql, and curl. The engine must support
 Kind networking and node `exec`; the selected kubectl context must point to
@@ -65,9 +65,14 @@ the disposable cluster. Configure the database and run:
 
 ```sh
 EP_PATH=/path/to/syntara-execution-plane \
+EP_REVISION=<full-commit-sha> \
 EP_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/execution_plane \
 make test-execution-plane
 ```
+
+The compatibility workflow pins `EP_REVISION` once at its root and accepts an
+optional `ep-ref` input for `workflow_dispatch`. The helper script requires a
+full 40-character commit SHA and verifies that the checkout matches it.
 
 The target installs dependencies without checkout package build hooks, builds
 local wheels and the image, and starts a registry and the EP API. It requires

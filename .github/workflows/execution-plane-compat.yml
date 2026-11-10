@@ -5,12 +5,21 @@ on:
   push:
     branches: [devel]
   workflow_dispatch:
+    inputs:
+      ep-ref:
+        description: Execution Plane commit SHA to test (defaults to the pinned revision)
+        required: false
+        type: string
 
 permissions:
   contents: read
 
+env:
+  EP_REVISION: ${{ inputs['ep-ref'] || '67bea4e48dcb15063fcdce1b98b7bd7d443da961' }}
+
 jobs:
   dispatch:
+    name: Dispatch SDK plugin through Execution Plane
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -41,7 +50,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: syntara-orchestration/syntara-execution-plane
-          ref: 67bea4e48dcb15063fcdce1b98b7bd7d443da961
+          ref: ${{ env.EP_REVISION }}
           path: execution-plane
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
