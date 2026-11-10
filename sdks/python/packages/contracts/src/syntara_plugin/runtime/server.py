@@ -89,27 +89,33 @@ class _DaemonStepWorkerPool:
 
     def shutdown(self, *, wait: bool = False, cancel_futures: bool = False) -> None:
         with self._shutdown_lock:
-            first_shutdown = not self._shutdown
-            self._shutdown = True
-            if first_shutdown:
-                if cancel_futures:
-                    while True:
-                        try:
-                            item = self._work.get_nowait()
-                        except Empty:
-                            break
-                        if item is not None:
-                            item[0].cancel()
-                        self._work.task_done()
-                started_threads = [thread for thread in self._threads if thread.ident is not None]
-                if started_threads and not self._sentinels_enqueued:
-                    self._sentinels_enqueued = True
-                    for _thread in started_threads:
-                        self._work.put(None)
+            started_threads = self._begin_shutdown(cancel_futures)
         if wait:
-            for thread in self._threads:
-                if thread.ident is not None:
-                    thread.join()
+            for thread in started_threads:
+                thread.join()
+
+    def _begin_shutdown(self, cancel_futures: bool) -> tuple[Thread, ...]:
+        if self._shutdown:
+            return tuple(thread for thread in self._threads if thread.ident is not None)
+        self._shutdown = True
+        if cancel_futures:
+            self._cancel_queued_work()
+        started_threads = tuple(thread for thread in self._threads if thread.ident is not None)
+        if started_threads and not self._sentinels_enqueued:
+            self._sentinels_enqueued = True
+            for _thread in started_threads:
+                self._work.put(None)
+        return started_threads
+
+    def _cancel_queued_work(self) -> None:
+        while True:
+            try:
+                item = self._work.get_nowait()
+            except Empty:
+                return
+            if item is not None:
+                item[0].cancel()
+            self._work.task_done()
 
     @staticmethod
     def _worker(
@@ -132,7 +138,10 @@ class _DaemonStepWorkerPool:
                     continue
                 try:
                     result = handler(invocation)
-                except BaseException as error:
+                except (KeyboardInterrupt, SystemExit) as error:
+                    future.set_exception(error)
+                    raise
+                except Exception as error:
                     future.set_exception(error)
                 else:
                     future.set_result(result)

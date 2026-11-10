@@ -1050,20 +1050,11 @@ class ContainerClient:
             if callable(add_done_callback):
                 add_done_callback(lambda: bridge.close(cancelled=bridge.has_pending))
             for message in call:
-                kind = message.WhichOneof("message")
-                if kind == "credential_request":
-                    if saw_terminal:
-                        raise _protocol_error()
-                    bridge.accept(message.credential_request)
-                    continue
-                if kind != "event":
-                    raise _protocol_error()
-                event = _execution_event_from_stream(
-                    message.event, invocation.invocation_id, saw_terminal
+                event, saw_terminal = self._stream_event(
+                    message, bridge, invocation.invocation_id, saw_terminal
                 )
-                if isinstance(event, ContainerResult):
-                    saw_terminal = True
-                yield event
+                if event is not None:
+                    yield event
         except grpc.RpcError as error:
             rpc_failure = _rpc_error(error)
         finally:
@@ -1075,6 +1066,26 @@ class ContainerClient:
             raise rpc_failure
         if not saw_terminal:
             raise _protocol_error()
+
+    @staticmethod
+    def _stream_event(
+        message: container_pb2.ExecuteServerMessage,
+        bridge: _CredentialRequestBridge,
+        invocation_id: str,
+        saw_terminal: bool,
+    ) -> tuple[ContainerProgress | ContainerResult | None, bool]:
+        """Validate one server message and return its public stream event."""
+
+        kind = message.WhichOneof("message")
+        if kind == "credential_request":
+            if saw_terminal:
+                raise _protocol_error()
+            bridge.accept(message.credential_request)
+            return None, saw_terminal
+        if kind != "event":
+            raise _protocol_error()
+        event = _execution_event_from_stream(message.event, invocation_id, saw_terminal)
+        return event, saw_terminal or isinstance(event, ContainerResult)
 
     def cancel(self, invocation_id: str, *, timeout_seconds: float | None = None) -> bool:
         """Request cooperative cancellation for an active step."""

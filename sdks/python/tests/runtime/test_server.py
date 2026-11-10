@@ -588,11 +588,9 @@ def test_async_execute_propagates_unexpected_setup_errors() -> None:
         yield container_pb2.ExecuteClientMessage(start=request)
 
     async def scenario() -> None:
+        messages = service.Execute(requests(), FailingServicerContext())
         with pytest.raises(RuntimeError, match="callback registration failed"):
-            _ = [
-                message
-                async for message in service.Execute(requests(), FailingServicerContext())
-            ]
+            _ = [message async for message in messages]
         assert service._active == {}
         service.shutdown()
 

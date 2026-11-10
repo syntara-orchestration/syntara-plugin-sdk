@@ -286,11 +286,10 @@ def test_deadline_signals_resolver_and_bounds_remaining_time() -> None:
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    client = ContainerClient(channel)
     try:
         with pytest.raises(ContainerRemoteError) as raised:
-            ContainerClient(channel).execute(
-                _invocation(), timeout_seconds=0.1, credential_handler=read
-            )
+            client.execute(_invocation(), timeout_seconds=0.1, credential_handler=read)
         assert raised.value.code is FailureCode.TIMEOUT
         assert started.is_set()
         assert cancelled.is_set()
