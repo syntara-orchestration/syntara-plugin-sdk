@@ -1,9 +1,11 @@
-"""Run inside the pinned EP integration suite against published step images."""
+"""Run the checkout's registered plugin through the pinned EP Kubernetes worker."""
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 from execution_plane.cluster.cluster_store import ClusterStore
@@ -20,40 +22,42 @@ from tests.integration.kind.test_dispatch import (
 @pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("image_env", "step", "inputs", "expected"),
+    ("identity", "inputs", "expected"),
     [
+        ("example.existing-step.create-ticket", {"title": "compat"}, {"ticket_id": ":compat"}),
         (
-            "EP_COMPAT_PYTHON_IMAGE",
-            "syntara.script-python.script-python",
-            {"code": "import json\nprint(json.dumps({'result': 42}))"},
-            {"return_code": 0, "stdout_json": {"result": 42}},
+            "example.existing-step.normalize-records",
+            {"records": ["Alpha", "Beta"]},
+            {"count": 2, "normalized": ["alpha", "beta"]},
         ),
         (
-            "EP_COMPAT_BASH_IMAGE",
-            "syntara.script-bash.script-bash",
-            {"code": "printf 'hello from bash\\n'"},
-            {"return_code": 0, "stdout": "hello from bash\n"},
-        ),
-        (
-            "EP_COMPAT_HTTP_IMAGE",
-            "syntara.http-request.http-request",
-            {"url": "http://100.64.0.100/result.json", "method": "GET"},
-            {"status_code": 200, "body": {"fixture": "execution-plane-compat", "value": 42}},
+            "example.existing-step.record-opened",
+            {"repository": "sdk"},
+            {"repository": "sdk"},
         ),
     ],
 )
-async def test_published_step_dispatch(
-    ep_cluster, integration_credential_resolver, image_env, step, inputs, expected
+async def test_checkout_plugin_dispatch(
+    ep_cluster, integration_credential_resolver, identity, inputs, expected
 ):
+    manifest = json.loads(Path(os.environ["EP_COMPAT_REGISTRATION"]).read_text(encoding="utf-8"))
+    revision, entry = next(
+        (revision, entry)
+        for revision, entry in manifest["steps"].items()
+        if entry["stepIdentity"] == identity
+    )
+    image = os.environ["EP_COMPAT_IMAGE"]
+    assert "@sha256:" in image
     database_url = os.environ["EP_TEST_DATABASE_URL"]
     settings = get_settings()
-    client_id = "ep-it-dispatch"
+    client_id = "ep-it-sdk-compat"
+    workflow_run_id = str(uuid.uuid4())
     payload = {
-        "image": os.environ[image_env],
+        "image": image,
         "selectors": {},
         "invocation": {
-            "workflow_run_id": str(uuid.uuid4()),
-            "step_revision_id": step,
+            "workflow_run_id": workflow_run_id,
+            "step_revision_id": revision,
             "inputs": inputs,
             "timeout_seconds": 120,
         },
@@ -71,8 +75,17 @@ async def test_published_step_dispatch(
             item = await _process_until_terminal(
                 dispatched.assigned, work, target_store, settings, client_id=client_id
             )
-    assert item.status is WorkItemStatus.COMPLETED, f"{step}: {item.status}; result={item.result}"
+    assert item is not None
+    assert item.status is WorkItemStatus.COMPLETED, (
+        f"{identity}: {item.status}; result={item.result}"
+    )
     assert item.result is not None
     assert item.result["status_code"] == 0
-    for key, value in expected.items():
-        assert item.result["output"][key] == value
+    assert item.result["output_schema_digest"] == entry["schemaDigests"]["output"]
+    if identity.endswith("create-ticket"):
+        assert item.result["output"]["ticket_id"].endswith(expected["ticket_id"])
+        assert item.result["output"]["ticket_id"] != expected["ticket_id"]
+    elif identity.endswith("record-opened"):
+        assert item.result["output"] == {**expected, "event_id": f"{workflow_run_id}:sdk"}
+    else:
+        assert item.result["output"] == expected

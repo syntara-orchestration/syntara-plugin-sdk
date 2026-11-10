@@ -44,21 +44,46 @@ Kubernetes, or the Execution Plane.
 
 For compatibility with the Execution Plane, run the **Execution Plane
 compatibility** GitHub Actions workflow manually against the SDK branch under
-test. Supply publicly pullable Quay image references pinned by SHA-256 digest
-for the Python, Bash, and HTTP step types. The images must advertise the
-identities and schemas from the current `syntara-step-types` manifests; a tag
-alone is not accepted. No registry credentials are used.
+test. It builds the [Existing step types](../examples/existing-step) plugin
+from this checkout, pushes it to a disposable registry, and dispatches its
+Action, Control, and Trigger through the pinned Execution Plane Kubernetes
+worker using the registry-resolved image digest. The workload advertises exact generated step revisions, and the tests select
+those revisions and check their outputs and schema digests. A skip or missing case fails the run.
 
-The workflow pins an Execution Plane revision and installs this checkout's
-contracts into its environment. It registers a disposable Kind target through
-the Execution Plane's cluster command tooling, then dispatches the three
-images through its Kubernetes worker and container gRPC client. The HTTP
-request uses an in-cluster fixture; the isolated Kind service range uses shared
-address space because the HTTP step rejects private addresses. The test node
-rejects pod forwarding outside the pod network while allowing node image pulls.
-All three cases must execute and return their expected business results; missing
-cluster prerequisites or skipped tests fail the workflow. Update the pinned
-Execution Plane revision and the harness together when its test helpers change.
+To run the static fixture checks without containers or a cluster:
+
+```sh
+make test-execution-plane-helpers
+```
+
+For the full test, use a disposable PostgreSQL database, an Execution Plane
+checkout at `67bea4e48dcb15063fcdce1b98b7bd7d443da961`, and a disposable Kind
+cluster created with `tests/execution_plane/kind.yaml`. Install uv, Docker (or
+a compatible engine), Kind, kubectl, psql, and curl. The engine must support
+Kind networking and node `exec`; the selected kubectl context must point to
+the disposable cluster. Configure the database and run:
+
+```sh
+EP_PATH=/path/to/syntara-execution-plane \
+EP_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/execution_plane \
+make test-execution-plane
+```
+
+The target installs dependencies without checkout package build hooks, builds
+local wheels and the image, and starts a registry and the EP API. It requires
+the database and its `execution_plane_runtime` role to exist; alternatively set
+`EP_COMPAT_CREATE_DATABASE=1` and provide `PGHOST`, `PGUSER`, and `PGPASSWORD`
+for a disposable PostgreSQL server. Override `CONTAINER_ENGINE`,
+`EP_KIND_CLUSTER_NAME`, `EP_REGISTRY_NAME`, `EP_REGISTRY_PORT`, and
+`EP_COMPAT_LOG_DIR` as needed. The cluster node's egress rules are changed for
+the duration of the cluster, so delete that cluster after the test. Failure
+logs and Kubernetes diagnostics are saved in the log directory.
+
+The pinned EP revision does not yet supply resolved execution data to
+workloads. This test therefore generates a fixture from the compiled plugin
+registration and places it in the test image; this is not a publishing path.
+Update the pinned EP revision and harness together when its helpers or workload
+contract change.
 
 ## Repository map
 

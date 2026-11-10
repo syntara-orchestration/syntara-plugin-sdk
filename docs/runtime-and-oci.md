@@ -181,10 +181,9 @@ outside this SDK boundary.
 The checked-in [Existing step types](../examples/existing-step) prototype exercises
 this path for Action, Control, and Trigger. `make test-integration` builds its
 plugin wheel, installs it with the Python contracts distribution, and invokes
-all three manifest-declared entry points over the container ABI. The current
-standalone Execution Plane still vendors the older `syntara.node.v1` protocol;
-until that service adopts `syntara.container/v1alpha1`, this repository proves
-the SDK adapter path but does not claim end-to-end Execution Plane dispatch.
+all three manifest-declared entry points over the container ABI. The Execution Plane compatibility test builds the same example from the checkout
+and dispatches its exact registered step revisions through the Execution Plane
+container service. See the [developer guide](developer-guide.md) to run it.
 Automation Orchestrator's workflow selection and platform-owned runners remain
 separate platform responsibilities.
 

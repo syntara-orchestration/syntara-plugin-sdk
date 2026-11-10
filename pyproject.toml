@@ -12,6 +12,7 @@ syntara-plugin-sdk = { workspace = true }
 
 [dependency-groups]
 dev = [
+  "hatchling==1.32.4",
   "pytest>=8.0",
   "jsonschema>=4.23",
   "grpcio-tools==1.78.0",
