@@ -210,3 +210,36 @@ def test_exception_line_matches_underscore_prefixed_exception_names() -> None:
     line = "grpc._channel._InactiveRpcError: <_InactiveRpcError of RPC that terminated>"
     assert _exception_line(line + "\n") == line
     assert _exception_line("httpx.ConnectError: refused\n") == "httpx.ConnectError: refused"
+
+
+def test_runtime_input_rejection_code_is_input_validation_contract() -> None:
+    # The runtime validates the step's inputs before the step runs, so a
+    # code-only INVALID_INPUT report is the SDK rejecting step-types' example
+    # input, not the step failing. Real shape: no error.kind, no errorDetail.
+    result = classify(run_failure(run_document("INVALID_INPUT", "input does not satisfy the declared schema")))
+    assert (result.category, result.rule_id, result.confidence) == (
+        "contract",
+        "CT006",
+        "deterministic",
+    )
+    assert result.facts == {"code": "INVALID_INPUT"}
+
+
+def test_outcome_unknown_without_a_traceback_is_not_attributed_to_the_step() -> None:
+    # The SDK's catch-all reports OUTCOME_UNKNOWN with errorDetail null; without
+    # a traceback nothing establishes an origin, so the analysis stays unknown
+    # instead of claiming the step failed.
+    result = classify(run_failure(run_document("OUTCOME_UNKNOWN", "The step did not complete.")))
+    assert (result.category, result.rule_id, result.confidence) == (
+        "unknown",
+        "UN000",
+        "unclassified",
+    )
+    assert result.facts == {"code": "OUTCOME_UNKNOWN"}
+    assert result.evidence == ("error.code OUTCOME_UNKNOWN: The step did not complete.",)
+
+
+def test_unmapped_runtime_code_stays_unknown_and_points_at_the_mapping() -> None:
+    result = classify(run_failure(run_document("SOME_NEW_CODE", "a code the SDK added")))
+    assert (result.category, result.rule_id) == ("unknown", "UN000")
+    assert any("run-code sets" in action for action in result.actions)

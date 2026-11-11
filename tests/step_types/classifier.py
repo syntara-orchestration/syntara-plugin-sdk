@@ -89,8 +89,25 @@ _GRPC_SIGNATURE = re.compile(r"StatusCode\.[A-Z_]+|grpc\._channel|_InactiveRpcEr
 _MAKE_ERROR = re.compile(r"^make(\[\d+\])?: \*\*\*", re.MULTILINE)
 
 # FailureCode values a step reports through the SDK runtime (syntara_plugin.runtime).
+# FailureCode values a step reports through the SDK runtime (syntara_plugin.runtime),
+# mapped by meaning for a failed run document without a traceback (a traceback
+# classifies by provenance first, in every stage). Every member of the SDK's
+# FailureCode enum belongs in exactly one set; test_step_types_classifier_sync.py
+# fails when the SDK adds a code without a mapping, and a code missing here
+# classifies as unknown rather than being guessed.
 _TRANSIENT_CODES = frozenset({"UPSTREAM_TRANSIENT", "RATE_LIMITED", "TIMEOUT"})
 _BOUNDARY_CODES = frozenset({"ABI_VIOLATION", "CREDENTIAL_SCAN_LIMIT"})
+_INPUT_CODES = frozenset({"INVALID_INPUT"})
+_STEP_REPORTED_CODES = frozenset({
+    "REMOTE_REJECTED",
+    "POLICY_DENIED",
+    "NOT_FOUND",
+    "CONFLICT",
+    "CANCELLED",
+    "AUTHENTICATION_FAILED",
+    "AUTHORIZATION_FAILED",
+})
+_UNDETERMINED_CODES = frozenset({"OUTCOME_UNKNOWN"})
 _SETTINGS_KINDS = frozenset({"SettingsError", "CompilationError"})
 
 
@@ -738,21 +755,57 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
             actions=(INTENTIONAL,),
             facts={"code": code},
         )
+    if code in _INPUT_CODES:
+        # The runtime validates the step's inputs before the step runs, so this
+        # is the SDK rejecting step-types' example input, not the step failing.
+        return Classification(
+            category="contract",
+            rule_id="CT006",
+            rule_name="input-validation",
+            confidence="deterministic",
+            what="The candidate SDK's runtime rejected step-types' example input against "
+            f"the step's declared schema: {message}",
+            evidence=(reported,),
+            cause="This pull request changed how step inputs are validated at runtime.",
+            actions=(INTENTIONAL, "Not intentional? Restore the previous validation."),
+            facts={"code": code},
+        )
+    if code in _STEP_REPORTED_CODES:
+        return Classification(
+            category="implementation",
+            rule_id="IM003",
+            rule_name="step-reported-failure",
+            confidence="deterministic",
+            what=f"The step itself reported {code} for its example input: {message}",
+            evidence=(reported,),
+            cause="The step ran and rejected its own example input; its behaviour under the "
+            "candidate SDK differs from before (or the pull request changed what the step "
+            "receives).",
+            actions=(
+                INTENTIONAL,
+                "Not intentional? Compare the diagnostic run output below with the step's "
+                "example input and expected output.",
+            ),
+            facts={"code": code},
+        )
+    # OUTCOME_UNKNOWN, or a code the SDK added without a mapping: without a
+    # traceback the report does not establish an origin, so stay uncertain.
+    actions = [_REPRODUCE.format(plugin=failure.plugin)]
+    if code not in _UNDETERMINED_CODES:
+        actions.append(
+            "This looks like a new SDK FailureCode; add it to the run-code sets in "
+            "classifier.py."
+        )
     return Classification(
-        category="implementation",
-        rule_id="IM003",
-        rule_name="step-reported-failure",
-        confidence="deterministic",
-        what=f"The step itself reported {code} for its example input: {message}",
+        category="unknown",
+        rule_id="UN000",
+        rule_name="unclassified",
+        confidence="unclassified",
+        what=f"The run failed with error.code {code} and no traceback to locate the "
+        f"failure: {message}",
         evidence=(reported,),
-        cause="The step ran and rejected its own example input; its behaviour under the "
-        "candidate SDK differs from before (or the pull request changed what the step "
-        "receives).",
-        actions=(
-            INTENTIONAL,
-            "Not intentional? Compare the diagnostic run output below with the step's example "
-            "input and expected output.",
-        ),
+        cause="Not determined; read the full output below.",
+        actions=tuple(actions),
         facts={"code": code},
     )
 
@@ -963,7 +1016,7 @@ def classify(failure: Failure) -> Classification:
         return _unclassified(failure, (), f" (the classifier itself failed: {error!r})")
 
 
-NOT_VERIFIED = frozenset({"infra", "fixture-drift"})
+NOT_VERIFIED = frozenset({"infra", "fixture-drift", "unknown"})
 
 
 def outcome_word(category: str) -> str:

@@ -328,6 +328,7 @@ def test_outcome_word() -> None:
 
     assert outcome_word("infra") == "not verified"
     assert outcome_word("fixture-drift") == "not verified"
+    assert outcome_word("unknown") == "not verified"
     assert outcome_word("misconfiguration") == "incompatible"
 
 
