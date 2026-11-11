@@ -27,6 +27,7 @@ from syntara_plugin.runtime import (
     ContainerInvocationError,
     ContainerRemoteError,
     ContainerResult,
+    ContainerToolbox,
     ExecutionContext,
     FailureCode,
     InstalledStepManifest,
@@ -46,6 +47,7 @@ from syntara_plugin.runtime.server import (
     load_runtime_server_config,
     resolved_step_registry,
 )
+from syntara_plugin.runtime.toolbox import _toolbox_active, _toolbox_state
 
 REVISION = "sha256:" + "a" * 64
 
@@ -77,8 +79,10 @@ class BarrierStep(ActionStep[EchoInput, EchoOutput]):
 class CancellationStep(ActionStep[EchoInput, EchoOutput]):
     started = threading.Event()
     cancelled = threading.Event()
+    toolbox: ContainerToolbox | None = None
 
     def run(self, inputs: EchoInput, context: ExecutionContext) -> EchoOutput:
+        type(self).toolbox = context.toolbox
         self.started.set()
         if context.cancellation.wait(timeout=5):
             self.cancelled.set()
@@ -160,6 +164,7 @@ def create_barrier_bindings() -> StepBindings:
 def create_cancellation_bindings() -> StepBindings:
     CancellationStep.started = threading.Event()
     CancellationStep.cancelled = threading.Event()
+    CancellationStep.toolbox = None
     return installed_action_bindings("smoke.cancellation.v1", CancellationStep())
 
 
@@ -480,6 +485,9 @@ def test_runtime_server_cancels_an_active_step(tmp_path: Path) -> None:
             )
             assert await asyncio.to_thread(CancellationStep.started.wait, 5)
             assert await asyncio.to_thread(client.cancel, "invocation-1", timeout_seconds=5)
+            assert CancellationStep.toolbox is not None
+            assert await asyncio.to_thread(_toolbox_state(CancellationStep.toolbox).closed.wait, 5)
+            assert not _toolbox_active(CancellationStep.toolbox)
             with pytest.raises(ContainerRemoteError) as raised:
                 await execution
         finally:
@@ -540,6 +548,9 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
 
             assert raised.value.code() is grpc.StatusCode.CANCELLED
             assert await asyncio.to_thread(CancellationStep.cancelled.wait, 5)
+            assert CancellationStep.toolbox is not None
+            assert await asyncio.to_thread(_toolbox_state(CancellationStep.toolbox).closed.wait, 5)
+            assert not _toolbox_active(CancellationStep.toolbox)
         finally:
             channel.close()
             await server.stop(grace=0)

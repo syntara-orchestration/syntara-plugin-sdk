@@ -28,6 +28,7 @@ from .outcome import (
     bounded_message,
     error_result_base_schema,
 )
+from .toolbox import _close_toolbox
 from .validation import StepInputValidationError, validate_step_inputs
 
 _INVALID_STEP_RESPONSE = "The step returned an invalid response."
@@ -320,25 +321,28 @@ def _invoke_with_error_schema(
     exceptions, raise ``StepExecutionError`` and therefore have no wrapper.
     """
 
-    untrusted_binding = False
-    executor: StepExecutor | None = None
     try:
-        executor = StepExecutor(step)
-    except Exception:
-        untrusted_binding = True
-    if untrusted_binding or executor is None:
-        raise StepExecutionError(_UNTRUSTED_BINDING, outcome="not_started")
+        untrusted_binding = False
+        executor: StepExecutor | None = None
+        try:
+            executor = StepExecutor(step)
+        except Exception:
+            untrusted_binding = True
+        if untrusted_binding or executor is None:
+            raise StepExecutionError(_UNTRUSTED_BINDING, outcome="not_started")
 
-    scoped_context = context._with_credentials(step.descriptor.credential_names)
-    scope = scoped_context._credential_scope
-    assert scope is not None
-    try:
-        wrapper = _execute_scoped(executor, step, input, scoped_context, scope)
-        _reject_credential_output(wrapper, scope)
-        object.__setattr__(wrapper, "error_schema_digest", executor.last_error_schema_digest)
-        return wrapper, executor.last_error_schema_digest
+        scoped_context = context._with_credentials(step.descriptor.credential_names)
+        scope = scoped_context._credential_scope
+        assert scope is not None
+        try:
+            wrapper = _execute_scoped(executor, step, input, scoped_context, scope)
+            _reject_credential_output(wrapper, scope)
+            object.__setattr__(wrapper, "error_schema_digest", executor.last_error_schema_digest)
+            return wrapper, executor.last_error_schema_digest
+        finally:
+            scope.close()
     finally:
-        scope.close()
+        _close_toolbox(context.toolbox)
 
 
 def _execute_scoped(

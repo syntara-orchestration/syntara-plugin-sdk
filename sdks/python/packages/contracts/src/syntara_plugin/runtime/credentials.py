@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import weakref
 from collections.abc import Callable, Mapping
 from enum import StrEnum
 from pathlib import Path
@@ -301,7 +302,7 @@ class _CredentialScope:
 
     __slots__ = (
         "_allowed", "_provider", "_active", "_strings", "_scalars",
-        "_fingerprint_count", "_overflow", "_has_read", "_restriction_failed",
+        "_fingerprint_count", "_overflow", "_has_read", "_restriction_failed", "__weakref__",
     )
 
     def __init__(self, allowed: tuple[str, ...], provider: CredentialProvider | None) -> None:
@@ -315,8 +316,16 @@ class _CredentialScope:
         self._restriction_failed = False
         self._provider: _ScopedCredentialProvider | None = None
         if provider is not None:
+            scope_ref = weakref.ref(self)
+
+            def record(document: Mapping[str, Any]) -> None:
+                scope = scope_ref()
+                if scope is None:
+                    raise CredentialAccessError("expired")
+                scope._record(document)
+
             try:
-                restricted = provider.restrict(self._allowed, self._record)
+                restricted = provider.restrict(self._allowed, record)
                 if (
                     restricted is provider
                     or not callable(getattr(restricted, "read", None))

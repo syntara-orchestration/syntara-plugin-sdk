@@ -118,10 +118,15 @@ def normalize_run_id(context: ExecutionContext) -> ExecutionContext:
         maximum=_DERIVATION_MAX,
         note=", leaving room for the derived run id",
     )
-    return ExecutionContext(
+    normalized = ExecutionContext(
         invocation_id=context.invocation_id,
         workflow_run_id=f"{context.invocation_id}{_DERIVED_SUFFIX}",
         runtime_context=context.runtime_context,
         cancellation=context.cancellation,
         credential_provider=context._provider,
     )
+    # Execution contexts created during normalization must retain the caller's
+    # invocation-scoped toolbox so execution closes the same surface the caller
+    # holds.
+    object.__setattr__(normalized, "_toolbox", context.toolbox)
+    return normalized

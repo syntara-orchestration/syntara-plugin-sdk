@@ -108,6 +108,7 @@ def _prepare_invocation(
         cancellation=context.cancellation,
         credential_provider=context._provider,
     )
+    object.__setattr__(prepared, "_toolbox", context.toolbox)
     return normalized_inputs, prepared
 
 

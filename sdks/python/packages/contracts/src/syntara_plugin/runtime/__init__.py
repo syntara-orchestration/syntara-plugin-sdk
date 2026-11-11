@@ -88,6 +88,7 @@ from .outcome import (
 )
 from .plugin_bindings import load_plugin_bindings
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
+from .toolbox import ContainerToolbox
 from .validation import StepInputValidationError
 
 if TYPE_CHECKING:
@@ -169,6 +170,7 @@ __all__ = [
     "ContainerResult",
     "ContainerRuntimeService",
     "ContainerStepHandler",
+    "ContainerToolbox",
     "CredentialRequestContext",
     "CredentialResolver",
     "ContractBundle",
