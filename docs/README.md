@@ -14,6 +14,7 @@ Choose the guide that matches what you are doing.
 | Test step type implementations locally | [Testing reference](testing.md) |
 | Run one step type locally from source or a running image | [Running locally](running-locally.md) |
 | Contribute to the SDK or change a contract | [Developer guide](developer-guide.md) |
+| See what an SDK change does to the maintained step types | [Step type compatibility check](step-type-compatibility.md) |
 | Prepare or approve a Python package release | [Release guide](releasing.md) |
 | Understand the OCI artifact and container ABI boundaries | [Runtime and OCI model](runtime-and-oci.md) |
 

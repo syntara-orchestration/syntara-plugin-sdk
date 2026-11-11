@@ -1,0 +1,263 @@
+name: Step types compatibility
+
+# Builds this pull request's SDK and contracts wheels and runs the maintained
+# syntara-step-types plugins through their own validate, run, and
+# build-inspect flow against them. See docs/step-type-compatibility.md.
+
+on:
+  pull_request:
+    # labeled/unlabeled: adding or removing the breaking-change label re-evaluates the
+    # check by itself (any label change re-runs it in full, which keeps it correct).
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [devel]
+  workflow_dispatch:
+    inputs:
+      step_types_ref:
+        description: syntara-step-types commit, branch, or tag (empty uses the pinned revision)
+        required: false
+        default: ""
+        type: string
+      report_only:
+        description: Report incompatibilities without failing the check
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: step-types-compat-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  # Superseded pull request runs are cancelled; devel and manual runs always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned syntara-step-types revision. Bump it with a pull request that edits this line.
+  STEP_TYPES_REF: ${{ inputs.step_types_ref || '40f5d907eb3b0f16b73ca040a24320327e6f1a4d' }}
+  UV_VERSION: "0.12.3"
+
+jobs:
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # read the breaking-change label; this job runs no repository code
+    outputs:
+      run_compat: ${{ steps.decide.outputs.run_compat }}
+      mode: ${{ steps.mode.outputs.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Decide whether the check applies
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run_compat=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # HEAD is the pull request merge commit; HEAD^1 is the base it merges into.
+          # Only changes that cannot affect the wheels or the check skip it. --no-renames
+          # lists both sides of a move, so moving code into docs/ still runs the check.
+          relevant="$(git diff --no-renames --name-only HEAD^1 HEAD \
+            | grep -Ev '^(docs/.*|.*\.md|LICENSE|\.github/CODEOWNERS|\.github/pull_request_template\.md)$' \
+            || true)"
+          if [ -n "$relevant" ]; then
+            echo "run_compat=true" >> "$GITHUB_OUTPUT"
+            printf 'Relevant changes:\n%s\n' "$relevant"
+          else
+            echo "run_compat=false" >> "$GITHUB_OUTPUT"
+            echo "Only documentation changed; the step types check is skipped by design."
+          fi
+      - name: Resolve report mode
+        id: mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          DISPATCH_REPORT_ONLY: ${{ inputs.report_only }}
+        run: |
+          # Labels are read live, not from the event payload, which re-runs reuse. This
+          # mode only lets the legs report without failing; the gate decides from its own
+          # live read in compat-report.
+          mode=enforcing
+          if [ "$DISPATCH_REPORT_ONLY" = "true" ]; then
+            mode=report-only:dispatch
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            labels="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name')"
+            if printf '%s\n' "$labels" | grep -qx 'breaking-change'; then
+              mode=report-only:label
+            fi
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Report mode: $mode"
+
+  discover:
+    name: Discover step types
+    needs: changes
+    if: needs.changes.outputs.run_compat == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      plugins: ${{ steps.discover.outputs.plugins }}
+      pin: ${{ steps.discover.outputs.pin }}
+    steps:
+      - name: Validate the step-types ref
+        run: |
+          if ! [[ "$STEP_TYPES_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]]; then
+            echo "::error title=Invalid step_types_ref::Use a commit SHA, branch, or tag name."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: sdk
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: syntara-orchestration/syntara-step-types
+          ref: ${{ env.STEP_TYPES_REF }}
+          path: step-types
+          persist-credentials: false
+      - name: Discover step types
+        id: discover
+        run: python3 sdk/tests/step_types/discover.py step-types
+
+  tooling:
+    name: Check tooling tests
+    needs: changes
+    if: needs.changes.outputs.run_compat == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
+      - run: make test-step-types-helpers
+
+  compat:
+    name: ${{ matrix.plugin }}
+    needs: [changes, discover]
+    if: needs.changes.outputs.run_compat == 'true'
+    runs-on: ubuntu-latest
+    # Above the driver's own 40-minute budget, so a hang is classified, not cut off.
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJSON(needs.discover.outputs.plugins) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: sdk
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: syntara-orchestration/syntara-step-types
+          ref: ${{ needs.discover.outputs.pin }}
+          path: step-types
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          version: ${{ env.UV_VERSION }}
+      - name: Build candidate SDK wheels
+        working-directory: sdk
+        run: uv build --all-packages --out-dir "$RUNNER_TEMP/wheels"
+      - name: Check the step type against the candidate SDK
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          MODE: ${{ needs.changes.outputs.mode }}
+        run: |
+          podman --version
+          uv run --no-project --python 3.12 python sdk/tests/step_types/driver.py \
+            --plugin "$PLUGIN" \
+            --step-types-dir step-types \
+            --wheels-dir "$RUNNER_TEMP/wheels" \
+            --report-dir report \
+            --mode "$MODE"
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: step-types-compat-${{ matrix.plugin }}
+          path: report/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+      - name: Remove the temporary registry
+        if: always()
+        run: podman rm --force step-types-compat-registry || true
+
+  compat-report:
+    name: compat-report
+    needs: [changes, discover, tooling, compat]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # re-read the breaking-change label; the token stays in that one step
+    steps:
+      - name: Read the breaking-change label
+        id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          # Runs before any repository code is checked out. This live read is the only
+          # source of the label for the verdict: the legs' recorded mode can be stale
+          # (label removed later, or outputs reused by "Re-run failed jobs").
+          present=false
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            labels="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name')"
+            if printf '%s\n' "$labels" | grep -qx 'breaking-change'; then
+              present=true
+            fi
+          fi
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: sdk
+          persist-credentials: false
+      - name: Download reports
+        if: needs.changes.outputs.run_compat == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: step-types-compat-*
+          path: reports
+          merge-multiple: true
+      - name: Aggregate the verdict
+        env:
+          PLUGINS: ${{ needs.discover.outputs.plugins }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_COMPAT: ${{ needs.changes.outputs.run_compat }}
+          DISCOVER_RESULT: ${{ needs.discover.result }}
+          TOOLING_RESULT: ${{ needs.tooling.result }}
+          COMPAT_RESULT: ${{ needs.compat.result }}
+          LABEL_PRESENT: ${{ steps.label.outputs.present }}
+        run: |
+          python3 sdk/tests/step_types/report.py \
+            --reports-dir reports \
+            --plugins "${PLUGINS:-[]}" \
+            --changes "$CHANGES_RESULT" \
+            --run-compat "${RUN_COMPAT:-false}" \
+            --discover "$DISCOVER_RESULT" \
+            --tooling "$TOOLING_RESULT" \
+            --compat "$COMPAT_RESULT" \
+            --label-report-only "${LABEL_PRESENT:-false}"
