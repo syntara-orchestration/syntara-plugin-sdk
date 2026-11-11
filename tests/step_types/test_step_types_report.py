@@ -11,7 +11,13 @@ from report import main
 PLUGINS = '["http-request", "script-bash"]'
 
 
-def write(directory: Path, plugin: str, result: str, report_only: bool = False) -> None:
+def write(
+    directory: Path,
+    plugin: str,
+    result: str,
+    report_only: bool = False,
+    confidence: str = "deterministic",
+) -> None:
     directory.mkdir(exist_ok=True)
     mode = "report-only:dispatch" if report_only else "enforcing"
     document = {
@@ -22,7 +28,12 @@ def write(directory: Path, plugin: str, result: str, report_only: bool = False) 
         "pin": {},
     }
     if result == "fail":
-        document["failure"] = {"stage": "validate", "index": 3, "category": "misconfiguration"}
+        document["failure"] = {
+            "stage": "validate",
+            "index": 3,
+            "category": "misconfiguration",
+            "confidence": confidence,
+        }
     (directory / f"{plugin}.json").write_text(json.dumps(document))
 
 
@@ -157,3 +168,29 @@ def test_summary_is_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     text = summary.read_text()
     assert "## Step types compatibility" in text
     assert "| http-request | compatible |" in text
+
+
+def test_summary_reports_the_analysis_mix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    reports = tmp_path / "reports"
+    write(reports, "http-request", "fail", confidence="deterministic")
+    write(reports, "script-bash", "fail", confidence="unclassified")
+    write(reports, "script-python", "pass")
+    assert run(tmp_path, compat="failure") == 1
+    output = capsys.readouterr().out
+    assert "failure analysis: 1 deterministic, 1 unclassified" in output
+    assert "failures without a rule" in output
+    assert "failure analysis: 1 deterministic, 1 unclassified" in summary.read_text()
+
+
+def test_no_analysis_mix_when_everything_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    write(tmp_path / "reports", "http-request", "pass")
+    write(tmp_path / "reports", "script-bash", "pass")
+    assert run(tmp_path) == 0
+    assert "failure analysis" not in capsys.readouterr().out

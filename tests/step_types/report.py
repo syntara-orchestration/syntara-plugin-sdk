@@ -114,6 +114,22 @@ def verdict(args: argparse.Namespace, reports: dict[str, dict[str, Any] | None])
     return Verdict(0, ["every step type is compatible with the candidate SDK"])
 
 
+def analysis_mix(reports: dict[str, dict[str, Any] | None]) -> str:
+    """One line describing how the failing reports were classified, or ""."""
+    counts = {"deterministic": 0, "inferred": 0, "unclassified": 0}
+    for report in reports.values():
+        if isinstance(report, dict) and report.get("result") == "fail":
+            confidence = str((report.get("failure") or {}).get("confidence", ""))
+            counts[confidence if confidence in counts else "unclassified"] += 1
+    if not any(counts.values()):
+        return ""
+    parts = [f"{value} {name}" for name, value in counts.items() if value]
+    line = f"failure analysis: {', '.join(parts)}"
+    if counts["unclassified"]:
+        line += " (failures without a rule; see the docs)"
+    return line
+
+
 def row(plugin: str, report: dict[str, Any] | None, label: bool) -> list[str]:
     if report is None:
         return [plugin, "no report", "-", "-", "-", "-"]
@@ -175,6 +191,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     pin = next((r.get("pin", {}) for r in reports.values() if r), {})
     if pin:
         out.line(f"step-types pin {str(pin.get('sha', ''))[:12]} ({pin.get('age_days')} days old)")
+    mix = analysis_mix(reports)
+    if mix:
+        out.line(mix)
     for warning in result.warnings:
         out.line(out.paint(f"{out.glyphs['warn']} {warning}", YELLOW))
     if result.code:
@@ -197,6 +216,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary.append(
             f"\nstep-types pin `{str(pin.get('sha', ''))[:12]}` ({pin.get('age_days')} days old)\n"
         )
+    if mix:
+        summary.append(f"\n{mix}\n")
     summary.append("\n" + "".join(f"**Warning:** {warning}  \n" for warning in result.warnings))
     verdict_word = "FAIL" if result.code else ("PASS, report-only" if result.warnings else "PASS")
     summary.append("".join(f"**{verdict_word}:** {reason}  \n" for reason in result.reasons))

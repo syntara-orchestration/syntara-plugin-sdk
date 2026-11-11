@@ -77,6 +77,26 @@ summary repeats the analysis, and each job uploads a
 `step-types-compat-<step type>` artifact with a JSON report and every stage's
 log.
 
+### When a failure reports unknown
+
+An `unknown` failure still fails the check; it means no rule recognized the
+signature, so the analysis says what it knows and stops. To turn it into a
+rule:
+
+1. Open the leg's `step-types-compat-<step type>` artifact and read
+   `<step type>.json` and the failing stage's log.
+2. Find the stable signature: an error code, an exact message line, or a
+   traceback location.
+3. Add a rule to `tests/step_types/classifier.py` with a test that captures
+   the real output, and prove the test can fail by breaking the rule.
+
+The gate's summary prints the analysis mix for the run (`failure analysis:
+2 deterministic, 1 unclassified`), so unknown failures are visible without
+opening the logs. Two sync tests keep the classifier current with the SDK:
+one fails when a new `FailureCode` is added without a mapping, the other runs
+the CLI against a scratch workspace and fails when an error message the rules
+match is reworded.
+
 ### Mechanical migrations
 
 For a few settings changes the check knows the migration. It applies it to the
