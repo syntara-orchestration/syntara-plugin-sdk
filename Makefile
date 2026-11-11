@@ -4,7 +4,7 @@ install:
 	uv sync --locked --all-groups
 
 test:
-	uv run --no-sync pytest sdks/python/tests examples -q
+	uv run --no-sync pytest sdks/python/tests examples tests/step_types -q
 
 test-examples:
 	uv run --no-sync pytest examples -q

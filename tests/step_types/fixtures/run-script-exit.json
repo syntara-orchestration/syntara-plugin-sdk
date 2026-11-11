@@ -1,0 +1,25 @@
+{
+  "credentials": [],
+  "error": {
+    "code": "REMOTE_REJECTED",
+    "message": "Script exited with code 3",
+    "providerCode": "",
+    "retryable": false
+  },
+  "errorDetail": null,
+  "image": null,
+  "input": {
+    "code": "import sys\nprint(\"partial\")\nsys.exit(3)"
+  },
+  "inputSource": "/work/inputs/pyexit.json",
+  "invocationId": "run-00000000000000000000000000000000",
+  "mode": "source",
+  "objectReference": null,
+  "ok": false,
+  "outcome": null,
+  "output": null,
+  "status": 1,
+  "statusMessage": "Script exited with code 3",
+  "target": "syntara.script-python.script-python",
+  "workflowRunId": "run-00000000000000000000000000000000-run"
+}
