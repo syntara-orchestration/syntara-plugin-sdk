@@ -50,34 +50,40 @@ spec:
           title: API token
           default: ""
           description: Test-only value for the local example; not credential delivery.
-      required: [title, request_type]
-      if:
-        properties:
-          request_type:
-            const: bug
-        required: [request_type]
-      then:
-        properties:
-          reproduction_steps:
-            type: string
-            title: Reproduction steps
-            minLength: 1
-          environment:
-            type: string
-            title: Environment
-            default: development
-            enum: [development, staging, production]
-        required: [reproduction_steps]
-      else:
-        properties:
-          business_value:
-            type: string
-            title: Business value
-            minLength: 1
-          target_release:
-            type: [string, "null"]
-            title: Target release
-        required: [business_value]
+      required: [title]
+      allOf:
+        - if:
+            properties:
+              request_type:
+                const: bug
+            required: [request_type]
+          then:
+            properties:
+              reproduction_steps:
+                type: string
+                title: Reproduction steps
+                minLength: 1
+              environment:
+                type: string
+                title: Environment
+                default: development
+                enum: [development, staging, production]
+            required: [reproduction_steps]
+        - if:
+            properties:
+              request_type:
+                const: feature
+            required: [request_type]
+          then:
+            properties:
+              business_value:
+                type: string
+                title: Business value
+                minLength: 1
+              target_release:
+                type: [string, "null"]
+                title: Target release
+            required: [business_value]
   inputPresentation:
     renderer: rjsf.v1
     uiSchema:
