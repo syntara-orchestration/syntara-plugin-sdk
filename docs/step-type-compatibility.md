@@ -91,11 +91,12 @@ rule:
    the real output, and prove the test can fail by breaking the rule.
 
 The gate's summary prints the analysis mix for the run (`failure analysis:
-2 deterministic, 1 unclassified`), so unknown failures are visible without
-opening the logs. Two sync tests keep the classifier current with the SDK:
-one fails when a new `FailureCode` is added without a mapping, the other runs
-the CLI against a scratch workspace and fails when an error message the rules
-match is reworded.
+2 deterministic, 1 unclassified`, plus a pointer here whenever any failure is
+unclassified), so unknown failures are visible without opening the logs.
+Three sync tests keep the classifier current with the SDK: one fails when a
+new `FailureCode` is added without a mapping, and two run the CLI against a
+scratch workspace and fail when an error message or diagnostic code the rules
+match changes.
 
 ### Mechanical migrations
 
