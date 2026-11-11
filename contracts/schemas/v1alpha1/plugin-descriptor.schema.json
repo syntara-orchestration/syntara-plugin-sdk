@@ -77,6 +77,15 @@
       }
     },
     "schema": {"type": "object"},
+    "inputPresentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["renderer", "uiSchema"],
+      "properties": {
+        "renderer": {"const": "rjsf.v1"},
+        "uiSchema": {"type": "object"}
+      }
+    },
     "schemaDigests": {
       "type": "object",
       "additionalProperties": {"$ref": "common.schema.json#/$defs/sha256Digest"}
@@ -176,6 +185,7 @@
             "error": {"$ref": "#/$defs/schema"},
             "domain": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
             "input": {"$ref": "#/$defs/schema"},
+            "inputPresentation": {"$ref": "#/$defs/inputPresentation"},
             "integrationType": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
             "output": {"$ref": "#/$defs/schema"},
             "runtime": {"$ref": "#/$defs/actionRuntime"},
@@ -206,6 +216,7 @@
             "error": {"$ref": "#/$defs/schema"},
             "integrationType": {"$ref": "common.schema.json#/$defs/qualifiedIdentifier"},
             "input": {"$ref": "#/$defs/schema"},
+            "inputPresentation": {"$ref": "#/$defs/inputPresentation"},
             "invocation": {"$ref": "#/$defs/workflowInvocation"},
             "output": {"$ref": "#/$defs/schema"},
             "runtime": {"$ref": "#/$defs/runnerRuntime"},
@@ -238,6 +249,7 @@
             "configuration": {"$ref": "#/$defs/schema"},
             "driver": {"$ref": "step.schema.json#/$defs/driver"},
             "input": {"$ref": "#/$defs/schema"},
+            "inputPresentation": {"$ref": "#/$defs/inputPresentation"},
             "output": {"$ref": "#/$defs/schema"},
             "runtime": {"$ref": "#/$defs/runnerRuntime"},
             "schemaDigests": {

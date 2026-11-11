@@ -1,0 +1,35 @@
+ui:order:
+  - title
+  - description
+  - request_type
+  - "*"
+  - priority
+  - estimate_points
+  - notify_watchers
+  - due_date
+  - api_token
+title:
+  ui:autofocus: true
+  ui:placeholder: Summarize the request
+description:
+  ui:widget: textarea
+  ui:placeholder: Add useful background and acceptance details
+request_type:
+  ui:widget: select
+priority:
+  ui:widget: select
+estimate_points:
+  ui:widget: updown
+due_date:
+  ui:widget: date
+reproduction_steps:
+  ui:widget: textarea
+  ui:placeholder: List the steps that reproduce the problem
+environment:
+  ui:widget: select
+business_value:
+  ui:widget: textarea
+  ui:placeholder: Explain the outcome this feature should enable
+api_token:
+  ui:widget: password
+  ui:help: Test-only field; it does not configure credential delivery.
