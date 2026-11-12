@@ -30,6 +30,12 @@ bounded output scanner can reject leaks. An access failure never includes
 provider details. Hosts must not log sensitive messages. The callback grants
 access only for the invocation; it is not a sandbox for arbitrary Python code.
 
+Terminal-event delivery may outlive the execution budget by a bounded window.
+That window does not extend credential access: client resolver contexts and
+server providers remain bounded by the execution deadline (or a shorter
+explicit transport deadline). See [Runtime and OCI model](../../docs/runtime-and-oci.md)
+for timeout delivery and unknown-outcome behavior.
+
 The synchronous client invokes the host-supplied resolver on the thread
 consuming the Execute stream. Each resolver receives its declared name,
 invocation ID, cancellation signal, and monotonic deadline through a

@@ -15,7 +15,7 @@ import signal
 from _thread import LockType
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from queue import Queue
+from queue import Empty, Queue
 from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
 from time import monotonic
 from typing import Any, Literal, NoReturn
@@ -43,6 +43,7 @@ _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 _MAX_JSON_BYTES = 1_048_576
 _MAX_TIMEOUT_SECONDS = 86_400
+_RESULT_DELIVERY_GRACE_SECONDS = 5.0
 _MAX_STATUS_CODE = 4_294_967_295
 _MAX_SYNC_INVOCATIONS = 16
 _SYNC_RUNTIME_WORKER_SLOTS = BoundedSemaphore(_MAX_SYNC_INVOCATIONS)
@@ -483,6 +484,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             request = first.start
             invocation_id = request.invocation_id
             invocation, cancellation = invocation_from_request(request)
+            execution_deadline = monotonic() + invocation.timeout_seconds
             handler = self._steps.resolve(invocation.step_revision_id)
             provider = CallbackCredentialProvider(
                 invocation_id,
@@ -503,7 +505,28 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 requests, handler, invocation, provider, outgoing, terminal_lock
             )
             while context.is_active():
-                message = outgoing.get()
+                try:
+                    message = outgoing.get(timeout=max(0.0, execution_deadline - monotonic()))
+                except Empty:
+                    # Prefer an already committed terminal event over timeout.
+                    # Hold the same lock as the handler and Cancel so signalling
+                    # cancellation cannot race a late handler result into the stream.
+                    with terminal_lock:
+                        try:
+                            message = outgoing.get_nowait()
+                        except Empty:
+                            cancellation.set()
+                            provider.close()
+                            outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
+                                invocation_id, ContainerInvocationError(
+                                    FailureCode.TIMEOUT,
+                                    "The step exceeded its execution timeout.",
+                                    retryable=True,
+                                    outcome="not_completed",
+                                )
+                            )))
+                            outgoing.put(None)
+                            message = outgoing.get_nowait()
                 if message is None:
                     break
                 yield message
@@ -1031,7 +1054,14 @@ class ContainerClient:
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,
         credential_handler: CredentialResolver | None = None,
     ) -> Iterator[ContainerProgress | ContainerResult]:
-        """Invoke a step type and yield progress followed by exactly one result."""
+        """Invoke a step type and yield progress followed by exactly one result.
+
+        The default RPC deadline includes five seconds for terminal-event
+        delivery after the invocation's execution budget. ``timeout_seconds``
+        is an optional hard transport limit, capped at that default. A limit
+        no longer than the execution budget can prevent a timeout failure from
+        reaching the client. It does not change the workload's execution budget.
+        """
 
         request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)
@@ -1040,7 +1070,7 @@ class ContainerClient:
             credential_handler,
             request,
             invocation.cancellation,
-            monotonic() + deadline,
+            monotonic() + min(deadline, invocation.timeout_seconds),
         )
         self._register_bridge(bridge)
         saw_terminal = False
@@ -1169,9 +1199,9 @@ def _request_from_invocation(
 
 
 def _execution_deadline(invocation: ContainerInvocation, timeout_seconds: float | None) -> float:
-    """Constrain transport lifetime to the invocation contract's timeout."""
+    """Bound transport lifetime while allowing the terminal event to arrive."""
 
-    deadline = float(invocation.timeout_seconds)
+    deadline = float(invocation.timeout_seconds) + _RESULT_DELIVERY_GRACE_SECONDS
     if timeout_seconds is None:
         return deadline
     if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool):
