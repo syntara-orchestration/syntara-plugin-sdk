@@ -281,6 +281,9 @@ Both modes execute through the SDK's `ContainerClient` over real gRPC, call
 `Health` first to check the ABI identifier and that the runtime advertises the
 requested step type, and use a 60 second invocation timeout with an empty
 runtime context; credentials are supplied only when the step requests them.
+The client allows up to five additional seconds to receive the final result or
+failure message. This does not extend the step's execution timeout; see
+[Execution timeouts](runtime-and-oci.md#execution-timeouts).
 The identifier alone cannot distinguish the earlier unary `v1alpha1` protocol;
 the client and workload must both implement the current callback protocol.
 

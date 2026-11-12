@@ -86,6 +86,36 @@ logs. Do not put values in inputs or runtime context. See
 [ADR 0011](../.sdlc/adrs/0011-credential-callback.md) for callback lifetime and
 failure semantics.
 
+### Execution timeouts
+
+When a step exceeds its execution timeout, the runtime signals cancellation
+and sends a `TIMEOUT` failure with outcome `not_completed`. The Python client
+keeps the connection open for up to five additional seconds so that failure
+can reach the caller. Closing the connection at the execution timeout could
+otherwise lose the failure message and leave the caller unsure how the step
+ended. For example, a five-second execution timeout gets a ten-second RPC
+deadline by default.
+
+The host constructs a `ContainerInvocation` whose `timeout_seconds` field sets
+the step's execution timeout. The Execution Plane submits that invocation
+through `ContainerClient.stream()`. The separate `timeout_seconds` keyword
+argument to `.stream()` or `.execute()` controls how long the client waits for
+the execution call, including delivery of the final response. When that time
+expires, the client ends the RPC even if the workload has not reported a result
+or failure.
+
+Omit that keyword argument to let the client wait up to five additional seconds
+for the final response. This is a maximum wait: the call finishes sooner if the
+response arrives sooner. Setting the argument to the step's execution timeout
+recreates the race described above; larger values are capped at the default
+deadline.
+
+If the RPC deadline expires without a final response, the client reports a
+transport `TIMEOUT` with outcome `unknown`. The delivery window does not extend
+credential access. Signalling cancellation cannot forcibly stop arbitrary
+Python step code, so a timeout failure does not prove that the handler has
+stopped or that its external side effects are safe to retry.
+
 ### Runtime adapters and workload images
 
 The SDK does not publish a universal base image that contains an SDK runtime.
