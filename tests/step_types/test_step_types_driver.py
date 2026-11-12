@@ -19,6 +19,7 @@ from driver import (
     import_problems,
     parse_args,
     patch_sources,
+    sha256_file,
     workload_tag,
 )
 
@@ -93,13 +94,16 @@ def test_candidate_problems_detects_index_installs(tmp_path: Path) -> None:
     sdk = make_wheel(tmp_path, "syntara_plugin_sdk", "1.0")
     contracts = make_wheel(tmp_path, "syntara_plugin_contracts", "1.0")
     wheels = Wheels({"syntara-plugin-sdk": sdk, "syntara-plugin-contracts": contracts})
-    good = {"url": f"file://{sdk}", "archive_info": {}}
+    good = {"url": sdk.as_uri(), "archive_info": {}}
     report = {
         "syntara-plugin-sdk": {"version": "1.0", "direct_url": json.dumps(good)},
         "syntara-plugin-contracts": {"version": "1.0", "direct_url": None},
     }
     problems = candidate_problems(report, wheels)
-    assert problems == ["syntara-plugin-contracts 1.0 is installed from an index"]
+    assert problems == [
+        "syntara-plugin-contracts 1.0 is installed from a package index, "
+        f"expected {contracts.as_uri()}"
+    ]
 
 
 def test_import_problems_accepts_candidate_imports(tmp_path: Path) -> None:
@@ -108,25 +112,39 @@ def test_import_problems_accepts_candidate_imports(tmp_path: Path) -> None:
     wheels = Wheels({"syntara-plugin-sdk": sdk, "syntara-plugin-contracts": contracts})
     entry = {
         "argv": ["syntara-plugin", "validate"],
-        "syntara-plugin-sdk": {"version": "1.0", "direct_url": json.dumps({"url": f"file://{sdk}"})},
+        "syntara-plugin-sdk": {"version": "1.0", "direct_url": json.dumps({"url": sdk.as_uri()})},
         "syntara-plugin-contracts": {
             "version": "1.0",
-            "direct_url": json.dumps({"url": f"file://{contracts}"}),
+            "direct_url": json.dumps({"url": contracts.as_uri()}),
         },
     }
     assert import_problems(json.dumps(entry) + "\n", wheels) == []
+    # A PEP 610 hash, when present, must match the wheel's own content.
+    hashed = json.dumps({"url": sdk.as_uri(), "archive_info": {"hash": f"sha256={sha256_file(sdk)}"}})
+    entry["syntara-plugin-sdk"]["direct_url"] = hashed
+    assert import_problems(json.dumps(entry) + "\n", wheels) == []
+    stale = json.dumps({"url": sdk.as_uri(), "archive_info": {"hash": "sha256=" + "0" * 64}})
+    entry["syntara-plugin-sdk"]["direct_url"] = stale
+    assert import_problems(json.dumps(entry) + "\n", wheels) == [
+        "syntara-plugin validate imported syntara-plugin-sdk 1.0 "
+        f"from a different build of {sdk.name} (hash mismatch)"
+    ]
 
 
 def test_import_problems_flags_a_published_sdk(tmp_path: Path) -> None:
     sdk = make_wheel(tmp_path, "syntara_plugin_sdk", "1.0")
     contracts = make_wheel(tmp_path, "syntara_plugin_contracts", "1.0")
     wheels = Wheels({"syntara-plugin-sdk": sdk, "syntara-plugin-contracts": contracts})
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
     overlay = {
         "argv": ["syntara-plugin", "validate"],
         "syntara-plugin-sdk": {"version": "0.9", "direct_url": None},
         "syntara-plugin-contracts": {
             "version": "0.9",
-            "direct_url": json.dumps({"url": "file:///cache/archive/other.whl"}),
+            # Same filename as the candidate, different directory: the
+            # basename alone must not pass for the pull request's build.
+            "direct_url": json.dumps({"url": (decoy / contracts.name).as_uri()}),
         },
     }
     bare = {"argv": ["python"], "syntara-plugin-sdk": None, "syntara-plugin-contracts": None}
@@ -134,8 +152,9 @@ def test_import_problems_flags_a_published_sdk(tmp_path: Path) -> None:
     assert problems == [
         "python imported syntara_plugin without an installed SDK distribution",
         "syntara-plugin validate imported syntara-plugin-contracts 0.9 from "
-        "file:///cache/archive/other.whl",
-        "syntara-plugin validate imported syntara-plugin-sdk 0.9 from a package index",
+        f"{(decoy / contracts.name).as_uri()}, expected {contracts.as_uri()}",
+        "syntara-plugin validate imported syntara-plugin-sdk 0.9 from a package index, "
+        f"expected {sdk.as_uri()}",
     ]
 
 

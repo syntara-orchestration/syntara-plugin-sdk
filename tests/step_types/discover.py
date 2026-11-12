@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -36,20 +37,32 @@ class DiscoveryError(Exception):
 
 def sdk_plugins(step_types: Path, make: str) -> list[str]:
     """Return ``$(SDK_PLUGINS)`` from the step-types Makefile, validated."""
-    result = subprocess.run(
-        [
-            make,
-            "-s",
-            "--no-print-directory",
-            "-C",
-            str(step_types),
-            f"--eval={_PRINT_TARGET}: ; @echo $(SDK_PLUGINS)",
-            _PRINT_TARGET,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # A temporary makefile that includes theirs and prints the variable. This
+    # needs only features GNU Make has had forever: `make --eval` (the obvious
+    # tool) is missing from GNU Make 3.81, which is still a default on macOS.
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".mak", encoding="utf-8", delete=False
+    ) as handle:
+        handle.write(f"include Makefile\n{_PRINT_TARGET}: ; @echo $(SDK_PLUGINS)\n")
+        script = handle.name
+    try:
+        result = subprocess.run(
+            [
+                make,
+                "-s",
+                "--no-print-directory",
+                "-C",
+                str(step_types),
+                "-f",
+                script,
+                _PRINT_TARGET,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        Path(script).unlink(missing_ok=True)
     if result.returncode != 0:
         raise DiscoveryError(f"could not read SDK_PLUGINS from the Makefile: {result.stderr.strip()}")
     names = result.stdout.split()

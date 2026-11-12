@@ -49,6 +49,7 @@ import time
 import tomllib
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from collections.abc import Sequence
@@ -281,11 +282,41 @@ print(json.dumps(report))
 """
 
 
-def _direct_url(raw: str | None) -> str:
+def _direct_url_info(raw: str | None) -> dict[str, Any]:
     try:
-        return str(json.loads(raw or "{}").get("url", ""))
+        info = json.loads(raw or "{}")
     except (ValueError, AttributeError):
-        return ""
+        return {}
+    return info if isinstance(info, dict) else {}
+
+
+def _is_wheel_url(url: str, wheel: Path) -> bool:
+    """Whether ``url`` is the candidate wheel's own file:// location.
+
+    A same-named wheel from anywhere else (a package index, uv's build cache)
+    is not the pull request's build, so the comparison is on the full
+    location, not the filename.
+    """
+    if url == wheel.as_uri():
+        return True
+    parsed = urllib.parse.urlparse(url)
+    return parsed.scheme == "file" and Path(urllib.parse.unquote(parsed.path)) == wheel
+
+
+def _wheel_mismatch(raw: str | None, wheel: Path) -> str | None:
+    """Why an installed distribution is not the candidate wheel, or None."""
+    info = _direct_url_info(raw)
+    url = str(info.get("url", ""))
+    if not _is_wheel_url(url, wheel):
+        return f"from {url or 'a package index'}, expected {wheel.as_uri()}"
+    archive = info.get("archive_info")
+    recorded = str(archive.get("hash", "")) if isinstance(archive, dict) else ""
+    for prefix in ("sha256=", "sha256:"):
+        if recorded.startswith(prefix):
+            if recorded.removeprefix(prefix) != sha256_file(wheel):
+                return f"from a different build of {wheel.name} (hash mismatch)"
+            break
+    return None
 
 
 def candidate_problems(report: dict[str, Any], wheels: Wheels) -> list[str]:
@@ -297,9 +328,9 @@ def candidate_problems(report: dict[str, Any], wheels: Wheels) -> list[str]:
         if not entry:
             problems.append(f"{dist} is not installed")
             continue
-        url = _direct_url(entry.get("direct_url"))
-        if not url.endswith("/" + wheel.name):
-            problems.append(f"{dist} {entry.get('version', '?')} is installed from {url or 'an index'}")
+        mismatch = _wheel_mismatch(entry.get("direct_url"), wheel)
+        if mismatch:
+            problems.append(f"{dist} {entry.get('version', '?')} is installed {mismatch}")
     return problems
 
 
@@ -318,11 +349,10 @@ def import_problems(log: str, wheels: Wheels) -> list[str]:
             if not isinstance(installed, dict):
                 continue
             seen = True
-            url = _direct_url(installed.get("direct_url"))
-            if not url.endswith("/" + wheels.paths[dist].name):
+            mismatch = _wheel_mismatch(installed.get("direct_url"), wheels.paths[dist])
+            if mismatch:
                 problems.append(
-                    f"{command} imported {dist} {installed.get('version', '?')} from "
-                    f"{url or 'a package index'}"
+                    f"{command} imported {dist} {installed.get('version', '?')} {mismatch}"
                 )
         if not seen:
             problems.append(f"{command or 'a process'} imported syntara_plugin without an installed "

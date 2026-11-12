@@ -37,7 +37,10 @@ CYAN = "36"
 _UNICODE = {
     "pass": "✔",
     "fail": "✘",
-    "skip": "⊘",
+    # ASCII on purpose: circled glyphs render double-width in common log
+    # fonts (including the GitHub Actions log), pushing the skip rows of
+    # every table past their border.
+    "skip": "-",
     "warn": "!",
     "start": "▶",
     "bar_on": "▰",
