@@ -1,0 +1,30 @@
+{
+  "credentials": [],
+  "error": {
+    "code": "UPSTREAM_TRANSIENT",
+    "message": "HTTP 503 Service Unavailable",
+    "providerCode": "",
+    "retryable": true
+  },
+  "errorDetail": null,
+  "image": null,
+  "input": {
+    "follow_redirects": false,
+    "headers": {},
+    "method": "GET",
+    "query_params": {},
+    "timeout_seconds": 15,
+    "url": "https://httpbin.org/status/503"
+  },
+  "inputSource": "/work/inputs/h503.json",
+  "invocationId": "run-00000000000000000000000000000000",
+  "mode": "source",
+  "objectReference": null,
+  "ok": false,
+  "outcome": null,
+  "output": null,
+  "status": 1,
+  "statusMessage": "HTTP 503 Service Unavailable",
+  "target": "syntara.http-request.http-request",
+  "workflowRunId": "run-00000000000000000000000000000000-run"
+}

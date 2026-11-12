@@ -1,0 +1,16 @@
+{
+  "diagnostics": [
+    {
+      "code": "TARGET_PATH_INVALID",
+      "location": {
+        "column": 1,
+        "file": "plugin.yaml",
+        "line": 1,
+        "path": "$"
+      },
+      "message": "'missing-target.yaml' is not a regular file.",
+      "remediation": "Reference an existing regular file inside the plugin workspace."
+    }
+  ],
+  "ok": false
+}

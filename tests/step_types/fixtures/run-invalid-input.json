@@ -1,0 +1,14 @@
+{
+  "error": {
+    "detail": [
+      "inputs/method: enum constraint is not satisfied"
+    ],
+    "kind": "InvalidInput",
+    "message": "input does not satisfy the declared schema for syntara.http-request.http-request",
+    "nextSteps": [
+      "fix /work/inputs/badinput.json and rerun",
+      "or run without --input to print a template"
+    ]
+  },
+  "ok": false
+}

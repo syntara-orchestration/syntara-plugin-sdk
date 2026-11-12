@@ -1,0 +1,30 @@
+{
+  "credentials": [],
+  "error": {
+    "code": "OUTCOME_UNKNOWN",
+    "message": "The step did not complete.",
+    "providerCode": "",
+    "retryable": false
+  },
+  "errorDetail": "Traceback (most recent call last):\n  File \"/work/step-types/.venv/lib/python3.12/site-packages/syntara_plugin/runtime/execution.py\", line 212, in execute\n    output = self._binding.step.execute(validated_inputs, context)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/work/step-types/.venv/lib/python3.12/site-packages/syntara_plugin/runtime/step.py\", line 142, in execute\n    return self.run(inputs, context)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/work/step-types/http-request/src/syntara_node_http_request/__init__.py\", line 43, in run\n    _ = {}['injected-step-bug']\n        ~~^^^^^^^^^^^^^^^^^^^^^\nKeyError: 'injected-step-bug'",
+  "image": null,
+  "input": {
+    "follow_redirects": false,
+    "headers": {},
+    "method": "GET",
+    "query_params": {},
+    "timeout_seconds": 30,
+    "url": "https://httpbin.org/get"
+  },
+  "inputSource": "example.json",
+  "invocationId": "run-00000000000000000000000000000000",
+  "mode": "source",
+  "objectReference": null,
+  "ok": false,
+  "outcome": "unknown",
+  "output": null,
+  "status": null,
+  "statusMessage": "",
+  "target": "syntara.http-request.http-request",
+  "workflowRunId": "run-00000000000000000000000000000000-run"
+}

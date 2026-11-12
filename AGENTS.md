@@ -30,7 +30,7 @@ those repositories before proposing the change.
 for dependencies; regenerate the lockfile when dependency metadata changes.
 
 - `make install`: sync the development environment
-- `make test`: unit, CLI, contract, and examples suite
+- `make test`: unit, CLI, contract, examples, and step types classifier suite
 - `make test-integration`: opt-in Podman and registry runtime-image tests
 - `make lint` and `make check`: ruff through pre-commit
 - `make generate-container-protocol`: regenerate the protobuf bindings after a `.proto` change; generated `*_pb2*` files are never hand-edited

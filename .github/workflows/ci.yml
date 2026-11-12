@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
-      - run: uv run --no-sync --no-build pytest sdks/python/tests examples -q
+      - run: uv run --no-sync --no-build pytest sdks/python/tests examples tests/step_types -q
 
   pre-commit:
     name: Pre-commit

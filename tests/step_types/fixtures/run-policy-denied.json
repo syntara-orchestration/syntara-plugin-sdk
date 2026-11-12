@@ -1,0 +1,30 @@
+{
+  "credentials": [],
+  "error": {
+    "code": "POLICY_DENIED",
+    "message": "URL targets a blocked address: 127.0.0.1",
+    "providerCode": "",
+    "retryable": false
+  },
+  "errorDetail": null,
+  "image": null,
+  "input": {
+    "follow_redirects": false,
+    "headers": {},
+    "method": "GET",
+    "query_params": {},
+    "timeout_seconds": 5,
+    "url": "http://127.0.0.1/"
+  },
+  "inputSource": "/work/inputs/blocked.json",
+  "invocationId": "run-00000000000000000000000000000000",
+  "mode": "source",
+  "objectReference": null,
+  "ok": false,
+  "outcome": null,
+  "output": null,
+  "status": 1,
+  "statusMessage": "URL targets a blocked address: 127.0.0.1",
+  "target": "syntara.http-request.http-request",
+  "workflowRunId": "run-00000000000000000000000000000000-run"
+}
