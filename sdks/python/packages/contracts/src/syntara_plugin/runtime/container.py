@@ -49,6 +49,10 @@ _SYNC_RUNTIME_WORKER_SLOTS = BoundedSemaphore(_MAX_SYNC_INVOCATIONS)
 _PROGRESS_STATES = frozenset({"started", "heartbeat", "progress"})
 INCOMPLETE_STEP_MESSAGE = "The step did not complete."
 _CANCELLED_STEP_MESSAGE = "The step was cancelled."
+# Operational-log batches are best-effort telemetry: receivers clamp rather
+# than fail an invocation over them. Senders must split larger sets.
+_MAX_LOG_RECORDS_PER_BATCH = 128
+_MAX_LOG_MESSAGE_BYTES = 1_048_576
 
 # A platform-owned runner can handle any installed step type that the control
 # plane has already resolved to that runner. It is a health-advertisement
@@ -125,6 +129,32 @@ class ContainerProgress:
     state: str
     message: str = ""
     percent: float | None = None
+
+
+@dataclass(frozen=True)
+class ContainerLogRecord:
+    """One structured operational log record collected by the SDK helper.
+
+    Records are forwarded as received: the contract does not inspect, redact,
+    or scrub them, and unknown level names are passed through verbatim.
+    """
+
+    level: str
+    message: str
+    attributes: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ContainerLogBatch:
+    """A bounded, invocation-scoped batch of operational log records.
+
+    A one-way Toolbox notification emitted before the terminal outcome. The
+    host (the Execution Plane) forwards the records to its configured
+    collector; no acknowledgement is required before the step completes.
+    """
+
+    invocation_id: str
+    records: tuple[ContainerLogRecord, ...]
 
 
 @dataclass(frozen=True)
@@ -889,6 +919,40 @@ class _CredentialRequestBridge:
                 self._cancellation.set()
 
 
+def _log_batch_from_stream(
+    batch: container_pb2.LogBatch, invocation_id: str,
+) -> ContainerLogBatch | None:
+    """Parse one operational log batch, dropping malformed content.
+
+    Telemetry must never fail an invocation: a batch for another invocation,
+    an oversize batch, or records with malformed structured fields are clamped
+    or dropped here rather than raised.
+    """
+    if batch.invocation_id != invocation_id:
+        return None
+    records: list[ContainerLogRecord] = []
+    for record in batch.records[:_MAX_LOG_RECORDS_PER_BATCH]:
+        if len(record.message.encode("utf-8")) > _MAX_LOG_MESSAGE_BYTES:
+            continue
+        attributes: dict[str, Any] = {}
+        if record.attributes_json:
+            try:
+                decoded = json.loads(
+                    record.attributes_json,
+                    parse_constant=_reject_nonstandard_json_constant,
+                    object_pairs_hook=_reject_duplicate_json_members,
+                )
+                canonical_json_bytes(decoded)
+            except (ValueError, RecursionError):
+                decoded = None
+            if isinstance(decoded, dict):
+                attributes = decoded
+        records.append(
+            ContainerLogRecord(level=record.level, message=record.message, attributes=attributes)
+        )
+    return ContainerLogBatch(invocation_id=invocation_id, records=tuple(records))
+
+
 def _execution_event_from_stream(
     event: container_pb2.ExecutionEvent, invocation_id: str,
     saw_terminal: bool,
@@ -1030,8 +1094,8 @@ class ContainerClient:
     def stream(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,
         credential_handler: CredentialResolver | None = None,
-    ) -> Iterator[ContainerProgress | ContainerResult]:
-        """Invoke a step type and yield progress followed by exactly one result."""
+    ) -> Iterator[ContainerProgress | ContainerResult | ContainerLogBatch]:
+        """Invoke a step type and yield progress, log batches, and one result."""
 
         request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)
@@ -1075,7 +1139,7 @@ class ContainerClient:
         bridge: _CredentialRequestBridge,
         invocation_id: str,
         saw_terminal: bool,
-    ) -> tuple[ContainerProgress | ContainerResult | None, bool]:
+    ) -> tuple[ContainerProgress | ContainerResult | ContainerLogBatch | None, bool]:
         """Validate one server message and return its public stream event."""
 
         kind = message.WhichOneof("message")
@@ -1084,6 +1148,12 @@ class ContainerClient:
                 raise _protocol_error()
             bridge.accept(message.credential_request)
             return None, saw_terminal
+        if kind == "log_batch":
+            # Best-effort telemetry: batches after the terminal event are
+            # dropped, and a malformed batch never fails the invocation.
+            if saw_terminal:
+                return None, saw_terminal
+            return _log_batch_from_stream(message.log_batch, invocation_id), saw_terminal
         if kind != "event":
             raise _protocol_error()
         event = _execution_event_from_stream(message.event, invocation_id, saw_terminal)

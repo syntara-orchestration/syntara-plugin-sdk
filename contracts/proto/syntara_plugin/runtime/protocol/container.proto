@@ -50,7 +50,33 @@ message ExecuteServerMessage {
   oneof message {
     ExecutionEvent event = 1;
     CredentialRequest credential_request = 2;
+    LogBatch log_batch = 3;
   }
+}
+
+// One structured operational log record collected by the SDK helper during
+// step execution. The helper does not inspect, redact, or scrub records; the
+// trusted host (the Execution Plane) forwards them as received.
+message OperationalLogRecord {
+  // Level name from the standard set (trace, debug, info, warning, error,
+  // critical). Unknown names must be forwarded verbatim, not rejected.
+  string level = 1;
+  // Human-readable message. Bounded by the batch limits below.
+  string message = 2;
+  // Canonical JSON object of additional structured fields, or empty.
+  bytes attributes_json = 3;
+}
+
+// A bounded, invocation-scoped batch of operational log records emitted by
+// the SDK helper. A one-way typed Toolbox notification sent before the
+// terminal outcome; no acknowledgement is required before the step completes.
+// The initial delivery model is terminal-adjacent only: a workload that is
+// crashed, force-killed, or hung cannot send its batch. Batches arriving
+// after the terminal event may be ignored.
+message LogBatch {
+  string invocation_id = 1;
+  // Hard bound on records per batch; senders must split larger sets.
+  repeated OperationalLogRecord records = 2;
 }
 
 // name is a declared CredentialRecipe ID, not a credential ID or reference.

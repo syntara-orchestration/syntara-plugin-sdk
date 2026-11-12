@@ -101,6 +101,8 @@ if TYPE_CHECKING:
     from .container import (
         ContainerClient,
         ContainerInvocation,
+        ContainerLogBatch,
+        ContainerLogRecord,
         ContainerProgress,
         ContainerRemoteError,
         ContainerResult,
@@ -121,6 +123,8 @@ _ADAPTER_MODULE = ".adapter"
 _LAZY_EXPORTS = {
     "ContainerClient": _CONTAINER_MODULE,
     "ContainerInvocation": _CONTAINER_MODULE,
+    "ContainerLogBatch": _CONTAINER_MODULE,
+    "ContainerLogRecord": _CONTAINER_MODULE,
     "ContainerProgress": _CONTAINER_MODULE,
     "ContainerRemoteError": _CONTAINER_MODULE,
     "ContainerResult": _CONTAINER_MODULE,
@@ -164,6 +168,8 @@ __all__ = [
     "ContainerClient",
     "ContainerInvocation",
     "ContainerInvocationError",
+    "ContainerLogBatch",
+    "ContainerLogRecord",
     "ContainerProgress",
     "ContainerRemoteError",
     "ContainerResult",
