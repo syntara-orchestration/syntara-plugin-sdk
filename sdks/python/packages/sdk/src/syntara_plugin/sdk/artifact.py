@@ -35,6 +35,7 @@ _SCHEMA_SOURCE_FIELDS = frozenset({"configuration", "credentialSchema", "error",
 _HTTP_MAPPING_SOURCE_FIELDS = frozenset(
     {"runtime/operation/requestMap", "runtime/operation/responseMap"}
 )
+_INPUT_PRESENTATION_SOURCE_FIELDS = frozenset({"inputPresentation/uiSchema"})
 _OCI_IMAGE_TITLE_ANNOTATION = "org.opencontainers.image.title"
 _DOCUMENTATION_REFERENCE = "plugin.yaml#/spec/documentation"
 
@@ -218,7 +219,7 @@ def _reference_media_type(path: str, reference: str) -> str:
         raise ArtifactBuildError(f"Asset {path!r} has an invalid source reference {reference!r}.")
     if field in _SCHEMA_SOURCE_FIELDS:
         prefix = "application/schema+"
-    elif field in _HTTP_MAPPING_SOURCE_FIELDS:
+    elif field in _HTTP_MAPPING_SOURCE_FIELDS or field in _INPUT_PRESENTATION_SOURCE_FIELDS:
         prefix = "application/"
     else:
         raise ArtifactBuildError(f"Asset {path!r} has an invalid source reference {reference!r}.")
@@ -227,7 +228,12 @@ def _reference_media_type(path: str, reference: str) -> str:
     if path.endswith((".yaml", ".yml")):
         return f"{prefix}yaml"
     if path.endswith(".md"):
-        kind = "schema" if field in _SCHEMA_SOURCE_FIELDS else "HTTP mapping"
+        if field in _SCHEMA_SOURCE_FIELDS:
+            kind = "schema"
+        elif field in _HTTP_MAPPING_SOURCE_FIELDS:
+            kind = "HTTP mapping"
+        else:
+            kind = "input presentation"
         raise ArtifactBuildError(f"Asset {path!r} has a non-{kind} media type for {reference!r}.")
     raise ArtifactBuildError(f"Asset {path!r} must use a JSON, YAML, or Markdown filename.")
 

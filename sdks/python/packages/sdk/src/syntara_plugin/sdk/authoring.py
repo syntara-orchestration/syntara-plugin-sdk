@@ -532,6 +532,7 @@ def _normalize_action(
     target["runtime"] = _ordered(runtime)
     for field_name in ("input", "output"):
         target[field_name] = _target_document_source(spec.get(field_name), field_name, context)
+    _normalize_input_presentation(target, spec, context)
     if "error" in spec:
         target["error"] = _target_document_source(spec.get("error"), "error", context)
     for field_name in ("domain", "integrationType"):
@@ -561,6 +562,7 @@ def _normalize_control(
     target["runtime"] = _ordered(_normalize_step_runtime(spec.get("runtime"), plugin))
     for field_name in ("input", "output"):
         target[field_name] = _target_document_source(spec.get(field_name), field_name, context)
+    _normalize_input_presentation(target, spec, context)
     if "error" in spec:
         target["error"] = _target_document_source(spec.get("error"), "error", context)
     if "integrationType" in spec:
@@ -596,6 +598,7 @@ def _normalize_trigger(
     )
     for field_name in ("input", "output"):
         target[field_name] = _target_document_source(spec.get(field_name), field_name, context)
+    _normalize_input_presentation(target, spec, context)
     if "error" in spec:
         target["error"] = _target_document_source(spec.get("error"), "error", context)
     if "integrationType" in spec:
@@ -606,6 +609,25 @@ def _normalize_step_runtime(raw_runtime: object, plugin: Mapping[str, Any]) -> d
     """Materialize the shared runner metadata for non-Action step types."""
 
     return _normalize_runner_runtime(raw_runtime, plugin)
+
+
+def _normalize_input_presentation(
+    target: dict[str, Any], spec: Mapping[str, Any], context: _NormalizationContext
+) -> None:
+    """Resolve an optional declarative input presentation into the descriptor."""
+
+    presentation = spec.get("inputPresentation")
+    if not isinstance(presentation, Mapping):
+        return
+    target["inputPresentation"] = {
+        "renderer": presentation.get("renderer"),
+        "uiSchema": _target_document_source(
+            presentation.get("uiSchema"),
+            "inputPresentation/uiSchema",
+            context,
+            document_kind="ui_schema",
+        ),
+    }
 
 
 def _normalize_runner_runtime(raw_runtime: object, plugin: Mapping[str, Any]) -> dict[str, Any]:
@@ -695,7 +717,7 @@ def _target_document_source(
     field_name: str,
     context: _NormalizationContext,
     *,
-    document_kind: Literal["schema", "http_mapping"] = "schema",
+    document_kind: Literal["schema", "http_mapping", "ui_schema"] = "schema",
 ) -> object:
     return _document_source(
         source,
@@ -720,7 +742,7 @@ def _document_source(
     assets: dict[str, CompiledAsset],
     diagnostics: list[Diagnostic],
     *,
-    document_kind: Literal["schema", "http_mapping"] = "schema",
+    document_kind: Literal["schema", "http_mapping", "ui_schema"] = "schema",
 ) -> object:
     if not isinstance(source, Mapping):
         return source
@@ -1280,12 +1302,23 @@ def _validate_typed_document(
     target_path: str,
     diagnostics: list[Diagnostic],
     bundle: ContractBundle,
-    document_kind: Literal["schema", "http_mapping"],
+    document_kind: Literal["schema", "http_mapping", "ui_schema"],
 ) -> None:
     """Validate an inert document source according to its declared contract."""
 
     if document_kind == "schema":
         _validate_schema_document(value, target_path, diagnostics)
+        return
+    if document_kind == "ui_schema":
+        if not isinstance(value, Mapping):
+            diagnostics.append(
+                _diagnostic(
+                    "UI_SCHEMA_INVALID",
+                    "The RJSF uiSchema must be an object.",
+                    target_path,
+                    "Use a JSON or YAML mapping containing declarative uiSchema options.",
+                )
+            )
         return
     for message in validate_document(bundle, "http_mapping", value):
         diagnostics.append(
@@ -1482,7 +1515,9 @@ def _parse_asset(path: Path, raw: bytes) -> object:
     raise ValueError("only .json, .yaml, and .yml assets are supported")
 
 
-def _structured_media_type(path: Path, document_kind: Literal["schema", "http_mapping"]) -> str:
+def _structured_media_type(
+    path: Path, document_kind: Literal["schema", "http_mapping", "ui_schema"]
+) -> str:
     """Return the source-byte media type for a bounded structured document."""
 
     if document_kind == "schema":

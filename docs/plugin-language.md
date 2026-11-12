@@ -79,6 +79,7 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.domain` | Optional qualified domain identifier that groups an Action step type independently of its runner. |
 | `spec.integrationType` | Optional qualified integration type required by the step type. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |
+| `spec.inputPresentation` | Optional versioned, declarative input-form presentation. The validation and data contract remains `spec.input`. |
 | `spec.output` | Required JSON Schema source for the step type's business result. |
 | `spec.error` | Optional JSON Schema source for failure details, separate from the successful business result schema in `spec.output`. |
 
@@ -291,6 +292,34 @@ and must be distinguished by their pinned image digests.
 | `kind: asset` with `path` | The JSON Schema or mapping is a contained file bundled in the OCI artifact. |
 
 Use `asset` for reusable or substantial schemas. Both forms are immutable parts of the compiled plugin artifact.
+
+### Input presentation
+
+An executable step type may add `spec.inputPresentation` when the form needs
+layout or widget hints that JSON Schema does not express. `renderer` is
+`rjsf.v1`, and `uiSchema` is an inline or asset-backed native RJSF uiSchema.
+YAML and JSON assets are supported.
+
+```yaml
+inputPresentation:
+  renderer: rjsf.v1
+  uiSchema:
+    kind: asset
+    path: ui/create-issue.yaml
+```
+
+When this section is absent, Syntara derives controls from the input JSON
+Schema. The uiSchema is presentation-only: it cannot relax validation or change
+the submitted data shape. It is declarative data, not executable JavaScript,
+and must not contain credentials. The UI validates renderer-specific options
+and widgets when it renders the form.
+
+Conditional fields remain part of the input contract. Define them with JSON
+Schema `if`, `then`, and `else`; use the uiSchema only to choose their widgets
+and placement. The `python-steps` `create-issue` example demonstrates text,
+textarea, select, number, checkbox, date, and password controls, with different
+fields shown for bug and feature requests. Its API token field is test-only and
+does not demonstrate production credential delivery.
 
 ### Form and result descriptions
 
