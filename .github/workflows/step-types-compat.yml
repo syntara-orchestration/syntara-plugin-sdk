@@ -34,7 +34,7 @@ concurrency:
 
 env:
   # Pinned syntara-step-types revision. Bump it with a pull request that edits this line.
-  STEP_TYPES_REF: ${{ inputs.step_types_ref || '40f5d907eb3b0f16b73ca040a24320327e6f1a4d' }}
+  STEP_TYPES_REF: ${{ inputs.step_types_ref || '3991e986f92f4b1b00a76e21902038215915bd19' }}
   UV_VERSION: "0.12.3"
 
 jobs:
