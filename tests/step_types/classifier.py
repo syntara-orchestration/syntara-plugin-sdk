@@ -103,11 +103,13 @@ _STEP_REPORTED_CODES = frozenset({
     "POLICY_DENIED",
     "NOT_FOUND",
     "CONFLICT",
-    "CANCELLED",
     "AUTHENTICATION_FAILED",
     "AUTHORIZATION_FAILED",
 })
-_UNDETERMINED_CODES = frozenset({"OUTCOME_UNKNOWN"})
+# CANCELLED is undetermined: the SDK reports it both for step-reported
+# cancellations and for cancelled transport RPCs, and only a traceback
+# (classified first, by provenance) tells them apart.
+_UNDETERMINED_CODES = frozenset({"OUTCOME_UNKNOWN", "CANCELLED"})
 _SETTINGS_KINDS = frozenset({"SettingsError", "CompilationError"})
 
 

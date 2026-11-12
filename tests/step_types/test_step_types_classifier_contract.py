@@ -243,3 +243,15 @@ def test_unmapped_runtime_code_stays_unknown_and_points_at_the_mapping() -> None
     result = classify(run_failure(run_document("SOME_NEW_CODE", "a code the SDK added")))
     assert (result.category, result.rule_id) == ("unknown", "UN000")
     assert any("run-code sets" in action for action in result.actions)
+
+
+def test_code_only_cancellation_is_not_attributed_to_the_step() -> None:
+    # The SDK reports CANCELLED both for step-reported cancellations and for
+    # cancelled transport RPCs; without a traceback neither is established.
+    result = classify(run_failure(run_document("CANCELLED", "HTTP request was cancelled.")))
+    assert (result.category, result.rule_id, result.confidence) == (
+        "unknown",
+        "UN000",
+        "unclassified",
+    )
+    assert result.facts == {"code": "CANCELLED"}
