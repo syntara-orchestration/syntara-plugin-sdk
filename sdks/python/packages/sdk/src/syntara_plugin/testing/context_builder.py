@@ -92,8 +92,8 @@ def build_execution_context(
     return context
 
 
-def normalize_run_id(context: ExecutionContext) -> ExecutionContext:
-    """Validate one context's identifiers and give it the deterministic run id.
+def normalize_run_id(context: ExecutionContext) -> str:
+    """Validate one context's identifiers and return its deterministic run id.
 
     Both invocation helpers run this before executing, so raw
     ``ExecutionContext`` objects are held to the same rules as harness-built
@@ -111,17 +111,11 @@ def normalize_run_id(context: ExecutionContext) -> ExecutionContext:
     _require_identity(context.invocation_id, field="invocation_id", maximum=_ABI_MAX)
     if context.workflow_run_id is not None:
         _require_identity(context.workflow_run_id, field="workflow_run_id", maximum=_ABI_MAX)
-        return context
+        return context.workflow_run_id
     _require_identity(
         context.invocation_id,
         field="invocation_id",
         maximum=_DERIVATION_MAX,
         note=", leaving room for the derived run id",
     )
-    return ExecutionContext(
-        invocation_id=context.invocation_id,
-        workflow_run_id=f"{context.invocation_id}{_DERIVED_SUFFIX}",
-        runtime_context=context.runtime_context,
-        cancellation=context.cancellation,
-        credential_provider=context._provider,
-    )
+    return f"{context.invocation_id}{_DERIVED_SUFFIX}"

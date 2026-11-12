@@ -1115,9 +1115,12 @@ def test_importing_the_runtime_does_not_require_grpc() -> None:
             "StepDescriptor",
             "InstalledStepManifest",
             "ContainerInvocationError",
+            "ContainerToolbox",
         ):
             assert getattr(runtime, name) is not None, name
+        assert isinstance(runtime.ExecutionContext("direct").toolbox, runtime.ContainerToolbox)
         assert "grpc" not in [m for m in sys.modules if sys.modules[m] is not None]
+        assert "syntara_plugin.runtime.protocol.container_pb2" not in sys.modules
 
         # Transport exports still resolve by name, but their deps are required.
         try:

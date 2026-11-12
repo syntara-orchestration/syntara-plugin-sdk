@@ -54,6 +54,13 @@ sends a fake document over its loopback callback. Custom in-process providers
 must implement the restricted provider contract described in
 [credential access](runtime-and-oci.md#credential-access).
 
+Contexts supplied by the testing harness expose the same empty, read-only
+`toolbox` surface on direct and container runs. It has no service operations
+to configure or fake yet; see [host services](runtime-and-oci.md#host-services).
+The supplied context is an invocation template: each helper call creates its
+own invocation-scoped Toolbox, so the same context can be reused across direct
+and container test calls.
+
 ## Invocation helpers
 
 ```python

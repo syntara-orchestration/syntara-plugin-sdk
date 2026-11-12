@@ -14,6 +14,7 @@ from .credentials import (
     CredentialProvider,
     _CredentialScope,
 )
+from .toolbox import ContainerToolbox, _new_toolbox
 
 
 class _NoCredentialProvider(Enum):
@@ -36,8 +37,13 @@ class ExecutionContext:
     credential_provider: InitVar[CredentialProvider | None | _NoCredentialProvider] = (
         _NoCredentialProvider.VALUE
     )
-    _provider: CredentialProvider | None = field(default=None, init=False, compare=False, repr=False)
-    _credential_scope: _CredentialScope | None = field(default=None, init=False, compare=False, repr=False)
+    _provider: CredentialProvider | None = field(
+        default=None, init=False, compare=False, repr=False
+    )
+    _credential_scope: _CredentialScope | None = field(
+        default=None, init=False, compare=False, repr=False
+    )
+    _toolbox: ContainerToolbox = field(init=False, compare=False, repr=False)
 
     def __post_init__(
         self, credential_provider: CredentialProvider | None | _NoCredentialProvider
@@ -46,8 +52,11 @@ class ExecutionContext:
 
         if not self.invocation_id:
             raise ValueError("invocation_id must not be empty")
-        provider = None if credential_provider is _NoCredentialProvider.VALUE else credential_provider
+        provider = (
+            None if credential_provider is _NoCredentialProvider.VALUE else credential_provider
+        )
         object.__setattr__(self, "_provider", provider)
+        object.__setattr__(self, "_toolbox", _new_toolbox(self.cancellation))
 
     def credential(self, name: str) -> CredentialBinding:
         """Request a declared binding during execution; the handle expires on return."""
@@ -55,13 +64,22 @@ class ExecutionContext:
             raise CredentialAccessError("expired")
         return self._credential_scope.handle(name)
 
+    @property
+    def toolbox(self) -> ContainerToolbox:
+        """Return this invocation's host-service surface, currently empty."""
+
+        return self._toolbox
+
     def _with_credentials(self, names: tuple[str, ...]) -> ExecutionContext:
         if self._credential_scope is not None:
             raise CredentialAccessError("unauthorized")
         context = ExecutionContext(
-            invocation_id=self.invocation_id, workflow_run_id=self.workflow_run_id,
-            runtime_context=self.runtime_context, cancellation=self.cancellation,
+            invocation_id=self.invocation_id,
+            workflow_run_id=self.workflow_run_id,
+            runtime_context=self.runtime_context,
+            cancellation=self.cancellation,
         )
+        object.__setattr__(context, "_toolbox", self._toolbox)
         object.__setattr__(context, "_credential_scope", _CredentialScope(names, self._provider))
         return context
 

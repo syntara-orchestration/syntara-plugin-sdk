@@ -29,6 +29,7 @@ from .container import (
     StepRegistry,
 )
 from .context import ExecutionContext
+from .credential_callback import CallbackCredentialProvider
 from .execution import StepExecutionError
 from .outcome import StandardOutputWrapper, thaw_json
 from .step import BaseStep
@@ -58,13 +59,16 @@ class ResultObjectStore(Protocol):
 def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
     """Build the transport-independent context for one container invocation."""
 
-    return ExecutionContext(
+    context = ExecutionContext(
         credential_provider=invocation.credential_provider,
         invocation_id=invocation.invocation_id,
         workflow_run_id=invocation.workflow_run_id,
         runtime_context=invocation.runtime_context,
         cancellation=invocation.cancellation,
     )
+    if isinstance(invocation.credential_provider, CallbackCredentialProvider):
+        object.__setattr__(context, "_toolbox", invocation.credential_provider._public_toolbox)
+    return context
 
 
 def _applied_output_schema_digest(binding: StepBinding) -> str:

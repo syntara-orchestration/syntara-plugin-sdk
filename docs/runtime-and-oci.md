@@ -304,8 +304,18 @@ contract: **step type -> Category -> Runner -> Execution**.
 
 `ExecutionContext` carries the invocation ID, an optional workflow run ID,
 bounded non-secret runtime data, and a cooperative cancellation signal. It
-intentionally exposes no protobuf, gRPC, container, worker, or Execution Plane
-types, and no raw credential values.
+intentionally exposes no protobuf, gRPC, container transport, worker, or
+Execution Plane types, and no raw credential values.
+
+### Host services
+
+Every `ExecutionContext` has a read-only `toolbox` property of type
+`ContainerToolbox`. The runtime supplies an empty toolbox in direct and
+container execution; it currently has no service operations. The invocation
+closes the toolbox on completion, failure, cancellation, or disconnect. Future
+services require typed contracts and host implementations. Credential access remains
+`context.credential(name).read()` and is not a Toolbox operation. See
+[ADR 0012](../.sdlc/adrs/0012-container-toolbox.md).
 
 ### Credential access
 
