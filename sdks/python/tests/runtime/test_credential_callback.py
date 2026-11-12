@@ -224,7 +224,7 @@ def test_client_signals_resolver_when_remote_stream_closes() -> None:
 
     class FakeStub:
         def Execute(self, requests: Any, *, timeout: float) -> CompletingCall:
-            assert timeout == invocation.timeout_seconds
+            assert timeout == invocation.timeout_seconds + 5
             assert next(requests).WhichOneof("message") == "start"
             call_started.set()
             return call
@@ -239,6 +239,7 @@ def test_client_signals_resolver_when_remote_stream_closes() -> None:
 
     def read(context: CredentialRequestContext) -> dict[str, str]:
         contexts.append(context)
+        assert 0 < context.remaining_seconds <= invocation.timeout_seconds
         resolver_started.set()
         assert context.cancellation.wait(2)
         return {"token": _SECRET}

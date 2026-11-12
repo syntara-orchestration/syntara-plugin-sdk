@@ -27,6 +27,10 @@ message ExecuteRequest {
   bytes inputs_json = 4;
   reserved 5;
   reserved "credential_file_paths_json";
+  // Execution budget, excluding terminal-event delivery. The runtime signals
+  // cancellation and reports TIMEOUT/not_completed when this budget expires.
+  // This does not prove arbitrary handler code has stopped. Clients should
+  // allow a bounded delivery window beyond this budget in their RPC deadline.
   uint32 timeout_seconds = 6;
   // A bounded, non-secret runner-specific context selected by Syntara from the
   // installed immutable step. It never contains an endpoint or credential.

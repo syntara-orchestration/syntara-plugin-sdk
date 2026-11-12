@@ -292,7 +292,7 @@ def test_cancellation_reaches_the_selected_step() -> None:
 
 
 def test_invocation_timeout_sets_the_step_cancellation_signal() -> None:
-    """The required invocation timeout is the default gRPC deadline."""
+    """The runtime reports timeout before the default gRPC deadline expires."""
     started = Event()
     cancelled = Event()
 
@@ -328,6 +328,8 @@ def test_invocation_timeout_sets_the_step_cancellation_signal() -> None:
 
     assert started.is_set()
     assert raised.value.code is FailureCode.TIMEOUT
+    assert raised.value.source == "workload"
+    assert raised.value.outcome == "not_completed"
 
 
 def test_container_result_enforces_terminal_invariants() -> None:

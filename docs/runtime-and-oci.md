@@ -50,6 +50,21 @@ accepts a `credential_handler` per execution or stream, so the host can bind
 each resolver to its own attempt. The channel must authenticate both peers
 and protect confidentiality (mTLS in production).
 
+`ContainerInvocation.timeout_seconds` is the execution budget. Both runtime
+services signal cancellation and emit a `TIMEOUT` failure with outcome
+`not_completed` when it expires. Arbitrary Python handlers may still be running;
+this failure does not confirm termination or make external side effects safe
+to retry.
+
+`ContainerClient` defaults to a transport deadline five seconds beyond that
+budget so the terminal event can reach the caller. Its optional `timeout_seconds`
+argument is a hard transport limit, capped at this default. Omit it for normal
+execution; setting it equal to the execution budget recreates the timeout race.
+A shorter explicit limit still interrupts the RPC and reports a transport
+`TIMEOUT` with outcome `unknown`. Credential access retains the execution budget
+and never gains the delivery window. If the runtime cannot report its outcome
+within the bounded transport deadline, the outcome remains unknown.
+
 Each credential handler receives a `CredentialRequestContext` with the
 declared name, invocation ID, cancellation signal, and monotonic deadline.
 Use `remaining_seconds` to bound network and operation timeouts, and observe
