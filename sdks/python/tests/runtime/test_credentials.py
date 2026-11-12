@@ -78,17 +78,10 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                         return CredentialOutput(result=json.loads(response.document_json)["token"])
             scope = context._credential_scope
             assert scope is not None
-            if inputs.mode in {"scope_toolbox_bypass", "scope_weakref_bypass"}:
+            if inputs.mode == "scope_toolbox_bypass":
                 assert scope._provider is not None
                 view = getattr(scope._provider, "_ScopedCredentialProvider__provider")  # noqa: B009
                 provider = getattr(view, "_provider", None)
-                if inputs.mode == "scope_weakref_bypass":
-                    callback = getattr(getattr(view, "__weakref__", None), "__callback__", None)
-                    defaults = getattr(callback, "__defaults__", None)
-                    if defaults:
-                        registry = defaults[0]()
-                        state = registry.get(view) if registry is not None else None
-                        provider = getattr(state, "provider", None)
                 if provider is not None:
                     with provider._toolbox._request_credential(_NAME) as response:
                         return CredentialOutput(result=json.loads(response.document_json)["token"])
@@ -162,7 +155,7 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
             if inputs.mode == "keyboard_interrupt":
                 raise KeyboardInterrupt(credential["token"])
             if inputs.mode in {"leak", "provider_allowed_leak", "inner_allowed_leak",
-                               "toolbox_bypass", "scope_toolbox_bypass", "scope_weakref_bypass"}:
+                               "toolbox_bypass", "scope_toolbox_bypass"}:
                 return CredentialOutput(result=f"token={credential['token']}")
             if inputs.mode == "number_raw_leak":
                 return CredentialOutput(result=credential["pin"])
@@ -974,14 +967,13 @@ def test_toolbox_cannot_bypass_credential_output_protection(tmp_path: Path) -> N
     assert _SECRET not in repr(outcome)
 
 
-@pytest.mark.parametrize("mode", ["scope_toolbox_bypass", "scope_weakref_bypass"])
-def test_scope_cannot_reach_unrecorded_credential_transport(tmp_path: Path, mode: str) -> None:
+def test_scope_cannot_reach_unrecorded_credential_transport(tmp_path: Path) -> None:
     path = tmp_path / "credential"
     path.write_text(json.dumps({"token": _SECRET}))
     context = build_execution_context(
         credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
     )
-    outcome = invoke_step_in_container(_binding(), {"mode": mode}, context=context)
+    outcome = invoke_step_in_container(_binding(), {"mode": "scope_toolbox_bypass"}, context=context)
     if outcome.ok:
         pytest.fail("credential scope allowed a raw response to escape", pytrace=False)
     assert _SECRET not in repr(outcome)

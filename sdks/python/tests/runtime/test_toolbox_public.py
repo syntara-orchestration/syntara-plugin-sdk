@@ -84,10 +84,30 @@ def test_toolbox_expires_after_step_returns_or_fails(container: bool, fail: bool
     outcome = invoke(probe, {}, context=context)
     assert outcome.ok is not fail
     assert probe.retained is not None
-    if not container:
-        assert probe.retained is context.toolbox
+    assert probe.retained is not context.toolbox
+    assert _toolbox_active(context.toolbox)
     assert _toolbox_state(probe.retained).closed.is_set()
     assert not _toolbox_active(probe.retained)
+
+
+@pytest.mark.parametrize("container", [False, True])
+def test_reused_context_receives_a_fresh_toolbox_for_each_invocation(container: bool) -> None:
+    context = build_execution_context(invocation_id="reused-toolbox")
+    invoke = invoke_step_in_container if container else invoke_step
+    first = RetainingProbe()
+    second = RetainingProbe()
+
+    assert invoke(first, {}, context=context).ok
+    assert invoke(second, {}, context=context).ok
+
+    assert first.retained is not None
+    assert second.retained is not None
+    assert first.retained is not second.retained
+    assert first.retained is not context.toolbox
+    assert second.retained is not context.toolbox
+    assert not _toolbox_active(first.retained)
+    assert not _toolbox_active(second.retained)
+    assert _toolbox_active(context.toolbox)
 
 
 def test_toolbox_observes_cooperative_cancellation() -> None:

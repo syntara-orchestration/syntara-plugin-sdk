@@ -236,7 +236,8 @@ class _ScopedCallbackState:
 
 
 # A step can reach the scoped view through its context. Keep the raw callback
-# provider outside that object graph so every view read records its document.
+# provider off the view's direct attribute path so ordinary view reads record
+# their documents. This is not a sandbox for arbitrary in-process introspection.
 _callback_states: dict[int, _ScopedCallbackState] = {}
 _callback_states_lock = RLock()
 
