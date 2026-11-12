@@ -577,3 +577,75 @@ def test_malformed_failure_provider_code_is_a_protocol_error() -> None:
         _remote_failure(event)
 
     assert raised.value.source == "protocol"
+
+
+def _log_batch_message(
+    invocation_id: str = "inv-1",
+    records: list[dict[str, Any]] | None = None,
+) -> container_pb2.ExecuteServerMessage:
+    batch = container_pb2.LogBatch(invocation_id=invocation_id)
+    for record in records or []:
+        batch.records.add(**record)
+    return container_pb2.ExecuteServerMessage(log_batch=batch)
+
+
+def test_log_batch_yields_parsed_records() -> None:
+    message = _log_batch_message(
+        records=[
+            {
+                "level": "info",
+                "message": "hello from the helper",
+                "attributes_json": b'{"attempt": 2}',
+            },
+            {"level": "warning", "message": "no attributes"},
+        ]
+    )
+    event, saw_terminal = ContainerClient._stream_event(message, None, "inv-1", False)
+    assert saw_terminal is False
+    assert event is not None
+    assert event.invocation_id == "inv-1"
+    assert [record.level for record in event.records] == ["info", "warning"]
+    assert event.records[0].attributes == {"attempt": 2}
+    assert event.records[1].attributes == {}
+
+
+def test_log_batch_after_terminal_is_dropped() -> None:
+    message = _log_batch_message(records=[{"level": "info", "message": "late"}])
+    event, saw_terminal = ContainerClient._stream_event(message, None, "inv-1", True)
+    assert event is None
+    assert saw_terminal is True
+
+
+def test_log_batch_for_other_invocation_is_dropped() -> None:
+    message = _log_batch_message(invocation_id="other", records=[{"level": "info", "message": "x"}])
+    event, _ = ContainerClient._stream_event(message, None, "inv-1", False)
+    assert event is None
+
+
+def test_log_batch_malformed_attributes_are_dropped_not_fatal() -> None:
+    message = _log_batch_message(
+        records=[
+            {"level": "info", "message": "kept", "attributes_json": b"{not json"},
+            {"level": "info", "message": "also kept", "attributes_json": b'["a list"]'},
+        ]
+    )
+    event, _ = ContainerClient._stream_event(message, None, "inv-1", False)
+    assert event is not None
+    assert len(event.records) == 2
+    assert all(record.attributes == {} for record in event.records)
+
+
+def test_log_batch_records_are_clamped_to_the_protocol_bound() -> None:
+    message = _log_batch_message(
+        records=[{"level": "info", "message": f"record {i}"} for i in range(500)]
+    )
+    event, _ = ContainerClient._stream_event(message, None, "inv-1", False)
+    assert event is not None
+    assert len(event.records) == 128
+
+
+def test_log_batch_unknown_level_is_forwarded_verbatim() -> None:
+    message = _log_batch_message(records=[{"level": "verbose", "message": "x"}])
+    event, _ = ContainerClient._stream_event(message, None, "inv-1", False)
+    assert event is not None
+    assert event.records[0].level == "verbose"
