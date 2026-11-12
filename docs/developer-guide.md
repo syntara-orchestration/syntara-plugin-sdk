@@ -42,6 +42,54 @@ plugin from local wheels, starts the server with mutual TLS, and invokes its
 Action, Control, and Trigger steps over gRPC. It does not require the backend,
 Kubernetes, or the Execution Plane.
 
+The **Execution Plane compatibility** GitHub Actions workflow runs on pull
+requests and pushes to `devel`. It builds the
+[Existing step types](../examples/existing-step) plugin
+from this checkout, pushes it to a disposable registry, and dispatches its
+Action, Control, and Trigger through the pinned Execution Plane Kubernetes
+worker using the registry-resolved image digest. The workload advertises exact generated step revisions, and the tests select
+those revisions and check their outputs and schema digests. A skip or missing case fails the run.
+
+To run the static fixture checks without containers or a cluster:
+
+```sh
+make test-execution-plane-helpers
+```
+
+For the full test, use a disposable PostgreSQL database, an Execution Plane
+checkout at the commit in `EP_REVISION`, and a disposable Kind
+cluster created with `tests/execution_plane/kind.yaml`. Install uv, Docker (or
+a compatible engine), Kind, kubectl, psql, and curl. The engine must support
+Kind networking and node `exec`; the selected kubectl context must point to
+the disposable cluster. Configure the database and run:
+
+```sh
+EP_PATH=/path/to/syntara-execution-plane \
+EP_REVISION=<full-commit-sha> \
+EP_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/execution_plane \
+make test-execution-plane
+```
+
+The compatibility workflow pins `EP_REVISION` once at its root and accepts an
+optional `ep-ref` input for `workflow_dispatch`. The helper script requires a
+full 40-character commit SHA and verifies that the checkout matches it.
+
+The target installs dependencies without checkout package build hooks, builds
+local wheels and the image, and starts a registry and the EP API. It requires
+the database and its `execution_plane_runtime` role to exist; alternatively set
+`EP_COMPAT_CREATE_DATABASE=1` and provide `PGHOST`, `PGUSER`, and `PGPASSWORD`
+for a disposable PostgreSQL server. Override `CONTAINER_ENGINE`,
+`EP_KIND_CLUSTER_NAME`, `EP_REGISTRY_NAME`, `EP_REGISTRY_PORT`, and
+`EP_COMPAT_LOG_DIR` as needed. The cluster node's egress rules are changed for
+the duration of the cluster, so delete that cluster after the test. Failure
+logs and Kubernetes diagnostics are saved in the log directory.
+
+The pinned EP revision does not yet supply resolved execution data to
+workloads. This test therefore generates a fixture from the compiled plugin
+registration and places it in the test image; this is not a publishing path.
+Update the pinned EP revision and harness together when its helpers or workload
+contract change.
+
 ## Repository map
 
 | Location | Responsibility |
