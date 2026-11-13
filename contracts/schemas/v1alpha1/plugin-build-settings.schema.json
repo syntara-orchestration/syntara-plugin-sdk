@@ -172,6 +172,24 @@
         }
       }
     },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Checks that build and publish commands must satisfy.",
+      "properties": {
+        "requirements": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Checks applied during build and publish. Empty by default; all selects every check registered in this SDK version. Command-line --require values are additive. Persistent checks include verified-runtime.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9-]*$"
+          }
+        }
+      }
+    },
     "catalog": {
       "type": "object",
       "additionalProperties": false,

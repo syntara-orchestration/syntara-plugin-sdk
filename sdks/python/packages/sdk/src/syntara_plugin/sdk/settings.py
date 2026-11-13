@@ -80,6 +80,13 @@ class PublishSettings:
 
 
 @dataclass(frozen=True)
+class PolicySettings:
+    """Persistent build and publication checks."""
+
+    requirements: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CatalogSettings:
     """Catalog ownership and freshness defaults for one release channel."""
 
@@ -98,6 +105,7 @@ class PluginBuildSettings:
     registry: RegistrySettings = field(default_factory=RegistrySettings)
     build: BuildSettings = field(default_factory=BuildSettings)
     publish: PublishSettings = field(default_factory=PublishSettings)
+    policy: PolicySettings = field(default_factory=PolicySettings)
     catalog: CatalogSettings = field(default_factory=CatalogSettings)
 
 
@@ -153,6 +161,7 @@ def _parse_settings(source: Path) -> PluginBuildSettings:
             "registry",
             "build",
             "publish",
+            "policy",
             "catalog",
         },
         "settings document",
@@ -169,6 +178,7 @@ def _parse_settings(source: Path) -> PluginBuildSettings:
         registry=_parse_registry(document.get("registry"), source),
         build=_parse_build(document.get("build"), source),
         publish=_parse_publish(document.get("publish"), source),
+        policy=_parse_policy(document.get("policy")),
         catalog=_parse_catalog(document.get("catalog")),
     )
     schema_errors = validate_document(load_bundle(), "plugin_build_settings", document)
@@ -310,6 +320,21 @@ def _parse_publish(value: object, source: Path) -> PublishSettings:
         channel=_string(document.get("channel"), "publish.channel"),
         update_catalog=True if update_catalog is None else update_catalog,
     )
+
+
+def _parse_policy(value: object) -> PolicySettings:
+    if value is None:
+        return PolicySettings()
+    document = _mapping(value, "policy")
+    _reject_unknown_keys(document, {"requirements"}, "policy")
+    raw_requirements = document.get("requirements", [])
+    if not isinstance(raw_requirements, list) or not all(
+        isinstance(item, str) and item for item in raw_requirements
+    ):
+        raise SettingsError("policy.requirements must be a list of non-empty strings")
+    if len(raw_requirements) != len(set(raw_requirements)):
+        raise SettingsError("policy.requirements must not contain duplicate checks")
+    return PolicySettings(tuple(raw_requirements))
 
 
 def _parse_catalog(value: object) -> CatalogSettings:

@@ -102,6 +102,7 @@ if TYPE_CHECKING:
     )
     from .container import (
         ContainerClient,
+        ContainerHealth,
         ContainerInvocation,
         ContainerLogBatch,
         ContainerLogRecord,
@@ -112,6 +113,7 @@ if TYPE_CHECKING:
         ContainerStepHandler,
         CredentialRequestContext,
         CredentialResolver,
+        RuntimeComponentInfo,
         StepRegistry,
         add_container_runtime_service,
         standard_output_from_container_result,
@@ -124,6 +126,7 @@ _ADAPTER_MODULE = ".adapter"
 
 _LAZY_EXPORTS = {
     "ContainerClient": _CONTAINER_MODULE,
+    "ContainerHealth": _CONTAINER_MODULE,
     "ContainerInvocation": _CONTAINER_MODULE,
     "ContainerLogBatch": _CONTAINER_MODULE,
     "ContainerLogRecord": _CONTAINER_MODULE,
@@ -132,6 +135,7 @@ _LAZY_EXPORTS = {
     "ContainerResult": _CONTAINER_MODULE,
     "ContainerRuntimeService": _CONTAINER_MODULE,
     "ContainerStepHandler": _CONTAINER_MODULE,
+    "RuntimeComponentInfo": _CONTAINER_MODULE,
     "CredentialRequestContext": _CONTAINER_MODULE,
     "CredentialResolver": _CONTAINER_MODULE,
     "StepRegistry": _CONTAINER_MODULE,
@@ -168,6 +172,7 @@ __all__ = [
     "ConformanceHarness",
     "ConformanceResult",
     "ContainerClient",
+    "ContainerHealth",
     "ContainerInvocation",
     "ContainerInvocationError",
     "ContainerLogBatch",
@@ -177,6 +182,7 @@ __all__ = [
     "ContainerResult",
     "ContainerRuntimeService",
     "ContainerStepHandler",
+    "RuntimeComponentInfo",
     "ContainerToolbox",
     "CredentialRequestContext",
     "CredentialResolver",

@@ -79,11 +79,21 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
                         {
                             "name": "python-base",
                             "displayName": "Python base",
+                            "runtime": {
+                                "components": [
+                                    {"name": "python", "executable": "/usr/bin/python3"}
+                                ]
+                            },
                             "image": {"buildTarget": "python-base"},
                         },
                         {
                             "name": "python-aws",
                             "displayName": "Python with AWS SDK",
+                            "runtime": {
+                                "components": [
+                                    {"name": "python", "executable": "/usr/bin/python3"}
+                                ]
+                            },
                             "image": {"buildTarget": "python-aws"},
                         },
                     ],
@@ -94,6 +104,11 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
                         {
                             "name": "bash-base",
                             "displayName": "Bash base",
+                            "runtime": {
+                                "components": [
+                                    {"name": "bash", "executable": "/usr/bin/bash"}
+                                ]
+                            },
                             "image": {"buildTarget": "bash-base"},
                         }
                     ],

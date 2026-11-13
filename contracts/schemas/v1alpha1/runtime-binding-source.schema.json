@@ -50,12 +50,36 @@
     "optionSource": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "displayName", "image"],
+      "required": ["name", "displayName", "image", "runtime"],
       "properties": {
         "name": {"$ref": "common.schema.json#/$defs/identifier"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
         "description": {"type": "string", "maxLength": 2000},
-        "image": {"$ref": "#/$defs/imageSource"}
+        "image": {"$ref": "#/$defs/imageSource"},
+        "runtime": {"$ref": "#/$defs/runtimeDeclaration"}
+      }
+    },
+    "runtimeDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["components"],
+      "description": "Runtime components expected in this image option. Versions are observed from the built image and are not authored here.",
+      "properties": {
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/runtimeComponentDeclaration"}
+        }
+      }
+    },
+    "runtimeComponentDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "executable"],
+      "properties": {
+        "name": {"$ref": "common.schema.json#/$defs/identifier"},
+        "executable": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/", "description": "Absolute executable path used by this runtime component inside the workload image."}
       }
     },
     "workloadSource": {

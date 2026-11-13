@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .bundle import load_bundle, validate_document
@@ -62,7 +62,11 @@ def plugin_revision_id(descriptor: Mapping[str, Any]) -> str:
     )
 
 
-def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> dict[str, Any]:
+def registration_manifest(
+    descriptor: Mapping[str, Any],
+    workload_id: str,
+    runtime_components: Sequence[Mapping[str, str]] = (),
+) -> dict[str, Any]:
     """Generate the complete mapping for one custom-runner workload."""
 
     spec = descriptor["spec"]
@@ -81,7 +85,7 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
             }
     if not steps:
         raise ValueError(f"workload {workload_id!r} has no custom-runner step types")
-    return {
+    manifest = {
         "apiVersion": "syntara.registration/v1alpha1",
         "kind": "RegistrationManifest",
         "plugin_revision_id": spec["plugin_revision_id"],
@@ -89,6 +93,9 @@ def registration_manifest(descriptor: Mapping[str, Any], workload_id: str) -> di
         "workload": workload_id,
         "steps": steps,
     }
+    if runtime_components:
+        manifest["runtime"] = {"components": [dict(component) for component in runtime_components]}
+    return manifest
 
 
 def _executable_schema_digests(target: Mapping[str, Any]) -> dict[str, str]:
@@ -109,7 +116,10 @@ def _executable_schema_digests(target: Mapping[str, Any]) -> dict[str, str]:
 
 
 def validate_registration_manifest(
-    descriptor: Mapping[str, Any], workload_id: str, manifest: Mapping[str, Any]
+    descriptor: Mapping[str, Any],
+    workload_id: str,
+    manifest: Mapping[str, Any],
+    runtime_components: Sequence[Mapping[str, str]] | None = None,
 ) -> None:
     """Reject a malformed, incomplete, or inconsistent registration mapping."""
 
@@ -124,13 +134,18 @@ def validate_registration_manifest(
     if descriptor["spec"]["contractBundleDigest"] != bundle.digest:
         raise ValueError("descriptor uses an unsupported contract bundle")
     try:
-        expected = registration_manifest(descriptor, workload_id)
+        expected = registration_manifest(
+            descriptor, workload_id, runtime_components or ()
+        )
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError("invalid descriptor for registration manifest") from error
     schema_errors = validate_document(bundle, "registration_manifest", manifest)
     if schema_errors:
         raise ValueError("; ".join(schema_errors))
-    if manifest != expected:
+    comparable_manifest = dict(manifest)
+    if runtime_components is None:
+        comparable_manifest.pop("runtime", None)
+    if comparable_manifest != expected:
         raise ValueError("registration manifest does not match the compiled descriptor")
 
 
