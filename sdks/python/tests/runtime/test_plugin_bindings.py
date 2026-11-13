@@ -89,9 +89,9 @@ class SampleTriggerOutput(BaseModel):
 
 class SampleTriggerStep(TriggerStep[SampleTriggerInput, SampleTriggerOutput]):
     def run(self, inputs: SampleTriggerInput, context: ExecutionContext) -> SampleTriggerOutput:
-        workflow_run_id = context.workflow_run_id or "no-workflow"
+        execution_id = context.runtime_context.get("execution_id", "") or "no-workflow"
         return SampleTriggerOutput(
-            event_id=f"{workflow_run_id}:{inputs.repository}",
+            event_id=f"{execution_id}:{inputs.repository}",
             repository=inputs.repository,
         )
 
@@ -468,7 +468,7 @@ def test_bindings_execute_on_direct_and_container_paths(
     bindings = load_plugin_bindings(package)
     binding = bindings.binding(identity)
     context = mock_execution_context(
-        invocation_id="wrapper-action", workflow_run_id="wrapper-run"
+        invocation_id="wrapper-action", runtime_context={"execution_id": "wrapper-run"}
     )
 
     direct = invoke_step(binding, inputs, context=context)

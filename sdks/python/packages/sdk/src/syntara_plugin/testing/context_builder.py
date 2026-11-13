@@ -13,12 +13,9 @@ from syntara_plugin.runtime import ExecutionContext, FileCredentialProvider
 from .errors import HarnessUsageError
 
 # The container ABI accepts only Syntara identity characters and at most 256
-# of them; the harness derives ``{invocation_id}-run`` as the workflow-run id,
-# so a context that needs derivation leaves room for that suffix.
+# of them. Caller correlation data belongs in runtime_context.
 _IDENTITY_CHARSET = re.compile(r"^[A-Za-z0-9._:-]+$")
 _ABI_MAX = 256
-_DERIVED_SUFFIX = "-run"
-_DERIVATION_MAX = _ABI_MAX - len(_DERIVED_SUFFIX)
 
 
 def _require_identity(
@@ -41,7 +38,6 @@ def _require_identity(
 def build_execution_context(
     *,
     invocation_id: str | None = None,
-    workflow_run_id: str | None = None,
     runtime_context: Mapping[str, Any] | None = None,
     cancelled: bool = False,
     credential_file_paths: Mapping[str, str] | None = None,
@@ -57,12 +53,7 @@ def build_execution_context(
     Args:
         invocation_id: Stable invocation identifier; a unique test identity
             when omitted. Must be a Syntara identity (letters, digits,
-            ``. _ : -``, at most 252 characters) so the context and its
-            derived run id also work on the container path.
-        workflow_run_id: Optional workflow-run correlation identifier; when
-            supplied it must be a Syntara identity (letters, digits,
-            ``. _ : -``, at most 256 characters) so both execution paths
-            accept it.
+            ``. _ : -``, at most 256 characters).
         runtime_context: Optional non-secret runtime data surfaced to the step type.
         cancelled: Pre-set the cooperative cancellation signal when true.
     """
@@ -71,16 +62,12 @@ def build_execution_context(
         _require_identity(
             invocation_id,
             field="invocation_id",
-            maximum=_DERIVATION_MAX,
-            note=", leaving room for the derived run id",
+            maximum=_ABI_MAX,
         )
-    if workflow_run_id is not None:
-        _require_identity(workflow_run_id, field="workflow_run_id", maximum=_ABI_MAX)
     context = ExecutionContext(
         invocation_id=(
             invocation_id if invocation_id is not None else f"test-invocation-{uuid4().hex}"
         ),
-        workflow_run_id=workflow_run_id,
         runtime_context=dict(runtime_context or {}),
         credential_provider=(
             FileCredentialProvider(credential_file_paths, local_directory=credential_directory)
@@ -92,30 +79,7 @@ def build_execution_context(
     return context
 
 
-def normalize_run_id(context: ExecutionContext) -> str:
-    """Validate one context's identifiers and return its deterministic run id.
-
-    Both invocation helpers run this before executing, so raw
-    ``ExecutionContext`` objects are held to the same rules as harness-built
-    ones: identifiers must be Syntara identities the container ABI accepts,
-    and an invocation id that needs a derived run id must leave room for the
-    suffix. When the context already carries a run id, its length may use the
-    full ABI maximum because nothing is derived.
-
-    The container ABI requires a workflow-run identifier, so the container
-    path can never present ``None``. When a context carries no run id, both
-    invocation helpers substitute ``{invocation_id}-run`` so the two SDK paths
-    present identical identifiers to the business hook.
-    """
-
+def validate_execution_context(context: ExecutionContext) -> ExecutionContext:
+    """Require an invocation identity accepted by both local and container paths."""
     _require_identity(context.invocation_id, field="invocation_id", maximum=_ABI_MAX)
-    if context.workflow_run_id is not None:
-        _require_identity(context.workflow_run_id, field="workflow_run_id", maximum=_ABI_MAX)
-        return context.workflow_run_id
-    _require_identity(
-        context.invocation_id,
-        field="invocation_id",
-        maximum=_DERIVATION_MAX,
-        note=", leaving room for the derived run id",
-    )
-    return f"{context.invocation_id}{_DERIVED_SUFFIX}"
+    return context

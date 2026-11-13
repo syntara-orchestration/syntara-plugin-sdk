@@ -31,7 +31,6 @@ class ExecutionContext:
     """
 
     invocation_id: str
-    workflow_run_id: str | None = None
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
     credential_provider: InitVar[CredentialProvider | None | _NoCredentialProvider] = (
@@ -75,7 +74,6 @@ class ExecutionContext:
             raise CredentialAccessError("unauthorized")
         context = ExecutionContext(
             invocation_id=self.invocation_id,
-            workflow_run_id=self.workflow_run_id,
             runtime_context=self.runtime_context,
             cancellation=self.cancellation,
         )

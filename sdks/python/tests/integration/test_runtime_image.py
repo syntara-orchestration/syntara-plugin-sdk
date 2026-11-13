@@ -353,11 +353,10 @@ def _invocation(
 ) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id=invocation_id,
-        workflow_run_id="existing-run",
         step_revision_id=step_revision_id,
         inputs=inputs,
         timeout_seconds=30,
-        runtime_context={},
+        runtime_context={"execution_id": "existing-run"},
     )
 
 

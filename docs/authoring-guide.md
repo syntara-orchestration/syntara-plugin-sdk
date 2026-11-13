@@ -528,7 +528,7 @@ Follow these rules in every implementation:
 ### Use the execution context
 
 The `context` argument is an `ExecutionContext`. It carries the
-`invocation_id`, an optional `workflow_run_id`, bounded non-secret
+`invocation_id`, bounded non-secret
 `runtime_context` data, and a `cancelled` flag for cooperative cancellation.
 It exposes no transport types. Any custom-runner step type can request its declared credential
 through `context.credential(name)`; see [credential access](runtime-and-oci.md#credential-access).
@@ -1046,7 +1046,7 @@ assert not seam_report.passed(), "normalize output is not directly normalize inp
 outcome = chain_steps(
     [first, second],
     {"records": ["Alpha"]},
-    context=mock_execution_context(workflow_run_id="example-chain"),
+    context=mock_execution_context(runtime_context={"execution_id": "example-chain"}),
     seams=[lambda output: {"records": output["normalized"]}],
 )
 assert outcome.ok

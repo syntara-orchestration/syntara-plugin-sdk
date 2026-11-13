@@ -25,6 +25,5 @@
   "output": null,
   "status": 1,
   "statusMessage": "URL targets a blocked address: 127.0.0.1",
-  "target": "syntara.http-request.http-request",
-  "workflowRunId": "run-00000000000000000000000000000000-run"
+  "target": "syntara.http-request.http-request"
 }

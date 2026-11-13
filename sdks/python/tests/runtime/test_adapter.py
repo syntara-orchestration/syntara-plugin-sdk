@@ -47,7 +47,7 @@ class EchoInput(BaseModel):
 class EchoOutput(BaseModel):
     message: str
     invocation_id: str
-    workflow_run_id: str
+    execution_id: str
     cancelled: bool
 
 
@@ -56,7 +56,7 @@ class ActionEchoStep(ActionStep[EchoInput, EchoOutput]):
         return EchoOutput(
             message=inputs.message,
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id,
+            execution_id=context.runtime_context.get("execution_id", ""),
             cancelled=context.cancelled,
         )
 
@@ -66,7 +66,7 @@ class ControlEchoStep(ControlStep[EchoInput, EchoOutput]):
         return EchoOutput(
             message=inputs.message,
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id,
+            execution_id=context.runtime_context.get("execution_id", ""),
             cancelled=context.cancelled,
         )
 
@@ -76,7 +76,7 @@ class TriggerEchoStep(TriggerStep[EchoInput, EchoOutput]):
         return EchoOutput(
             message=inputs.message,
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id,
+            execution_id=context.runtime_context.get("execution_id", ""),
             cancelled=context.cancelled,
         )
 
@@ -245,11 +245,10 @@ def _invocation(
 ) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
-        workflow_run_id="workflow-run-1",
         step_revision_id=step_revision_id,
         inputs=inputs or {"message": "hello"},
         timeout_seconds=30,
-        runtime_context=runtime_context or {"environment": "test"},
+        runtime_context={"execution_id": "workflow-run-1", **(runtime_context or {"environment": "test"})},
     )
 
 
@@ -272,7 +271,7 @@ def test_container_handler_executes_a_typed_step() -> None:
     assert result.output == {
         "message": "hello",
         "invocation_id": "invocation-1",
-        "workflow_run_id": "workflow-run-1",
+        "execution_id": "workflow-run-1",
         "cancelled": False,
     }
 
@@ -284,8 +283,8 @@ def test_direct_and_container_paths_return_identical_standard_output_wrappers() 
     binding = bindings.binding("acme.plugin.echo")
     context = ExecutionContext(
         invocation_id="invocation-1",
-        workflow_run_id="workflow-run-1",
-        runtime_context={"environment": "test"},
+
+        runtime_context={"execution_id": "workflow-run-1", "environment": "test"},
     )
 
     direct = invoke(binding, {"message": "hello"}, context)
@@ -332,7 +331,7 @@ def test_container_handler_uses_the_public_runtime_invoke(monkeypatch: pytest.Mo
     assert binding.descriptor.step_identity == invocation.step_revision_id
     assert inputs == invocation.inputs
     assert context.invocation_id == invocation.invocation_id
-    assert context.workflow_run_id == invocation.workflow_run_id
+    assert context.runtime_context.get("execution_id", "") == invocation.runtime_context.get("execution_id", "")
 
 
 def test_matching_runtime_context_digest_is_accepted() -> None:
@@ -960,7 +959,7 @@ def test_typed_steps_dispatch_end_to_end_over_the_container_abi(
     assert result.output == {
         "message": "hello",
         "invocation_id": "invocation-1",
-        "workflow_run_id": "workflow-run-1",
+        "execution_id": "workflow-run-1",
         "cancelled": False,
     }
 
@@ -981,7 +980,7 @@ def test_large_invalid_payloads_remain_invalid_input_over_grpc() -> None:
         client = ContainerClient(channel)
         invocation = ContainerInvocation(
             invocation_id="invocation-2",
-            workflow_run_id="workflow-run-2",
+            runtime_context={"execution_id": "workflow-run-2"},
             step_revision_id="acme.plugin.bulk",
             inputs={"items": ["leaked-secret-value"] * 200},
             timeout_seconds=30,

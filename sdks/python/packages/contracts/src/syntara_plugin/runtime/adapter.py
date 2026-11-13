@@ -62,7 +62,6 @@ def _execution_context(invocation: ContainerInvocation) -> ExecutionContext:
     context = ExecutionContext(
         credential_provider=invocation.credential_provider,
         invocation_id=invocation.invocation_id,
-        workflow_run_id=invocation.workflow_run_id,
         runtime_context=invocation.runtime_context,
         cancellation=invocation.cancellation,
     )

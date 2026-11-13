@@ -51,7 +51,7 @@ class ExampleInput(BaseModel):
 class ExampleOutput(BaseModel):
     message: str
     invocation_id: str
-    workflow_run_id: str | None
+    execution_id: str | None
     count: int
     mode: str
 
@@ -65,7 +65,7 @@ class ExampleStep(ActionStep[ExampleInput, ExampleOutput]):
         return ExampleOutput(
             message=inputs.message,
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id,
+            execution_id=context.runtime_context.get("execution_id", ""),
             count=inputs.count,
             mode=inputs.mode,
         )
@@ -285,8 +285,8 @@ def _executor(step: ExampleStep, output_schema: dict[str, object] | None = None)
 def _context() -> ExecutionContext:
     return ExecutionContext(
         invocation_id="invoke-1",
-        workflow_run_id="run-1",
-        runtime_context={"environment": "test"},
+
+        runtime_context={"execution_id": "run-1", "environment": "test"},
     )
 
 
@@ -297,11 +297,10 @@ def _container_invocation(
 ) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invoke-1",
-        workflow_run_id="run-1",
         step_revision_id=step_revision_id,
         inputs=inputs,
         timeout_seconds=30,
-        runtime_context={"environment": "test"},
+        runtime_context={"execution_id": "run-1", "environment": "test"},
     )
 
 
@@ -316,7 +315,7 @@ def test_valid_raw_input_uses_defaults_and_calls_run_once() -> None:
     assert wrapper.output == {
         "message": "hello",
         "invocation_id": "invoke-1",
-        "workflow_run_id": "run-1",
+        "execution_id": "run-1",
         "count": 2,
         "mode": "fast",
     }
@@ -781,10 +780,9 @@ def test_control_and_trigger_executor_propagates_the_complete_context(
     _bind_installed(bindings, identity, step)
     cancellation = Event()
     cancellation.set()
-    runtime_context = {"environment": "test", "requestId": "request-1"}
+    runtime_context = {"execution_id": "run-1", "environment": "test", "requestId": "request-1"}
     context = ExecutionContext(
         invocation_id="invoke-1",
-        workflow_run_id="run-1",
         runtime_context=runtime_context,
         cancellation=cancellation,
     )
@@ -1033,10 +1031,9 @@ def test_supported_non_action_adapter_propagates_the_complete_context(
     _bind_installed(bindings, identity, step)
     cancellation = Event()
     cancellation.set()
-    runtime_context = {"environment": "test", "requestId": "request-1"}
+    runtime_context = {"execution_id": "run-1", "environment": "test", "requestId": "request-1"}
     invocation = ContainerInvocation(
         invocation_id="invoke-1",
-        workflow_run_id="run-1",
         step_revision_id=identity,
         inputs={"message": "hello"},
         timeout_seconds=30,
@@ -1049,7 +1046,7 @@ def test_supported_non_action_adapter_propagates_the_complete_context(
     assert result.output is not None
     assert step.last_context is not None
     assert step.last_context.invocation_id == invocation.invocation_id
-    assert step.last_context.workflow_run_id == invocation.workflow_run_id
+    assert step.last_context.runtime_context.get("execution_id", "") == invocation.runtime_context.get("execution_id", "")
     assert step.last_context.runtime_context is runtime_context
     assert step.last_context.cancellation is cancellation
     assert step.last_context.cancelled is True

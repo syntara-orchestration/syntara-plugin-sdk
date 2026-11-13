@@ -14,9 +14,9 @@ from syntara_plugin.testing.payloads import ReferenceControlStep
 def test_mock_execution_context_fixture_builds_contexts(
     mock_execution_context: Callable[..., ExecutionContext],
 ) -> None:
-    context = mock_execution_context(invocation_id="fixture-1", workflow_run_id="run-1")
+    context = mock_execution_context(invocation_id="fixture-1", runtime_context={"execution_id": "run-1"})
     assert context.invocation_id == "fixture-1"
-    assert context.workflow_run_id == "run-1"
+    assert context.runtime_context.get("execution_id", "") == "run-1"
 
 
 def test_step_bindings_fixture_binds_and_resolves(

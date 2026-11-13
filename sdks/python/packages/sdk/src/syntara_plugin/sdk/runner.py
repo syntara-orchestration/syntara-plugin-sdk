@@ -192,7 +192,6 @@ class RunReport:
     input_values: Mapping[str, Any]
     ok: bool
     invocation_id: str
-    workflow_run_id: str
     status: int | None
     status_message: str
     output: Mapping[str, Any] | None
@@ -1444,10 +1443,9 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
                 "or select an advertised target",
             ),
         )
-    invocation_id, workflow_run_id = _identifiers()
+    invocation_id = _invocation_id()
     invocation = ContainerInvocation(
         invocation_id=invocation_id,
-        workflow_run_id=workflow_run_id,
         step_revision_id=dispatch_id,
         inputs=inputs,
         timeout_seconds=execution.timeout_seconds,
@@ -1475,7 +1473,6 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
             input_values=redacted_inputs,
             ok=False,
             invocation_id=invocation_id,
-            workflow_run_id=workflow_run_id,
             status=None,
             status_message="",
             output=None,
@@ -1508,7 +1505,6 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         input_values=redacted_inputs,
         ok=result.status_code == 0 and error is None,
         invocation_id=invocation_id,
-        workflow_run_id=workflow_run_id,
         status=result.status_code,
         status_message=_scrub_text(result.status_message, secrets),
         output=_scrub_structure(result.output, secrets, scalars)
@@ -1837,9 +1833,8 @@ def _make_importable(workspace_root: Path) -> None:
         sys.path.insert(0, root)
 
 
-def _identifiers() -> tuple[str, str]:
-    suffix = uuid.uuid4().hex
-    return f"run-{suffix}", f"run-{suffix}-run"
+def _invocation_id() -> str:
+    return f"run-{uuid.uuid4().hex}"
 
 
 def _channel(address: str, tls: TlsOptions | None) -> grpc.Channel:

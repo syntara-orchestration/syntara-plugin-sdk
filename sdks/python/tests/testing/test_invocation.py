@@ -34,7 +34,7 @@ class CaptureInput(BaseModel):
 
 class CaptureOutput(BaseModel):
     invocation_id: str
-    workflow_run_id: str
+    execution_id: str
     cancelled: bool
 
 
@@ -42,7 +42,7 @@ class CaptureContextTask(ControlStep[CaptureInput, CaptureOutput]):
     def run(self, inputs: CaptureInput, context: ExecutionContext) -> CaptureOutput:
         return CaptureOutput(
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id or "",
+            execution_id=context.runtime_context.get("execution_id", "") or "",
             cancelled=context.cancelled,
         )
 
@@ -51,7 +51,7 @@ class LocalActionStep(ActionStep[CaptureInput, CaptureOutput]):
     def run(self, inputs: CaptureInput, context: ExecutionContext) -> CaptureOutput:
         return CaptureOutput(
             invocation_id=context.invocation_id,
-            workflow_run_id="", cancelled=False
+            execution_id="", cancelled=False
         )
 
 
@@ -89,21 +89,19 @@ def test_default_context_flows_into_the_step() -> None:
     assert outcome.ok
     assert outcome.output is not None
     assert outcome.output["invocation_id"].startswith("test-invocation-")
-    # Both execution paths substitute a deterministic run id when none is set,
-    # so the container ABI's required identifier never diverges from the
-    # direct path.
-    assert outcome.output["workflow_run_id"] == f"{outcome.output['invocation_id']}-run"
+    # Caller context is optional; the harness never invents correlation IDs.
+    assert outcome.output["execution_id"] == ""
     assert outcome.output["cancelled"] is False
 
 
 def test_custom_context_flows_into_the_step() -> None:
     context = build_execution_context(
-        invocation_id="ctx-1", workflow_run_id="run-9", cancelled=True
+        invocation_id="ctx-1", runtime_context={"execution_id": "run-9"}, cancelled=True
     )
     outcome = invoke_step(CaptureContextTask(), {}, context=context)
     assert outcome.output == {
         "invocation_id": "ctx-1",
-        "workflow_run_id": "run-9",
+        "execution_id": "run-9",
         "cancelled": True,
     }
 
@@ -203,11 +201,9 @@ def test_raw_contexts_are_held_to_the_same_identity_rules() -> None:
     from syntara_plugin.testing import invoke_step_in_container
 
     step = ReferenceControlStep()
-    invalid_run_id = ExecutionContext(
-        invocation_id="raw-probe", workflow_run_id="not valid"
-    )
-    with pytest.raises(HarnessUsageError, match="workflow_run_id"):
-        invoke_step_in_container(step, {"title": "x"}, context=invalid_run_id)
+    invalid_invocation = ExecutionContext(invocation_id="not valid")
+    with pytest.raises(HarnessUsageError, match="invocation_id"):
+        invoke_step_in_container(step, {"title": "x"}, context=invalid_invocation)
 
     oversized_invocation = ExecutionContext(invocation_id="x" * 300)
     with pytest.raises(HarnessUsageError, match="invocation_id"):

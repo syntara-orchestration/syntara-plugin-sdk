@@ -52,7 +52,6 @@ def run_document(code: str, message: str, **extra: Any) -> dict[str, Any]:
         "status": 1,
         "statusMessage": message,
         "target": "syntara.http-request.http-request",
-        "workflowRunId": "run-00000000000000000000000000000000-run",
     }
     document.update(extra)
     return document

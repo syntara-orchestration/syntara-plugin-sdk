@@ -186,7 +186,7 @@ against a different contract than its implementation.
 Each entry point must import a typed `BaseStep` class matching that exact
 executable installed binding from the factory. Missing, malformed, duplicate, or
 inconsistent data prevents server startup. This file is bootstrap data only: it
-does not contain invocation IDs, workflow-run IDs, input, timeout, credentials,
+does not contain invocation IDs, input, timeout, credentials,
 or runtime context. Those per-invocation values are supplied in the gRPC
 `Execute` request. Health advertises only the registered revisions, and Execute
 dispatches only an exact revision match.
@@ -302,9 +302,9 @@ contract: **step type -> Category -> Runner -> Execution**.
 | `ControlStep` | `control` |
 | `TriggerStep` | `trigger` |
 
-`ExecutionContext` carries the invocation ID, an optional workflow run ID,
-bounded non-secret runtime data, and a cooperative cancellation signal. It
-intentionally exposes no protobuf, gRPC, container transport, worker, or
+`ExecutionContext` carries the invocation ID, bounded non-secret runtime data,
+and a cooperative cancellation signal. It intentionally exposes no protobuf,
+gRPC, container transport, worker, or
 Execution Plane types, and no raw credential values.
 
 ### Host services

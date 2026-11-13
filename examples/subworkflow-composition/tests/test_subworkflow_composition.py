@@ -43,7 +43,7 @@ def test_child_trigger_emits_the_invocation_event(
 
     binding = step_bindings.bind_step(TRIGGER, workspace=WORKSPACE)
     outcome = invoke_step(
-        binding, PARAMETERS, context=mock_execution_context(workflow_run_id="child-run-1")
+        binding, PARAMETERS, context=mock_execution_context(runtime_context={"execution_id": "child-run-1"})
     )
     assert outcome.ok
     assert outcome.run_calls == 1
@@ -107,7 +107,7 @@ def test_running_the_child_workflow_reaches_the_parent_declared_result(
     outcome = chain_steps(
         [trigger, terminal],
         PARAMETERS,
-        context=mock_execution_context(workflow_run_id="child-run-1"),
+        context=mock_execution_context(runtime_context={"execution_id": "child-run-1"}),
     )
     assert outcome.ok, outcome.seam_issues
     assert outcome.output == CHILD_RESULT
@@ -128,7 +128,7 @@ def test_direct_and_container_paths_are_equivalent(
 
     binding = step_bindings.bind_step(entry_point, workspace=WORKSPACE)
     context = mock_execution_context(
-        invocation_id="subworkflow-equivalence", workflow_run_id="run-1"
+        invocation_id="subworkflow-equivalence", runtime_context={"execution_id": "run-1"}
     )
     direct = invoke_step(binding, PARAMETERS, context=context)
     container = invoke_step_in_container(binding, PARAMETERS, context=context)

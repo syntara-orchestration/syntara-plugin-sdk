@@ -71,7 +71,6 @@ class ContainerInvocation:
     """The selected type and the safe data supplied to it."""
 
     invocation_id: str
-    workflow_run_id: str
     step_revision_id: str
     inputs: Mapping[str, Any]
     timeout_seconds: int
@@ -1114,7 +1113,6 @@ def invocation_from_request(
 ) -> tuple[ContainerInvocation, Event]:
     try:
         _require_identity(request.invocation_id, "invocation_id")
-        _require_identity(request.workflow_run_id, "workflow_run_id")
         _require_identity(request.step_revision_id, "step_revision_id")
     except ValueError as error:
         raise ContainerInvocationError(
@@ -1139,7 +1137,6 @@ def invocation_from_request(
     cancellation = Event()
     invocation = ContainerInvocation(
         invocation_id=request.invocation_id,
-        workflow_run_id=request.workflow_run_id,
         step_revision_id=request.step_revision_id,
         inputs=inputs,
         timeout_seconds=request.timeout_seconds,
@@ -1153,13 +1150,11 @@ def _request_from_invocation(
     invocation: ContainerInvocation,
 ) -> container_pb2.ExecuteRequest:
     _require_identity(invocation.invocation_id, "invocation_id")
-    _require_identity(invocation.workflow_run_id, "workflow_run_id")
     _require_identity(invocation.step_revision_id, "step_revision_id")
     if not 1 <= invocation.timeout_seconds <= _MAX_TIMEOUT_SECONDS:
         raise ValueError("timeout_seconds is outside the supported range")
     return container_pb2.ExecuteRequest(
         invocation_id=invocation.invocation_id,
-        workflow_run_id=invocation.workflow_run_id,
         step_revision_id=invocation.step_revision_id,
         runtime_abi=CONTAINER_ABI,
         inputs_json=_encode_json_object(invocation.inputs, "inputs"),

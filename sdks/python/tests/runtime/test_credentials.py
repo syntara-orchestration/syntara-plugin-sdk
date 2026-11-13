@@ -370,7 +370,7 @@ def _terminal_failure_event(
     """Exercise sensitive responses separately from terminal business events."""
     del root
     invocation = ContainerInvocation(
-        invocation_id="terminal-leak-probe", workflow_run_id="terminal-leak-probe-run",
+        invocation_id="terminal-leak-probe", runtime_context={"execution_id": "terminal-leak-probe-run"},
         step_revision_id=binding.descriptor.step_identity, inputs=dict(inputs), timeout_seconds=30,
     )
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
