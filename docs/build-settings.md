@@ -40,6 +40,8 @@ build:
 publish:
   channel: 1.0.0
   updateCatalog: true
+policy:
+  requirements: []
 catalog:
   sourceId: acme-plugins
   channel: stable
@@ -113,6 +115,30 @@ For image-only updates, the SDK uses the exact plugin OCI archive supplied to
 | `catalog.sourceId` | Stable catalog-source identity configured in Syntara. |
 | `catalog.channel` | OCI tag for the catalog index, commonly `stable`. |
 | `catalog.expiresInHours` | Validity period for a new catalog or RuntimeBinding index. Expiry does not delete artifacts. |
+
+## `policy`
+
+`policy.requirements` is an optional list of checks applied by `build` and
+`publish`. It defaults to an empty list. The current check is
+`verified-runtime`, which requires every RuntimeBinding image option to report
+a supported runtime version. The special value `all` selects every check in
+the installed SDK:
+
+```yaml
+policy:
+  requirements:
+    - all
+```
+
+Commands can add requirements with repeatable `--require` options. CLI values
+are combined with settings and cannot turn a configured check off. For
+example, `syntara-plugin build --require verified-runtime` and
+`syntara-plugin publish dist/release.json --artifact-kind release --require all`
+use the same requirement evaluator. A release inventory records the checks
+selected at build time and their results; publish verifies the underlying
+image metadata again rather than accepting the recorded result alone. Pin the
+SDK in CI when using `all`, because upgrading the SDK can add checks to that
+set.
 
 Registry passwords, signing keys, and secret values must not be stored in
 `syntara-plugin.yaml`. Use `--password-stdin` or a protected registry auth file

@@ -574,11 +574,21 @@ def _runtime_binding_source() -> dict[str, Any]:
                         {
                             "name": "base",
                             "displayName": "Python base",
+                            "runtime": {
+                                "components": [
+                                    {"name": "python", "executable": "/usr/bin/python3"}
+                                ]
+                            },
                             "image": {"buildTarget": "python-base"},
                         },
                         {
                             "name": "aws",
                             "displayName": "Python with AWS SDK",
+                            "runtime": {
+                                "components": [
+                                    {"name": "python", "executable": "/usr/bin/python3"}
+                                ]
+                            },
                             "image": {"buildTarget": "python-aws"},
                         },
                     ],
@@ -611,6 +621,16 @@ def _runtime_binding_resolved() -> dict[str, Any]:
                             "name": "base",
                             "displayName": "Python base",
                             "image": "quay.io/acme/python-base@sha256:" + "d" * 64,
+                            "runtime": {
+                                "components": [
+                                    {
+                                        "name": "python",
+                                        "executable": "/usr/bin/python3",
+                                        "version": "3.12.8",
+                                        "verification": "verified",
+                                    }
+                                ]
+                            },
                         }
                     ],
                 }

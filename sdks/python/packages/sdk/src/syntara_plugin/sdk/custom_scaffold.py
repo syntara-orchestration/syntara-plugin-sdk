@@ -119,6 +119,10 @@ def write_custom_workspace(
             "      options:\n"
             "        - name: default\n"
             "          displayName: Default runtime\n"
+            "          runtime:\n"
+            "            components:\n"
+            "              - name: python\n"
+            "                executable: /usr/bin/python3.12\n"
             "          image:\n"
             "            buildTarget: custom-runtime\n"
         ),

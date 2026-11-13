@@ -8,7 +8,7 @@ import json
 import os
 import signal
 import weakref
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +34,7 @@ from .container import (
 )
 from .credential_callback import CallbackCredentialProvider
 from .execution import StepExecutionError
+from .metadata import probe_runtime_components
 from .protocol import container_pb2, container_pb2_grpc
 from .step import BaseStep
 
@@ -175,13 +176,18 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     """
 
     def __init__(
-        self, steps: StepRegistry, *, max_concurrent_steps: int = _DEFAULT_MAX_CONCURRENT_STEPS,
+        self,
+        steps: StepRegistry,
+        *,
+        max_concurrent_steps: int = _DEFAULT_MAX_CONCURRENT_STEPS,
+        runtime_components: Sequence[Mapping[str, str]] = (),
     ) -> None:
         if not isinstance(max_concurrent_steps, int) or isinstance(max_concurrent_steps, bool):
             raise TypeError("max_concurrent_steps must be an integer")
         if max_concurrent_steps < 1:
             raise ValueError("max_concurrent_steps must be positive")
         self._steps = steps
+        self._runtime_components = tuple(dict(item) for item in runtime_components)
         self._active: dict[str, tuple[Event, CallbackCredentialProvider, asyncio.Queue[Any]]] = {}
         self._step_executor = _DaemonStepWorkerPool(max_concurrent_steps)
         self._step_slots = BoundedSemaphore(max_concurrent_steps)
@@ -363,6 +369,10 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ready=True,
             runtime_abi=CONTAINER_ABI,
             step_revision_ids=self._steps.step_revision_ids,
+            runtime_components=[
+                container_pb2.RuntimeComponent(**component)
+                for component in self._runtime_components
+            ],
         )
 
     def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: asyncio.Queue[Any]) -> None:
@@ -516,8 +526,9 @@ def _create_runtime_server(config: RuntimeServerConfig) -> tuple[grpc.aio.Server
     _validate_listener(config.address, config.tls_certificate, config.tls_key, config.tls_client_ca)
     bindings = load_runtime_bindings(config.bindings_factory)
     steps = resolved_step_registry(config, bindings)
+    runtime_components = _registration_runtime_components(config.registration_manifest_path)
     server = grpc.aio.server()
-    service = AsyncContainerRuntimeService(steps)
+    service = AsyncContainerRuntimeService(steps, runtime_components=runtime_components)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
     credentials = _server_credentials(config)
     port = (
@@ -557,6 +568,23 @@ def _registration_steps(path: Path) -> Mapping[str, Any]:
     steps = manifest["steps"]
     assert isinstance(steps, Mapping)
     return steps
+
+
+def _registration_runtime_components(path: Path) -> tuple[dict[str, str], ...]:
+    """Probe the runtime executables embedded for this exact workload image."""
+
+    if path == _DEFAULT_REGISTRATION_MANIFEST and not path.exists():
+        return ()
+    manifest = _read_json_object(path, "registration manifest")
+    runtime = manifest.get("runtime")
+    if runtime is None:
+        return ()
+    if not isinstance(runtime, Mapping) or not isinstance(runtime.get("components"), list):
+        raise RuntimeServerError("registration manifest runtime components are invalid")
+    try:
+        return probe_runtime_components(runtime["components"])
+    except ValueError as error:
+        raise RuntimeServerError("a declared runtime component could not be verified") from error
 
 
 def _resolved_execution_bindings(config: RuntimeServerConfig) -> list[_ResolvedExecutionBinding]:

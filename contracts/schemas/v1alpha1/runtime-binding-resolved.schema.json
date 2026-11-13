@@ -45,13 +45,45 @@
     "optionResolved": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "displayName", "image"],
+      "required": ["name", "displayName", "image", "runtime"],
       "properties": {
         "name": {"$ref": "common.schema.json#/$defs/identifier"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
         "description": {"type": "string", "maxLength": 2000},
-        "image": {"$ref": "common.schema.json#/$defs/digestImageReference"}
+        "image": {"$ref": "common.schema.json#/$defs/digestImageReference"},
+        "runtime": {"$ref": "#/$defs/runtimeObservation"}
       }
+    },
+    "runtimeObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["components"],
+      "description": "Runtime metadata observed from the digest-pinned workload image during SDK build.",
+      "properties": {
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/runtimeComponentObservation"}
+        }
+      }
+    },
+    "runtimeComponentObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "executable", "verification"],
+      "properties": {
+        "name": {"$ref": "common.schema.json#/$defs/identifier"},
+        "executable": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Version reported by a supported runtime probe; omitted when unverified."},
+        "verification": {"enum": ["verified", "unverified"], "description": "Whether this SDK version successfully identified the declared runtime executable and version."}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"verification": {"const": "verified"}}, "required": ["verification"]},
+          "then": {"required": ["version"]}
+        }
+      ]
     },
     "workloadResolved": {
       "type": "object",

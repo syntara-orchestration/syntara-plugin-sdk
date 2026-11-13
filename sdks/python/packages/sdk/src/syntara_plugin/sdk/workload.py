@@ -49,6 +49,7 @@ class WorkloadBuildRequest:
     auth_file: Path | None = None
     registration_descriptor: Mapping[str, Any] | None = None
     workload_id: str | None = None
+    runtime_components: tuple[Mapping[str, str], ...] = ()
 
     @property
     def tagged_reference(self) -> str:
@@ -462,9 +463,16 @@ def _registration_manifest_bytes(request: WorkloadBuildRequest) -> bytes:
     assert request.registration_descriptor is not None
     assert request.workload_id is not None
     try:
-        manifest = registration_manifest(request.registration_descriptor, request.workload_id)
+        manifest = registration_manifest(
+            request.registration_descriptor,
+            request.workload_id,
+            request.runtime_components,
+        )
         validate_registration_manifest(
-            request.registration_descriptor, request.workload_id, manifest
+            request.registration_descriptor,
+            request.workload_id,
+            manifest,
+            request.runtime_components,
         )
         return canonical_json_bytes(manifest)
     except (ValueError, KeyError, TypeError, AttributeError) as error:

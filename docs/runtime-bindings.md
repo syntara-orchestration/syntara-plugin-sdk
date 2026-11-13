@@ -75,14 +75,74 @@ spec:
         - name: python-base
           displayName: Python base
           description: General-purpose report runtime.
+          runtime:
+            components:
+              - name: python
+                executable: /usr/bin/python3.12
           image:
             buildTarget: python-base-image
         - name: python-pdf
           displayName: Python with PDF tools
           description: Includes libraries for creating and processing PDFs.
+          runtime:
+            components:
+              - name: python
+                executable: /usr/bin/python3.12
           image:
             buildTarget: python-pdf-image
 ```
+
+Each image option declares the runtime components it is expected to use. The
+declaration names an absolute executable path but does not contain a version.
+When the SDK builds a workload image, it adds the declarations to the image's
+registration manifest, starts that exact image in a local probe with an
+egress-restricted internal network,
+and asks its gRPC `Health` endpoint for observed runtime metadata. The SDK
+writes the observed version and verification status into the resolved
+RuntimeBinding. Python and GNU Bash have built-in probes. Components without a
+probe remain `unverified`; a failed probe or executable mismatch stops the
+build. The SDK does not infer an image's runtime version from plugin tags or
+project dependency constraints. On macOS with Podman, the SDK uses a temporary
+OpenSSH tunnel through the Podman machine to query the workload on its internal
+network; the workload remains disconnected from external networks.
+
+For example, the source declaration contains no version:
+
+```yaml
+runtime:
+  components:
+    - name: python
+      executable: /usr/bin/python3.12
+```
+
+The resolved RuntimeBinding records what the image reports:
+
+```yaml
+runtime:
+  components:
+    - name: python
+      executable: /usr/bin/python3.12
+      version: "3.12.8"
+      verification: verified
+```
+
+`--require verified-runtime` makes `build` and `publish` fail if any image
+option is unverified. `--require all` expands to every check registered by the
+installed SDK. Requirements can also be set persistently in
+`syntara-plugin.yaml`:
+
+```yaml
+policy:
+  requirements:
+    - verified-runtime
+```
+
+The default is an empty requirement list. CLI requirements add to the
+settings list and cannot remove a configured check. `build` records the
+expanded checks and results in `dist/release.json`. `publish` probes the
+digest-pinned images again and validates that evidence instead of trusting a
+stored pass flag. Pin the SDK version in CI when using `all`, because a later
+SDK release can register additional checks.
 
 Keep non-secret container build settings in `syntara-plugin.yaml`:
 
@@ -141,7 +201,8 @@ container gRPC runtime:
 ```sh
 syntara-plugin build plugin.yaml \
   --runtime-bindings runtime-bindings.yaml \
-  --output dist/report-tools.oci.tar
+  --output dist/report-tools.oci.tar \
+  --require verified-runtime
 syntara-plugin inspect dist/release.json
 syntara-plugin inspect dist/report-tools.oci.tar
 syntara-plugin inspect dist/runtime-bindings.yaml
@@ -163,7 +224,7 @@ digests, publishes in dependency order, and prints the immutable references:
 
 ```sh
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish dist/release.json \
-  --artifact-kind release --password-stdin --cosign-key cosign.key \
+  --artifact-kind release --require all --password-stdin --cosign-key cosign.key \
   --cosign-verify-key cosign.pub
 ```
 
