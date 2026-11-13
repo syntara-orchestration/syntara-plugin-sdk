@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-10
+- Amended by: [ADR 0013](0013-toolbox-logging.md)
 
 ## Decision
 

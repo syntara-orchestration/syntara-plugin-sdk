@@ -1,0 +1,13 @@
+{
+  "invocationId": "invoke-1",
+  "version": 1,
+  "events": [
+    {
+      "timestamp": "2026-11-11T10:32:01.482Z",
+      "severity": "INFO",
+      "message": "Created Jira issue",
+      "eventName": "issue.created",
+      "attributesJson": "eyJhdHRlbXB0cyI6MSwiaXNzdWVfaWQiOiIxMjMifQ=="
+    }
+  ]
+}

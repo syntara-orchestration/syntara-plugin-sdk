@@ -157,7 +157,7 @@ class CallbackCredentialProvider:
         self._toolbox = _ContainerToolbox(
             self._context, _CredentialCallbackTransport(send, self._scope)
         )
-        self._public_toolbox = _new_toolbox(cancellation)
+        self._public_toolbox = _new_toolbox(cancellation, invocation_id)
 
     def restrict(
         self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
@@ -217,8 +217,12 @@ class CallbackCredentialProvider:
             except Exception:
                 raise CredentialAccessError("unavailable") from None
 
-    def close(self) -> None:
+    def close_credentials(self) -> None:
+        """Stop reads when the client half-closes without ending logging."""
         self._toolbox._close()
+
+    def close(self) -> None:
+        self.close_credentials()
         _close_toolbox(self._public_toolbox)
 
 

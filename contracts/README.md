@@ -140,3 +140,13 @@ The wrapper schema does not redefine protobuf transport fields. The
 `ContainerService` ABI remains the protocol contract for transporting runtime
 events; any transport mapping must preserve the distinction between deliberate
 failure and no valid outcome.
+
+The Execute server can send a version 1 `LogBatch` notification immediately
+before its terminal outcome. The [protobuf](proto/syntara_plugin/runtime/protocol/container.proto)
+defines its event fields, allowed values, bounds, and overflow behavior. The
+batch is one-way, separate from credential responses, and requires no
+acknowledgment. Peers that reject unknown server messages must be updated before
+workloads use logging; Health does not distinguish this addition under the
+existing ABI identifier. Host consumers receive validated batches as
+`ContainerLogBatch` events from `ContainerClient.stream()`, alongside progress
+and the terminal result. See [ADR 0013](../.sdlc/adrs/0013-toolbox-logging.md).

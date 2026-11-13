@@ -532,6 +532,8 @@ The `context` argument is an `ExecutionContext`. It carries the
 `runtime_context` data, and a `cancelled` flag for cooperative cancellation.
 It exposes no transport types. Any custom-runner step type can request its declared credential
 through `context.credential(name)`; see [credential access](runtime-and-oci.md#credential-access).
+For structured operational logs, use `context.toolbox.log("INFO", "Started")`;
+see [host services](runtime-and-oci.md#host-services).
 Check `context.cancelled`
 before a long or irreversible operation, and stop with a `CANCELLED` failure
 when it is `True`.
