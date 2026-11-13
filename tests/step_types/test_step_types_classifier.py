@@ -356,3 +356,54 @@ def test_text_compiler_diagnostic_from_build_is_classified() -> None:
 def test_settings_error_text_is_not_mistaken_for_a_diagnostic_code() -> None:
     result = classify(failure(stderr="error: build contains unsupported setting(s): workload\n"))
     assert result.rule_id == "MC001"
+
+
+def test_rules_carry_baseline_identity_facts() -> None:
+    # The devel-baseline comparison keys on these facts (tests/step_types/baseline.py).
+    schema = classify(
+        failure(
+            stderr="error: settings document schema validation failed: build/workloads/x: "
+            "Additional properties are not allowed ('imageId' was unexpected)\n"
+        )
+    )
+    assert schema.facts["detail"].startswith("build/workloads/x")
+
+    required = classify(failure(stderr="build requires: workload, workloadTag\n"))
+    assert required.facts == {"label": "build", "keys": ["workload", "workloadTag"]}
+
+    cli = classify(
+        failure(
+            stage="build-inspect",
+            stderr="syntara-plugin: error: unrecognized arguments: --with-workload\n",
+        )
+    )
+    assert cli.facts == {"detail": "unrecognized arguments: --with-workload"}
+
+    settings = classify(
+        failure(stage="run", diagnostic={"error": {"kind": "SettingsError", "message": "m"}})
+    )
+    assert settings.facts == {"kind": "SettingsError", "message": "m"}
+
+    invalid = classify(
+        failure(stage="run", diagnostic={"error": {"kind": "InvalidInput", "message": "m"}})
+    )
+    assert invalid.facts == {"kind": "InvalidInput", "message": "m"}
+
+    abi = classify(
+        failure(stderr="the step runtime does not support the requested runtime ABI (v9)\n")
+    )
+    assert abi.facts == {"line": "the step runtime does not support the requested runtime ABI (v9)"}
+
+    wheels = classify(failure(stage="environment", note="candidate wheels: inconsistent set"))
+    assert wheels.facts == {"note": "candidate wheels: inconsistent set"}
+
+    layout = classify(failure(stage="preflight", note="missing make target sdk-plugin-run"))
+    assert layout.facts == {"note": "missing make target sdk-plugin-run"}
+
+    injected = classify(failure(note="candidate not installed: uv re-synced the environment"))
+    assert injected.facts == {"reason": "uv re-synced the environment"}
+
+    plugin_unknown = classify(
+        failure(stderr="Makefile:42: *** Set PLUGIN to one of http-request script-bash. Stop.\n")
+    )
+    assert "Set PLUGIN to one of" in plugin_unknown.facts["line"]

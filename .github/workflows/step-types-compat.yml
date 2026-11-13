@@ -28,8 +28,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: step-types-compat-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  # Superseded pull request runs are cancelled; devel and manual runs always finish.
+  # Pull request runs share one group per pull request (superseded runs are
+  # cancelled). Every other event keys on its commit: the compat baseline is
+  # the devel push run for a pull request's base commit, so a devel push run
+  # must never be cancelled by a newer one.
+  group: step-types-compat-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -48,6 +51,7 @@ jobs:
     outputs:
       run_compat: ${{ steps.decide.outputs.run_compat }}
       mode: ${{ steps.mode.outputs.mode }}
+      base_sha: ${{ steps.decide.outputs.base_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: github.event_name == 'pull_request'
@@ -61,6 +65,7 @@ jobs:
         run: |
           if [ "$EVENT_NAME" != "pull_request" ]; then
             echo "run_compat=true" >> "$GITHUB_OUTPUT"
+            echo "base_sha=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # HEAD is the pull request merge commit; HEAD^1 is the base it merges into.
@@ -76,6 +81,9 @@ jobs:
             echo "run_compat=false" >> "$GITHUB_OUTPUT"
             echo "Only documentation changed; the step types check is skipped by design."
           fi
+          # The devel commit this pull request is tested against (the merge
+          # commit's first parent); the compat baseline is its push run.
+          echo "base_sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
       - name: Resolve report mode
         id: mode
         env:
@@ -195,7 +203,8 @@ jobs:
           name: step-types-compat-${{ matrix.plugin }}
           path: report/
           if-no-files-found: warn
-          retention-days: 14
+          # Devel push runs are the compat baseline, so they outlive pull request artifacts.
+          retention-days: ${{ github.event_name == 'push' && 90 || 14 }}
           overwrite: true
       - name: Remove the temporary registry
         if: always()
@@ -209,7 +218,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read # re-read the breaking-change label; the token stays in that one step
+      pull-requests: read # re-read the breaking-change label
+      actions: read # read the devel baseline run's reports (pull request runs only)
     steps:
       - name: Read the breaking-change label
         id: label
@@ -242,6 +252,41 @@ jobs:
           pattern: step-types-compat-*
           path: reports
           merge-multiple: true
+      - name: Resolve the devel baseline run
+        id: baseline-run
+        # Pull request runs only: devel and manual runs are judged as they are,
+        # so devel stays red while a break waits on step-types. The baseline is
+        # the devel push run for this pull request's base commit (HEAD^1 of the
+        # merge commit), exactly the devel this pull request is tested against.
+        # Cancelled runs are skipped; they produced no reports.
+        if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ needs.changes.outputs.base_sha }}
+        run: |
+          mkdir -p baseline
+          run_id=""
+          if [ -n "$BASE_SHA" ]; then
+            run_id="$(gh api "repos/$REPOSITORY/actions/workflows/step-types-compat.yml/runs?head_sha=$BASE_SHA&event=push&status=completed&per_page=20" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")][0].id // ""')"
+          fi
+          printf '{"base_sha":"%s","run_id":"%s"}\n' "$BASE_SHA" "$run_id" > baseline/meta.json
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "baseline run for base ${BASE_SHA:-unknown}: ${run_id:-none}"
+      - name: Download the devel baseline
+        if: >-
+          github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true' &&
+          steps.baseline-run.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          run-id: ${{ steps.baseline-run.outputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: step-types-compat-*
+          path: baseline
+          merge-multiple: true
       - name: Aggregate the verdict
         env:
           PLUGINS: ${{ needs.discover.outputs.plugins }}
@@ -251,9 +296,12 @@ jobs:
           TOOLING_RESULT: ${{ needs.tooling.result }}
           COMPAT_RESULT: ${{ needs.compat.result }}
           LABEL_PRESENT: ${{ steps.label.outputs.present }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           python3 sdk/tests/step_types/report.py \
             --reports-dir reports \
+            --baseline-dir baseline \
+            --event "$EVENT_NAME" \
             --plugins "${PLUGINS:-[]}" \
             --changes "$CHANGES_RESULT" \
             --run-compat "${RUN_COMPAT:-false}" \

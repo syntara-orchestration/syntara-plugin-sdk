@@ -35,7 +35,7 @@ its tooling lives in [`tests/step_types`](../tests/step_types).
    stage fails unless all of them used this pull request's wheels: a result
    produced by the published SDK says nothing about the change.
 4. **compat-report**: aggregates every job into one verdict and one summary
-   table.
+   table, and compares failures against `devel` (the baseline, below).
 
 ## Reading a failure
 
@@ -117,9 +117,48 @@ so a stale result never outlives a label change. Coordinate the migration with
 the step-types maintainers and share the report.
 
 Until step-types migrates a break that is already on `devel`, the check stays
-red on `devel` pushes and on pull requests without the label. That red is
-migration debt waiting on step-types, not a flaky check; it clears when the pin
-moves to a step-types revision that works with the SDK.
+red on `devel` pushes; that red is migration debt waiting on step-types, not a
+flaky check, and it clears when the pin moves to a step-types revision that
+works with the SDK. Pull requests, however, are judged against `devel` as it
+is, so an inherited break does not fail them (next section). The label is only
+needed on the pull request that introduces a break.
+
+## Failures already on devel
+
+Every merge to `devel` runs this same workflow and uploads one report per step
+type. Those reports are the *baseline*: when a pull request leg fails, the gate
+reads the baseline for exactly the `devel` commit the pull request is tested
+against (the merge commit's base) and compares the failures. Reading it needs
+only the workflow's read-only token.
+
+- A failure `devel` already carries, with the same pin, stage, rule, and
+  identity (the broken settings keys or diagnostic codes, or the traceback
+  frame a crash was located on), is **inherited**: the summary shows it as
+  `incompatible, inherited` with the `devel` commit it comes from, and it does
+  not fail the check.
+- A failure that is new or worse (one more or one different broken field, a
+  different rule or stage, a migration that used to pass and now fails)
+  **fails the check** as usual.
+- A pull request that breaks strictly less than `devel` (fewer broken fields)
+  is inherited too, and the summary says so.
+
+Only the first failing stage is recorded per step type, so while a failure is
+inherited the stages after it are unchecked; the summary names them. For
+settings migrations, the adapter's re-run on the migrated copy is compared as
+well, so a second break hiding behind an inherited migration still fails the
+check.
+
+Not every failure can be inherited: `infra` and `unknown` failures never are
+(they stay red; re-run or classify them), and a few rules have no identity
+stable enough to compare. The policy lives in `tests/step_types/baseline.py`,
+and a test fails when the classifier gains a rule the policy does not know.
+
+The baseline needs the `devel` push run for the pull request's base commit to
+have finished. A pull request checked in the minutes after a merge fails with
+`no completed devel run ... yet`; re-running the failed jobs clears it once
+that run finishes. When only the gate failed (after a label change, for
+example), re-running the `compat-report` job alone is enough, and the legs
+are reused. Baseline reports are kept for 90 days.
 
 ## The pinned revision
 
@@ -156,6 +195,11 @@ pushed to it).
 
 - The check surfaces compatibility regressions; it cannot guarantee that it
   detects every breaking change.
+- Only the first failure per step type is compared against `devel`; the stages
+  after it are unchecked while that failure is inherited (the adapter's
+  migrated re-run is compared too).
+- The baseline is the `devel` push run for the pull request's base commit;
+  until that run completes, inherited failures cannot be recognized.
 - Workload images install `syntara-plugin-contracts` from published releases
   (step-types' lock file and Containerfiles), not from the pull request. Changes
   to the contracts package are exercised through the authoring and source-mode

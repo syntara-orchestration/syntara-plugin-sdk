@@ -37,7 +37,9 @@ def write(
     (directory / f"{plugin}.json").write_text(json.dumps(document))
 
 
-def run(tmp_path: Path, **overrides: str) -> int:
+def run(
+    tmp_path: Path, baseline: Path | None = None, event: str = "pull_request", **overrides: str
+) -> int:
     options = {
         "changes": "success",
         "run-compat": "true",
@@ -48,6 +50,9 @@ def run(tmp_path: Path, **overrides: str) -> int:
     }
     options.update(overrides)
     argv = ["--reports-dir", str(tmp_path / "reports")]
+    if baseline is not None:
+        argv += ["--baseline-dir", str(baseline)]
+    argv += ["--event", event]
     for key, value in options.items():
         argv += [f"--{key}", value]
     return main(argv)
@@ -194,3 +199,152 @@ def test_no_analysis_mix_when_everything_passes(
     write(tmp_path / "reports", "script-bash", "pass")
     assert run(tmp_path) == 0
     assert "failure analysis" not in capsys.readouterr().out
+
+
+# The devel baseline -----------------------------------------------------------
+
+
+PIN = "3991e986f92f4b1b00a76e21902038215915bd19"
+BASE_FACTS = {"label": "build", "keys": ["workload"]}
+
+
+def write_leg(
+    directory: Path,
+    plugin: str,
+    result: str = "fail",
+    *,
+    rule: str = "MC001",
+    stage: str = "validate",
+    facts: dict | None = None,
+) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    document = {
+        "schema": 1,
+        "plugin": plugin,
+        "result": result,
+        "mode": "enforcing",
+        "report_only": False,
+        "sdk": {"commit": "2" * 40},
+        "pin": {"sha": PIN, "date": "2026-11-12T10:00:00+00:00", "age_days": 1},
+    }
+    if result == "fail":
+        document["failure"] = {
+            "stage": stage,
+            "index": 3,
+            "category": "misconfiguration",
+            "rule_id": rule,
+            "confidence": "deterministic",
+            "facts": BASE_FACTS if facts is None else facts,
+            "frames": [],
+        }
+    (directory / f"{plugin}.json").write_text(json.dumps(document))
+
+
+def test_inherited_failure_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    write_leg(tmp_path / "baseline", "http-request", "fail")
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+    assert run(tmp_path, baseline=tmp_path / "baseline") == 0
+    output = capsys.readouterr().out
+    assert "already on devel at 222222222222" in output
+    assert "stages after 3 validate unchecked" in output
+    assert "new in this pull request" not in output
+    assert "every step type is compatible" not in output
+
+
+def test_inherited_and_new_fails_naming_only_the_new(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    write_leg(tmp_path / "reports", "script-bash", "fail")
+    write_leg(tmp_path / "baseline", "http-request", "fail")
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+    assert run(tmp_path, baseline=tmp_path / "baseline", compat="failure") == 1
+    output = capsys.readouterr().out
+    assert "script-bash: incompatible, new in this pull request" in output
+    assert "http-request: incompatible, already on devel" in output
+
+
+def test_no_baseline_reports_fail_with_reason(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    baseline = tmp_path / "baseline"
+    baseline.mkdir()
+    (baseline / "meta.json").write_text(json.dumps({"base_sha": "a" * 40, "run_id": ""}))
+    assert run(tmp_path, baseline=baseline, compat="failure") == 1
+    output = capsys.readouterr().out
+    assert "no completed devel run" in output
+    assert "new in this pull request" in output
+
+
+def test_push_event_ignores_a_present_baseline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Devel and manual runs are judged as they are; only pull requests inherit.
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    write_leg(tmp_path / "baseline", "http-request", "fail")
+    assert run(tmp_path, baseline=tmp_path / "baseline", event="push", compat="failure") == 1
+    output = capsys.readouterr().out
+    assert "already on devel" not in output
+    assert "devel baseline" not in output
+
+
+def test_gate_only_rerun_still_sees_the_baseline(tmp_path: Path) -> None:
+    # The legs ran while the label was set (compat succeeded); the label was
+    # removed and only this job was re-run. The baseline is fetched on every
+    # pull request run, so the inherited failure is still recognized.
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    write_leg(tmp_path / "baseline", "http-request", "fail")
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+    assert run(tmp_path, baseline=tmp_path / "baseline", compat="success") == 0
+
+
+def test_report_only_takes_precedence_over_inherited(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    write_leg(tmp_path / "baseline", "http-request", "fail")
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+    assert run(tmp_path, baseline=tmp_path / "baseline", **{"label-report-only": "true"}) == 0
+    output = capsys.readouterr().out
+    assert "reported only (breaking-change label)" in output
+    assert "already on devel" not in output
+
+
+def test_improvement_over_devel_is_noted(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_leg(tmp_path / "reports", "http-request", "fail", facts={"label": "build", "keys": ["workload"]})
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    write_leg(tmp_path / "baseline", "http-request", "fail", facts={"label": "build", "keys": ["workload", "publish"]})
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+    assert run(tmp_path, baseline=tmp_path / "baseline") == 0
+    assert "breaks less than devel" in capsys.readouterr().out
+
+
+def test_baseline_summary_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_leg(tmp_path / "reports", "http-request", "pass")
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    baseline = tmp_path / "baseline"
+    write_leg(baseline, "http-request", "pass")
+    (baseline / "meta.json").write_text(json.dumps({"base_sha": "b" * 40, "run_id": "42"}))
+    assert run(tmp_path, baseline=baseline) == 0
+    assert "devel baseline: bbbbbbbbbbbb (run 42)" in capsys.readouterr().out
+
+
+def test_inherited_summary_wording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    write_leg(tmp_path / "baseline", "http-request", "fail")
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+    assert run(tmp_path, baseline=tmp_path / "baseline") == 0
+    text = summary.read_text()
+    assert "PASS, inherited" in text
+    assert "**Inherited:**" in text
+    assert "| http-request | incompatible, inherited |" in text
