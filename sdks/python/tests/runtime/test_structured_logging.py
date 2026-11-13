@@ -12,10 +12,16 @@ import pytest
 from syntara_plugin.runtime import (
     ContainerInvocation,
     ContainerInvocationError,
+    ContainerLogBatch,
     ContainerResult,
     FailureCode,
 )
-from syntara_plugin.runtime.container import _run_sync_step, _valid_log_batch
+from syntara_plugin.runtime.container import (
+    ContainerClient,
+    _container_log_batch,
+    _run_sync_step,
+    _valid_log_batch,
+)
 from syntara_plugin.runtime.credential_callback import CallbackCredentialProvider
 from syntara_plugin.runtime.protocol import container_pb2
 from syntara_plugin.runtime.server import AsyncContainerRuntimeService
@@ -200,10 +206,13 @@ def test_local_diagnostics_render_events_without_changing_them() -> None:
     toolbox = _new_toolbox(Event(), "invocation")
     toolbox.log("INFO", "created", {"issue": "123"}, event_name="issue.created")
     batch = _take_log_batch(toolbox, "invocation")
+    assert batch is not None
+    log_batch = _container_log_batch(batch, "invocation")
+    assert log_batch is not None
 
     class Client:
-        def stream(self, invocation: Any, *, credential_handler: Any, on_log_batch: Any) -> Any:
-            on_log_batch(batch)
+        def stream(self, invocation: Any, *, credential_handler: Any) -> Any:
+            yield log_batch
             yield ContainerResult("sha256:" + "a" * 64, output={})
 
     stream = io.StringIO()
@@ -213,6 +222,25 @@ def test_local_diagnostics_render_events_without_changing_them() -> None:
     assert record["message"] == "created"
     assert record["attributes"] == {"issue": "123"}
     assert record["event_name"] == "issue.created"
+
+
+def test_client_exposes_one_validated_public_log_batch() -> None:
+    toolbox = _new_toolbox(Event(), "invocation")
+    toolbox.log("INFO", "created", {"issue": "123"}, event_name="issue.created")
+    batch = _take_log_batch(toolbox, "invocation")
+    assert batch is not None
+
+    public_batch = ContainerClient._read_log_batch(batch, "invocation", False, False)
+
+    assert isinstance(public_batch, ContainerLogBatch)
+    assert public_batch.invocation_id == "invocation"
+    assert public_batch.version == 1
+    assert public_batch.records[0].timestamp.endswith("Z")
+    assert public_batch.records[0].severity == "INFO"
+    assert public_batch.records[0].message == "created"
+    assert public_batch.records[0].event_name == "issue.created"
+    assert public_batch.records[0].attributes == {"issue": "123"}
+    assert public_batch.dropped_count == 0
 
 
 def test_language_neutral_batch_fixture() -> None:

@@ -35,6 +35,7 @@ from syntara_plugin.runtime.bindings import StepBinding
 from syntara_plugin.runtime.container import (
     ContainerClient,
     ContainerInvocation,
+    ContainerLogBatch,
     ContainerProgress,
     ContainerRemoteError,
     ContainerResult,
@@ -47,7 +48,6 @@ from syntara_plugin.runtime.container import (
 from syntara_plugin.runtime.contract_validation import SchemaDriftError
 from syntara_plugin.runtime.credentials import CredentialAccessError
 from syntara_plugin.runtime.execution import StepExecutionError
-from syntara_plugin.runtime.protocol import container_pb2
 from syntara_plugin.testing import BoundedStepHandler, HarnessUsageError, StepBindingsFactory
 
 from .authoring import CompilationResult
@@ -1683,8 +1683,10 @@ def _consume(
         for event in client.stream(
             invocation,
             credential_handler=credential_handler,
-            on_log_batch=lambda batch: _render_log_batch(batch, diagnostic_stream),
         ):
+            if isinstance(event, ContainerLogBatch):
+                _render_log_batch(event, diagnostic_stream)
+                continue
             if isinstance(event, ContainerResult):
                 return event
             if on_progress is not None:
@@ -1720,15 +1722,15 @@ def _consume(
     raise RunExecutionError("the runtime closed the stream without a terminal result")
 
 
-def _render_log_batch(batch: container_pb2.LogBatch, diagnostic_stream: Any) -> None:
+def _render_log_batch(batch: ContainerLogBatch, diagnostic_stream: Any) -> None:
     """Render received SDK logging records through the local diagnostic channel."""
     stream = diagnostic_stream if diagnostic_stream is not None else sys.stderr
-    for event in batch.events:
+    for event in batch.records:
         record = {
             "timestamp": event.timestamp,
             "severity": event.severity,
             "message": event.message,
-            "attributes": json.loads(event.attributes_json),
+            "attributes": event.attributes,
         }
         if event.event_name:
             record["event_name"] = event.event_name

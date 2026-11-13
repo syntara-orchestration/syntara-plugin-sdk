@@ -130,6 +130,27 @@ class ContainerProgress:
 
 
 @dataclass(frozen=True)
+class ContainerLogRecord:
+    """One validated structured operational record from a workload."""
+
+    timestamp: str
+    severity: str
+    message: str
+    attributes: Mapping[str, Any]
+    event_name: str | None = None
+
+
+@dataclass(frozen=True)
+class ContainerLogBatch:
+    """One validated, invocation-scoped operational-log delivery."""
+
+    invocation_id: str
+    version: int
+    records: tuple[ContainerLogRecord, ...]
+    dropped_count: int
+
+
+@dataclass(frozen=True)
 class ContainerResult:
     """The terminal SDK output envelope of one step type invocation.
 
@@ -964,6 +985,29 @@ def _valid_log_event(event: container_pb2.LogEvent) -> bool:
     return type(attributes) is dict and len(attributes) <= 32 and _json_value(attributes)
 
 
+def _container_log_batch(
+    batch: container_pb2.LogBatch, invocation_id: str
+) -> ContainerLogBatch | None:
+    """Map a valid wire batch to the public host-consumer event."""
+    if not _valid_log_batch(batch, invocation_id):
+        return None
+    return ContainerLogBatch(
+        invocation_id=batch.invocation_id,
+        version=batch.version,
+        records=tuple(
+            ContainerLogRecord(
+                timestamp=event.timestamp,
+                severity=event.severity,
+                message=event.message,
+                event_name=event.event_name or None,
+                attributes=json.loads(event.attributes_json),
+            )
+            for event in batch.events
+        ),
+        dropped_count=batch.dropped_count,
+    )
+
+
 class ContainerClient:
     """Synchronous client for an Execution Plane adapter or local test harness.
 
@@ -1089,9 +1133,8 @@ class ContainerClient:
     def stream(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,
         credential_handler: CredentialResolver | None = None,
-        on_log_batch: Callable[[container_pb2.LogBatch], None] | None = None,
-    ) -> Iterator[ContainerProgress | ContainerResult]:
-        """Invoke a step type and yield progress followed by exactly one result."""
+    ) -> Iterator[ContainerProgress | ContainerLogBatch | ContainerResult]:
+        """Invoke a step type and yield progress, log batches, and one result."""
 
         request = _request_from_invocation(invocation)
         deadline = _execution_deadline(invocation, timeout_seconds)
@@ -1114,13 +1157,15 @@ class ContainerClient:
             saw_log_batch = False
             for message in call:
                 if message.WhichOneof("message") == "log_batch":
-                    saw_log_batch = self._deliver_log_batch(
+                    log_batch = self._read_log_batch(
                         message.log_batch,
                         invocation.invocation_id,
                         saw_terminal,
                         saw_log_batch,
-                        on_log_batch,
                     )
+                    if log_batch is not None:
+                        saw_log_batch = True
+                        yield log_batch
                     continue
                 event, saw_terminal = self._stream_event(
                     message, bridge, invocation.invocation_id, saw_terminal
@@ -1140,21 +1185,15 @@ class ContainerClient:
             raise _protocol_error()
 
     @staticmethod
-    def _deliver_log_batch(
+    def _read_log_batch(
         batch: container_pb2.LogBatch,
         invocation_id: str,
         saw_terminal: bool,
         saw_log_batch: bool,
-        on_log_batch: Callable[[container_pb2.LogBatch], None] | None,
-    ) -> bool:
-        if saw_terminal or saw_log_batch or not _valid_log_batch(batch, invocation_id):
-            return saw_log_batch
-        if on_log_batch is not None:
-            try:
-                on_log_batch(batch)
-            except Exception:
-                pass
-        return True
+    ) -> ContainerLogBatch | None:
+        if saw_terminal or saw_log_batch:
+            return None
+        return _container_log_batch(batch, invocation_id)
 
     @staticmethod
     def _stream_event(
