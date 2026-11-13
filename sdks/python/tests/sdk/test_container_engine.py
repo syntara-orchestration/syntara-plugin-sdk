@@ -67,6 +67,31 @@ def test_generate_tls_material_returns_none_without_openssl(
     assert _generate_tls_material(tmp_path) is None
 
 
+def test_verify_loaded_image_normalizes_podman_config_digest(monkeypatch) -> None:
+    """Podman omits the OCI sha256 prefix when printing an image ID."""
+    digest = "a" * 64
+    monkeypatch.setattr(
+        container_engine.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=digest, stderr=""),
+    )
+
+    container_engine._verify_loaded_image("example/image:tag", f"sha256:{digest}")
+
+
+def test_verify_loaded_image_rejects_a_different_config_digest(monkeypatch) -> None:
+    expected = "sha256:" + "a" * 64
+    actual = "b" * 64
+    monkeypatch.setattr(
+        container_engine.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=actual, stderr=""),
+    )
+
+    with pytest.raises(RunExecutionError, match="does not match"):
+        container_engine._verify_loaded_image("example/image:tag", expected)
+
+
 def test_a_missing_image_fails_at_the_local_check_without_any_side_effect(
     monkeypatch,
 ) -> None:
@@ -180,6 +205,53 @@ def test_published_runtime_never_pulls_and_never_uses_the_host_network(
     # can read its status and log, and the finally-block removal stays the
     # single cleanup path.
     assert "--rm" not in run_command
+
+
+def test_macos_podman_probe_uses_the_internal_network_tunnel(monkeypatch, tmp_path) -> None:
+    """Podman Desktop probes stay isolated and reach the workload through its VM."""
+
+    from syntara_plugin.sdk.container_engine import _published_runtime, _TlsMaterial
+
+    material = _TlsMaterial(
+        client_ca=tmp_path / "ca.crt",
+        client_certificate=tmp_path / "client.crt",
+        client_key=tmp_path / "client.key",
+        server_certificate=tmp_path / "server.crt",
+        server_key=tmp_path / "server.key",
+    )
+    commands: list[list[str]] = []
+    tunnel = object()
+
+    def fake_run(command, **_kwargs):
+        commands.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="container-id", stderr="")
+
+    monkeypatch.setattr(container_engine.sys, "platform", "darwin")
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+    monkeypatch.setattr(container_engine, "_free_port", lambda: 45678)
+    monkeypatch.setattr(
+        container_engine, "_podman_container_address", lambda name, network: "10.89.0.2"
+    )
+    monkeypatch.setattr(
+        container_engine,
+        "_start_podman_machine_tunnel",
+        lambda port, address, tls: tunnel,
+    )
+
+    runtime = _published_runtime(
+        container_engine.ContainerEngine("podman"),
+        "some-image",
+        "a-name",
+        material,
+        probe_network="syntara-probe-a-name",
+        probe_only=True,
+    )
+
+    run_command = next(command for command in commands if command[1] == "run")
+    assert "--publish" not in run_command
+    assert run_command[run_command.index("--network") + 1] == "syntara-probe-a-name"
+    assert runtime.address == "127.0.0.1:45678"
+    assert runtime.tunnel_process is tunnel
 
 
 def test_liveness_probe_raises_with_exit_status_and_logs(monkeypatch) -> None:

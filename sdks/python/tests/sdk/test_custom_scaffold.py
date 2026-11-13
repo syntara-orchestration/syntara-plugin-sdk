@@ -244,6 +244,18 @@ def test_generated_workspace_build_creates_local_runtime_binding_release(
     monkeypatch.setattr(
         "syntara_plugin.sdk.cli.workload_archive_digest", lambda _path: "sha256:" + "a" * 64
     )
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.observe_runtime_image",
+        lambda _image, declarations, **_kwargs: [
+            {
+                "name": item["name"],
+                "executable": item["executable"],
+                "version": "3.12.8",
+                "verification": "verified",
+            }
+            for item in declarations
+        ],
+    )
     assert main(["build", str(workspace / "plugin.yaml"), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert Path(payload["pluginArchive"]).is_file()

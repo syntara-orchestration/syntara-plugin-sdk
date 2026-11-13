@@ -1164,7 +1164,7 @@ def test_settings_reject_build_target_names_that_are_not_safe_ids(tmp_path: Path
 
 
 def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The build command resolves immutable image references without publishing anything."""
     workspace = tmp_path / "http-plugin"
@@ -1172,6 +1172,9 @@ def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
     capsys.readouterr()
     binding_path = workspace / "runtime-bindings.yaml"
     binding = yaml.safe_load(binding_path.read_text(encoding="utf-8"))
+    assert binding["spec"]["workloads"]["python"]["options"][0]["runtime"]["components"] == [
+        {"name": "python", "executable": "/usr/bin/python3.12"}
+    ]
     binding["spec"]["workloads"]["python"]["options"][0]["image"] = {
         "reference": f"quay.io/acme/python-runtime@{_WORKLOAD_DIGEST}"
     }
@@ -1186,6 +1189,19 @@ def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
         }
     )
     settings.write_text(yaml.safe_dump(settings_document, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.observe_runtime_image",
+        lambda _image, declarations, **_kwargs: [
+            {
+                "name": item["name"],
+                "executable": item["executable"],
+                "version": "3.12.8",
+                "verification": "verified",
+            }
+            for item in declarations
+        ],
+    )
 
     assert main(["build", "--settings", str(settings), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -1277,6 +1293,18 @@ def test_image_only_release_keeps_plugin_and_catalog_unchanged(
         ]
 
     monkeypatch.setattr("syntara_plugin.sdk.cli._build_runtime_binding_images", build_images)
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.observe_runtime_image",
+        lambda _image, declarations, **_kwargs: [
+            {
+                "name": item["name"],
+                "executable": item["executable"],
+                "version": "3.12.8",
+                "verification": "verified",
+            }
+            for item in declarations
+        ],
+    )
     assert main(["build", "--settings", str(settings_path), "--json"]) == 0
     first_build = json.loads(capsys.readouterr().out)
     plugin_archive = Path(first_build["pluginArchive"])
@@ -1342,6 +1370,7 @@ def test_image_only_release_keeps_plugin_and_catalog_unchanged(
         allow_unverified_binding_index=False,
         cosign_key=None,
         verbose=False,
+        requirements=(),
     )
 
     result = _publish_release(arguments, inventory_path)
@@ -1362,7 +1391,17 @@ def test_runtime_binding_image_archives_are_content_addressed_and_reusable(
         "spec": {
             "workloads": {
                 "plugin-workload": {
-                    "options": [{"name": "default", "image": {"buildTarget": "python-runtime"}}]
+                    "options": [
+                        {
+                            "name": "default",
+                            "runtime": {
+                                "components": [
+                                    {"name": "python", "executable": "/usr/bin/python3"}
+                                ]
+                            },
+                            "image": {"buildTarget": "python-runtime"},
+                        }
+                    ]
                 }
             }
         }

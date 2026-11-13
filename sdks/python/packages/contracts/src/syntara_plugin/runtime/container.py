@@ -13,7 +13,7 @@ import os
 import re
 import signal
 from _thread import LockType
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from queue import Queue
 from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
@@ -125,6 +125,25 @@ class ContainerProgress:
     state: str
     message: str = ""
     percent: float | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeComponentInfo:
+    """One runtime component reported by a workload's Health response."""
+
+    name: str
+    executable: str
+    version: str | None
+    verification: str
+
+
+@dataclass(frozen=True)
+class ContainerHealth:
+    """Validated health and runtime metadata for a custom-runner service."""
+
+    runtime_abi: str
+    step_revision_ids: tuple[str, ...]
+    runtime_components: tuple[RuntimeComponentInfo, ...]
 
 
 @dataclass(frozen=True)
@@ -459,8 +478,11 @@ class _SyncWorkerGroup:
 class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     """Bidirectional invocation service on an authenticated, confidential channel."""
 
-    def __init__(self, steps: StepRegistry) -> None:
+    def __init__(
+        self, steps: StepRegistry, runtime_components: Sequence[Mapping[str, str]] = ()
+    ) -> None:
         self._steps = steps
+        self._runtime_components = tuple(dict(item) for item in runtime_components)
         self._active: dict[str, tuple[Event, CallbackCredentialProvider, Queue[container_pb2.ExecuteServerMessage | None], LockType]] = {}
         self._active_lock = Lock()
         self._shutdown = Event()
@@ -656,6 +678,10 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ready=True,
             runtime_abi=CONTAINER_ABI,
             step_revision_ids=self._steps.step_revision_ids,
+            runtime_components=[
+                container_pb2.RuntimeComponent(**component)
+                for component in self._runtime_components
+            ],
         )
 
     def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: Queue[container_pb2.ExecuteServerMessage | None], terminal_lock: LockType) -> None:
@@ -963,6 +989,11 @@ class ContainerClient:
         protocol from the current bidirectional v1alpha1 protocol.
         """
 
+        return self.health_report(timeout_seconds=timeout_seconds).step_revision_ids
+
+    def health_report(self, *, timeout_seconds: float | None = None) -> ContainerHealth:
+        """Return the verified ABI, advertised steps, and image runtime metadata."""
+
         rpc_failure: ContainerRemoteError | None = None
         try:
             response = self._stub.Health(container_pb2.HealthRequest(), timeout=timeout_seconds)
@@ -977,7 +1008,20 @@ class ContainerClient:
                 outcome="not_started",
                 source="protocol",
             )
-        return tuple(response.step_revision_ids)
+        components = tuple(
+            RuntimeComponentInfo(
+                name=item.name,
+                executable=item.executable,
+                version=item.version or None,
+                verification=item.verification,
+            )
+            for item in response.runtime_components
+        )
+        return ContainerHealth(
+            runtime_abi=response.runtime_abi,
+            step_revision_ids=tuple(response.step_revision_ids),
+            runtime_components=components,
+        )
 
     def execute(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,

@@ -21,6 +21,7 @@ the workload died instead of a generic timeout.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import shutil
@@ -75,6 +76,7 @@ class ManagedRuntime:
     address: str
     tls: TlsOptions | None = None
     liveness: Callable[[], None] | None = None
+    tunnel_process: subprocess.Popen[bytes] | None = None
 
 
 def detect_engine() -> ContainerEngine | None:
@@ -282,7 +284,13 @@ def _verify_loaded_image(local_reference: str, expected_config_digest: str) -> N
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise RunExecutionError("could not verify the image loaded from the OCI archive") from error
-    if inspected.returncode != 0 or inspected.stdout.strip() != expected_config_digest:
+    image_id = inspected.stdout.strip()
+    # Podman prints the config digest without the OCI algorithm prefix, while
+    # OCI archive descriptors include it. Normalize the CLI representation
+    # before comparing identities.
+    if re.fullmatch(r"[0-9a-f]{64}", image_id):
+        image_id = f"sha256:{image_id}"
+    if inspected.returncode != 0 or image_id != expected_config_digest:
         raise RunExecutionError("loaded workload image does not match the selected OCI archive")
 
 
@@ -340,6 +348,8 @@ def managed_runtime(
     target: RunTarget | None = None,
     *,
     scrub: Callable[[str], str] | None = None,
+    probe_only: bool = False,
+    resolved_execution: Mapping[str, Any] | None = None,
 ) -> Iterator[ManagedRuntime]:
     """Run one workload image for the duration of the block, then remove it.
 
@@ -375,26 +385,35 @@ def managed_runtime(
         # a start failure (a port race, the engine timeout, Ctrl-C) must not
         # leave the named container behind. Removal is best effort, so a
         # failure before creation is harmless.
+        runtime: ManagedRuntime | None = None
         try:
-            resolved_path: Path | None = None
+            probe_network = (
+                _create_probe_network(engine, name) if probe_only else None
+            )
+            if target is not None and resolved_execution is not None:
+                raise RunExecutionError(
+                    "managed runtime cannot use both a step target and probe resolution data"
+                )
+            resolved_document: Mapping[str, Any] | None = resolved_execution
             if target is not None:
+                resolved_document = {
+                    "bindings": [
+                        {
+                            "stepRevisionId": target.step_revision_id,
+                            "stepIdentity": target.identity,
+                            "runtimeKind": "custom-runner",
+                            "entryPoint": target.entry_point,
+                            "abi": CONTAINER_ABI,
+                            "schemaDigests": target.schema_digests,
+                        }
+                    ]
+                }
+            resolved_path: Path | None = None
+            if resolved_document is not None:
                 resolved_path = Path(temporary) / "resolved.json"
                 try:
                     resolved_path.write_text(
-                        json.dumps(
-                            {
-                                "bindings": [
-                                    {
-                                        "stepRevisionId": target.step_revision_id,
-                                        "stepIdentity": target.identity,
-                                        "runtimeKind": "custom-runner",
-                                        "entryPoint": target.entry_point,
-                                        "abi": CONTAINER_ABI,
-                                        "schemaDigests": target.schema_digests,
-                                    }
-                                ]
-                            }
-                        ),
+                        json.dumps(resolved_document, allow_nan=False),
                         encoding="utf-8",
                     )
                     resolved_path.chmod(0o644)
@@ -406,16 +425,34 @@ def managed_runtime(
                             _SELF_MANAGED_NEXT_STEP,
                         ),
                     ) from error
-            runtime = replace(
-                _published_runtime(
-                    engine, image, name, material, resolved_path
-                ),
-                liveness=_container_liveness(engine, name, image, scrub),
+            runtime = _published_runtime(
+                engine,
+                image,
+                name,
+                material,
+                resolved_path,
+                probe_network=probe_network,
+                probe_only=probe_only,
             )
+            container_liveness = _container_liveness(engine, name, image, scrub)
+
+            def check_liveness() -> None:
+                container_liveness()
+                if runtime is not None and runtime.tunnel_process is not None:
+                    if runtime.tunnel_process.poll() is not None:
+                        raise RunExecutionError(
+                            "the isolated Podman health tunnel stopped unexpectedly"
+                        )
+
+            runtime = replace(runtime, liveness=check_liveness)
             yield runtime
         finally:
             _restore_sigterm(previous_handler)
+            if runtime is not None and runtime.tunnel_process is not None:
+                _stop_tunnel(runtime.tunnel_process)
             _remove_container(engine, name)
+            if probe_only:
+                _remove_probe_network(engine, name)
 
 
 def _published_runtime(
@@ -424,10 +461,16 @@ def _published_runtime(
     name: str,
     material: _TlsMaterial,
     resolved_path: Path | None = None,
+    *,
+    probe_network: str | None = None,
+    probe_only: bool = False,
 ) -> ManagedRuntime:
     """Run the container on a published loopback port with generated mTLS."""
 
     port = _free_port()
+    use_podman_machine_tunnel = (
+        probe_only and engine.command == "podman" and sys.platform == "darwin"
+    )
     # Both engines support the SELinux relabel; without it, Docker on an
     # SELinux-enforcing host cannot read the mounted material (it stays
     # labeled user_tmp_t) and the runtime dies with EACCES. Where SELinux is
@@ -446,8 +489,11 @@ def _published_runtime(
                 # Never resolve the image from a registry: the local check above
                 # is the authority, and a pull would run unrequested content.
                 "--pull=never",
-                "--publish",
-                f"127.0.0.1:{port}:50051",
+                *(
+                    []
+                    if use_podman_machine_tunnel
+                    else ["--publish", f"127.0.0.1:{port}:50051"]
+                ),
                 "--volume",
                 f"{material.server_certificate}:/run/secrets/server.crt:{mount_mode}",
                 "--volume",
@@ -462,6 +508,22 @@ def _published_runtime(
                 "SYNTARA_RUNTIME_GRPC_TLS_KEY=/run/secrets/server.key",
                 "--env",
                 "SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=/run/secrets/client-ca.crt",
+                *(
+                    [
+                        "--network",
+                        probe_network or "none",
+                        "--read-only",
+                        "--cap-drop=all",
+                        "--security-opt=no-new-privileges",
+                        "--pids-limit=64",
+                        "--memory=256m",
+                        "--cpus=1",
+                        "--tmpfs",
+                        "/tmp:rw,noexec,nosuid,size=64m",
+                    ]
+                    if probe_only
+                    else []
+                ),
                 *(
                     [
                         "--volume",
@@ -494,7 +556,20 @@ def _published_runtime(
                 _SELF_MANAGED_NEXT_STEP,
             ),
         )
-    return ManagedRuntime(
+    tunnel_process: subprocess.Popen[bytes] | None = None
+    if use_podman_machine_tunnel:
+        try:
+            container_address = _podman_container_address(name, probe_network)
+            tunnel_process = _start_podman_machine_tunnel(
+                port,
+                container_address,
+                material,
+            )
+        except RunExecutionError:
+            if tunnel_process is not None:
+                _stop_tunnel(tunnel_process)
+            raise
+    runtime = ManagedRuntime(
         engine=engine,
         image=image,
         container_name=name,
@@ -504,7 +579,174 @@ def _published_runtime(
             certificate=material.client_certificate,
             key=material.client_key,
         ),
+        tunnel_process=tunnel_process,
     )
+    return runtime
+
+
+def _podman_container_address(name: str, network: str | None) -> str:
+    """Resolve the probe container's address on its isolated Podman network."""
+
+    if not network:
+        raise RunExecutionError("the isolated Podman probe network was not created")
+    try:
+        completed = subprocess.run(
+            ["podman", "inspect", "--format", "{{json .NetworkSettings.Networks}}", name],
+            capture_output=True,
+            text=True,
+            timeout=_INSPECT_TIMEOUT_SECONDS,
+            check=False,
+        )
+        networks = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        networks = None
+    if not isinstance(networks, Mapping):
+        raise RunExecutionError("could not resolve the isolated Podman probe address")
+    settings = networks.get(network)
+    address = settings.get("IPAddress") if isinstance(settings, Mapping) else None
+    if not isinstance(address, str) or not address:
+        raise RunExecutionError("the isolated Podman probe has no usable IPv4 address")
+    try:
+        parsed_address = ipaddress.ip_address(address)
+    except ValueError:
+        raise RunExecutionError(
+            "the isolated Podman probe has no usable IPv4 address"
+        ) from None
+    if not isinstance(parsed_address, ipaddress.IPv4Address):
+        raise RunExecutionError("the isolated Podman probe has no usable IPv4 address")
+    return address
+
+
+def _start_podman_machine_tunnel(
+    local_port: int,
+    container_address: str,
+    material: _TlsMaterial,
+) -> subprocess.Popen[bytes]:
+    """Tunnel host gRPC through Podman VM into an internal-only network.
+
+    Podman Desktop on macOS does not forward published ports from an
+    ``--internal`` network. The SSH tunnel originates inside the Podman VM,
+    reaches only the probe container's internal address, and keeps the
+    workload disconnected from external networks.
+    """
+
+    if shutil.which("ssh") is None:
+        raise RunExecutionError("OpenSSH is required to probe an isolated Podman workload on macOS")
+    try:
+        completed = subprocess.run(
+            ["podman", "machine", "inspect"],
+            capture_output=True,
+            text=True,
+            timeout=_INSPECT_TIMEOUT_SECONDS,
+            check=False,
+        )
+        machines = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        machines = None
+    machine = machines[0] if isinstance(machines, list) and machines else None
+    ssh_config = machine.get("SSHConfig") if isinstance(machine, Mapping) else None
+    identity = ssh_config.get("IdentityPath") if isinstance(ssh_config, Mapping) else None
+    username = ssh_config.get("RemoteUsername") if isinstance(ssh_config, Mapping) else None
+    machine_port = ssh_config.get("Port") if isinstance(ssh_config, Mapping) else None
+    if (
+        not isinstance(identity, str)
+        or not Path(identity).is_file()
+        or not isinstance(username, str)
+        or re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", username) is None
+        or not isinstance(machine_port, int)
+        or not 1 <= machine_port <= 65535
+    ):
+        raise RunExecutionError("could not resolve the active Podman machine SSH settings")
+
+    known_hosts = material.client_ca.parent / "podman-machine-known-hosts"
+    command = [
+        "ssh",
+        "-N",
+        "-T",
+        "-L",
+        f"127.0.0.1:{local_port}:{container_address}:50051",
+        "-p",
+        str(machine_port),
+        "-i",
+        identity,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        f"UserKnownHostsFile={known_hosts}",
+        "-o",
+        "ServerAliveInterval=2",
+        "-o",
+        "ServerAliveCountMax=3",
+        f"{username}@127.0.0.1",
+    ]
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as error:
+        raise RunExecutionError("could not start the isolated Podman health tunnel") from error
+    time.sleep(0.1)
+    if process.poll() is not None:
+        _stop_tunnel(process)
+        raise RunExecutionError("could not establish the isolated Podman health tunnel")
+    return process
+
+
+def _stop_tunnel(process: subprocess.Popen[bytes]) -> None:
+    """Stop a temporary SSH tunnel without masking the probe result."""
+
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
+
+
+def _create_probe_network(engine: ContainerEngine, container_name: str) -> str:
+    """Create a temporary internal network so image probes cannot egress."""
+
+    network = f"syntara-probe-{container_name.removeprefix('syntara-run-')}"
+    try:
+        completed = subprocess.run(
+            [engine.command, "network", "create", "--internal", network],
+            capture_output=True,
+            text=True,
+            timeout=_RUN_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RunExecutionError("could not create an isolated workload probe network") from error
+    if completed.returncode != 0:
+        raise RunExecutionError("could not create an isolated workload probe network")
+    return network
+
+
+def _remove_probe_network(engine: ContainerEngine, container_name: str) -> None:
+    """Remove the per-probe internal network after its container is removed."""
+
+    network = f"syntara-probe-{container_name.removeprefix('syntara-run-')}"
+    try:
+        subprocess.run(
+            [engine.command, "network", "rm", network],
+            capture_output=True,
+            text=True,
+            timeout=_RUN_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _install_sigterm_exit() -> Any:

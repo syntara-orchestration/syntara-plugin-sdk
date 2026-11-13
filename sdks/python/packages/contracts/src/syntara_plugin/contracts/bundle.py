@@ -228,6 +228,17 @@ def validate_runtime_binding(
                     f"workload {workload_id!r} has duplicate option names.",
                 )
             )
+        for option in options:
+            components = option["runtime"]["components"]
+            component_names = [component["name"] for component in components]
+            if len(component_names) != len(set(component_names)):
+                diagnostics.append(
+                    RuntimeBindingDiagnostic(
+                        "RUNTIME_BINDING_COMPONENT_DUPLICATE",
+                        f"spec/workloads/{workload_id}/options/{option['name']}/runtime/components",
+                        f"workload option {option['name']!r} has duplicate runtime component names.",
+                    )
+                )
         if workload["default"] not in names:
             diagnostics.append(
                 RuntimeBindingDiagnostic(

@@ -265,6 +265,16 @@ artifacts published for deployment. They must record their immutable
 Konflux ownership and signing apply to those final images; the SDK repository
 does not create a long-lived shared runtime image.
 
+For each custom-runner image option, `runtime-bindings.yaml` can declare the
+absolute executable paths that the image is expected to use. The SDK injects
+those declarations into the image registration manifest. The runtime checks
+supported components at startup and reports the observed version and
+verification status in `Health`; the SDK records that result in the resolved
+RuntimeBinding after probing the exact image digest. This metadata describes
+the image contents and is separate from the runtime ABI version. See the
+[RuntimeBindings guide](runtime-bindings.md) for the supported probes and the
+`--require verified-runtime` and `--require all` policy options.
+
 ## Typed Python step types
 
 Custom-runner authors implement step types with the typed Python API in

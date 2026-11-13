@@ -137,8 +137,21 @@ message ExecutionEvent {
 message CancelRequest { string invocation_id = 1; }
 message CancelResponse { bool accepted = 1; }
 message HealthRequest {}
+// Runtime metadata observed inside one immutable workload image.
+message RuntimeComponent {
+  // Runtime component identifier from RuntimeBinding, for example "python".
+  string name = 1;
+  // Absolute executable path inside the image.
+  string executable = 2;
+  // Observed version, empty when verification is unverified.
+  string version = 3;
+  // "verified" or "unverified" according to the workload's probe support.
+  string verification = 4;
+}
 message HealthResponse {
   bool ready = 1;
   string runtime_abi = 2;
   repeated string step_revision_ids = 3;
+  // Runtime metadata for image components declared by the SDK registration file.
+  repeated RuntimeComponent runtime_components = 4;
 }
