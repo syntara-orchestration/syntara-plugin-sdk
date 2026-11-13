@@ -47,6 +47,7 @@ _ENGINE_COMMANDS = ("podman", "docker")
 _SELF_MANAGED_NEXT_STEP = "or start the runtime yourself and pass --address HOST:PORT"
 _VERSION_TIMEOUT_SECONDS = 10
 _INSPECT_TIMEOUT_SECONDS = 30
+_DIGEST_PREFIX = "sha256:"
 _RUN_TIMEOUT_SECONDS = 60
 _OPENSSL_TIMEOUT_SECONDS = 30
 _LOG_TAIL_LINES = 20
@@ -163,7 +164,7 @@ def _inspect_oci_archive_for_load(archive: Path) -> tuple[str, str]:
             )
             config = manifest.get("config")
             config_digest = config.get("digest") if isinstance(config, Mapping) else None
-            if not isinstance(config_digest, str) or not config_digest.startswith("sha256:"):
+            if not isinstance(config_digest, str) or not config_digest.startswith(_DIGEST_PREFIX):
                 raise RunExecutionError("workload OCI archive config digest is invalid")
             config_bytes = _read_oci_member_bytes(
                 image_archive,
@@ -173,7 +174,7 @@ def _inspect_oci_archive_for_load(archive: Path) -> tuple[str, str]:
                 missing_message="workload OCI archive config is missing or oversized",
                 read_message="workload OCI archive config cannot be read",
             )
-            if f"sha256:{sha256(config_bytes).hexdigest()}" != config_digest:
+            if _DIGEST_PREFIX + sha256(config_bytes).hexdigest() != config_digest:
                 raise RunExecutionError(
                     "workload OCI archive config digest does not match its bytes"
                 )
@@ -204,7 +205,7 @@ def _archive_image_descriptor(index: Mapping[str, Any]) -> tuple[str, str]:
     ):
         raise RunExecutionError("workload OCI archive has no SDK-generated local image reference")
     manifest_digest = descriptor.get("digest")
-    if not isinstance(manifest_digest, str) or not manifest_digest.startswith("sha256:"):
+    if not isinstance(manifest_digest, str) or not manifest_digest.startswith(_DIGEST_PREFIX):
         raise RunExecutionError("workload OCI archive manifest digest is invalid")
     return local_reference, manifest_digest
 
@@ -251,7 +252,7 @@ def _read_oci_member_bytes(
 
 
 def _oci_blob_name(digest: str) -> str:
-    return f"blobs/sha256/{digest.removeprefix('sha256:')}"
+    return f"blobs/sha256/{digest.removeprefix(_DIGEST_PREFIX)}"
 
 
 def _load_image_with_podman(archive: Path) -> None:
@@ -282,7 +283,10 @@ def _verify_loaded_image(local_reference: str, expected_config_digest: str) -> N
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise RunExecutionError("could not verify the image loaded from the OCI archive") from error
-    if inspected.returncode != 0 or inspected.stdout.strip() != expected_config_digest:
+    # Podman prints the image ID as bare hex; the OCI config digest carries the
+    # algorithm prefix. Compare the hex exactly, accepting either form.
+    loaded_id = inspected.stdout.strip().removeprefix(_DIGEST_PREFIX)
+    if inspected.returncode != 0 or loaded_id != expected_config_digest.removeprefix(_DIGEST_PREFIX):
         raise RunExecutionError("loaded workload image does not match the selected OCI archive")
 
 
