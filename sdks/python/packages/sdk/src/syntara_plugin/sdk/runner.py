@@ -1411,15 +1411,6 @@ class _ChannelExecution:
 
 
 def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
-    documents = {credential.name: credential.document for credential in execution.credentials}
-
-    def read_credential(context: CredentialRequestContext) -> Mapping[str, Any]:
-        if context.cancelled:
-            raise CredentialAccessError("expired")
-        if context.name not in documents:
-            raise CredentialAccessError("missing")
-        return documents[context.name]
-
     client = ContainerClient(execution.channel)
     target = execution.target
     inputs = execution.inputs
@@ -1462,7 +1453,10 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         redact_inputs(target.input_schema, inputs), secrets, scalars
     )
     terminal = _consume(
-        client, invocation, _scrubbing_progress(execution.on_progress, secrets), read_credential,
+        client,
+        invocation,
+        _scrubbing_progress(execution.on_progress, secrets),
+        _credential_reader(execution.credentials),
         execution.diagnostic_stream or sys.stderr,
     )
     detail = (
@@ -1531,6 +1525,20 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         image=execution.image,
         credentials=credential_names,
     )
+
+
+def _credential_reader(credentials: Sequence[LoadedCredential]) -> CredentialResolver:
+    """Return an invocation-bound resolver for local credential documents."""
+    documents = {credential.name: credential.document for credential in credentials}
+
+    def read(context: CredentialRequestContext) -> Mapping[str, Any]:
+        if context.cancelled:
+            raise CredentialAccessError("expired")
+        if context.name not in documents:
+            raise CredentialAccessError("missing")
+        return documents[context.name]
+
+    return read
 
 
 def _health(
@@ -1671,21 +1679,12 @@ def _consume(
     transport failures raise :class:`RunExecutionError`.
     """
 
-    def render_logs(batch: container_pb2.LogBatch) -> None:
-        stream = diagnostic_stream if diagnostic_stream is not None else sys.stderr
-        for event in batch.events:
-            record = {
-                "timestamp": event.timestamp, "severity": event.severity,
-                "message": event.message, "attributes": json.loads(event.attributes_json),
-            }
-            if event.event_name:
-                record["event_name"] = event.event_name
-            print(json.dumps(record, ensure_ascii=False, separators=(",", ":")), file=stream)
-        if batch.dropped_count:
-            print(f"Dropped {batch.dropped_count} log event(s).", file=stream)
-
     try:
-        for event in client.stream(invocation, credential_handler=credential_handler, on_log_batch=render_logs):
+        for event in client.stream(
+            invocation,
+            credential_handler=credential_handler,
+            on_log_batch=lambda batch: _render_log_batch(batch, diagnostic_stream),
+        ):
             if isinstance(event, ContainerResult):
                 return event
             if on_progress is not None:
@@ -1719,6 +1718,23 @@ def _consume(
             next_steps=("address the failure above and rerun",),
         ) from error
     raise RunExecutionError("the runtime closed the stream without a terminal result")
+
+
+def _render_log_batch(batch: container_pb2.LogBatch, diagnostic_stream: Any) -> None:
+    """Render received SDK logging records through the local diagnostic channel."""
+    stream = diagnostic_stream if diagnostic_stream is not None else sys.stderr
+    for event in batch.events:
+        record = {
+            "timestamp": event.timestamp,
+            "severity": event.severity,
+            "message": event.message,
+            "attributes": json.loads(event.attributes_json),
+        }
+        if event.event_name:
+            record["event_name"] = event.event_name
+        print(json.dumps(record, ensure_ascii=False, separators=(",", ":")), file=stream)
+    if batch.dropped_count:
+        print(f"Dropped {batch.dropped_count} log event(s).", file=stream)
 
 
 @dataclass(frozen=True)

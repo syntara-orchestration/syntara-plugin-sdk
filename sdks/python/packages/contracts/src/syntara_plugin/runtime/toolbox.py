@@ -21,73 +21,89 @@ _MAX_EVENTS = 128
 _MAX_DROPPED = 4_294_967_295
 
 
-def _snapshot_json(value: Any) -> tuple[bool, Any]:
-    """Copy validated JSON while accounting for its compact UTF-8 size.
+class _JsonSnapshotter:
+    """Build a detached JSON value while enforcing the attribute contract."""
 
-    The bounded copy is the object subsequently serialized, so caller-owned
-    containers cannot change it after validation.
-    """
-    remaining = [16_384]
-    nodes = [2048]
+    def __init__(self) -> None:
+        self.remaining = 16_384
+        self.nodes = 2048
 
-    def spend(size: int) -> bool:
-        remaining[0] -= size
-        return remaining[0] >= 0
+    def spend(self, size: int) -> bool:
+        self.remaining -= size
+        return self.remaining >= 0
 
-    def string(value: str) -> bool:
-        # Even before escaping or UTF-8 encoding, the JSON string needs quotes.
-        if len(value) + 2 > remaining[0]:
-            return False
-        return spend(len(json.dumps(value, ensure_ascii=False).encode("utf-8")))
+    def string(self, value: str) -> bool:
+        # Even before escaping or UTF-8 encoding, a JSON string needs quotes.
+        return (
+            len(value) + 2 <= self.remaining
+            and self.spend(len(json.dumps(value, ensure_ascii=False).encode("utf-8")))
+        )
 
-    def copy(item: Any, depth: int) -> tuple[bool, Any]:
-        nodes[0] -= 1
-        if nodes[0] < 0:
+    def copy(self, item: Any, depth: int = 0) -> tuple[bool, Any]:
+        self.nodes -= 1
+        if self.nodes < 0:
             return False, None
-        if item is None:
-            return spend(4), None
-        if type(item) is bool:
-            return spend(4 if item else 5), item
-        if type(item) is str:
-            return string(item), item
-        if type(item) is int:
-            return -(2**63) <= item < 2**63 and spend(len(str(item))), item
-        if type(item) is float:
-            return math.isfinite(item) and spend(len(json.dumps(item, allow_nan=False))), item
+        if type(item) not in (list, dict):
+            return self._copy_scalar(item)
         if depth >= 8:
             return False, None
         if type(item) is list:
-            if not spend(2):
-                return False, None
-            snapshot_list: list[Any] = []
-            for index, child in enumerate(item):
-                if index and not spend(1):
-                    return False, None
-                valid, snapshot_child = copy(child, depth + 1)
-                if not valid:
-                    return False, None
-                snapshot_list.append(snapshot_child)
-            return True, snapshot_list
-        if type(item) is dict:
-            if not spend(2):
-                return False, None
-            snapshot_dict: dict[str, Any] = {}
-            for index, (key, child) in enumerate(item.items()):
-                if (
-                    type(key) is not str
-                    or (index and not spend(1))
-                    or not string(key)
-                    or not spend(1)
-                ):
-                    return False, None
-                valid, snapshot_child = copy(child, depth + 1)
-                if not valid:
-                    return False, None
-                snapshot_dict[key] = snapshot_child
-            return True, snapshot_dict
+            return self._copy_list(item, depth)
+        return self._copy_dict(item, depth)
+
+    def _copy_scalar(self, item: Any) -> tuple[bool, Any]:
+        if item is None:
+            return self.spend(4), None
+        if type(item) is bool:
+            return self.spend(4 if item else 5), item
+        if type(item) is str:
+            return self.string(item), item
+        if type(item) is int:
+            return -(2**63) <= item < 2**63 and self.spend(len(str(item))), item
+        if type(item) is float:
+            return math.isfinite(item) and self.spend(
+                len(json.dumps(item, allow_nan=False))
+            ), item
         return False, None
 
-    return copy(value, 0)
+    def _copy_list(self, items: list[Any], depth: int) -> tuple[bool, Any]:
+        if not self.spend(2):
+            return False, None
+        snapshot: list[Any] = []
+        for index, child in enumerate(items):
+            if index and not self.spend(1):
+                return False, None
+            valid, copied = self.copy(child, depth + 1)
+            if not valid:
+                return False, None
+            snapshot.append(copied)
+        return True, snapshot
+
+    def _copy_dict(self, items: dict[str, Any], depth: int) -> tuple[bool, Any]:
+        if not self.spend(2):
+            return False, None
+        snapshot: dict[str, Any] = {}
+        for index, (key, child) in enumerate(items.items()):
+            if not self._copy_member_prefix(key, index):
+                return False, None
+            valid, copied = self.copy(child, depth + 1)
+            if not valid:
+                return False, None
+            snapshot[key] = copied
+        return True, snapshot
+
+    def _copy_member_prefix(self, key: Any, index: int) -> bool:
+        return (
+            type(key) is str
+            and (not index or self.spend(1))
+            and self.string(key)
+            and self.spend(1)
+        )
+
+
+def _snapshot_json(value: Any) -> tuple[bool, Any]:
+    """Copy validated JSON while accounting for its compact UTF-8 size."""
+    return _JsonSnapshotter().copy(value)
 
 
 def _json_value(value: Any) -> bool:

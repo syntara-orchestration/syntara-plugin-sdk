@@ -32,7 +32,9 @@ def test_events_are_snapshotted_bounded_and_ordered() -> None:
         toolbox.log("DEBUG", "extra")
     batch = _take_log_batch(toolbox, "invocation")
     assert batch is not None
-    assert batch.version == 1 and len(batch.events) == 128 and batch.dropped_count == 2
+    assert batch.version == 1
+    assert len(batch.events) == 128
+    assert batch.dropped_count == 2
     assert [event.message for event in batch.events[:2]] == ["first", "second"]
     assert json.loads(batch.events[0].attributes_json) == {"count": 1, "nested": ["original"]}
     assert batch.events[0].event_name == "item.created"
@@ -62,7 +64,9 @@ def test_invalid_logs_never_raise(
     toolbox = _new_toolbox(Event(), "invocation")
     toolbox.log(level, message, attributes, event_name=name)
     batch = _take_log_batch(toolbox, "invocation")
-    assert batch is not None and batch.dropped_count == 1 and not batch.events
+    assert batch is not None
+    assert batch.dropped_count == 1
+    assert not batch.events
 
 
 def test_byte_limit_and_cancelled_toolbox() -> None:
@@ -73,7 +77,8 @@ def test_byte_limit_and_cancelled_toolbox() -> None:
     cancellation.set()
     toolbox.log("ERROR", "ignored")
     batch = _take_log_batch(toolbox, "invocation")
-    assert batch is not None and 0 < len(batch.events) < 30
+    assert batch is not None
+    assert 0 < len(batch.events) < 30
     assert batch.dropped_count == 30 - len(batch.events)
     assert batch.ByteSize() <= 262_144
 
@@ -244,7 +249,9 @@ def test_oversized_nested_attributes_are_rejected_before_container_serialization
     toolbox.log("INFO", "oversized", {"items": ["x" * 16000] * 1000})
     assert serialized_containers == []
     batch = _take_log_batch(toolbox, "invocation")
-    assert batch is not None and batch.dropped_count == 1 and not batch.events
+    assert batch is not None
+    assert batch.dropped_count == 1
+    assert not batch.events
 
 
 @pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le", "utf-32", "utf-32-le"])
@@ -289,5 +296,6 @@ def test_mutation_after_validation_does_not_change_serialized_record(monkeypatch
     toolbox.log("INFO", "mutation", attributes)
     batch = _take_log_batch(toolbox, "invocation")
     assert mutated
-    assert batch is not None and batch.dropped_count == 0
+    assert batch is not None
+    assert batch.dropped_count == 0
     assert json.loads(batch.events[0].attributes_json) == {"items": ["small"]}

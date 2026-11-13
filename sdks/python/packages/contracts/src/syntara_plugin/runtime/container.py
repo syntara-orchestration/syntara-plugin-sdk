@@ -925,27 +925,43 @@ def _execution_event_from_stream(
 
 def _valid_log_batch(batch: container_pb2.LogBatch, invocation_id: str) -> bool:
     """Treat malformed remote diagnostics as dropped, never as a step failure."""
-    from .toolbox import _LEVELS, _NAME, _json_value
-
     try:
-        if batch.invocation_id != invocation_id or batch.version != 1 or len(batch.events) > 128 or batch.ByteSize() > 262_144:
-            return False
-        for event in batch.events:
-            if len(event.timestamp) != 24:
-                return False
-            datetime.strptime(event.timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
-            if event.severity not in _LEVELS or not 1 <= len(event.message.encode("utf-8")) <= 4096:
-                return False
-            if event.event_name and not _NAME.fullmatch(event.event_name):
-                return False
-            if len(event.attributes_json) > 16_384:
-                return False
-            attrs = json.loads(event.attributes_json.decode("utf-8"), parse_constant=_invalid_constant, object_pairs_hook=_unique_members)
-            if type(attrs) is not dict or len(attrs) > 32 or not _json_value(attrs):
-                return False
-        return True
+        return _valid_log_batch_header(batch, invocation_id) and all(
+            _valid_log_event(event) for event in batch.events
+        )
     except Exception:
         return False
+
+
+def _valid_log_batch_header(
+    batch: container_pb2.LogBatch, invocation_id: str
+) -> bool:
+    return (
+        batch.invocation_id == invocation_id
+        and batch.version == 1
+        and len(batch.events) <= 128
+        and batch.ByteSize() <= 262_144
+    )
+
+
+def _valid_log_event(event: container_pb2.LogEvent) -> bool:
+    from .toolbox import _LEVELS, _NAME, _json_value
+
+    if len(event.timestamp) != 24:
+        return False
+    datetime.strptime(event.timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
+    if event.severity not in _LEVELS or not 1 <= len(event.message.encode("utf-8")) <= 4096:
+        return False
+    if event.event_name and not _NAME.fullmatch(event.event_name):
+        return False
+    if len(event.attributes_json) > 16_384:
+        return False
+    attributes = json.loads(
+        event.attributes_json.decode("utf-8"),
+        parse_constant=_invalid_constant,
+        object_pairs_hook=_unique_members,
+    )
+    return type(attributes) is dict and len(attributes) <= 32 and _json_value(attributes)
 
 
 class ContainerClient:
@@ -1098,14 +1114,13 @@ class ContainerClient:
             saw_log_batch = False
             for message in call:
                 if message.WhichOneof("message") == "log_batch":
-                    batch = message.log_batch
-                    if not saw_terminal and not saw_log_batch and _valid_log_batch(batch, invocation.invocation_id):
-                        saw_log_batch = True
-                        if on_log_batch is not None:
-                            try:
-                                on_log_batch(batch)
-                            except Exception:
-                                pass
+                    saw_log_batch = self._deliver_log_batch(
+                        message.log_batch,
+                        invocation.invocation_id,
+                        saw_terminal,
+                        saw_log_batch,
+                        on_log_batch,
+                    )
                     continue
                 event, saw_terminal = self._stream_event(
                     message, bridge, invocation.invocation_id, saw_terminal
@@ -1123,6 +1138,23 @@ class ContainerClient:
             raise rpc_failure
         if not saw_terminal:
             raise _protocol_error()
+
+    @staticmethod
+    def _deliver_log_batch(
+        batch: container_pb2.LogBatch,
+        invocation_id: str,
+        saw_terminal: bool,
+        saw_log_batch: bool,
+        on_log_batch: Callable[[container_pb2.LogBatch], None] | None,
+    ) -> bool:
+        if saw_terminal or saw_log_batch or not _valid_log_batch(batch, invocation_id):
+            return saw_log_batch
+        if on_log_batch is not None:
+            try:
+                on_log_batch(batch)
+            except Exception:
+                pass
+        return True
 
     @staticmethod
     def _stream_event(
