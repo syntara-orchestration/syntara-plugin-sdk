@@ -28,6 +28,7 @@ from .container import (
     ContainerResult,
     ContainerStepHandler,
     StepRegistry,
+    _log_notification,
     failure_event,
     invocation_from_request,
     terminal_execution_event,
@@ -273,6 +274,12 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 task.cancel()
 
     @staticmethod
+    def _queue_log(provider: CallbackCredentialProvider, invocation_id: str, outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None]) -> None:
+        message = _log_notification(provider, invocation_id)
+        if message is not None:
+            outgoing.put_nowait(message)
+
+    @staticmethod
     async def _receive_responses(
         requests: AsyncIterator[container_pb2.ExecuteClientMessage],
         provider: CallbackCredentialProvider,
@@ -283,6 +290,8 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             async for message in requests:
                 if message.WhichOneof("message") != "credential_response":
                     invocation.cancellation.set()
+                    provider.close()
+                    AsyncContainerRuntimeService._queue_log(provider, invocation.invocation_id, outgoing)
                     outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
                         invocation.invocation_id, ContainerInvocationError(
                             FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
@@ -292,7 +301,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                     return
                 provider.receive(message.credential_response)
         finally:
-            provider.close()
+            provider.close_credentials()
 
     async def _run_step(
         self,
@@ -316,6 +325,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ))
         finally:
             provider.close()
+        self._queue_log(provider, invocation.invocation_id, outgoing)
         outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
         outgoing.put_nowait(None)
 
@@ -328,6 +338,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         cancellation, provider, outgoing = active
         cancellation.set()
         provider.close()
+        self._queue_log(provider, request.invocation_id, outgoing)
         outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
             request.invocation_id, ContainerInvocationError(
                 FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
@@ -344,6 +355,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         for invocation_id, (cancellation, provider, outgoing) in self._active.copy().items():
             cancellation.set()
             provider.close()
+            self._queue_log(provider, invocation_id, outgoing)
             outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
                 invocation_id, ContainerInvocationError(
                     FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"

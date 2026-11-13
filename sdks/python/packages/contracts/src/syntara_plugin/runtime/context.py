@@ -56,7 +56,7 @@ class ExecutionContext:
             None if credential_provider is _NoCredentialProvider.VALUE else credential_provider
         )
         object.__setattr__(self, "_provider", provider)
-        object.__setattr__(self, "_toolbox", _new_toolbox(self.cancellation))
+        object.__setattr__(self, "_toolbox", _new_toolbox(self.cancellation, self.invocation_id))
 
     def credential(self, name: str) -> CredentialBinding:
         """Request a declared binding during execution; the handle expires on return."""
@@ -66,7 +66,7 @@ class ExecutionContext:
 
     @property
     def toolbox(self) -> ContainerToolbox:
-        """Return this invocation's host-service surface, currently empty."""
+        """Return this invocation's host-service surface."""
 
         return self._toolbox
 

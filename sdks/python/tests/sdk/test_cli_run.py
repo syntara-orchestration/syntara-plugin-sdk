@@ -4037,3 +4037,21 @@ def test_image_mode_accepts_loopback_address_with_complete_tls(tmp_path: Path, c
     assert calls[0][1]["tls"] == runner_module.TlsOptions(
         ca=Path("ca.crt"), certificate=Path("client.crt"), key=Path("client.key")
     )
+
+
+def test_source_run_renders_toolbox_logs_on_stderr(tmp_path: Path, capsys: Any, monkeypatch: Any) -> None:
+    source = _STEP_SOURCE.replace(
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+        '        context.toolbox.log("INFO", "Created issue", {"issue_id": "123"}, event_name="issue.created")\n'
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+    )
+    monkeypatch.setitem(globals(), "_STEP_SOURCE", source)
+    workspace = _write_echo_workspace(tmp_path / "workspace")
+    assert main(["run", "--manifest", str(workspace / "plugin.yaml"), "--input", '{"title":"Hello"}', "--json"]) == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out)["output"] == {"slug": "hello"}
+    record = json.loads(output.err.strip())
+    assert record["severity"] == "INFO"
+    assert record["message"] == "Created issue"
+    assert record["event_name"] == "issue.created"
+    assert record["attributes"] == {"issue_id": "123"}

@@ -309,13 +309,27 @@ Execution Plane types, and no raw credential values.
 
 ### Host services
 
-Every `ExecutionContext` has a read-only `toolbox` property of type
-`ContainerToolbox`. The runtime supplies an empty toolbox in direct and
-container execution; it currently has no service operations. The invocation
-closes the toolbox on completion, failure, cancellation, or disconnect. Future
-services require typed contracts and host implementations. Credential access remains
-`context.credential(name).read()` and is not a Toolbox operation. See
-[ADR 0012](../.sdlc/adrs/0012-container-toolbox.md).
+Every `ExecutionContext` has an invocation-scoped `ContainerToolbox`. Use
+its optional logging helper for operational records:
+
+```python
+context.toolbox.log("INFO", "Created issue", {"issue_id": "123"}, event_name="issue.created")
+```
+
+Levels are `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, and `FATAL`. The SDK
+assigns a UTC timestamp. Attributes are JSON objects; the optional event name
+is a stable identifier. Invalid records and records exceeding the contract's
+bounds are dropped without failing the step. Container execution sends one
+bounded batch immediately before its terminal outcome. This is not live
+streaming and delivery is not guaranteed if the workload cannot send that
+outcome. The local runner writes the same records as JSON lines to stderr.
+
+The helper does not inspect, redact, or scrub log records. Do not put
+credentials, secrets, or sensitive provider responses in messages or attributes.
+Credential access remains `context.credential(name).read()` and is separate
+from Toolbox. See [ADR 0013](../.sdlc/adrs/0013-toolbox-logging.md) and the
+[protobuf contract](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
+for the exact limits.
 
 ### Credential access
 
@@ -616,9 +630,8 @@ error_result=ErrorResult(category="dependency", code="REMOTE_REJECTED",
 message="Rejected", retryable=True, requestId="request-1"))`.
 They can also subclass `ErrorResult` to declare step type-specific fields.
 Preserve an upstream `requestId` in declared step type-specific error fields when
-it helps troubleshoot the provider call. For correlation with platform
-execution records, use `ExecutionContext.invocation_id` in step type logs instead
-of generating a second execution identifier.
+it helps troubleshoot the provider call. The host associates a received log batch with its invocation; do not invent a
+second execution identifier.
 
 ### Installed revision mapping
 

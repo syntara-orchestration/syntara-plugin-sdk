@@ -727,16 +727,18 @@ def test_request_stream_end_has_a_terminal_event(
 
     provider_closed = Event()
     release = Event()
-    original_close = CallbackCredentialProvider.close
+    original_close = CallbackCredentialProvider.close_credentials
 
     def close(provider: CallbackCredentialProvider) -> None:
         original_close(provider)
         provider_closed.set()
 
-    monkeypatch.setattr(CallbackCredentialProvider, "close", close)
+    monkeypatch.setattr(CallbackCredentialProvider, "close_credentials", close)
 
     def handler(invocation: ContainerInvocation) -> ContainerResult:
         release.wait(5)
+        assert isinstance(invocation.credential_provider, CallbackCredentialProvider)
+        invocation.credential_provider._public_toolbox.log("INFO", "after half-close")
         return ContainerResult(_DIGEST, output={"ok": True})
 
     def consume(port: int) -> list[Any]:
@@ -749,12 +751,14 @@ def test_request_stream_end_has_a_terminal_event(
             channel.close()
 
     def check(messages: list[Any]) -> None:
-        assert len(messages) == 1
         if malformed:
+            assert len(messages) == 1
             assert messages[0].event.failure.code == FailureCode.CANCELLED
             assert messages[0].event.failure.outcome == "not_completed"
         else:
-            assert messages[0].event.WhichOneof("event") == "result"
+            assert len(messages) == 2
+            assert messages[0].log_batch.events[0].message == "after half-close"
+            assert messages[1].event.WhichOneof("event") == "result"
 
     async def run_async() -> None:
         server = grpc.aio.server()
@@ -870,6 +874,8 @@ def test_shutdown_grace_delivers_running_invocation_result(asynchronous: bool, m
     def handler(invocation: ContainerInvocation) -> ContainerResult:
         started.set()
         release.wait(5)
+        assert isinstance(invocation.credential_provider, CallbackCredentialProvider)
+        invocation.credential_provider._public_toolbox.log("INFO", "after half-close")
         return ContainerResult(_DIGEST, output={"ok": True})
 
     def consume(port: int) -> ContainerResult:

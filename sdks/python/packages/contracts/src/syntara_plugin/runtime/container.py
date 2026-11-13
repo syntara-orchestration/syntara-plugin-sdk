@@ -15,6 +15,7 @@ import signal
 from _thread import LockType
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from queue import Queue
 from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
 from time import monotonic
@@ -25,7 +26,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
 
 from .abi import _PROVIDER_CODE, CONTAINER_ABI, ContainerInvocationError, FailureCode
-from .credential_callback import CallbackCredentialProvider
+from .credential_callback import CallbackCredentialProvider, _invalid_constant, _unique_members
 from .credentials import CredentialAccessError, CredentialProvider
 from .execution import StepExecutionError
 from .outcome import (
@@ -38,6 +39,7 @@ from .outcome import (
     validate_json_object,
 )
 from .protocol import container_pb2, container_pb2_grpc
+from .toolbox import _take_log_batch
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
@@ -388,6 +390,17 @@ class StepRegistry:
         )
 
 
+def _log_notification(provider: CallbackCredentialProvider, invocation_id: str) -> container_pb2.ExecuteServerMessage | None:
+    batch = _take_log_batch(provider._public_toolbox, invocation_id)
+    return container_pb2.ExecuteServerMessage(log_batch=batch) if batch is not None else None
+
+
+def _queue_sync_log(provider: CallbackCredentialProvider, invocation_id: str, outgoing: Queue[container_pb2.ExecuteServerMessage | None]) -> None:
+    message = _log_notification(provider, invocation_id)
+    if message is not None:
+        outgoing.put(message)
+
+
 def _close_sync_invocation(
     cancellation: Event,
     provider: CallbackCredentialProvider,
@@ -410,6 +423,8 @@ def _receive_sync_responses(
             if message.WhichOneof("message") != "credential_response":
                 with terminal_lock:
                     invocation.cancellation.set()
+                    provider.close()
+                    _queue_sync_log(provider, invocation.invocation_id, outgoing)
                     outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
                         invocation.invocation_id, ContainerInvocationError(
                             FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
@@ -421,7 +436,7 @@ def _receive_sync_responses(
     except Exception:
         pass
     finally:
-        provider.close()
+        provider.close_credentials()
 
 
 def _run_sync_step(
@@ -447,6 +462,7 @@ def _run_sync_step(
     finally:
         provider.close()
     with terminal_lock:
+        _queue_sync_log(provider, invocation.invocation_id, outgoing)
         outgoing.put(container_pb2.ExecuteServerMessage(event=event))
         outgoing.put(None)
 
@@ -535,6 +551,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         with terminal_lock:
             cancellation.set()
             provider.close()
+            _queue_sync_log(provider, request.invocation_id, outgoing)
             outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
                 request.invocation_id, ContainerInvocationError(
                     FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
@@ -559,6 +576,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             with terminal_lock:
                 cancellation.set()
                 provider.close()
+                _queue_sync_log(provider, invocation_id, outgoing)
                 outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
                     invocation_id, ContainerInvocationError(
                         FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
@@ -905,6 +923,31 @@ def _execution_event_from_stream(
     raise _protocol_error()
 
 
+def _valid_log_batch(batch: container_pb2.LogBatch, invocation_id: str) -> bool:
+    """Treat malformed remote diagnostics as dropped, never as a step failure."""
+    from .toolbox import _LEVELS, _NAME, _json_value
+
+    try:
+        if batch.invocation_id != invocation_id or batch.version != 1 or len(batch.events) > 128 or batch.ByteSize() > 262_144:
+            return False
+        for event in batch.events:
+            if len(event.timestamp) != 24:
+                return False
+            datetime.strptime(event.timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
+            if event.severity not in _LEVELS or not 1 <= len(event.message.encode("utf-8")) <= 4096:
+                return False
+            if event.event_name and not _NAME.fullmatch(event.event_name):
+                return False
+            if len(event.attributes_json) > 16_384:
+                return False
+            attrs = json.loads(event.attributes_json.decode("utf-8"), parse_constant=_invalid_constant, object_pairs_hook=_unique_members)
+            if type(attrs) is not dict or len(attrs) > 32 or not _json_value(attrs):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 class ContainerClient:
     """Synchronous client for an Execution Plane adapter or local test harness.
 
@@ -1030,6 +1073,7 @@ class ContainerClient:
     def stream(
         self, invocation: ContainerInvocation, *, timeout_seconds: float | None = None,
         credential_handler: CredentialResolver | None = None,
+        on_log_batch: Callable[[container_pb2.LogBatch], None] | None = None,
     ) -> Iterator[ContainerProgress | ContainerResult]:
         """Invoke a step type and yield progress followed by exactly one result."""
 
@@ -1051,7 +1095,18 @@ class ContainerClient:
             add_done_callback = getattr(call, "add_callback", None)
             if callable(add_done_callback):
                 add_done_callback(lambda: bridge.close(cancelled=bridge.has_pending))
+            saw_log_batch = False
             for message in call:
+                if message.WhichOneof("message") == "log_batch":
+                    batch = message.log_batch
+                    if not saw_terminal and not saw_log_batch and _valid_log_batch(batch, invocation.invocation_id):
+                        saw_log_batch = True
+                        if on_log_batch is not None:
+                            try:
+                                on_log_batch(batch)
+                            except Exception:
+                                pass
+                    continue
                 event, saw_terminal = self._stream_event(
                     message, bridge, invocation.invocation_id, saw_terminal
                 )

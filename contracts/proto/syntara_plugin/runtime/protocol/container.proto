@@ -50,7 +50,34 @@ message ExecuteServerMessage {
   oneof message {
     ExecutionEvent event = 1;
     CredentialRequest credential_request = 2;
+    LogBatch log_batch = 3;
   }
+}
+
+// Version 1 operational logs. A batch is sent at most once, immediately
+// before a terminal event. It is a one-way notification; no reply is required.
+// The batch holds at most 128 events and 262144 serialized protobuf bytes.
+// Excess or invalid events are dropped without failing the invocation.
+message LogBatch {
+  string invocation_id = 1;
+  uint32 version = 2; // Must be 1.
+  repeated LogEvent events = 3;
+  uint32 dropped_count = 4; // Saturating count of rejected/overflow records.
+}
+
+// timestamp is UTC RFC 3339 with millisecond precision. severity is one of
+// TRACE, DEBUG, INFO, WARN, ERROR, FATAL. message is 1..4096 UTF-8 bytes;
+// event_name is empty or 1..128 ASCII characters from [A-Za-z0-9_.-].
+// attributes_json is a JSON object at most 16384 UTF-8 bytes containing at
+// most 32 top-level members and JSON values (finite numbers only), with at
+// most 8 nested container levels, at most 2048 values, and signed 64-bit
+// integers. It is never inspected for secrets.
+message LogEvent {
+  string timestamp = 1;
+  string severity = 2;
+  string message = 3;
+  string event_name = 4;
+  bytes attributes_json = 5;
 }
 
 // name is a declared CredentialRecipe ID, not a credential ID or reference.

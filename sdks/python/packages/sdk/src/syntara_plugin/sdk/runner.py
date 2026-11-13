@@ -47,6 +47,7 @@ from syntara_plugin.runtime.container import (
 from syntara_plugin.runtime.contract_validation import SchemaDriftError
 from syntara_plugin.runtime.credentials import CredentialAccessError
 from syntara_plugin.runtime.execution import StepExecutionError
+from syntara_plugin.runtime.protocol import container_pb2
 from syntara_plugin.testing import BoundedStepHandler, HarnessUsageError, StepBindingsFactory
 
 from .authoring import CompilationResult
@@ -1269,6 +1270,7 @@ def run_source(
         sys.stderr,
         _secret_values(target.input_schema, inputs) + credential_secret_values(credentials),
     )
+    diagnostic_stream = sys.stderr
     try:
         # The step type runs in this process; anything it prints belongs on
         # stderr, scrubbed of supplied secrets, so stdout keeps carrying only the
@@ -1292,6 +1294,7 @@ def run_source(
                     on_progress=on_progress,
                     captured_detail=captured,
                     credentials=credentials,
+                    diagnostic_stream=diagnostic_stream,
                 )
             )
     finally:
@@ -1404,6 +1407,7 @@ class _ChannelExecution:
     startup_seconds: float = 10.0
     liveness: Callable[[], None] | None = None
     credentials: Sequence[LoadedCredential] = ()
+    diagnostic_stream: Any = None
 
 
 def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
@@ -1458,7 +1462,8 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         redact_inputs(target.input_schema, inputs), secrets, scalars
     )
     terminal = _consume(
-        client, invocation, _scrubbing_progress(execution.on_progress, secrets), read_credential
+        client, invocation, _scrubbing_progress(execution.on_progress, secrets), read_credential,
+        execution.diagnostic_stream or sys.stderr,
     )
     detail = (
         _scrub_text("\n\n".join(execution.captured_detail).rstrip(), secrets)
@@ -1657,6 +1662,7 @@ def run_secret_scrubber(
 def _consume(
     client: ContainerClient, invocation: ContainerInvocation, on_progress: ProgressCallback | None,
     credential_handler: CredentialResolver | None = None,
+    diagnostic_stream: Any = None,
 ) -> ContainerResult | _WorkloadFailure:
     """Consume the event stream, returning the terminal outcome.
 
@@ -1665,8 +1671,21 @@ def _consume(
     transport failures raise :class:`RunExecutionError`.
     """
 
+    def render_logs(batch: container_pb2.LogBatch) -> None:
+        stream = diagnostic_stream if diagnostic_stream is not None else sys.stderr
+        for event in batch.events:
+            record = {
+                "timestamp": event.timestamp, "severity": event.severity,
+                "message": event.message, "attributes": json.loads(event.attributes_json),
+            }
+            if event.event_name:
+                record["event_name"] = event.event_name
+            print(json.dumps(record, ensure_ascii=False, separators=(",", ":")), file=stream)
+        if batch.dropped_count:
+            print(f"Dropped {batch.dropped_count} log event(s).", file=stream)
+
     try:
-        for event in client.stream(invocation, credential_handler=credential_handler):
+        for event in client.stream(invocation, credential_handler=credential_handler, on_log_batch=render_logs):
             if isinstance(event, ContainerResult):
                 return event
             if on_progress is not None:

@@ -1,4 +1,4 @@
-"""Public empty Toolbox behavior in execution contexts."""
+"""Public Toolbox behavior in execution contexts."""
 
 from __future__ import annotations
 
@@ -31,18 +31,18 @@ class ToolboxProbe(ControlStep[ToolboxInput, ToolboxOutput]):
     def run(self, inputs: ToolboxInput, context: ExecutionContext) -> ToolboxOutput:
         return ToolboxOutput(
             present=isinstance(context.toolbox, ContainerToolbox),
-            empty=not any(not name.startswith("_") for name in dir(context.toolbox)),
+            empty=callable(context.toolbox.log),
         )
 
 
-def test_context_exposes_a_stable_read_only_empty_toolbox() -> None:
+def test_context_exposes_a_stable_read_only_toolbox() -> None:
     context = ExecutionContext("example")
     toolbox = context.toolbox
     assert isinstance(toolbox, ContainerToolbox)
     assert context.toolbox is toolbox
     assert context._with_credentials(()).toolbox is toolbox
     assert ExecutionContext("another").toolbox is not toolbox
-    assert not any(not name.startswith("_") for name in dir(toolbox))
+    assert [name for name in dir(toolbox) if not name.startswith("_")] == ["log"]
     assert not hasattr(toolbox, "resolve_credential_ref")
     assert not hasattr(toolbox, "request_credential")
     assert not hasattr(toolbox, "_transport")
@@ -54,7 +54,7 @@ def test_context_exposes_a_stable_read_only_empty_toolbox() -> None:
 
 
 @pytest.mark.parametrize("container", [False, True])
-def test_empty_toolbox_is_available_on_both_execution_paths(container: bool) -> None:
+def test_toolbox_is_available_on_both_execution_paths(container: bool) -> None:
     context = build_execution_context(invocation_id="toolbox-test")
     invoke = invoke_step_in_container if container else invoke_step
     outcome = invoke(ToolboxProbe(), {}, context=context)
