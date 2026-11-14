@@ -5,7 +5,6 @@
     "apiVersion": "syntara.io/v1alpha1",
     "kind": "ContainerStepWorkItem",
     "invocationId": "invoke-1",
-    "workflowRunId": "workflow-1",
     "stepRevisionId": "step-1",
     "pluginDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "runtimeAbi": "syntara.container/v1alpha1",
@@ -20,14 +19,14 @@
     "capabilityGrantId": "grant-1",
     "executionPolicyId": "policy-1",
     "timeoutSeconds": 300,
-    "requestHash": "sha256:03bd96fcdb939ed991dff5088d40bdc65850c492bad67b5104e33bd55f4b286c"
+    "requestHash": "sha256:8aa485555615358f3b57669785173d77027bb89bc1441db7c41dfc299e175134"
   },
   "policySnapshot": {
     "apiVersion": "syntara.io/v1alpha1",
     "kind": "ExecutionPolicySnapshot",
     "policyId": "policy-1",
     "revision": "revision-1",
-    "requestHash": "sha256:03bd96fcdb939ed991dff5088d40bdc65850c492bad67b5104e33bd55f4b286c",
+    "requestHash": "sha256:8aa485555615358f3b57669785173d77027bb89bc1441db7c41dfc299e175134",
     "effectiveCapabilities": []
   },
   "credentialLeases": [

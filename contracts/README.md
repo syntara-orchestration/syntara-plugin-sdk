@@ -140,3 +140,11 @@ The wrapper schema does not redefine protobuf transport fields. The
 `ContainerService` ABI remains the protocol contract for transporting runtime
 events; any transport mapping must preserve the distinction between deliberate
 failure and no valid outcome.
+
+The container ABI and generic work-item schema no longer require a workflow run
+ID. `invocation_id` identifies the invocation; `step_revision_id` selects the
+handler. Non-secret caller correlation belongs in the existing `runtime_context`
+(`runtimeContext` in JSON) object and is delivered unchanged to the step. The
+SDK does not generate a synthetic workflow run ID. Protobuf field 8 and its old
+name `workflow_run_id` are reserved. Upgrade host contracts and plugin containers
+together; old SDK runtimes still require the removed field.

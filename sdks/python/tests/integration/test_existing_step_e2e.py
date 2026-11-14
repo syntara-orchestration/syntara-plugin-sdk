@@ -82,7 +82,7 @@ def test_manifest_entry_points_execute_through_both_paths(
     )
     context = mock_execution_context(
         invocation_id="existing-action",
-        workflow_run_id="existing-run",
+        runtime_context={"execution_id": "existing-run"},
     )
 
     direct = invoke_step(binding, inputs, context=context)
@@ -149,7 +149,7 @@ def test_packaged_bindings_factory_loads_and_executes_every_manifest_entry_point
         ),
     }
     context = ExecutionContext(
-        invocation_id="packaged-action", workflow_run_id="packaged-run"
+        invocation_id="packaged-action", runtime_context={"execution_id": "packaged-run"}
     )
     for kind, (inputs, expected) in cases.items():
         result = invoke(bindings.binding(IDENTITIES[kind]), inputs, context)

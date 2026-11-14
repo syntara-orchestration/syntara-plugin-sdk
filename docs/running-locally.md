@@ -499,7 +499,7 @@ under `--verbose`, and warnings. The document has three shapes:
 
 - **Completed invocation** (exit 0, or exit 1 when the step type completed with a
   failure): `ok`, `mode`, `target`, `image`, `inputSource`, `input` with
-  sensitive fields masked, `invocationId`, `workflowRunId`, `status`,
+  sensitive fields masked, `invocationId`, `status`,
   `statusMessage`, `output`, `objectReference`, `outcome`, `errorDetail`,
   `credentials` (the names supplied, never their values), and `error` with
   `code`, `message`, and `retryable`.

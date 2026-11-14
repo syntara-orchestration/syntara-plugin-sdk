@@ -66,7 +66,7 @@ class _InvocationEchoStep(ControlStep[_EchoInput, _InvocationEchoOutput]):
 
 class _RunIdEchoOutput(BaseModel):
     invocation_id: str
-    workflow_run_id: str
+    execution_id: str
 
 
 class _RunIdEchoStep(ControlStep[_EchoInput, _RunIdEchoOutput]):
@@ -75,19 +75,19 @@ class _RunIdEchoStep(ControlStep[_EchoInput, _RunIdEchoOutput]):
     def run(self, inputs: _EchoInput, context: ExecutionContext) -> _RunIdEchoOutput:
         return _RunIdEchoOutput(
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id or "",
+            execution_id=context.runtime_context.get("execution_id", "") or "",
         )
 
 
 class _RunIdOutput(BaseModel):
-    workflow_run_id: str
+    execution_id: str
 
 
 class _RunIdStep(ControlStep[_EchoInput, _RunIdOutput]):
     """Echoes the workflow-run id."""
 
     def run(self, inputs: _EchoInput, context: ExecutionContext) -> _RunIdOutput:
-        return _RunIdOutput(workflow_run_id=context.workflow_run_id or "")
+        return _RunIdOutput(execution_id=context.runtime_context.get("execution_id", "") or "")
 
 
 class _SleepyOutput(BaseModel):
@@ -240,15 +240,15 @@ def test_business_crashes_are_equivalent_as_raised_failures(
         assert_no_secrets(outcome, ["the business logic crashed"], caplog=caplog)
 
 
-def test_run_id_echoing_step_is_equivalent_under_a_shared_context() -> None:
-    """Both paths must present the same run id when the context carries none."""
+def test_missing_caller_context_is_equivalent_on_both_paths() -> None:
+    """Neither path invents correlation context."""
 
     context = build_execution_context(invocation_id="equiv-run-id")
     direct = invoke_step(_RunIdEchoStep(), {}, context=context)
     container = invoke_step_in_container(_RunIdEchoStep(), {}, context=context)
     assert_outcomes_equivalent(direct, container)
     assert direct.output == container.output
-    assert direct.output["workflow_run_id"] == "equiv-run-id-run"
+    assert direct.output["execution_id"] == ""
 
 
 def test_a_deadlocked_step_returns_its_timeout_without_hanging_the_session() -> None:
@@ -284,9 +284,9 @@ def test_system_exit_on_the_container_path_fails_promptly() -> None:
 
 
 def test_boundary_length_invocation_ids_work_on_both_paths() -> None:
-    """A 252-character id plus the derived run id fits the container ABI."""
+    """The full 256-character invocation identity fits both paths."""
 
-    invocation_id = "x" * 252
+    invocation_id = "x" * 256
     context = build_execution_context(invocation_id=invocation_id)
     direct = invoke_step(_InvocationEchoStep(), {}, context=context)
     container = invoke_step_in_container(_InvocationEchoStep(), {}, context=context)
@@ -294,29 +294,24 @@ def test_boundary_length_invocation_ids_work_on_both_paths() -> None:
     assert container.output == {"invocation_id": invocation_id}
 
 
-def test_supplied_workflow_run_ids_work_on_both_paths() -> None:
+def test_supplied_execution_ids_work_on_both_paths() -> None:
     """A caller-supplied run id must be presented identically by both paths."""
 
     context = build_execution_context(
-        invocation_id="run-id-probe", workflow_run_id="team.aap:run-42"
+        invocation_id="run-id-probe", runtime_context={"execution_id": "team.aap:run-42"}
     )
     direct = invoke_step(_RunIdStep(), {}, context=context)
     container = invoke_step_in_container(_RunIdStep(), {}, context=context)
     assert_outcomes_equivalent(direct, container)
-    assert container.output == {"workflow_run_id": "team.aap:run-42"}
+    assert container.output == {"execution_id": "team.aap:run-42"}
 
 
-def test_raw_contexts_with_supplied_run_ids_use_the_full_abi_maximum() -> None:
-    """With a supplied run id nothing is derived, so 254 characters are valid.
-
-    The 252-character cap exists only to leave room for the derived
-    ``-run`` suffix; a raw context that already carries a run id may use the
-    container ABI's full 256-character maximum for its invocation id.
-    """
+def test_raw_contexts_use_the_full_abi_maximum() -> None:
+    """Raw contexts have the same identity limit as harness-built contexts."""
 
     from syntara_plugin.runtime import ExecutionContext
 
-    context = ExecutionContext(invocation_id="x" * 254, workflow_run_id="run-1")
+    context = ExecutionContext(invocation_id="x" * 256, runtime_context={"execution_id": "run-1"})
     direct = invoke_step(ReferenceControlStep(), {"title": "x"}, context=context)
     container = invoke_step_in_container(
         ReferenceControlStep(), {"title": "x"}, context=context

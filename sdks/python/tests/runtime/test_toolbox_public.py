@@ -124,7 +124,7 @@ def test_container_context_shares_only_its_own_invocation_toolbox() -> None:
     contexts = [
         _execution_context(
             ContainerInvocation(
-                invocation_id=str(i), workflow_run_id="workflow", step_revision_id="step",
+                invocation_id=str(i), step_revision_id="step",
                 inputs={}, timeout_seconds=5, credential_provider=provider,
             )
         )
