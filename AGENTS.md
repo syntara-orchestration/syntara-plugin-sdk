@@ -32,6 +32,9 @@ for dependencies; regenerate the lockfile when dependency metadata changes.
 - `make install`: sync the development environment
 - `make test`: unit, CLI, contract, examples, and step types classifier suite
 - `make test-integration`: opt-in Podman and registry runtime-image tests
+- `make test-step-types`: run the maintained step types against this checkout
+  ([docs/step-type-compatibility.md](docs/step-type-compatibility.md));
+  `make test-step-types-helpers` tests its tooling
 - `make lint` and `make check`: ruff through pre-commit
 - `make generate-container-protocol`: regenerate the protobuf bindings after a `.proto` change; generated `*_pb2*` files are never hand-edited
 
@@ -84,8 +87,9 @@ submitting: docs that drift from real behavior are bugs.
 ## After pushing, while the PR is open
 
 - CI runs the Python test matrix (3.12 to 3.14), pre-commit, the package
-  build with its install smoke test, and the opt-in runtime-image integration
-  job. Failures are usually caused by the change just pushed: read the
+  build with its install smoke test, the opt-in runtime-image integration
+  job, and the step types compatibility check (one job per step type, with a
+  failure analysis in each job's log and summary). Failures are usually caused by the change just pushed: read the
   failing job's log and fix the cause instead of re-running and hoping.
 - Check the SonarCloud results on the PR and fix every finding on New Code:
   new issues including code smells, Security Hotspots, and Duplication. There

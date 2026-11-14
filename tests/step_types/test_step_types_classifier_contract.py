@@ -97,7 +97,7 @@ def test_run_document_boundary_code_is_runtime_boundary_contract(code: str, mess
     )
     assert result.rule_name == "runtime-boundary"
     assert result.evidence == (f"error.code {code}: {message}",)
-    assert result.facts == {"code": code}
+    assert result.facts == {"code": code, "message": message}
     assert result.actions == (INTENTIONAL,)
 
 
@@ -222,7 +222,7 @@ def test_runtime_input_rejection_code_is_input_validation_contract() -> None:
         "CT006",
         "deterministic",
     )
-    assert result.facts == {"code": "INVALID_INPUT"}
+    assert result.facts == {"code": "INVALID_INPUT", "message": "input does not satisfy the declared schema"}
 
 
 def test_outcome_unknown_without_a_traceback_is_not_attributed_to_the_step() -> None:

@@ -48,6 +48,9 @@ htmlcov/
 # uv
 .uv/
 
+# Local step types compatibility runs (make test-step-types)
+.cache/
+
 # Step SDK specific
 *.compiled.json
 step-definition.json

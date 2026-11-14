@@ -364,6 +364,8 @@ def _fixture_layout(failure: Failure, frames: tuple[Frame, ...]) -> Classificati
             "Update tests/step_types for the new step-types layout, or pin a compatible revision "
             "(STEP_TYPES_REF in .github/workflows/step-types-compat.yml).",
         ),
+        # The identity of this failure for the devel-baseline comparison.
+        facts={"note": failure.note},
     )
 
 
@@ -382,6 +384,8 @@ def _candidate_not_installed(failure: Failure, frames: tuple[Frame, ...]) -> Cla
         "the environment, so the wheel injection no longer takes effect. Testing would "
         "exercise the published SDK, not this pull request.",
         actions=("Update the injection in tests/step_types/driver.py for the new layout.",),
+        # The identity of this failure for the devel-baseline comparison.
+        facts={"reason": failure.note.removeprefix("candidate not installed: ")},
     )
 
 
@@ -398,6 +402,8 @@ def _candidate_wheels(failure: Failure, frames: tuple[Frame, ...]) -> Classifica
         cause="The SDK build produced a missing or inconsistent wheel set (the SDK wheel pins "
         "an exact contracts version that the built contracts wheel must match).",
         actions=("Fix the package versions or build configuration in this pull request.",),
+        # The identity of this failure for the devel-baseline comparison.
+        facts={"note": failure.note},
     )
 
 
@@ -420,6 +426,8 @@ def _fixture_plugin_unknown(failure: Failure, frames: tuple[Frame, ...]) -> Clas
         cause="The plugin is not registered in step-types' Makefile (SDK_PLUGINS) or in its "
         "archive assertion script.",
         actions=("Ask the step-types maintainers to register the plugin, then bump the pin.",),
+        # The identity of this failure for the devel-baseline comparison.
+        facts={"line": evidence[0]} if evidence else {},
     )
 
 
@@ -537,6 +545,8 @@ def _schema_violation(failure: Failure, frames: tuple[Frame, ...]) -> Classifica
         cause="This pull request changed the plugin settings schema in a way step-types' "
         "settings do not satisfy.",
         actions=(INTENTIONAL, "Not intentional? Restore schema compatibility."),
+        # The identity of this failure for the devel-baseline comparison.
+        facts={"detail": match["detail"].strip()},
     )
 
 
@@ -554,6 +564,8 @@ def _required_setting(failure: Failure, frames: tuple[Frame, ...]) -> Classifica
         evidence=(match.group(0).strip(),),
         cause="This pull request made a plugin setting mandatory that step-types does not set.",
         actions=(INTENTIONAL, "Not intentional? Keep the setting optional or give it a default."),
+        # The identity of this failure for the devel-baseline comparison.
+        facts={"label": match["label"].strip(), "keys": _split_keys(match["keys"])},
     )
 
 
@@ -572,6 +584,8 @@ def _cli_usage(failure: Failure, frames: tuple[Frame, ...]) -> Classification | 
         cause="This pull request removed or renamed a CLI flag, subcommand, or choice that "
         "step-types' make targets still use.",
         actions=(INTENTIONAL, "Not intentional? Keep accepting the old arguments."),
+        # The identity of this failure for the devel-baseline comparison.
+        facts={"detail": match["detail"].strip()},
     )
 
 
@@ -591,6 +605,8 @@ def _cli_error_kind(failure: Failure, frames: tuple[Frame, ...]) -> Classificati
             evidence=evidence,
             cause="The candidate SDK rejected the plugin workspace before running the step.",
             actions=(INTENTIONAL,),
+            # The identity of this failure for the devel-baseline comparison.
+            facts={"kind": kind, "message": message},
         )
     if kind == "InvalidInput":
         return Classification(
@@ -604,6 +620,8 @@ def _cli_error_kind(failure: Failure, frames: tuple[Frame, ...]) -> Classificati
             cause="This pull request changed how step inputs are validated, so an input that "
             "satisfied the step's schema before no longer does.",
             actions=(INTENTIONAL, "Not intentional? Restore the previous input validation."),
+            # The identity of this failure for the devel-baseline comparison.
+            facts={"kind": kind, "message": message},
         )
     return None
 
@@ -755,7 +773,8 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
             evidence=(reported,),
             cause="This pull request changed a runtime boundary the step depends on.",
             actions=(INTENTIONAL,),
-            facts={"code": code},
+            # The identity of this failure for the devel-baseline comparison.
+            facts={"code": code, "message": message},
         )
     if code in _INPUT_CODES:
         # The runtime validates the step's inputs before the step runs, so this
@@ -770,7 +789,8 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
             evidence=(reported,),
             cause="This pull request changed how step inputs are validated at runtime.",
             actions=(INTENTIONAL, "Not intentional? Restore the previous validation."),
-            facts={"code": code},
+            # The identity of this failure for the devel-baseline comparison.
+            facts={"code": code, "message": message},
         )
     if code in _STEP_REPORTED_CODES:
         return Classification(
@@ -788,7 +808,8 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
                 "Not intentional? Compare the diagnostic run output below with the step's "
                 "example input and expected output.",
             ),
-            facts={"code": code},
+            # The identity of this failure for the devel-baseline comparison.
+            facts={"code": code, "message": message},
         )
     # OUTCOME_UNKNOWN, or a code the SDK added without a mapping: without a
     # traceback the report does not establish an origin, so stay uncertain.
@@ -815,15 +836,18 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
 def _runtime_abi(failure: Failure, frames: tuple[Frame, ...]) -> Classification | None:
     text = _searchable(failure)
     if _ABI_SIGNATURE in text:
+        evidence = _matching_lines(text, _ABI_SIGNATURE)
         return Classification(
             category="contract",
             rule_id="CT001",
             rule_name="runtime-abi",
             confidence="deterministic",
             what="The step runtime rejected the requested runtime ABI.",
-            evidence=_matching_lines(text, _ABI_SIGNATURE),
+            evidence=evidence,
             cause="This pull request changed the container runtime ABI or protocol.",
             actions=(INTENTIONAL,),
+            # The identity of this failure for the devel-baseline comparison.
+            facts={"line": evidence[0]} if evidence else {},
         )
     match = _GRPC_SIGNATURE.search(text)
     if match is not None:

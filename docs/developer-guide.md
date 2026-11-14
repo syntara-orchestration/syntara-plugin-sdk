@@ -79,6 +79,10 @@ When changing a contract:
    git diff --check
    ```
 
+7. Check the effect on the maintained step types. Pull requests run the
+   [step type compatibility check](step-type-compatibility.md) automatically;
+   run it locally with `make test-step-types`.
+
 The SDK is pre-release. Prefer a clear forward-only contract over a
 compatibility shim; removed configuration keys should fail validation rather
 than silently selecting legacy behavior. Follow the [release guide](releasing.md)
