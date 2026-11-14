@@ -28,6 +28,19 @@ class ExecutionContext:
     The context deliberately excludes protobuf messages, gRPC objects, container
     invocation types, and raw credential values. A trusted host supplies a
     provider; the executor binds it to the installed declaration for one invocation.
+
+    Attributes:
+        invocation_id: Host-assigned identity of this particular invocation,
+            used for event and cancellation correlation. EP supplies its
+            dispatch-attempt ID; this is not a workflow execution ID.
+        runtime_context: Optional non-secret caller-defined data visible to the
+            plugin, defaulting to {}. The SDK neither requires nor interprets
+            project, workflow, execution, or parent identifiers in this mapping.
+            Values do not grant authorization or select a handler.
+        cancellation: Host-controlled cooperative cancellation signal; inspect
+            cancelled to decide whether to stop work.
+        credential_provider: Host-supplied credential access. Plugin code uses
+            credential(name), scoped to the installed step's declared bindings.
     """
 
     invocation_id: str

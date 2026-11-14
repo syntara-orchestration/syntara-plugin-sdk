@@ -68,7 +68,22 @@ def _thaw_json_document(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class ContainerInvocation:
-    """The selected type and the safe data supplied to it."""
+    """One handler invocation and the data supplied by its caller.
+
+    Attributes:
+        invocation_id: Host-assigned invocation identity for events, credential
+            requests, and cancellation. EP supplies its dispatch-attempt ID.
+        step_revision_id: Workload-advertised handler identifier used to select
+            the implementation, not the identity of this invocation.
+        inputs: Business inputs defined by the selected handler's input schema.
+        timeout_seconds: Maximum execution time allowed, in seconds.
+        runtime_context: Optional non-secret caller data, defaulting to {} and
+            exposed to plugin code as ExecutionContext.runtime_context. The SDK
+            requires no domain identifiers and does not use it for authorization.
+        cancellation: Host-controlled cooperative cancellation signal.
+        credential_provider: Host-provided credential access, kept separate from
+            inputs and runtime context and restricted to declared bindings.
+    """
 
     invocation_id: str
     step_revision_id: str
