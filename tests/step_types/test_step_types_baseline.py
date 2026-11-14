@@ -95,7 +95,8 @@ def test_smaller_broken_set_is_inherited_as_an_improvement() -> None:
     decision = inherited(report(facts={"label": "build", "keys": ["workload"]}), report(
         facts={"label": "build", "keys": ["workload", "publish"]}
     ))
-    assert decision is not None and decision.improved
+    assert decision is not None
+    assert decision.improved
 
 
 def test_extra_broken_field_is_new() -> None:
@@ -119,7 +120,8 @@ def test_derived_facts_do_not_participate() -> None:
         report(facts={"label": "build", "keys": ["x"], "locations": ["a"], "transform": "t"}),
         report(facts={"label": "build", "keys": ["x", "workload"], "locations": ["a", "b"], "transform": "t"}),
     )
-    assert decision is not None and decision.improved
+    assert decision is not None
+    assert decision.improved
 
 
 def test_missing_fact_on_either_side_is_new() -> None:
@@ -287,15 +289,18 @@ def test_load_survives_oversized_files(tmp_path: Path) -> None:
     tmp_path.mkdir(exist_ok=True)
     (tmp_path / "http-request.json").write_text("x" * (2 * 1024 * 1024 + 1), encoding="utf-8")
     reports, meta = load(tmp_path, ["http-request"])
-    assert reports["http-request"] is None and meta == {}
+    assert reports["http-request"] is None
+    assert meta == {}
 
 
 def test_absence_reasons() -> None:
     assert "did not complete" in absence_reason({})
     pending = absence_reason({"base_sha": PIN, "run_id": ""})
-    assert "no completed devel run" in pending and PIN[:12] in pending
+    assert "no completed devel run" in pending
+    assert PIN[:12] in pending
     expired = absence_reason({"base_sha": PIN, "run_id": "42"})
-    assert "could not be downloaded" in expired and "42" in expired
+    assert "could not be downloaded" in expired
+    assert "42" in expired
 
 
 def test_inherited_never_raises_on_garbage() -> None:
