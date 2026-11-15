@@ -31,12 +31,9 @@ class ExecutionContext:
 
     Attributes:
         invocation_id: Host-assigned identity of this particular invocation,
-            used for event and cancellation correlation. EP supplies its
-            dispatch-attempt ID; this is not a workflow execution ID.
+            used for event and cancellation correlation.
         runtime_context: Optional non-secret caller-defined data visible to the
-            plugin, defaulting to {}. The SDK neither requires nor interprets
-            project, workflow, execution, or parent identifiers in this mapping.
-            Values do not grant authorization or select a handler.
+            plugin, defaulting to {}. Keys are defined by the caller.
         cancellation: Host-controlled cooperative cancellation signal; inspect
             cancelled to decide whether to stop work.
         credential_provider: Host-supplied credential access. Plugin code uses

@@ -154,11 +154,6 @@ the parent's `spec.input` to the child Trigger's declared event payload, or the
 child's terminal result to the parent's `spec.output`. Both agreements are
 authoring obligations that an author verifies with their own tests.
 
-The trigger's event payload carries no parent-run identifier: `ExecutionContext`
-has no dedicated parent-run field. A step type executing in a child run can
-identify its parent only if the caller supplies that relationship in runtime
-context. The SDK does not infer it from invocation identity or the event payload.
-
 See [`examples/subworkflow-composition`](../examples/subworkflow-composition)
 for a worked parent-and-child workspace.
 

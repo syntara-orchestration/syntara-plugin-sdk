@@ -24,9 +24,6 @@ message ExecuteRequest {
   // credential requests, and cancellation. EP supplies its dispatch-attempt ID;
   // this is not a project, workflow, or workflow-execution identifier.
   string invocation_id = 1;
-  // Removed: caller-specific correlation belongs in runtime_context_json.
-  reserved 8;
-  reserved "workflow_run_id";
   // Handler identifier advertised by this workload's Health response. Selects
   // the implementation to execute; does not identify an individual invocation.
   string step_revision_id = 2;
@@ -40,9 +37,7 @@ message ExecuteRequest {
   uint32 timeout_seconds = 6;
   // Optional UTF-8 JSON object supplied by the caller and exposed to plugin
   // code as ExecutionContext.runtime_context. Omitted/empty bytes mean {}.
-  // The SDK forwards it without requiring project, workflow, execution, or
-  // parent IDs. It is descriptive context, not authorization or handler
-  // selection, and must not contain credentials or other secrets.
+  // Keys are caller-defined. Do not include credentials or other secrets.
   bytes runtime_context_json = 7;
 }
 
