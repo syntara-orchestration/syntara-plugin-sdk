@@ -80,6 +80,15 @@ def _outcome_texts(outcome: StepOutcome) -> list[tuple[str, str]]:
         texts.append(("business output", json.dumps(outcome.output, default=str, sort_keys=True)))
     if outcome.raw is not None:
         texts.append(("raw envelope", repr(outcome.raw)))
+    for record in outcome.logs.records:
+        texts.append(("captured structured log message", record.message))
+        if record.event_name is not None:
+            texts.append(("captured structured log event name", record.event_name))
+        try:
+            attributes = json.dumps(record.attributes, default=str, sort_keys=True)
+        except (TypeError, ValueError):
+            attributes = _safe_repr(record.attributes)
+        texts.append(("captured structured log attributes", attributes))
     return texts
 
 
@@ -93,9 +102,9 @@ def assert_no_secrets(
 
     Scans the outcome's status message, error message, raised exception
     including its whole chain (message, args, notes, ``__cause__``, and
-    ``__context__``), serialized business output, raw envelope, and (when
-    supplied) the pytest ``caplog`` capture. Secrets must never appear in any
-    of them.
+    ``__context__``), serialized business output, raw envelope, captured
+    structured log records, and (when supplied) the pytest ``caplog`` capture.
+    Secrets must never appear in any of them.
 
     When scanning logs, raise the capture level around the invocation first:
     pytest captures only records that pass the root logger's effective level,

@@ -7,7 +7,7 @@ import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import MagicMock, patch
 
@@ -29,6 +29,8 @@ from syntara_plugin.runtime.bindings import validate_executable_step_binding
 from syntara_plugin.runtime.container import (
     ContainerClient,
     ContainerInvocation,
+    ContainerLogBatch,
+    ContainerLogRecord,
     ContainerRemoteError,
     ContainerResult,
     ContainerStepHandler,
@@ -125,6 +127,20 @@ StepTargetOrBinding = StepTarget | StepBinding
 
 
 @dataclass(frozen=True)
+class LogCapture:
+    """Structured records observed by one local container-harness invocation.
+
+    ``invoke_step_in_container`` receives these records over the real local
+    gRPC stream, before its terminal result or failure. The capture is testing
+    data only: it does not alter Toolbox delivery, the container ABI, or any
+    Execution Plane behavior.
+    """
+
+    records: tuple[ContainerLogRecord, ...] = ()
+    dropped_count: int = 0
+
+
+@dataclass(frozen=True)
 class StepOutcome:
     """One normalized invocation outcome across both SDK execution paths.
 
@@ -142,6 +158,7 @@ class StepOutcome:
     raised: BaseException | None
     transport: Transport
     raw: StandardOutputWrapper | ContainerResult | None
+    logs: LogCapture = field(default_factory=LogCapture)
 
 
 def _resolve_binding(target: StepTargetOrBinding) -> StepBinding:
@@ -182,7 +199,10 @@ def _counting_run(step: BaseStep[Any, Any]) -> Iterator[MagicMock]:
 
 
 def _raised_outcome(
-    spy: MagicMock, error: BaseException, transport: Transport
+    spy: MagicMock,
+    error: BaseException,
+    transport: Transport,
+    logs: LogCapture | None = None,
 ) -> StepOutcome:
     """Normalize an executor or business exception into one failed outcome."""
 
@@ -196,6 +216,7 @@ def _raised_outcome(
         raised=error,
         transport=transport,
         raw=None,
+        logs=logs or LogCapture(),
     )
 
 
@@ -387,14 +408,26 @@ def invoke_step_in_container(
             timeout_seconds=timeout_seconds,
             runtime_context=context.runtime_context,
         )
+        records: list[ContainerLogRecord] = []
+        dropped_count = 0
         with _counting_run(binding.step) as spy:
             try:
-                result = client.execute(
+                result: ContainerResult | None = None
+                for event in client.stream(
                     invocation,
                     credential_handler=read_credential if scoped_provider is not None else None,
-                )
+                ):
+                    if isinstance(event, ContainerLogBatch):
+                        records.extend(event.records)
+                        dropped_count += event.dropped_count
+                    elif isinstance(event, ContainerResult):
+                        result = event
             except ContainerRemoteError as remote_error:
-                return _raised_outcome(spy, remote_error, "container")
+                return _raised_outcome(
+                    spy, remote_error, "container", LogCapture(tuple(records), dropped_count)
+                )
+        if result is None:
+            raise RuntimeError("the container client ended without a terminal result")
         wrapper_error = (
             ErrorResult.model_validate(result.error_result)
             if result.error_result is not None else None
@@ -409,6 +442,7 @@ def invoke_step_in_container(
             raised=None,
             transport="container",
             raw=result,
+            logs=LogCapture(tuple(records), dropped_count),
         )
     finally:
         if scoped_provider is not None:

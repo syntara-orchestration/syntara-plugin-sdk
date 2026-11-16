@@ -91,6 +91,20 @@ outcome = invoke_step(binding, {"title": "Broken build"}, context=ctx)
 `StepOutcome` normalizes both paths: `.ok`, `.status`, `.status_message`,
 `.output`, `.error` (the complete structured error result), `.run_calls` (business-hook spy),
 `.raised` (executor exception, terminal failure, or remote failure), `.transport`, and `.raw`.
+For container runs, `.logs` is a `LogCapture` of the structured records received
+over the local gRPC stream. It preserves record order and exposes
+`.dropped_count`, so test code can assert logging and its terminal outcome from
+the same invocation without a deployed Execution Plane or OTEL collector.
+Direct runs have an empty log capture.
+
+```python
+outcome = invoke_step_in_container(binding, {"title": "Broken build"}, context=ctx)
+
+assert outcome.logs.records[0].severity == "INFO"
+assert outcome.logs.records[0].message == "Created issue"
+assert outcome.logs.dropped_count == 0
+assert outcome.ok
+```
 Invalid output or serialization raises `StepExecutionError` before wrapper
 construction; `invoke_step` stores it in `.raised`, while the container
 adapter emits `ContainerFailure` because there is no valid wrapper to
@@ -181,11 +195,11 @@ The test injects a synthetic value and a mocked dependency solely to exercise
 leak detection; it does not model credential delivery.
 
 `assert_no_secrets` scans the status message, error message, raised exception,
-serialized output, raw envelope, and the pytest log capture. When scanning
-logs, wrap the invocation in `caplog.at_level(logging.INFO)` (or higher):
-pytest only captures records that pass the root logger's effective level,
-which defaults to WARNING, and INFO is exactly where a chatty step type leaks
-credentials.
+serialized output, raw envelope, captured `StepOutcome.logs` records, and the
+pytest log capture. When scanning logs, wrap the invocation in
+`caplog.at_level(logging.INFO)` (or higher): pytest only captures records that
+pass the root logger's effective level, which defaults to WARNING, and INFO is
+exactly where a chatty step type leaks credentials.
 
 Credential values must not appear in outputs, wrapper fields, raised errors,
 or logs. `assert_no_secrets` detects leaks in both outcomes and captured logs;

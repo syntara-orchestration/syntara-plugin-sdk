@@ -4057,8 +4057,9 @@ def test_source_run_renders_toolbox_logs_on_stderr(tmp_path: Path, capsys: Any, 
     assert record["attributes"] == {"issue_id": "123"}
 
 
+@pytest.mark.parametrize("token", ["ghp_ReproSecretToken42", "secret\nwith\"escapes-1234567890"])
 def test_source_run_scrubs_secrets_from_toolbox_log_diagnostics(
-    tmp_path: Path, capsys: Any, monkeypatch: Any
+    tmp_path: Path, capsys: Any, monkeypatch: Any, token: str
 ) -> None:
     source = _STEP_SOURCE.replace(
         '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
@@ -4067,8 +4068,6 @@ def test_source_run_scrubs_secrets_from_toolbox_log_diagnostics(
     )
     monkeypatch.setitem(globals(), "_STEP_SOURCE", source)
     workspace = _write_echo_workspace(tmp_path / "workspace")
-    token = "ghp_ReproSecretToken42"
-
     assert main([
         "run", "--manifest", str(workspace / "plugin.yaml"),
         "--input", json.dumps({"title": "Hello", "api_token": token}), "--json",
@@ -4079,3 +4078,166 @@ def test_source_run_scrubs_secrets_from_toolbox_log_diagnostics(
     record = json.loads(output.err.strip())
     assert record["message"] == "token: ***"
     assert record["attributes"] == {"api_token": "***"}
+
+
+def test_source_run_scrubs_sensitive_integer_in_toolbox_attributes(
+    tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    source = _STEP_SOURCE.replace(
+        '    api_token: str = ""', '    api_token: str = ""\n    private_number: int'
+    ).replace(
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+        '        context.toolbox.log("INFO", "handled", {"number": inputs.private_number, "other": 271831})\n'
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+    )
+    monkeypatch.setitem(globals(), "_STEP_SOURCE", source)
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "private_number": {"type": "integer", "writeOnly": True},
+        },
+        "required": ["title", "private_number"],
+    }
+    workspace = _write_echo_workspace(tmp_path / "workspace", input_schema=schema)
+    assert main([
+        "run", "--manifest", str(workspace / "plugin.yaml"),
+        "--input", json.dumps({"title": "Hello", "private_number": 27183}), "--json",
+    ]) == 0
+    output = capsys.readouterr()
+    record = json.loads(output.err.strip())
+    assert record["attributes"] == {"number": "***", "other": 271831}
+
+
+def test_sensitive_input_scalars_follow_redacted_paths() -> None:
+    from syntara_plugin.sdk.runner import _redacted_input_log_scalars, redact_inputs
+
+    schema = {
+        "type": "object",
+        "$defs": {"secret": {"writeOnly": True}},
+        "properties": {
+            "values": {"$ref": "#/$defs/secret"},
+            "visible": {"type": "integer"},
+        },
+    }
+    inputs = {
+        "values": [True, 1, 2.5, {"nested": 17}],
+        "password": {"code": 9},
+        "visible": 99,
+    }
+    scalars: list[Any] = []
+    _redacted_input_log_scalars(inputs, redact_inputs(schema, inputs), scalars)
+    assert [(type(value), value) for value in scalars] == [
+        (bool, True), (int, 1), (float, 2.5), (int, 17), (int, 9),
+    ]
+
+
+def test_source_run_scrubs_short_declared_secret_from_toolbox_logs(
+    tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    source = _STEP_SOURCE.replace(
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+        '        context.toolbox.log("INFO", f"token: {inputs.api_token}", {"value": inputs.api_token})\n'
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+    )
+    monkeypatch.setitem(globals(), "_STEP_SOURCE", source)
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "api_token": {"type": "string", "writeOnly": True},
+        },
+        "required": ["title", "api_token"],
+    }
+    workspace = _write_echo_workspace(tmp_path / "workspace", input_schema=schema)
+    assert main([
+        "run", "--manifest", str(workspace / "plugin.yaml"),
+        "--input", json.dumps({"title": "Hello", "api_token": "abc"}), "--json",
+    ]) == 0
+    record = json.loads(capsys.readouterr().err.strip())
+    assert record["message"] == "token: ***"
+    assert record["attributes"] == {"value": "***"}
+
+
+def test_source_run_keeps_short_heuristic_value_from_corrupting_log_text(
+    tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    source = _STEP_SOURCE.replace(
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+        '        context.toolbox.log("INFO", "database ready", {"state": "ready"})\n'
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+    )
+    monkeypatch.setitem(globals(), "_STEP_SOURCE", source)
+    schema = {
+        "type": "object",
+        "properties": {"title": {"type": "string"}, "api_token": {"type": "string"}},
+        "required": ["title", "api_token"],
+    }
+    workspace = _write_echo_workspace(tmp_path / "workspace", input_schema=schema)
+    assert main([
+        "run", "--manifest", str(workspace / "plugin.yaml"),
+        "--input", json.dumps({"title": "Hello", "api_token": "a"}), "--json",
+    ]) == 0
+    record = json.loads(capsys.readouterr().err.strip())
+    assert record["message"] == "database ready"
+    assert record["attributes"] == {"state": "ready"}
+
+
+def test_source_run_scrubs_stringified_short_sensitive_integer(
+    tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    source = _STEP_SOURCE.replace('    api_token: str = ""', "    api_token: int").replace(
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+        '        text = str(inputs.api_token)\n'
+        '        context.toolbox.log("INFO", f"value {text} {text.lower()}", '
+        '{"value": inputs.api_token}, event_name=f"value.{text}")\n'
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+    )
+    monkeypatch.setitem(globals(), "_STEP_SOURCE", source)
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "api_token": {"type": "integer", "writeOnly": True},
+        },
+        "required": ["title", "api_token"],
+    }
+    workspace = _write_echo_workspace(tmp_path / "workspace", input_schema=schema)
+    assert main([
+        "run", "--manifest", str(workspace / "plugin.yaml"),
+        "--input", json.dumps({"title": "Hello", "api_token": 123}), "--json",
+    ]) == 0
+    record = json.loads(capsys.readouterr().err.strip())
+    assert record["severity"] == "INFO"
+    assert record["message"] == "value *** ***"
+    assert record["event_name"] == "value.***"
+    assert record["attributes"] == {"value": "***"}
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_source_run_keeps_boolean_text_but_scrubs_boolean_attribute(
+    tmp_path: Path, capsys: Any, monkeypatch: Any, value: bool
+) -> None:
+    source = _STEP_SOURCE.replace('    api_token: str = ""', "    api_token: bool").replace(
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+        '        text = str(inputs.api_token)\n'
+        '        context.toolbox.log("INFO", f"value {text} {text.lower()}", '
+        '{"value": inputs.api_token}, event_name=f"value.{text}")\n'
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+    )
+    monkeypatch.setitem(globals(), "_STEP_SOURCE", source)
+    schema = {
+        "type": "object",
+        "properties": {"title": {"type": "string"}, "api_token": {"type": "boolean"}},
+        "required": ["title", "api_token"],
+    }
+    workspace = _write_echo_workspace(tmp_path / "workspace", input_schema=schema)
+    assert main([
+        "run", "--manifest", str(workspace / "plugin.yaml"),
+        "--input", json.dumps({"title": "Hello", "api_token": value}), "--json",
+    ]) == 0
+    record = json.loads(capsys.readouterr().err.strip())
+    text = str(value)
+    assert record["message"] == f"value {text} {text.lower()}"
+    assert record["event_name"] == f"value.{text}"
+    assert record["attributes"] == {"value": "***"}

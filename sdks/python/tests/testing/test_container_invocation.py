@@ -18,6 +18,7 @@ from syntara_plugin.runtime import (
 from syntara_plugin.runtime.container import ContainerRemoteError
 from syntara_plugin.testing import (
     INVALID_INPUT_CASES,
+    LogCapture,
     assert_no_secrets,
     assert_outcomes_equivalent,
     build_execution_context,
@@ -120,6 +121,28 @@ class _BigResultStep(ControlStep[_EchoInput, _BigOutput]):
         return _BigOutput(blob="x" * 1_200_000)
 
 
+class _LoggingStep(ControlStep[_EchoInput, _SleepyOutput]):
+    """Produces enough structured records to exercise the public test capture."""
+
+    def __init__(self, *, terminal_failure: bool = False) -> None:
+        super().__init__()
+        self._terminal_failure = terminal_failure
+
+    def run(self, inputs: _EchoInput, context: ExecutionContext) -> _SleepyOutput:
+        for sequence in range(130):
+            context.toolbox.log(
+                "INFO", f"event-{sequence}", {"sequence": sequence}, event_name="test.event"
+            )
+        if self._terminal_failure:
+            raise ContainerInvocationError(
+                FailureCode.UPSTREAM_TRANSIENT,
+                "The upstream service is temporarily unavailable.",
+                retryable=True,
+                provider_code="upstream",
+            )
+        return _SleepyOutput(value="done")
+
+
 def test_success_over_the_container_abi() -> None:
     outcome = invoke_step_in_container(ReferenceControlStep(), {"title": "deploy"})
     assert outcome.ok
@@ -128,6 +151,40 @@ def test_success_over_the_container_abi() -> None:
     assert outcome.output == {"summary": "processed deploy", "priority": "low"}
     assert outcome.transport == "container"
     assert outcome.raw is not None
+
+
+@pytest.mark.parametrize("terminal_failure", [False, True])
+def test_container_invocation_captures_structured_logs_and_terminal_outcome(
+    terminal_failure: bool,
+) -> None:
+    """Authors can test real container-delivered logs without protocol fakes."""
+
+    outcome = invoke_step_in_container(_LoggingStep(terminal_failure=terminal_failure), {})
+
+    assert isinstance(outcome.logs, LogCapture)
+    assert [record.message for record in outcome.logs.records] == [
+        f"event-{sequence}" for sequence in range(128)
+    ]
+    assert [record.attributes for record in outcome.logs.records] == [
+        {"sequence": sequence} for sequence in range(128)
+    ]
+    assert [record.event_name for record in outcome.logs.records] == ["test.event"] * 128
+    assert outcome.logs.dropped_count == 2
+    assert [record.timestamp for record in outcome.logs.records] == sorted(
+        record.timestamp for record in outcome.logs.records
+    )
+    if terminal_failure:
+        assert isinstance(outcome.raised, ContainerRemoteError)
+        assert outcome.raised.code is FailureCode.UPSTREAM_TRANSIENT
+    else:
+        assert outcome.ok
+        assert outcome.output == {"value": "done"}
+
+
+def test_direct_invocation_has_an_empty_log_capture() -> None:
+    outcome = invoke_step(_LoggingStep(), {})
+
+    assert outcome.logs == LogCapture()
 
 
 def test_invalid_input_fails_before_the_hook_over_the_container_abi() -> None:

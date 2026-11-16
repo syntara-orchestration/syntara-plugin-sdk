@@ -99,6 +99,36 @@ def test_assert_no_secrets_fails_when_output_contains_the_sentinel() -> None:
         assert_no_secrets(outcome, [token])
 
 
+def test_assert_no_secrets_scans_captured_structured_log_records() -> None:
+    from syntara_plugin.runtime import ContainerLogRecord
+    from syntara_plugin.testing import LogCapture, StepOutcome
+
+    token = secret_sentinel()
+    outcome = StepOutcome(
+        ok=True,
+        status=0,
+        status_message="Completed",
+        output={},
+        error=None,
+        run_calls=1,
+        raised=None,
+        transport="container",
+        raw=None,
+        logs=LogCapture((ContainerLogRecord(
+            timestamp="2026-11-18T10:32:01.482Z",
+            severity="INFO",
+            message=f"token={token}",
+            event_name=f"secret.{token}",
+            attributes={token: {"token": token}},
+        ),)),
+    )
+
+    with pytest.raises(AssertionError) as raised:
+        assert_no_secrets(outcome, [token])
+    assert token not in str(raised.value)
+    assert "captured structured log" in str(raised.value)
+
+
 def test_leak_report_does_not_echo_the_sentinel_value() -> None:
     token = secret_sentinel()
     outcome = invoke_step(ReferenceControlStep(), {"title": token})

@@ -25,6 +25,7 @@ from .equivalence import assert_outcomes_equivalent
 from .errors import HarnessUsageError
 from .invocation import (
     BoundedStepHandler,
+    LogCapture,
     StepOutcome,
     invoke_step,
     invoke_step_in_container,
@@ -81,6 +82,7 @@ __all__ = [
     "INVALID_OUTPUT_CASES",
     "ManifestValidationError",
     "ManifestValidator",
+    "LogCapture",
     "PAYLOAD_CASES",
     "PayloadCase",
     "ReferenceActionStep",

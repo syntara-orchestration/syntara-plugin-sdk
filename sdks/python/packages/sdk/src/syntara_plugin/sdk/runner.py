@@ -458,6 +458,32 @@ def _scrub_structure(
     return _scrub_scalar(value, scalars)
 
 
+def _scrub_log_attributes(
+    value: Any, secrets: tuple[str, ...], scalars: tuple[Any, ...]
+) -> Any:
+    """Scrub one local log attribute value without key-collision data loss.
+
+    Log attributes are an object on the wire. Two distinct keys can sanitize
+    to the same text, so returning either value under that key would silently
+    misrepresent the record. In that case, return an empty object for the
+    affected mapping rather than expose a key or choose one value.
+    """
+
+    if isinstance(value, str):
+        return _scrub_text(value, secrets)
+    if isinstance(value, Mapping):
+        scrubbed: dict[Any, Any] = {}
+        for key, item in value.items():
+            safe_key = _scrub_text(key, secrets) if isinstance(key, str) else key
+            if safe_key in scrubbed:
+                return {}
+            scrubbed[safe_key] = _scrub_log_attributes(item, secrets, scalars)
+        return scrubbed
+    if isinstance(value, list):
+        return [_scrub_log_attributes(item, secrets, scalars) for item in value]
+    return _scrub_scalar(value, scalars)
+
+
 def _scrub_scalar(value: Any, scalars: tuple[Any, ...]) -> Any:
     """Replace a scalar that equals a supplied credential value, exactly.
 
@@ -1181,6 +1207,18 @@ def _collect_nested_scalars(value: Any, picked: list[Any]) -> None:
             _collect_nested_scalars(item, picked)
 
 
+def _redacted_input_log_scalars(inputs: Any, redacted: Any, scalars: list[Any]) -> None:
+    """Collect hidden input scalars for exact local structured-log scrubbing."""
+    if redacted == _REDACTED:
+        _collect_nested_scalars(inputs, scalars)
+    elif isinstance(inputs, Mapping) and isinstance(redacted, Mapping):
+        for key, value in inputs.items():
+            _redacted_input_log_scalars(value, redacted[key], scalars)
+    elif isinstance(inputs, list) and isinstance(redacted, list):
+        for value, masked in zip(inputs, redacted, strict=True):
+            _redacted_input_log_scalars(value, masked, scalars)
+
+
 def credential_secret_values(credentials: Sequence[LoadedCredential]) -> tuple[str, ...]:
     """Return every value across the supplied credentials that must be scrubbed."""
 
@@ -1265,8 +1303,9 @@ def run_source(
         raise RunExecutionError("could not start the local runtime server")
     server.start()
     channel = grpc.insecure_channel(f"unix:{socket_path}")
+    diagnostic_stderr = sys.stderr
     scrubbing_stderr = _ScrubbingWriter(
-        sys.stderr,
+        diagnostic_stderr,
         _secret_values(target.input_schema, inputs) + credential_secret_values(credentials),
     )
     try:
@@ -1292,7 +1331,9 @@ def run_source(
                     on_progress=on_progress,
                     captured_detail=captured,
                     credentials=credentials,
-                    diagnostic_stream=scrubbing_stderr,
+                    # Log records are scrubbed before JSON encoding; running them
+                    # through the text scrubber can corrupt numeric JSON values.
+                    diagnostic_stream=diagnostic_stderr,
                 )
             )
     finally:
@@ -1446,15 +1487,18 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         runtime_context={},
     )
     credential_names = tuple(credential.name for credential in execution.credentials)
-    redacted_inputs = _scrub_structure(
-        redact_inputs(target.input_schema, inputs), secrets, scalars
-    )
+    masked_inputs = redact_inputs(target.input_schema, inputs)
+    input_scalars: list[Any] = []
+    _redacted_input_log_scalars(inputs, masked_inputs, input_scalars)
+    redacted_inputs = _scrub_structure(masked_inputs, secrets, scalars)
     terminal = _consume(
         client,
         invocation,
         _scrubbing_progress(execution.on_progress, secrets),
         _credential_reader(execution.credentials),
         execution.diagnostic_stream or sys.stderr,
+        secrets=secrets,
+        secret_scalars=scalars + tuple(input_scalars),
     )
     detail = (
         _scrub_text("\n\n".join(execution.captured_detail).rstrip(), secrets)
@@ -1666,6 +1710,9 @@ def _consume(
     client: ContainerClient, invocation: ContainerInvocation, on_progress: ProgressCallback | None,
     credential_handler: CredentialResolver | None = None,
     diagnostic_stream: Any = None,
+    *,
+    secrets: tuple[str, ...] = (),
+    secret_scalars: tuple[Any, ...] = (),
 ) -> ContainerResult | _WorkloadFailure:
     """Consume the event stream, returning the terminal outcome.
 
@@ -1680,7 +1727,7 @@ def _consume(
             credential_handler=credential_handler,
         ):
             if isinstance(event, ContainerLogBatch):
-                _render_log_batch(event, diagnostic_stream)
+                _render_log_batch(event, diagnostic_stream, secrets, secret_scalars)
                 continue
             if isinstance(event, ContainerResult):
                 return event
@@ -1717,18 +1764,21 @@ def _consume(
     raise RunExecutionError("the runtime closed the stream without a terminal result")
 
 
-def _render_log_batch(batch: ContainerLogBatch, diagnostic_stream: Any) -> None:
+def _render_log_batch(
+    batch: ContainerLogBatch, diagnostic_stream: Any,
+    secrets: tuple[str, ...] = (), secret_scalars: tuple[Any, ...] = (),
+) -> None:
     """Render received SDK logging records through the local diagnostic channel."""
     stream = diagnostic_stream if diagnostic_stream is not None else sys.stderr
     for event in batch.records:
         record = {
             "timestamp": event.timestamp,
             "severity": event.severity,
-            "message": event.message,
-            "attributes": event.attributes,
+            "message": _scrub_text(event.message, secrets),
+            "attributes": _scrub_log_attributes(event.attributes, secrets, secret_scalars),
         }
         if event.event_name:
-            record["event_name"] = event.event_name
+            record["event_name"] = _scrub_text(event.event_name, secrets)
         print(json.dumps(record, ensure_ascii=False, separators=(",", ":")), file=stream)
     if batch.dropped_count:
         print(f"Dropped {batch.dropped_count} log event(s).", file=stream)

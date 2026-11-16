@@ -325,3 +325,277 @@ def test_mutation_after_validation_does_not_change_serialized_record(monkeypatch
     assert batch is not None
     assert batch.dropped_count == 0
     assert json.loads(batch.events[0].attributes_json) == {"items": ["small"]}
+
+
+def test_local_log_rendering_scrubs_before_json_encoding() -> None:
+    import io
+
+    from syntara_plugin.sdk.runner import _render_log_batch
+
+    secret = 'secret\nwith"escapes-1234567890'
+    toolbox = _new_toolbox(Event(), "invocation")
+    toolbox.log("INFO", secret, {"nested": [secret]})
+    batch = _take_log_batch(toolbox, "invocation")
+    assert batch is not None
+    public_batch = _container_log_batch(batch, "invocation")
+    assert public_batch is not None
+    output = io.StringIO()
+    _render_log_batch(public_batch, output, (secret,))
+    record = json.loads(output.getvalue())
+    assert record["message"] == "***"
+    assert record["attributes"] == {"nested": ["***"]}
+
+
+def test_local_consumer_scrubs_structured_values_without_mutating_batch() -> None:
+    import io
+
+    from syntara_plugin.sdk.runner import _consume
+
+    secret = 'secret\nwith"escapes-1234567890'
+    toolbox = _new_toolbox(Event(), "invocation")
+    toolbox.log("INFO", secret, {secret: [secret, 123456789]})
+    batch = _take_log_batch(toolbox, "invocation")
+    assert batch is not None
+    public_batch = _container_log_batch(batch, "invocation")
+    assert public_batch is not None
+
+    class Client:
+        def stream(self, invocation: Any, *, credential_handler: Any) -> Any:
+            yield public_batch
+            yield ContainerResult("sha256:" + "a" * 64, output={})
+
+    output = io.StringIO()
+    _consume(
+        Client(), ContainerInvocation("invocation", "step", {}, 5), None,
+        diagnostic_stream=output, secrets=(secret,), secret_scalars=(123456789,),
+    )
+    record = json.loads(output.getvalue())
+    assert record["message"] == "***"
+    assert record["attributes"] == {"***": ["***", "***"]}
+    assert public_batch.records[0].message == secret
+    assert public_batch.records[0].attributes == {secret: [secret, 123456789]}
+
+
+@pytest.mark.parametrize("scenario", ["malformed", "duplicate", "out_of_order", "transport"])
+def test_grpc_logging_diagnostics_never_expose_batch_or_remote_details(
+    scenario: str, caplog: Any, capsys: Any
+) -> None:
+    import logging
+    import traceback
+    from concurrent.futures import ThreadPoolExecutor
+
+    import grpc
+    from syntara_plugin.runtime import ContainerRemoteError
+    from syntara_plugin.runtime.protocol import container_pb2_grpc
+
+    caplog.set_level(logging.DEBUG)
+    secret = "log-diagnostic-secret-sentinel"
+    toolbox = _new_toolbox(Event(), "invocation")
+    toolbox.log("INFO", secret, {"secret": secret})
+    batch = _take_log_batch(toolbox, "invocation")
+    assert batch is not None
+    duplicate = container_pb2.LogBatch()
+    duplicate.CopyFrom(batch)
+    duplicate.events[0].message = "second valid batch"
+    assert _valid_log_batch(duplicate, "invocation")
+    malformed = container_pb2.LogBatch()
+    malformed.CopyFrom(batch)
+    malformed.events[0].attributes_json = b'{"invalid":"' + secret.encode() + b'"'
+    terminal = container_pb2.ExecuteServerMessage(event=container_pb2.ExecutionEvent(
+        invocation_id="invocation", result=container_pb2.Result(
+            output_schema_digest="sha256:" + "a" * 64, output_json=b"{}"
+        )
+    ))
+
+    class Service(container_pb2_grpc.ContainerServiceServicer):
+        def Execute(self, requests: Any, context: Any) -> Any:
+            next(requests)
+            if scenario == "malformed":
+                yield container_pb2.ExecuteServerMessage(log_batch=malformed)
+            elif scenario in {"duplicate", "transport"}:
+                yield container_pb2.ExecuteServerMessage(log_batch=batch)
+                if scenario == "duplicate":
+                    yield container_pb2.ExecuteServerMessage(log_batch=duplicate)
+                else:
+                    context.abort(grpc.StatusCode.UNAVAILABLE, secret)
+            yield terminal
+            if scenario == "out_of_order":
+                yield container_pb2.ExecuteServerMessage(log_batch=duplicate)
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    container_pb2_grpc.add_ContainerServiceServicer_to_server(Service(), server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    observed: list[Any] = []
+    trace = ""
+    try:
+        try:
+            observed.extend(ContainerClient(channel).stream(
+                ContainerInvocation("invocation", "step", {}, 5)
+            ))
+        except ContainerRemoteError as error:
+            assert scenario == "transport"
+            trace = "".join(traceback.format_exception(error))
+            assert error.__cause__ is None
+            assert error.__context__ is None
+    finally:
+        channel.close()
+        server.stop(0).wait()
+    records = [event for event in observed if isinstance(event, ContainerLogBatch)]
+    assert len(records) == (1 if scenario in {"duplicate", "transport"} else 0)
+    if records:
+        assert records[0].records[0].message == secret
+    assert secret not in trace
+    assert secret not in caplog.text
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_grpc_runtime_delivers_one_bounded_batch_before_terminal(failure: bool) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import UTC, datetime
+
+    import grpc
+    from syntara_plugin.runtime import StepRegistry, add_container_runtime_service
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        assert invocation.credential_provider is not None
+        toolbox = invocation.credential_provider._public_toolbox
+        for index in range(130):
+            toolbox.log("INFO", f"event-{index}", {"index": index})
+        if failure:
+            return ContainerResult(
+                "sha256:" + "a" * 64, status_code=1, status_message="failed",
+                error_result={
+                    "category": "business", "code": "BUSINESS_RULE_FAILED",
+                    "message": "failed", "retryable": False,
+                },
+                error_schema_digest="sha256:" + "b" * 64,
+            )
+        return ContainerResult("sha256:" + "a" * 64, output={})
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    service = add_container_runtime_service(server, StepRegistry({"step": handler}))
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    started = datetime.now(UTC)
+    try:
+        events = list(ContainerClient(channel).stream(
+            ContainerInvocation("invocation", "step", {}, 5)
+        ))
+    finally:
+        channel.close()
+        server.stop(0).wait()
+        service.shutdown()
+    finished = datetime.now(UTC)
+    assert len(events) == 2
+    batch, terminal = events
+    assert isinstance(batch, ContainerLogBatch)
+    assert isinstance(terminal, ContainerResult)
+    assert terminal.status_code == int(failure)
+    assert batch.dropped_count == 2
+    assert [record.message for record in batch.records] == [f"event-{i}" for i in range(128)]
+    timestamps = [datetime.strptime(record.timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+        tzinfo=UTC
+    ) for record in batch.records]
+    assert started.timestamp() - 0.001 <= min(timestamp.timestamp() for timestamp in timestamps)
+    assert max(timestamps) <= finished
+    assert timestamps == sorted(timestamps)
+
+
+def test_local_log_preserves_protocol_timestamp_and_severity() -> None:
+    import io
+
+    from syntara_plugin.runtime import ContainerLogRecord
+    from syntara_plugin.sdk.runner import _render_log_batch
+
+    batch = ContainerLogBatch("invocation", 1, (ContainerLogRecord(
+        timestamp="2026-01-02T03:04:05.678Z", severity="INFO",
+        message="year 2026", attributes={"year": 2026}, event_name="year.2026",
+    ),), 0)
+    output = io.StringIO()
+    _render_log_batch(batch, output, ("2026", "INFO"), (2026,))
+    record = json.loads(output.getvalue())
+    assert record == {
+        "timestamp": "2026-01-02T03:04:05.678Z", "severity": "INFO",
+        "message": "year ***", "attributes": {"year": "***"}, "event_name": "year.***",
+    }
+
+
+def test_declared_sensitive_scalar_scrubbing_does_not_mutate_wire_batch() -> None:
+    import io
+
+    from syntara_plugin.sdk.runner import (
+        _redacted_input_log_scalars,
+        _render_log_batch,
+        _secret_values,
+        redact_inputs,
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {"api_token": {"type": "integer", "writeOnly": True}},
+    }
+    inputs = {"api_token": 123}
+    scalars: list[Any] = []
+    _redacted_input_log_scalars(inputs, redact_inputs(schema, inputs), scalars)
+    toolbox = _new_toolbox(Event(), "invocation")
+    toolbox.log("INFO", "token 123", {"value": 123}, event_name="value.123")
+    batch = _take_log_batch(toolbox, "invocation")
+    assert batch is not None
+    original = batch.SerializeToString()
+    public_batch = _container_log_batch(batch, "invocation")
+    assert public_batch is not None
+    output = io.StringIO()
+    _render_log_batch(public_batch, output, _secret_values(schema, inputs), tuple(scalars))
+    record = json.loads(output.getvalue())
+    assert record["message"] == "token ***"
+    assert record["event_name"] == "value.***"
+    assert record["attributes"] == {"value": "***"}
+    assert record["severity"] == "INFO"
+    assert batch.SerializeToString() == original
+    assert public_batch.records[0].message == "token 123"
+    assert public_batch.records[0].attributes == {"value": 123}
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_local_log_keeps_credential_boolean_text_but_scrubs_attribute(value: bool) -> None:
+    import io
+
+    from syntara_plugin.runtime import ContainerLogRecord
+    from syntara_plugin.sdk.runner import _render_log_batch
+
+    text = str(value)
+    batch = ContainerLogBatch("invocation", 1, (ContainerLogRecord(
+        timestamp="2026-01-02T03:04:05.678Z", severity="INFO",
+        message=f"credential={text}", attributes={"enabled": value},
+        event_name=f"credential.{text}",
+    ),), 0)
+    output = io.StringIO()
+    _render_log_batch(batch, output, (), (value,))
+    record = json.loads(output.getvalue())
+    assert record["message"] == f"credential={text}"
+    assert record["event_name"] == f"credential.{text}"
+    assert record["attributes"] == {"enabled": "***"}
+    assert batch.records[0].message == f"credential={text}"
+
+
+def test_local_log_drops_attributes_when_scrubbed_keys_collide() -> None:
+    import io
+
+    from syntara_plugin.runtime import ContainerLogRecord
+    from syntara_plugin.sdk.runner import _render_log_batch
+
+    secret = "sensitive-key"
+    batch = ContainerLogBatch("invocation", 1, (ContainerLogRecord(
+        timestamp="2026-01-02T03:04:05.678Z", severity="INFO", message="handled",
+        attributes={secret: "first", "***": "second"},
+    ),), 0)
+    output = io.StringIO()
+    _render_log_batch(batch, output, (secret,))
+    rendered = output.getvalue()
+    assert secret not in rendered
+    assert json.loads(rendered)["attributes"] == {}
