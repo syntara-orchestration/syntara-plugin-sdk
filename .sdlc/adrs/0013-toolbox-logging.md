@@ -11,7 +11,9 @@ with an optional keyword-only `event_name`. The SDK assigns the timestamp and
 records valid events in call order. The language-neutral protobuf defines the
 version 1 event and batch, including severity, JSON attribute and size bounds.
 Invalid and excess records are dropped and counted; logging never changes the
-step outcome. The collector does not inspect or scrub records.
+step outcome. The collector and wire batch do not inspect or scrub records.
+During direct local execution, the runner applies its existing local diagnostic
+scrubber when rendering records to stderr.
 
 The container runtime sends at most one nonempty or drop-count-bearing batch
 on Execute immediately before the terminal result or handled failure, without

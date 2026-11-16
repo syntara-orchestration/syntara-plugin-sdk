@@ -322,7 +322,8 @@ is a stable identifier. Invalid records and records exceeding the contract's
 bounds are dropped without failing the step. Container execution sends one
 bounded batch immediately before its terminal outcome. This is not live
 streaming and delivery is not guaranteed if the workload cannot send that
-outcome. The local runner writes the same records as JSON lines to stderr.
+outcome. The local runner writes the same records as JSON lines through its
+scrubbed diagnostic stderr channel.
 
 The helper does not inspect, redact, or scrub log records. Do not put
 credentials, secrets, or sensitive provider responses in messages or attributes.
