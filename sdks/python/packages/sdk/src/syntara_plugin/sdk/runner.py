@@ -1270,7 +1270,6 @@ def run_source(
         sys.stderr,
         _secret_values(target.input_schema, inputs) + credential_secret_values(credentials),
     )
-    diagnostic_stream = sys.stderr
     try:
         # The step type runs in this process; anything it prints belongs on
         # stderr, scrubbed of supplied secrets, so stdout keeps carrying only the
@@ -1294,7 +1293,7 @@ def run_source(
                     on_progress=on_progress,
                     captured_detail=captured,
                     credentials=credentials,
-                    diagnostic_stream=diagnostic_stream,
+                    diagnostic_stream=scrubbing_stderr,
                 )
             )
     finally:

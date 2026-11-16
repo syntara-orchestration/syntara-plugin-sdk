@@ -4055,3 +4055,27 @@ def test_source_run_renders_toolbox_logs_on_stderr(tmp_path: Path, capsys: Any, 
     assert record["message"] == "Created issue"
     assert record["event_name"] == "issue.created"
     assert record["attributes"] == {"issue_id": "123"}
+
+
+def test_source_run_scrubs_secrets_from_toolbox_log_diagnostics(
+    tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    source = _STEP_SOURCE.replace(
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+        '        context.toolbox.log("INFO", f"token: {inputs.api_token}", {"api_token": inputs.api_token})\n'
+        '        return EchoOutput(slug=inputs.title.lower().replace(" ", "-"))',
+    )
+    monkeypatch.setitem(globals(), "_STEP_SOURCE", source)
+    workspace = _write_echo_workspace(tmp_path / "workspace")
+    token = "ghp_ReproSecretToken42"
+
+    assert main([
+        "run", "--manifest", str(workspace / "plugin.yaml"),
+        "--input", json.dumps({"title": "Hello", "api_token": token}), "--json",
+    ]) == 0
+
+    output = capsys.readouterr()
+    assert token not in output.err
+    record = json.loads(output.err.strip())
+    assert record["message"] == "token: ***"
+    assert record["attributes"] == {"api_token": "***"}

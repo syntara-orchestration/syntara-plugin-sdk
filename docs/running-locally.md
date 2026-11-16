@@ -268,8 +268,9 @@ original-typed matches in step output, so a returned integer, float, or
 boolean is masked too. They are scrubbed from the
 report, `--json`, errors, hints, progress, step output, and tracebacks
 exactly as a sensitive input is. Structured records submitted through
-`context.toolbox.log` are written as JSON lines to stderr without scrubbing.
-Never log credential values or other secrets.
+`context.toolbox.log` are also scrubbed when rendered as JSON lines to the
+local diagnostic stderr stream. The SDK does not alter the corresponding wire
+`LogBatch`; never log credential values or other secrets.
 
 `--credential` cannot be combined with `--address` or the `--tls-*` options:
 the CLI only supplies credentials to a runtime it starts and authenticates.
