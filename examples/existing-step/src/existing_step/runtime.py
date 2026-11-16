@@ -68,9 +68,9 @@ class RecordOpenedOutput(BaseModel):
 
 class RecordOpenedStep(TriggerStep[RecordOpenedInput, RecordOpenedOutput]):
     def run(self, inputs: RecordOpenedInput, context: ExecutionContext) -> RecordOpenedOutput:
-        workflow_run_id = context.workflow_run_id or "no-workflow"
+        execution_id = context.runtime_context.get("execution_id", "") or "no-workflow"
         return RecordOpenedOutput(
-            event_id=f"{workflow_run_id}:{inputs.repository}",
+            event_id=f"{execution_id}:{inputs.repository}",
             repository=inputs.repository,
         )
 

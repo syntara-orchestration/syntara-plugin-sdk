@@ -28,10 +28,19 @@ class ExecutionContext:
     The context deliberately excludes protobuf messages, gRPC objects, container
     invocation types, and raw credential values. A trusted host supplies a
     provider; the executor binds it to the installed declaration for one invocation.
+
+    Attributes:
+        invocation_id: Host-assigned identity of this particular invocation,
+            used for event and cancellation correlation.
+        runtime_context: Optional non-secret caller-defined data visible to the
+            plugin, defaulting to {}. Keys are defined by the caller.
+        cancellation: Host-controlled cooperative cancellation signal; inspect
+            cancelled to decide whether to stop work.
+        credential_provider: Host-supplied credential access. Plugin code uses
+            credential(name), scoped to the installed step's declared bindings.
     """
 
     invocation_id: str
-    workflow_run_id: str | None = None
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
     credential_provider: InitVar[CredentialProvider | None | _NoCredentialProvider] = (
@@ -75,7 +84,6 @@ class ExecutionContext:
             raise CredentialAccessError("unauthorized")
         context = ExecutionContext(
             invocation_id=self.invocation_id,
-            workflow_run_id=self.workflow_run_id,
             runtime_context=self.runtime_context,
             cancellation=self.cancellation,
         )

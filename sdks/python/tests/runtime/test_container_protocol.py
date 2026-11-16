@@ -72,15 +72,14 @@ def runtime() -> tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub,
 def _invocation(step_revision_id: str) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
-        workflow_run_id="workflow-run-1",
         step_revision_id=step_revision_id,
         inputs={"repository": "syntara-orchestration/syntara"},
         timeout_seconds=30,
-        runtime_context={
+        runtime_context={"execution_id": "workflow-run-1", **({
             "driver": "http.v1",
             "operation": {"method": "POST", "path": "/issues"},
             "outputSchemaDigest": OUTPUT_SCHEMA_DIGEST,
-        },
+        })},
     )
 
 
@@ -99,9 +98,10 @@ def test_one_image_dispatches_the_selected_step_revision(
     assert result.output == {"issue": 42}
     assert set(calls) == {"create"}
     invocation = calls["create"]
-    assert invocation.workflow_run_id == "workflow-run-1"
+    assert invocation.runtime_context.get("execution_id", "") == "workflow-run-1"
     assert invocation.inputs == {"repository": "syntara-orchestration/syntara"}
     assert invocation.runtime_context == {
+        "execution_id": "workflow-run-1",
         "driver": "http.v1",
         "operation": {"method": "POST", "path": "/issues"},
         "outputSchemaDigest": OUTPUT_SCHEMA_DIGEST,
@@ -114,7 +114,6 @@ def test_nonstandard_json_numbers_are_rejected_at_the_container_boundary(
     _client, stub, calls = runtime
     request = container_pb2.ExecuteRequest(
         invocation_id="invocation-1",
-        workflow_run_id="workflow-run-1",
         step_revision_id="github.create-issue.v1",
         runtime_abi=CONTAINER_ABI,
         inputs_json=b'{"value": NaN}',
@@ -224,7 +223,6 @@ def test_invalid_abi_is_returned_as_a_terminal_failure(
     _client, stub, _calls = runtime
     request = container_pb2.ExecuteRequest(
         invocation_id="invocation-1",
-        workflow_run_id="workflow-run-1",
         step_revision_id="github.create-issue.v1",
         runtime_abi="syntara.provider/v1alpha1",
         inputs_json=b"{}",
@@ -238,7 +236,7 @@ def test_invalid_abi_is_returned_as_a_terminal_failure(
     assert "v1alpha1" not in events[0].failure.message
 
 
-def test_missing_workflow_run_id_is_invalid_input(
+def test_execution_needs_no_workflow_or_caller_context(
     runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
 ) -> None:
     _client, stub, calls = runtime
@@ -253,8 +251,8 @@ def test_missing_workflow_run_id_is_invalid_input(
     events = [message.event for message in stub.Execute(iter([container_pb2.ExecuteClientMessage(start=request)]))]
 
     assert len(events) == 1
-    assert events[0].failure.code == FailureCode.INVALID_INPUT.value
-    assert calls == {}
+    assert events[0].HasField("result")
+    assert calls["create"].runtime_context == {}
 
 
 def _ok(_invocation: ContainerInvocation) -> ContainerResult:
@@ -312,11 +310,10 @@ def test_invocation_timeout_sets_the_step_cancellation_signal() -> None:
     invocation = _invocation("github.wait.v1")
     invocation = ContainerInvocation(
         invocation_id=invocation.invocation_id,
-        workflow_run_id=invocation.workflow_run_id,
         step_revision_id=invocation.step_revision_id,
         inputs=invocation.inputs,
         timeout_seconds=1,
-        runtime_context=invocation.runtime_context,
+        runtime_context={"execution_id": invocation.runtime_context.get("execution_id", ""), **(invocation.runtime_context)},
     )
     try:
         with pytest.raises(ContainerRemoteError) as raised:

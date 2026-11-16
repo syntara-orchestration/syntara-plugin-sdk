@@ -2002,7 +2002,6 @@ def _print_run_report_json(report: RunReport) -> None:
         "input": report.input_values,
         "credentials": list(report.credentials),
         "invocationId": report.invocation_id,
-        "workflowRunId": report.workflow_run_id,
         "status": report.status,
         "statusMessage": report.status_message,
         "output": report.output,

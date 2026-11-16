@@ -108,8 +108,8 @@ def test_direct_execution_delegates_and_propagates_context(
 ) -> None:
     context = ExecutionContext(
         invocation_id="invoke-1",
-        workflow_run_id="run-1",
-        runtime_context={"environment": "test"},
+
+        runtime_context={"execution_id": "run-1", "environment": "test"},
     )
 
     output = step_type().execute(EchoInput(message="hello"), context)

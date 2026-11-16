@@ -95,7 +95,6 @@ def test_sync_terminal_batch_precedes_result_or_failure(failure: bool) -> None:
     provider = CallbackCredentialProvider("invocation", lambda _: None, cancellation, 5)
     invocation = ContainerInvocation(
         "invocation",
-        "workflow",
         "step",
         {},
         5,
@@ -130,7 +129,6 @@ def test_async_terminal_batch_precedes_result_or_failure(failure: bool) -> None:
         provider = CallbackCredentialProvider("invocation", lambda _: None, cancellation, 5)
         invocation = ContainerInvocation(
             "invocation",
-            "workflow",
             "step",
             {},
             5,
@@ -216,7 +214,7 @@ def test_local_diagnostics_render_events_without_changing_them() -> None:
             yield ContainerResult("sha256:" + "a" * 64, output={})
 
     stream = io.StringIO()
-    invocation = ContainerInvocation("invocation", "workflow", "step", {}, 5)
+    invocation = ContainerInvocation("invocation", "step", {}, 5)
     _consume(Client(), invocation, None, diagnostic_stream=stream)
     record = json.loads(stream.getvalue())
     assert record["message"] == "created"

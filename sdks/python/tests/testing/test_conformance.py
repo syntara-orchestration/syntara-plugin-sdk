@@ -87,7 +87,7 @@ class _EchoContextInput(BaseModel):
 
 class _EchoContextOutput(BaseModel):
     invocation_id: str
-    workflow_run_id: str
+    execution_id: str
 
 
 class _EchoContextStep(ControlStep[_EchoContextInput, _EchoContextOutput]):
@@ -96,7 +96,7 @@ class _EchoContextStep(ControlStep[_EchoContextInput, _EchoContextOutput]):
     def run(self, inputs: _EchoContextInput, context: ExecutionContext) -> _EchoContextOutput:
         return _EchoContextOutput(
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id or "",
+            execution_id=context.runtime_context.get("execution_id", "") or "",
         )
 
 

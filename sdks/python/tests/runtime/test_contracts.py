@@ -21,7 +21,6 @@ def _work_item() -> dict[str, object]:
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "ContainerStepWorkItem",
         "invocationId": "invoke-1",
-        "workflowRunId": "workflow-1",
         "stepRevisionId": "step-1",
         "pluginDigest": HASH,
         "runtimeAbi": CONTAINER_ABI,

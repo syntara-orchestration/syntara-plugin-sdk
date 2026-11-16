@@ -25,6 +25,5 @@
   "output": null,
   "status": 1,
   "statusMessage": "HTTP 503 Service Unavailable",
-  "target": "syntara.http-request.http-request",
-  "workflowRunId": "run-00000000000000000000000000000000-run"
+  "target": "syntara.http-request.http-request"
 }

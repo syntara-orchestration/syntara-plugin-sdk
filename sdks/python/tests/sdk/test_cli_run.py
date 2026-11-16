@@ -1689,7 +1689,7 @@ def test_json_output_emits_one_document(tmp_path: Path, capsys) -> None:
     assert document["input"] == {"title": "Json Title"}
     assert document["target"].endswith(".echo")
     assert document["invocationId"].startswith("run-")
-    assert document["workflowRunId"].startswith("run-")
+    assert "workflowRunId" not in document
 
 
 def test_input_values_are_echoed_with_sensitive_fields_masked(

@@ -35,7 +35,7 @@ _DIGEST = "sha256:" + "a" * 64
 
 def _invocation() -> ContainerInvocation:
     return ContainerInvocation(
-        invocation_id="invocation-1", workflow_run_id="workflow-1",
+        invocation_id="invocation-1", runtime_context={"execution_id": "workflow-1"},
         step_revision_id="example.step", inputs={}, timeout_seconds=5,
     )
 

@@ -39,7 +39,7 @@ from syntara_plugin.runtime.container import (
 from syntara_plugin.runtime.toolbox import _close_toolbox
 
 from .bindings_factory import installed_binding
-from .context_builder import build_execution_context, normalize_run_id
+from .context_builder import build_execution_context, validate_execution_context
 from .errors import HarnessUsageError
 from .loader import StepTarget, resolve_step
 
@@ -85,7 +85,7 @@ def _json_round_trip(value: Mapping[str, Any], field: str) -> dict[str, Any]:
 
 
 def _prepare_invocation(
-    inputs: Mapping[str, Any], context: ExecutionContext, workflow_run_id: str
+    inputs: Mapping[str, Any], context: ExecutionContext
 ) -> tuple[dict[str, Any], ExecutionContext]:
     """Normalize one invocation so both paths deliver identical values.
 
@@ -104,7 +104,6 @@ def _prepare_invocation(
     normalized_runtime = _json_round_trip(context.runtime_context, "runtime context")
     prepared = ExecutionContext(
         invocation_id=context.invocation_id,
-        workflow_run_id=workflow_run_id,
         runtime_context=normalized_runtime,
         cancellation=context.cancellation,
         credential_provider=context._provider,
@@ -285,8 +284,8 @@ def invoke_step(
     _require_executable(binding)
     if context is None:
         context = build_execution_context()
-    workflow_run_id = normalize_run_id(context)
-    inputs, context = _prepare_invocation(inputs, context, workflow_run_id)
+    context = validate_execution_context(context)
+    inputs, context = _prepare_invocation(inputs, context)
     # Construct outside the catch so harness-usage errors stay loud on both
     # paths instead of being normalized into a quiet failed outcome.
     with _counting_run(binding.step) as spy:
@@ -355,8 +354,8 @@ def invoke_step_in_container(
     _require_timeout(timeout_seconds)
     if context is None:
         context = build_execution_context()
-    workflow_run_id = normalize_run_id(context)
-    inputs, context = _prepare_invocation(inputs, context, workflow_run_id)
+    context = validate_execution_context(context)
+    inputs, context = _prepare_invocation(inputs, context)
     scoped_provider = None
     if context._provider is not None:
         scoped_provider = context._provider.restrict(
@@ -381,13 +380,8 @@ def invoke_step_in_container(
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     try:
         client = ContainerClient(channel)
-        # The helper derives and validates a run id before building the
-        # invocation, which requires a str.
-        workflow_run_id = context.workflow_run_id
-        assert workflow_run_id is not None
         invocation = ContainerInvocation(
             invocation_id=context.invocation_id,
-            workflow_run_id=workflow_run_id,
             step_revision_id=binding.descriptor.step_identity,
             inputs=inputs,
             timeout_seconds=timeout_seconds,

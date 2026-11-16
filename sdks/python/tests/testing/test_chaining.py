@@ -63,14 +63,14 @@ class CaptureIdInput(BaseModel):
 
 class CaptureIdOutput(BaseModel):
     invocation_id: str
-    workflow_run_id: str
+    execution_id: str
 
 
 class CaptureIdStep(ControlStep[CaptureIdInput, CaptureIdOutput]):
     def run(self, inputs: CaptureIdInput, context: ExecutionContext) -> CaptureIdOutput:
         return CaptureIdOutput(
             invocation_id=context.invocation_id,
-            workflow_run_id=context.workflow_run_id or "",
+            execution_id=context.runtime_context.get("execution_id", "") or "",
         )
 
 
@@ -112,8 +112,8 @@ def test_chain_gives_each_link_its_own_invocation_id() -> None:
     first_id = outcome.links[0].output["invocation_id"]
     second_id = outcome.links[1].output["invocation_id"]
     assert first_id != second_id
-    assert outcome.links[0].output["workflow_run_id"] == (
-        outcome.links[1].output["workflow_run_id"]
+    assert outcome.links[0].output["execution_id"] == (
+        outcome.links[1].output["execution_id"]
     )
 
 

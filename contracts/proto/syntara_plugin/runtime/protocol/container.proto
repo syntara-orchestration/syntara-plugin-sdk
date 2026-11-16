@@ -20,16 +20,24 @@ service ContainerService {
 }
 
 message ExecuteRequest {
+  // Host-assigned identity of this invocation, used to correlate events,
+  // credential requests, and cancellation. EP supplies its dispatch-attempt ID;
+  // this is not a project, workflow, or workflow-execution identifier.
   string invocation_id = 1;
-  string workflow_run_id = 8;
+  // Handler identifier advertised by this workload's Health response. Selects
+  // the implementation to execute; does not identify an individual invocation.
   string step_revision_id = 2;
+  // Version of the container protocol understood by both host and workload.
   string runtime_abi = 3;
+  // UTF-8 JSON object containing business inputs for the selected handler.
   bytes inputs_json = 4;
   reserved 5;
   reserved "credential_file_paths_json";
+  // Maximum execution time allowed for this invocation, in seconds.
   uint32 timeout_seconds = 6;
-  // A bounded, non-secret runner-specific context selected by Syntara from the
-  // installed immutable step. It never contains an endpoint or credential.
+  // Optional UTF-8 JSON object supplied by the caller and exposed to plugin
+  // code as ExecutionContext.runtime_context. Omitted/empty bytes mean {}.
+  // Keys are caller-defined. Do not include credentials or other secrets.
   bytes runtime_context_json = 7;
 }
 

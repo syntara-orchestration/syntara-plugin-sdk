@@ -343,8 +343,8 @@ def _context(
         values.update(runtime_context)
     return ExecutionContext(
         invocation_id=invocation_id,
-        workflow_run_id=f"{invocation_id}-run",
-        runtime_context=values,
+
+        runtime_context={"execution_id": f"{invocation_id}-run", **(values)},
     )
 
 
@@ -360,11 +360,10 @@ def _invocation(
         values.update(runtime_context)
     return ContainerInvocation(
         invocation_id=invocation_id,
-        workflow_run_id=f"{invocation_id}-run",
         step_revision_id=binding.descriptor.step_identity,
         inputs=inputs,
         timeout_seconds=30,
-        runtime_context=values,
+        runtime_context={"execution_id": f"{invocation_id}-run", **(values)},
     )
 
 

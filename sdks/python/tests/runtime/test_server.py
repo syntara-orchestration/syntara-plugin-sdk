@@ -231,44 +231,40 @@ def resolved_file(tmp_path: Path, step_class: type[BaseStep[EchoInput, EchoOutpu
 def _invocation() -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
-        workflow_run_id="workflow-run-1",
         step_revision_id=REVISION,
         inputs={"message": "hello"},
         timeout_seconds=30,
-        runtime_context={},
+        runtime_context={"execution_id": "workflow-run-1"},
     )
 
 
 def _barrier_invocation(invocation_id: str) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id=invocation_id,
-        workflow_run_id="workflow-run-1",
         step_revision_id=REVISION,
         inputs={"message": invocation_id},
         timeout_seconds=30,
-        runtime_context={},
+        runtime_context={"execution_id": "workflow-run-1"},
     )
 
 
 def _cancellation_invocation() -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
-        workflow_run_id="workflow-run-1",
         step_revision_id=REVISION,
         inputs={"message": "cancelled"},
         timeout_seconds=30,
-        runtime_context={},
+        runtime_context={"execution_id": "workflow-run-1"},
     )
 
 
 def _timeout_invocation(step_revision_id: str) -> ContainerInvocation:
     return ContainerInvocation(
         invocation_id="invocation-1",
-        workflow_run_id="workflow-run-1",
         step_revision_id=step_revision_id,
         inputs={"message": "timeout"},
         timeout_seconds=1,
-        runtime_context={},
+        runtime_context={"execution_id": "workflow-run-1"},
     )
 
 
@@ -280,7 +276,6 @@ async def _service_events(
 ) -> list[container_pb2.ExecutionEvent]:
     request = container_pb2.ExecuteRequest(
         invocation_id=invocation.invocation_id,
-        workflow_run_id=invocation.workflow_run_id,
         step_revision_id=invocation.step_revision_id,
         runtime_abi="syntara.container/v1alpha1",
         inputs_json=json.dumps({"message": invocation.inputs["message"]}).encode(),
@@ -528,7 +523,6 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
             invocation = _cancellation_invocation()
             request = container_pb2.ExecuteRequest(
                 invocation_id=invocation.invocation_id,
-                workflow_run_id=invocation.workflow_run_id,
                 step_revision_id=invocation.step_revision_id,
                 runtime_abi="syntara.container/v1alpha1",
                 inputs_json=json.dumps({"message": "disconnect"}).encode(),
@@ -588,7 +582,6 @@ def test_async_execute_propagates_unexpected_setup_errors() -> None:
     invocation = _invocation()
     request = container_pb2.ExecuteRequest(
         invocation_id=invocation.invocation_id,
-        workflow_run_id=invocation.workflow_run_id,
         step_revision_id=invocation.step_revision_id,
         runtime_abi="syntara.container/v1alpha1",
         inputs_json=json.dumps(invocation.inputs).encode(),
@@ -839,7 +832,6 @@ def blocked_handler(invocation):
 service = AsyncContainerRuntimeService(StepRegistry({"blocked": blocked_handler}))
 invocation = ContainerInvocation(
     invocation_id="shutdown-test",
-    workflow_run_id="workflow-run",
     step_revision_id="blocked",
     inputs={},
     timeout_seconds=1,

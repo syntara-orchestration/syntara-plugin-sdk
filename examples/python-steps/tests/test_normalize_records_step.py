@@ -54,7 +54,7 @@ def test_chained_control_steps_pass_outputs_through_an_explicit_seam(
     outcome = chain_steps(
         [first, second],
         {"records": ["Alpha"]},
-        context=mock_execution_context(workflow_run_id="example-chain"),
+        context=mock_execution_context(runtime_context={"execution_id": "example-chain"}),
         seams=[lambda output: {"records": output["normalized"]}],
     )
     assert outcome.ok
