@@ -224,8 +224,8 @@ start their own gRPC server: the SDK runtime server is the only server in the
 image, and it owns input validation, execution dispatch, and the container
 ABI. [Existing step types](../examples/existing-step) shows the base image recipe:
 the `Containerfile` entry point and the mounted TLS material.
-`syntara-plugin build --with-workload` adds the registration manifest the
-server requires at startup (see
+The workload build adds the registration manifest the server requires at
+startup (see
 [Installed revision mapping](#installed-revision-mapping)).
 
 > **Warning:** Do not start a separate gRPC server or write your own listener

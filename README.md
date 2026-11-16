@@ -142,12 +142,11 @@ facing workflow changes.
 ## Current scope
 
 The SDK supports offline plugin packaging, bounded OCI publication with
-default catalog publication, catalog recovery, and a developer-preview Podman workload build.
-`syntara-plugin run --credential` delivers a declared credential to a local
-run as a read-only file, the shape production will use; see
-[ADR 0009](.sdlc/adrs/0009-local-credential-delivery.md).
-Artifact signing, catalog refresh automation, the typed accessor a Step reads
-a credential through, and end-to-end Execution Plane delivery of credentials
-to custom runners remain follow-on work. See
-[ADR 0006](.sdlc/adrs/0006-deferred-custom-runner-build-ux.md) for the
-custom-runner preview boundary.
+default catalog publication, catalog recovery, optional Cosign signing, and a
+developer-preview Podman workload build. `syntara-plugin run --credential`
+supplies a declared credential through an invocation-scoped callback; step
+code reads it with `context.credential(name).read()`. See
+[ADR 0011](.sdlc/adrs/0011-credential-callback.md). Catalog refresh automation
+and end-to-end Execution Plane credential delivery remain follow-on work. See
+the [architecture overview](docs/architecture/overview.md) for the
+current boundaries.

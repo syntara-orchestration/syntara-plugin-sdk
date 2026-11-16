@@ -24,9 +24,9 @@ The canonical container protobuf source is also in `../../contracts`. The
 Python contracts distribution contains generated protobuf bindings plus a small public
 API for registering several action callables in one workload image, serving the
 container ABI, and invoking it from a trusted adapter. The API exposes only
-structured JSON data, a bounded non-secret runtime context, and mounted
-credential-file paths; it neither selects an image nor reads credential
-contents. A final Python workload image starts that server with the
+structured JSON data, a bounded non-secret runtime context, and invocation-scoped
+credential callbacks; it does not select an image or resolve production
+credentials. A final Python workload image starts that server with the
 `syntara-plugin-runtime-server` console script; see
 [runtime adapters and workload images](../../docs/runtime-and-oci.md#runtime-adapters-and-workload-images).
 
@@ -110,12 +110,12 @@ origin, repository, channel (OCI tag), username, and `--password-stdin`; it
 never stores credentials. It can also be invoked from a source checkout with
 `python -m syntara_plugin.sdk.cli`.
 
-`catalog update` is the explicit follow-on release operation. It reads and
+By default, `publish` also updates the configured catalog after publication;
+`catalog update` provides an explicit administrative operation. It reads and
 verifies the configured catalog channel, creates generation 1 when the channel
 does not exist, or appends a new archive-derived plugin entry while retaining
 existing entries and linking `metadata.previousIndexDigest`. Exact retries are
-idempotent; conflicting bytes for an existing plugin version are rejected. It
-does not make ordinary `publish` modify a shared discovery channel. The
+idempotent; conflicting bytes for an existing plugin version are rejected. The
 [user guide](../../docs/user-guide.md) documents settings-backed catalog
 configuration and the single-writer CI requirement.
 

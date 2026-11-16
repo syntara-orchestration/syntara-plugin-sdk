@@ -16,6 +16,7 @@ Choose the guide that matches what you are doing.
 | Contribute to the SDK or change a contract | [Developer guide](developer-guide.md) |
 | Prepare or approve a Python package release | [Release guide](releasing.md) |
 | Understand the OCI artifact and container ABI boundaries | [Runtime and OCI model](runtime-and-oci.md) |
+| Understand the current SDK architecture and review boundaries | [Architecture overview](architecture/overview.md) |
 
 ## Normative sources
 
@@ -28,7 +29,7 @@ is [`../contracts/proto/syntara_plugin/runtime/protocol/container.proto`](../con
 
 ## Design records
 
-The accepted design decisions live in [`../.sdlc/adrs`](../.sdlc/adrs):
+Design records live in [`../.sdlc/adrs`](../.sdlc/adrs):
 
 - [SDK repository layout](../.sdlc/adrs/0001-language-sdk-layout.md)
 - [Catalog index OCI artifact](../.sdlc/adrs/0002-catalog-index-oci-artifact.md)
@@ -38,6 +39,11 @@ The accepted design decisions live in [`../.sdlc/adrs`](../.sdlc/adrs):
 - [Custom-runner preview scope](../.sdlc/adrs/0006-deferred-custom-runner-build-ux.md)
 - [SDK local test harness](../.sdlc/adrs/0007-sdk-testing-harness.md)
 - [Testing harness inside the SDK distribution](../.sdlc/adrs/0008-testing-harness-inside-sdk.md)
-- [Local credential delivery](../.sdlc/adrs/0009-local-credential-delivery.md)
+- [Local credential delivery (superseded)](../.sdlc/adrs/0009-local-credential-delivery.md)
+- [Separate runtime release lifecycle](../.sdlc/adrs/0010-separate-runtime-release-lifecycle.md)
+- [Invocation-scoped credential callbacks](../.sdlc/adrs/0011-credential-callback.md)
+- [Container Toolbox boundary](../.sdlc/adrs/0012-container-toolbox.md)
+- [Caller-owned runtime context](../.sdlc/adrs/0013-caller-runtime-context.md)
+- [Terminal structured Toolbox logs](../.sdlc/adrs/0013-toolbox-logging.md)
 
 - [Credential authenticate and test extension proposal v1](../.sdlc/proposals/credential-authenticate-test-v1.md)
