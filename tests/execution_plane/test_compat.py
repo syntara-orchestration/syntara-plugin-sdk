@@ -38,7 +38,12 @@ from tests.integration.kind.test_dispatch import (
     ],
 )
 async def test_checkout_plugin_dispatch(
-    ep_cluster, integration_credential_resolver, identity, inputs, expected
+    ep_cluster,
+    integration_credential_resolver,
+    integration_workload_credential_resolver,
+    identity,
+    inputs,
+    expected,
 ):
     manifest = json.loads(Path(os.environ["EP_COMPAT_REGISTRATION"]).read_text(encoding="utf-8"))
     revision, entry = next(
@@ -67,7 +72,12 @@ async def test_checkout_plugin_dispatch(
         ExecutionTargetStore.from_database_url(database_url) as target_store,
     ):
         async with _work_service(
-            database_url, cluster_store, target_store, settings, integration_credential_resolver
+            database_url,
+            cluster_store,
+            target_store,
+            settings,
+            integration_credential_resolver,
+            integration_workload_credential_resolver,
         ) as work:
             dispatched = await _dispatch_item(
                 work, work.worker_managers, client_id=client_id, payload=payload
