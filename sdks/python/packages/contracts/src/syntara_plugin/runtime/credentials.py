@@ -8,9 +8,12 @@ import os
 import re
 import weakref
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from enum import StrEnum
 from pathlib import Path
+from threading import Lock
 from typing import Any, Literal, Protocol
+from urllib.parse import unquote
 
 from syntara_plugin.contracts import canonical_json_bytes
 
@@ -47,8 +50,9 @@ class CredentialAccessError(RuntimeError):
 class ScopedCredentialProvider(Protocol):
     """Host-supplied view containing only one invocation's allowed bindings.
 
-    Every successful read must call the callback supplied to ``restrict`` before
-    returning. ``close`` must revoke later reads and discard the view's bindings.
+    Every successful read must synchronously call the callback supplied to
+    ``restrict`` on the same thread and in the calling context before returning.
+    ``close`` must revoke later reads and discard the view's bindings.
     """
 
     def read(self, name: str) -> Mapping[str, Any]:
@@ -71,8 +75,10 @@ class CredentialProvider(Protocol):
         """Return a new view retaining only ``names`` and invoking ``on_read``.
 
         The view must not retain access to any other binding, even if its internal
-        state is inspected. Calls through the view must be recorded and revoked
-        on close. A provider that cannot supply this view is denied access.
+        state is inspected. Each successful read must invoke ``on_read``
+        synchronously on the same thread and in the calling context before it
+        returns. The view must revoke reads on close. A provider that cannot
+        supply this view is denied access.
         """
         ...
 
@@ -237,21 +243,146 @@ def _enqueue_children(value: Any, pending: list[Any], remaining: int) -> bool | 
     return None
 
 
+def _local_schema_reference(root: Any, reference: Any) -> Any:
+    """Resolve a local JSON Pointer without fetching external schemas."""
+
+    if not isinstance(reference, str) or not reference.startswith("#"):
+        return None
+    try:
+        pointer = unquote(reference[1:], errors="strict")
+        if not pointer:
+            return root
+        if not pointer.startswith("/"):
+            return None
+        current = root
+        for part in pointer[1:].split("/"):
+            if current is not root and isinstance(current, Mapping) and "$id" in current:
+                return None
+            if re.search(r"~(?![01])", part):
+                return None
+            part = part.replace("~1", "/").replace("~0", "~")
+            if isinstance(current, Mapping):
+                current = current[part]
+            elif isinstance(current, (list, tuple)) and re.fullmatch(r"0|[1-9][0-9]*", part):
+                current = current[int(part)]
+            else:
+                return None
+        return current
+    except (KeyError, IndexError, ValueError, UnicodeError):
+        return None
+
+
+def _additional_properties_apply(schema: Mapping[str, Any], key: Any, budget: list[int]) -> bool:
+    """Allow additional properties only when no supported pattern matches."""
+
+    patterns = schema.get("patternProperties", {})
+    if not isinstance(patterns, Mapping) or not isinstance(key, str):
+        return False
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            return False
+        # Literal validation and substring search are linear in their input lengths.
+        budget[0] -= 1 + len(pattern) + len(key)
+        if budget[0] < 0:
+            return False
+        if not re.fullmatch(r"\^?[A-Za-z0-9_-]+\$?", pattern):
+            return False
+        starts = pattern.startswith("^")
+        ends = pattern.endswith("$")
+        literal = pattern[int(starts):len(pattern) - int(ends)]
+        if starts and ends:
+            matches = key == literal
+        elif starts:
+            matches = key.startswith(literal)
+        elif ends:
+            matches = key.endswith(literal)
+        else:
+            matches = literal in key
+        if matches:
+            return False
+    return True
+
+
+def _declared_child_schema(
+    schema: Any, root: Any, key: Any, budget: list[int], ancestors: frozenset[int] = frozenset(),
+    *, include_additional: bool = False,
+) -> Any:
+    """Find a child's declared schema, conservatively intersecting alternatives."""
+
+    budget[0] -= 1
+    if budget[0] < 0 or len(ancestors) >= 80:
+        budget[0] = -1
+        return None
+    if not isinstance(schema, Mapping) or id(schema) in ancestors:
+        return None
+    # Nested identifiers change reference resolution. Leave those resources opaque.
+    if schema is not root and "$id" in schema:
+        return None
+    ancestors = ancestors | {id(schema)}
+    declarations: list[Any] = []
+    if key is None:
+        if "items" in schema and isinstance(schema["items"], (Mapping, bool)):
+            declarations.append(schema["items"])
+    else:
+        properties = schema.get("properties")
+        if isinstance(properties, Mapping) and key in properties:
+            declarations.append(properties[key])
+        elif include_additional:
+            additional = schema.get("additionalProperties")
+            if isinstance(additional, (Mapping, bool)) and _additional_properties_apply(
+                schema, key, budget
+            ):
+                declarations.append(additional)
+    if "$ref" in schema:
+        target = _local_schema_reference(root, schema["$ref"])
+        child = _declared_child_schema(
+            target, root, key, budget, ancestors, include_additional=include_additional
+        )
+        if child is not None:
+            declarations.append(child)
+    all_of = schema.get("allOf")
+    if isinstance(all_of, (list, tuple)):
+        for branch in all_of:
+            child = _declared_child_schema(
+                branch, root, key, budget, ancestors, include_additional=include_additional
+            )
+            if child is not None:
+                declarations.append(child)
+    for keyword in ("anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if isinstance(branches, (list, tuple)) and branches:
+            children = [
+                _declared_child_schema(
+                    branch, root, key, budget, ancestors, include_additional=include_additional
+                )
+                for branch in branches
+            ]
+            if all(child is not None for child in children):
+                declarations.append({keyword: children})
+    if not declarations:
+        return None
+    if len(declarations) == 1:
+        return declarations[0]
+    return {"allOf": declarations}
+
+
 class _ScopedCredentialProvider:
     """Restrict provider reads and track every successful read in the scope."""
 
-    __slots__ = ("__allowed", "__provider", "__record", "__active")
+    __slots__ = ("__allowed", "__provider", "__record", "__active", "__read_name")
 
     def __init__(
         self,
         allowed: frozenset[str],
         provider: ScopedCredentialProvider,
         record: Callable[[Mapping[str, Any]], None],
+        read_name: ContextVar[str | None],
     ) -> None:
         self.__allowed = allowed
         self.__provider: ScopedCredentialProvider | None = provider
         self.__record: Callable[[Mapping[str, Any]], None] | None = record
         self.__active = True
+        self.__read_name = read_name
 
     def __repr__(self) -> str:
         return "ScopedCredentialProvider(<opaque>)"
@@ -271,6 +402,9 @@ class _ScopedCredentialProvider:
         record = self.__record
         if provider is None or record is None:
             raise CredentialAccessError("expired")
+        # Providers call on_read before exposing the document. Attribute only
+        # callbacks in this read's context; any other read keeps every key secret.
+        token = self.__read_name.set(name)
         try:
             value = provider.read(name)
             if not isinstance(value, Mapping):
@@ -283,6 +417,8 @@ class _ScopedCredentialProvider:
             raise CredentialAccessError(error.reason) from None
         except Exception:
             raise CredentialAccessError("unavailable") from None
+        finally:
+            self.__read_name.reset(token)
         return document
 
     def close(self) -> None:
@@ -303,9 +439,13 @@ class _CredentialScope:
     __slots__ = (
         "_allowed", "_provider", "_active", "_strings", "_scalars",
         "_fingerprint_count", "_overflow", "_has_read", "_restriction_failed", "__weakref__",
+        "_schemas", "_read_name", "_record_lock",
     )
 
-    def __init__(self, allowed: tuple[str, ...], provider: CredentialProvider | None) -> None:
+    def __init__(
+        self, allowed: tuple[str, ...], provider: CredentialProvider | None,
+        schemas: Mapping[str, Any] | None = None,
+    ) -> None:
         self._allowed = frozenset(allowed)
         self._active = True
         self._strings: dict[int, set[bytes]] = {}
@@ -314,6 +454,9 @@ class _CredentialScope:
         self._overflow = False
         self._has_read = False
         self._restriction_failed = False
+        self._schemas = schemas or {}
+        self._read_name: ContextVar[str | None] = ContextVar("credential_read_name", default=None)
+        self._record_lock = Lock()
         self._provider: _ScopedCredentialProvider | None = None
         if provider is not None:
             scope_ref = weakref.ref(self)
@@ -335,7 +478,9 @@ class _CredentialScope:
             except Exception:
                 self._restriction_failed = True
             else:
-                self._provider = _ScopedCredentialProvider(self._allowed, restricted, self._record)
+                self._provider = _ScopedCredentialProvider(
+                    self._allowed, restricted, self._record, self._read_name
+                )
 
     def __repr__(self) -> str:
         return "CredentialScope(<opaque>)"
@@ -373,20 +518,50 @@ class _CredentialScope:
                 self._overflow = True
 
     def _record(self, document: Mapping[str, Any]) -> None:
+        with self._record_lock:
+            self._record_document(document, self._schemas.get(self._read_name.get()))
+
+    def _record_document(self, document: Mapping[str, Any], schema: Any) -> None:
         self._has_read = True
-        pending: list[Any] = [document]
+        pending: list[tuple[Any, Any]] = [(document, schema)]
         nodes = 0
+        schema_budget = [_MAX_CREDENTIAL_NODES]
         while pending and not self._overflow:
-            value = pending.pop()
+            value, current_schema = pending.pop()
             nodes += 1
             if nodes > _MAX_CREDENTIAL_NODES:
                 self._overflow = True
                 break
-            queued = _enqueue_children(value, pending, _MAX_CREDENTIAL_NODES - nodes)
-            if queued is True:
-                self._overflow = True
-                break
-            if queued is None:
+            if isinstance(value, Mapping):
+                if 2 * len(value) > _MAX_CREDENTIAL_NODES - nodes - len(pending):
+                    self._overflow = True
+                    break
+                for key, child in value.items():
+                    declaration = _declared_child_schema(
+                        current_schema, schema, key, schema_budget
+                    )
+                    child_schema = _declared_child_schema(
+                        current_schema, schema, key, schema_budget, include_additional=True
+                    )
+                    if schema_budget[0] < 0:
+                        self._overflow = True
+                        break
+                    if declaration is None:
+                        pending.append((key, None))
+                    else:
+                        # Public keys still count towards the traversal budget.
+                        nodes += 1
+                    pending.append((child, child_schema))
+            elif isinstance(value, (list, tuple)):
+                if len(value) > _MAX_CREDENTIAL_NODES - nodes - len(pending):
+                    self._overflow = True
+                    break
+                items = _declared_child_schema(current_schema, schema, None, schema_budget)
+                if schema_budget[0] < 0:
+                    self._overflow = True
+                    break
+                pending.extend((child, items) for child in value)
+            else:
                 self._record_leaf(value)
 
     def _record_leaf(self, value: Any) -> None:
@@ -486,6 +661,7 @@ class _CredentialScope:
         self._provider = None
         self._strings.clear()
         self._scalars.clear()
+        self._schemas = {}
 
 
 class CredentialBinding:

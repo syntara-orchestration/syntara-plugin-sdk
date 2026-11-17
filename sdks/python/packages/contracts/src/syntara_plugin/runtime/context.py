@@ -79,7 +79,9 @@ class ExecutionContext:
 
         return self._toolbox
 
-    def _with_credentials(self, names: tuple[str, ...]) -> ExecutionContext:
+    def _with_credentials(
+        self, names: tuple[str, ...], schemas: Mapping[str, Any] | None = None
+    ) -> ExecutionContext:
         if self._credential_scope is not None:
             raise CredentialAccessError("unauthorized")
         context = ExecutionContext(
@@ -88,7 +90,9 @@ class ExecutionContext:
             cancellation=self.cancellation,
         )
         object.__setattr__(context, "_toolbox", self._toolbox)
-        object.__setattr__(context, "_credential_scope", _CredentialScope(names, self._provider))
+        object.__setattr__(
+            context, "_credential_scope", _CredentialScope(names, self._provider, schemas)
+        )
         return context
 
     @property

@@ -138,6 +138,10 @@ def _bind_declared_targets(
         target = _custom_runner_target(document, target_path)
         documents.append((target_path, document, target))
     credential_targets = [document for _, document, _ in documents if document.get("kind") in {"IntegrationType", "CredentialRecipe"}]
+    credential_assets: dict[str, Mapping[str, Any]] = {}
+    for target_path, document, _ in documents:
+        if document.get("kind") == "CredentialRecipe":
+            credential_assets.update(_declared_assets(root, target_path, document))
     for target_path, document, target in documents:
         if target is None:
             continue
@@ -154,7 +158,10 @@ def _bind_declared_targets(
             )
             raise StepBindingError(message)
         declared[identity] = target_path
-        _bind_custom_runner_target(root, target_path, document, identity, runtime, bindings, credential_targets)
+        _bind_custom_runner_target(
+            root, target_path, document, identity, runtime, bindings,
+            credential_targets, credential_assets,
+        )
     if not bindings.step_identities:
         selected_workload = f" for workload {workload_id!r}" if workload_id is not None else ""
         message = (
@@ -218,13 +225,16 @@ def _bind_custom_runner_target(
     runtime: Mapping[str, Any],
     bindings: StepBindings,
     credential_targets: list[Mapping[str, Any]],
+    credential_assets: Mapping[str, Mapping[str, Any]],
 ) -> None:
     """Run the wrapped binding sequence for one custom-runner Step target."""
 
     assets = _declared_assets(root, target_path, document)
     try:
         installed = InstalledStepManifest.from_manifest(
-            identity, document, assets, credential_targets=credential_targets
+            identity, document, assets,
+            credential_targets=credential_targets,
+            credential_assets=credential_assets,
         )
         step = _declared_step(runtime.get("entryPoint"), target_path)
         descriptor = StepDescriptor.for_installed_step(step, installed)
@@ -243,7 +253,11 @@ def _declared_assets(
     specification = document.get("spec")
     if not isinstance(specification, Mapping):
         return assets
-    for field_name in _SCHEMA_SOURCE_FIELDS:
+    fields = (
+        ("credentialSchema",)
+        if document.get("kind") == "CredentialRecipe" else _SCHEMA_SOURCE_FIELDS
+    )
+    for field_name in fields:
         source = specification.get(field_name)
         if not isinstance(source, Mapping) or source.get("kind") != "asset":
             continue

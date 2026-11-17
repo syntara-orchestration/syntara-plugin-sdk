@@ -1086,6 +1086,28 @@ def test_packaged_action_retains_only_declared_credentials(plugin_root: Path) ->
     assert descriptor.credential_names == ("sample.demo.token",)
 
 
+def test_packaged_recipe_asset_is_bound_to_its_credential(plugin_root: Path) -> None:
+    def manifests(package: str) -> dict[str, Any]:
+        action = _action_document(f"{package}.steps:SampleActionStep")
+        action["spec"]["integrationType"] = "sample.demo.tracker"
+        recipe = _credential_recipe_document()
+        recipe["spec"]["credentialSchema"] = {"kind": "asset", "path": "schemas/credential.json"}
+        return {
+            "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "schemas/credential.json": {"type": "object", "properties": {"token": {"type": "string"}}},
+            "steps/action.yaml": action, "steps/integration.yaml": _integration_document(),
+            "recipes/recipe.yaml": recipe,
+        }
+
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/action.yaml", "recipes/recipe.yaml", "steps/integration.yaml"]),
+        manifests=manifests,
+    )
+    descriptor = load_plugin_bindings(package).binding("sample.demo.create-ticket").descriptor
+    assert "token" in descriptor.credential_schemas["sample.demo.token"]["properties"]
+
+
 @pytest.mark.parametrize("kind", ["Control", "Trigger"])
 def test_packaged_control_and_trigger_retain_declared_credentials(
     plugin_root: Path, kind: str

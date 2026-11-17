@@ -331,7 +331,9 @@ def _invoke_with_error_schema(
         if untrusted_binding or executor is None:
             raise StepExecutionError(_UNTRUSTED_BINDING, outcome="not_started")
 
-        scoped_context = context._with_credentials(step.descriptor.credential_names)
+        scoped_context = context._with_credentials(
+            step.descriptor.credential_names, step.descriptor.credential_schemas
+        )
         scope = scoped_context._credential_scope
         assert scope is not None
         try:

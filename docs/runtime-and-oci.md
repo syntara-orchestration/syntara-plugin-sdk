@@ -365,31 +365,56 @@ for the exact limits.
 ### Credential access
 
 For an Action, Control, or Trigger, the installed `integrationType` and its linked
-`credentialTypes` define which recipe identifiers the step may request. The host supplies a provider for
-approved bindings; a supplied name never grants permission by itself.
+`credentialTypes` define which recipe identifiers the step may request. The host
+supplies a provider for approved bindings; a supplied name never grants
+permission by itself.
 A custom `CredentialProvider` must return a fresh `ScopedCredentialProvider`
 from `restrict(names, on_read)`. The view retains only the named bindings,
-reports every read through `on_read`, and revokes access on `close`. Providers
-that cannot supply this restricted view fail safely. During `run`, call `context.credential("example.tracker.api-token").read()` to
-obtain a detached credential document. The handle and provider do not expose
-values in their representations and cannot be serialized. A handle expires as
+reports every read synchronously through `on_read` on the same thread and in the
+calling context before returning, and revokes access on `close`. An unattributed
+callback treats all document keys as sensitive. Providers that cannot supply
+this restricted view fail safely. During `run`, call
+`context.credential("example.tracker.api-token").read()` to obtain a detached
+credential document. The handle and provider do not expose values in their
+representations and cannot be serialized. A handle expires as
 soon as the invocation returns, including on failure. Missing, undeclared,
 unauthorized, unavailable, and expired bindings raise `CredentialAccessError`
 with a safe `reason` and no names, paths, or provider details.
 
 The returned document contains sensitive values. Use them only for the intended
-operation; never put them in logs, inputs, results, or error messages. SDK-generated
-errors and diagnostics do not include values read through the handle. The SDK
-rejects wrapper fields containing those values and suppresses business traceback
+operation; never put them in logs, inputs, results, or error messages.
+SDK-generated errors and diagnostics do not include values read through the
+handle. The SDK rejects wrapper fields containing those values and suppresses business traceback
 details after a read when they contain credential values, and degrades a
-terminal-failure message that carries one. Safety scans are bounded:
+terminal-failure message that carries one. The scan fingerprints all nonempty
+string values and non-null numeric and boolean values, including nested values,
+and checks the result and status message, as well as failure status codes and
+error results. The fixed success status code `0` is not scanned; a matching
+credential value in a result or status message is still rejected. Explicit
+property names in the installed recipe schema are public; the scan does not
+fingerprint them at their declared locations. Unknown document keys remain
+sensitive, including keys in opaque
+provider documents. The scan recognizes `properties`, `items`, local JSON
+Pointer `$ref`s, and `allOf` declarations. For `anyOf` and `oneOf`, a key is
+public only when every alternative declares it at that location. Dynamic keys
+covered by `additionalProperties` remain sensitive, but declared names inside
+their values can be public. The scan applies `additionalProperties` only if no
+`patternProperties` pattern matches. It recognizes nonempty case-sensitive
+literals of ASCII letters, digits, `_`, and `-`, with optional `^` and `$`
+anchors; unsupported patterns leave the child opaque. Names reachable only
+through pattern-based schemas, external references, or nested schema resources
+remain sensitive. A
+value matching a public property name is still sensitive.
+Keep credential values and opaque keys out of results and failures.
+Safety scans are bounded:
 credential documents are limited to 1 MiB, 10,000 nodes, and 256 tracked
-fingerprints; output scans are limited to 10,000 nodes and 4,000,000 scan-work
-units. If a scan cannot finish within those bounds, the SDK reports
+fingerprints. Schema traversal has a separate 10,000-unit work budget, including
+the lengths of patterns and keys examined; output scans are limited to 10,000
+nodes and 4,000,000 scan-work units. If a scan cannot finish within those bounds, the SDK reports
 `CREDENTIAL_SCAN_LIMIT`, distinct from a detected leak. Reduce credential document
-size or output complexity to stay within the limits. The SDK cannot redact logs emitted by step code, so
-step authors must not log returned values. The SDK does not resolve production
-credential IDs or implement a vault. A Python step is not sandboxed by this
+size or output complexity to stay within the limits. The SDK cannot redact logs
+emitted by step code, so step authors must not log returned values. The SDK
+does not resolve production credential IDs or implement a vault. A Python step is not sandboxed by this
 accessor; the host must authorize each invocation and enforce process isolation.
 
 `CredentialRecipe` and `IntegrationType` Pydantic views validate and serialize

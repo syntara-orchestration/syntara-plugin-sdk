@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 import grpc
 import pytest
 import syntara_plugin.runtime.credentials as credentials_module
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 from syntara_plugin.runtime import (
     ActionStep,
     ContainerInvocation,
@@ -58,6 +58,8 @@ class CredentialInput(BaseModel):
 
 
 class CredentialOutput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     result: str | int
 
 
@@ -172,6 +174,12 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                 return CredentialOutput(result=value)
             if inputs.mode == "status_code_leak":
                 raise StepFailure(credential["pin"], "Failed", "Safe failure")
+            if inputs.mode == "field_failure":
+                raise StepFailure(401, "invalid username or password", "authentication rejected")
+            if inputs.mode == "field_output":
+                return CredentialOutput(result="username password")
+            if inputs.mode == "field_key":
+                return CredentialOutput(result="accepted", username="safe")
             if inputs.mode == "numeric_token_status_code_leak":
                 raise StepFailure(int(credential["numeric_token"]), "Failed", "Safe failure")
             if inputs.mode in {"number_failure", "boolean_failure"}:
@@ -223,6 +231,33 @@ def _binding(targets: list[dict[str, Any]] | None = None) -> StepBinding:
         "acme.demo.use", manifest, {}, credential_targets=targets if targets is not None else _connection_targets()
     )
     return StepBinding(StepDescriptor.for_installed_step(step, installed), step)
+
+
+def test_declared_credential_keys_can_appear_in_output_and_failure(tmp_path: Path) -> None:
+    targets = _connection_targets()
+    targets[1]["spec"]["credentialSchema"]["value"] = {
+        "type": "object", "properties": {"username": {"type": "string"},
+                                          "password": {"type": "string"}},
+    }
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"username": "alice-example", "password": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    for call in (invoke_step, invoke_step_in_container):
+        success = call(_binding(targets), {"mode": "field_output"}, context=context)
+        assert success.ok
+        assert success.output == {"result": "username password"}
+        success = call(_binding(targets), {"mode": "field_key"}, context=context)
+        assert success.ok
+        assert success.output == {"result": "accepted", "username": "safe"}
+        failure = call(_binding(targets), {"mode": "field_failure"}, context=context)
+        assert failure.raised is None
+        assert failure.status == 401
+        assert failure.status_message == "invalid username or password"
+        assert failure.error.message == "authentication rejected"
+        assert failure.error.code == "STEP_FAILED"
+        assert failure.raw is not None
 
 
 @pytest.mark.parametrize(
@@ -292,6 +327,21 @@ def test_trusted_graph_rejects_missing_and_mismatched_credentials() -> None:
     object.__setattr__(binding.descriptor, "credential_names", ("acme.demo.other",))
     with pytest.raises(StepBindingError):
         binding.descriptor.require_executable_contract(binding.step)
+
+    binding = _binding()
+    object.__setattr__(binding.descriptor, "credential_schemas", {})
+    with pytest.raises(StepBindingError):
+        binding.descriptor.require_executable_contract(binding.step)
+
+
+def test_installed_recipe_schema_is_detached_from_source() -> None:
+    targets = _connection_targets()
+    schema = targets[1]["spec"]["credentialSchema"]["value"]
+    schema["properties"] = {"token": {"type": "string"}}
+    binding = _binding(targets)
+    schema["properties"]["changed"] = {}
+    assert "changed" not in binding.descriptor.credential_schemas[_NAME]["properties"]
+    binding.descriptor.require_executable_contract(binding.step)
 
 
 def test_approved_file_capability_has_direct_and_container_parity(tmp_path: Path, caplog: Any) -> None:
@@ -657,7 +707,7 @@ def test_string_credentials_converted_to_numbers_do_not_reach_wrapper(
         assert "8675309" not in repr(outcome)
 
 
-def test_zero_credential_allows_success_but_not_business_output(tmp_path: Path) -> None:
+def test_zero_credential_allows_success_but_rejects_business_output(tmp_path: Path) -> None:
     path = tmp_path / "credential"
     path.write_text(json.dumps({"pin": 0}))
     context = build_execution_context(
@@ -896,6 +946,312 @@ class _FakeProvider:
         self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
     ) -> _FakeView:
         return _FakeView(names, self._document, on_read)
+
+
+def test_scanner_tracks_values_and_only_excludes_declared_keys_at_their_location() -> None:
+    schema = {"properties": {"outer": {"properties": {"known": {}}}, "public": {}}}
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"outer": {"known": 83, "opaque": "public"}, "public": _SECRET}),
+        {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert not scope.contains_secret("outer known")
+        for value in ("opaque", "public", _SECRET, 83, "83"):
+            assert scope.contains_secret(value)
+    finally:
+        scope.close()
+
+
+
+def test_schema_refs_and_composition_only_exempt_unambiguous_declared_keys() -> None:
+    schema = {
+        "$defs": {"nested": {"properties": {"known": {}}}},
+        "allOf": [
+            {"properties": {"outer": {"$ref": "#/$defs/nested"}}},
+            {"properties": {"rows": {"items": {"$ref": "#/$defs/nested"}}}},
+        ],
+        "anyOf": [
+            {"properties": {"common": {"properties": {"shared": {}, "first": {}}}, "first": {}}},
+            {"properties": {"common": {"properties": {"shared": {}, "second": {}}}, "second": {}}},
+        ],
+    }
+    document = {
+        "outer": {"known": _SECRET, "opaque": "value-one"},
+        "rows": [{"known": "value-two"}],
+        "common": {"shared": "value-three", "first": "value-four"},
+        "first": "value-five",
+    }
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider(document), {_NAME: schema})
+    try:
+        scope.read(_NAME)
+        assert not scope.contains_secret("outer rows known common shared")
+        for value in ("opaque", "first", _SECRET, "value-two"):
+            assert scope.contains_secret(value)
+    finally:
+        scope.close()
+
+
+def test_schema_refs_fail_closed_for_cycles_and_external_references() -> None:
+    schema = {"allOf": [{"$ref": "#"}, {"$ref": "https://example.invalid/schema"}]}
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"unknown": _SECRET}), {_NAME: schema}
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.contains_secret("unknown")
+    finally:
+        scope.close()
+
+
+
+@pytest.mark.parametrize("keyword", ["anyOf", "oneOf"])
+def test_alternative_nested_and_array_declarations_require_every_branch(keyword: str) -> None:
+    schema = {keyword: [
+        {"properties": {"outer": {"properties": {"shared": {}, "only_first": {}}},
+                        "rows": {"items": {"properties": {"shared": {}, "only_first": {}}}}}},
+        {"properties": {"outer": {"properties": {"shared": {}}},
+                        "rows": {"items": {"properties": {"shared": {}}}}}},
+    ]}
+    document = {"outer": {"shared": _SECRET, "only_first": "one"},
+                "rows": [{"shared": "two", "only_first": "three"}]}
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider(document), {_NAME: schema})
+    try:
+        scope.read(_NAME)
+        assert not scope.contains_secret("outer rows shared")
+        assert scope.contains_secret("only_first")
+    finally:
+        scope.close()
+
+
+def test_local_pointer_escapes_and_nested_resource_boundaries() -> None:
+    schema = {
+        "$defs": {"a/b~c": {"properties": {"declared": {}}},
+                  "resource": {"$id": "nested", "properties": {"hidden": {}}}},
+        "properties": {
+            "outer": {"$ref": "#/$defs/a~1b~0c"},
+            "other": {"$ref": "#/$defs/resource/properties/hidden"},
+        },
+    }
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"outer": {"declared": _SECRET}, "other": {"unknown": "x"}}),
+        {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert not scope.contains_secret("declared")
+        assert scope.contains_secret("unknown")
+    finally:
+        scope.close()
+
+
+@pytest.mark.parametrize("keyword", ["anyOf", "oneOf"])
+def test_dynamic_properties_preserve_keys_and_follow_unambiguous_child_schemas(
+    keyword: str,
+) -> None:
+    schema = {
+        "$defs": {"entry": {"properties": {"username": {}, "only_first": {}}}},
+        keyword: [
+            {"additionalProperties": {"$ref": "#/$defs/entry"}},
+            {"allOf": [{"additionalProperties": {"properties": {"username": {}}}}]},
+        ],
+    }
+    document = {"tracker": {"username": "alice-secret", "only_first": "private-value"}}
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider(document), {_NAME: schema})
+    try:
+        scope.read(_NAME)
+        assert scope.contains_secret("tracker")
+        assert scope.contains_secret("only_first")
+        assert scope.contains_secret("alice-secret")
+        assert not scope.contains_secret("username")
+    finally:
+        scope.close()
+
+
+
+def test_direct_additional_properties_declares_only_nested_keys() -> None:
+    schema = {"additionalProperties": {"properties": {"username": {}}}}
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"tracker": {"username": "alice-secret"}}), {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.contains_secret("tracker")
+        assert scope.contains_secret("alice-secret")
+        assert not scope.contains_secret("username")
+    finally:
+        scope.close()
+
+
+def test_additional_properties_across_all_of_and_ambiguous_alternatives() -> None:
+    schema = {"allOf": [
+        {"properties": {"outer": {}}},
+        {"additionalProperties": {"properties": {"known": {}}}},
+    ], "properties": {"ambiguous": {"anyOf": [
+        {"additionalProperties": {"properties": {"sometimes": {}}}}, {},
+    ]}}}
+    document = {"outer": {"known": "one"}, "ambiguous": {"dynamic": {"sometimes": "two"}}}
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider(document), {_NAME: schema})
+    try:
+        scope.read(_NAME)
+        assert not scope.contains_secret("outer known")
+        assert scope.contains_secret("dynamic")
+        assert scope.contains_secret("sometimes")
+    finally:
+        scope.close()
+
+@pytest.mark.parametrize(
+    ("patterns", "username_is_sensitive"),
+    [
+        ({"^id$": {}}, False),
+        ({"^id$": {}, "^track$": {}}, False),
+        ({"^tracker$": {}}, True),
+        ({"^track": {}}, True),
+        ({"ker$": {}}, True),
+        ({"rac": {}}, True),
+        ({"^id$": {}, "t[a-z]": {}}, True),
+        ({".*": {}}, True),
+    ],
+)
+def test_pattern_properties_gate_additional_properties(
+    patterns: dict[str, Any], username_is_sensitive: bool,
+) -> None:
+    schema = {
+        "patternProperties": patterns,
+        "additionalProperties": {"properties": {"username": {}}},
+    }
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"tracker": {"username": "alice-secret"}}), {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.contains_secret("tracker")
+        assert scope.contains_secret("alice-secret")
+        assert scope.contains_secret("username") is username_is_sensitive
+    finally:
+        scope.close()
+
+
+
+
+@pytest.mark.parametrize("patterns", [{"a" * 100: {}}, {f"id{i}": {} for i in range(10)}])
+def test_pattern_matching_work_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, patterns: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(credentials_module, "_MAX_CREDENTIAL_NODES", 60)
+    schema = {
+        "patternProperties": patterns,
+        "additionalProperties": {"properties": {"username": {}}},
+    }
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"tracker": {"username": "alice-secret"}}), {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.scan("safe") is credentials_module._CredentialScanStatus.LIMIT_EXCEEDED
+    finally:
+        scope.close()
+
+def test_pattern_end_anchor_does_not_match_before_final_newline() -> None:
+    schema = {
+        "patternProperties": {"^tracker$": {}},
+        "additionalProperties": {"properties": {"username": {}}},
+    }
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"tracker\n": {"username": "alice-secret"}}), {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.contains_secret("tracker\n")
+        assert not scope.contains_secret("username")
+    finally:
+        scope.close()
+
+def test_cross_thread_callback_keeps_declared_keys_secret() -> None:
+    class CrossThreadView(_FakeView):
+        def read(self, name: str) -> Mapping[str, Any]:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(self._on_read, self._document).result()
+            return self._document
+
+    class CrossThreadProvider(_FakeProvider):
+        def restrict(
+            self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
+        ) -> _FakeView:
+            return CrossThreadView(names, self._document, on_read)
+
+    scope = credentials_module._CredentialScope(
+        (_NAME,), CrossThreadProvider({"public_name": _SECRET}),
+        {_NAME: {"properties": {"public_name": {}}}},
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.contains_secret("public_name")
+    finally:
+        scope.close()
+
+
+@pytest.mark.parametrize("document", [{"pin": 0}, {"nested": {"pin": 0}}])
+def test_fixed_success_status_is_not_scanned_but_business_fields_are(
+    document: dict[str, Any],
+) -> None:
+    from syntara_plugin.runtime.execution import _reject_credential_output
+    from syntara_plugin.runtime.outcome import StandardOutputWrapper
+
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider(document))
+    try:
+        scope.read(_NAME)
+        _reject_credential_output(StandardOutputWrapper.success({"result": "safe"}), scope)
+        with pytest.raises(StepExecutionError):
+            _reject_credential_output(StandardOutputWrapper.success({"result": 0}), scope)
+        with pytest.raises(StepExecutionError):
+            _reject_credential_output(
+                StandardOutputWrapper.success({"result": "safe"}, status_message="0"), scope
+            )
+    finally:
+        scope.close()
+
+
+def test_nonzero_failure_status_is_scanned() -> None:
+    from syntara_plugin.runtime.execution import _reject_credential_output
+    from syntara_plugin.runtime.outcome import StandardOutputWrapper
+
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider({"pin": 739251}))
+    try:
+        scope.read(_NAME)
+        wrapper = StandardOutputWrapper.failure(error_message="Safe failure", status_code=739251)
+        with pytest.raises(StepExecutionError):
+            _reject_credential_output(wrapper, scope)
+    finally:
+        scope.close()
+
+
+def test_concurrent_reads_keep_recipe_attribution_and_unknown_keys() -> None:
+    scope = credentials_module._CredentialScope(
+        (_NAME, _OTHER), _FakeProvider({"public_name": "long-secret-value"}),
+        {_NAME: {"properties": {"public_name": {}}}, _OTHER: {"properties": {}}},
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            list(executor.map(scope.read, (_NAME, _OTHER)))
+        assert scope.contains_secret("public_name")
+        assert scope.contains_secret("long-secret-value")
+    finally:
+        scope.close()
+
+
+def test_unattributed_inner_provider_read_keeps_keys_secret() -> None:
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"public_name": "long-secret-value"}),
+        {_NAME: {"properties": {"public_name": {}}}},
+    )
+    try:
+        assert scope._provider is not None
+        inner = getattr(scope._provider, "_ScopedCredentialProvider__provider")  # noqa: B009
+        inner.read(_NAME)
+        assert scope.contains_secret("public_name")
+    finally:
+        scope.close()
 
 
 def test_scope_tracks_each_provider_read_once(monkeypatch: pytest.MonkeyPatch) -> None:
