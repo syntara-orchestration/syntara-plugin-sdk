@@ -58,6 +58,7 @@ _OCI_INDEX_NAME = "index.json"
 _OCI_INDEX_MAX_BYTES = 1024 * 1024
 _OCI_BLOB_MAX_BYTES = 16 * 1024 * 1024
 _LOCAL_IMAGE_REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*:syntara-registered-[0-9a-f]{32}")
+_UNUSABLE_PROBE_ADDRESS = "the isolated Podman probe has no usable IPv4 address"
 
 
 @dataclass(frozen=True)
@@ -340,6 +341,49 @@ def _select_engine(image: str) -> ContainerEngine:
     )
 
 
+def _write_resolved_execution(
+    temporary: Path,
+    target: RunTarget | None,
+    resolved_execution: Mapping[str, Any] | None,
+) -> Path | None:
+    """Write the one resolved-execution document supplied to a runtime."""
+
+    if target is not None and resolved_execution is not None:
+        raise RunExecutionError(
+            "managed runtime cannot use both a step target and probe resolution data"
+        )
+    document: Mapping[str, Any] | None = resolved_execution
+    if target is not None:
+        document = {
+            "bindings": [
+                {
+                    "stepRevisionId": target.step_revision_id,
+                    "stepIdentity": target.identity,
+                    "runtimeKind": "custom-runner",
+                    "entryPoint": target.entry_point,
+                    "abi": CONTAINER_ABI,
+                    "schemaDigests": target.schema_digests,
+                }
+            ]
+        }
+    if document is None:
+        return None
+
+    path = temporary / "resolved.json"
+    try:
+        path.write_text(json.dumps(document, allow_nan=False), encoding="utf-8")
+        path.chmod(0o644)
+    except OSError as error:
+        raise RunExecutionError(
+            "could not prepare resolved execution data for the managed workload container",
+            next_steps=(
+                "check the permissions and available space in the temporary directory",
+                _SELF_MANAGED_NEXT_STEP,
+            ),
+        ) from error
+    return path
+
+
 @contextmanager
 def managed_runtime(
     image: str,
@@ -388,41 +432,7 @@ def managed_runtime(
             probe_network = (
                 _create_probe_network(engine, name) if probe_only else None
             )
-            if target is not None and resolved_execution is not None:
-                raise RunExecutionError(
-                    "managed runtime cannot use both a step target and probe resolution data"
-                )
-            resolved_document: Mapping[str, Any] | None = resolved_execution
-            if target is not None:
-                resolved_document = {
-                    "bindings": [
-                        {
-                            "stepRevisionId": target.step_revision_id,
-                            "stepIdentity": target.identity,
-                            "runtimeKind": "custom-runner",
-                            "entryPoint": target.entry_point,
-                            "abi": CONTAINER_ABI,
-                            "schemaDigests": target.schema_digests,
-                        }
-                    ]
-                }
-            resolved_path: Path | None = None
-            if resolved_document is not None:
-                resolved_path = Path(temporary) / "resolved.json"
-                try:
-                    resolved_path.write_text(
-                        json.dumps(resolved_document, allow_nan=False),
-                        encoding="utf-8",
-                    )
-                    resolved_path.chmod(0o644)
-                except OSError as error:
-                    raise RunExecutionError(
-                        "could not prepare resolved execution data for the managed workload container",
-                        next_steps=(
-                            "check the permissions and available space in the temporary directory",
-                            _SELF_MANAGED_NEXT_STEP,
-                        ),
-                    ) from error
+            resolved_path = _write_resolved_execution(Path(temporary), target, resolved_execution)
             runtime = _published_runtime(
                 engine,
                 image,
@@ -603,15 +613,13 @@ def _podman_container_address(name: str, network: str | None) -> str:
     settings = networks.get(network)
     address = settings.get("IPAddress") if isinstance(settings, Mapping) else None
     if not isinstance(address, str) or not address:
-        raise RunExecutionError("the isolated Podman probe has no usable IPv4 address")
+        raise RunExecutionError(_UNUSABLE_PROBE_ADDRESS)
     try:
         parsed_address = ipaddress.ip_address(address)
     except ValueError:
-        raise RunExecutionError(
-            "the isolated Podman probe has no usable IPv4 address"
-        ) from None
+        raise RunExecutionError(_UNUSABLE_PROBE_ADDRESS) from None
     if not isinstance(parsed_address, ipaddress.IPv4Address):
-        raise RunExecutionError("the isolated Podman probe has no usable IPv4 address")
+        raise RunExecutionError(_UNUSABLE_PROBE_ADDRESS)
     return address
 
 

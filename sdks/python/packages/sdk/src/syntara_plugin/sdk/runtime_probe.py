@@ -65,49 +65,54 @@ def observe_runtime_image(
                 message = f"{message}: {detail}"
             raise RuntimeProbeError(message) from error
 
-    reports = {item.name: item for item in report.runtime_components}
-    if len(reports) != len(report.runtime_components):
+    return _runtime_observations(declarations, report.runtime_components)
+
+
+def _runtime_observations(
+    declarations: Sequence[Mapping[str, str]], reports: Sequence[Any]
+) -> list[dict[str, str]]:
+    """Match image Health results to declared probe targets."""
+
+    reports_by_name = {item.name: item for item in reports}
+    if len(reports_by_name) != len(reports):
         raise RuntimeProbeError("workload Health reported duplicate runtime component names")
-    observations: list[dict[str, str]] = []
-    for declaration in declarations:
-        name = declaration["name"]
-        executable = declaration["executable"]
-        observed = reports.get(name)
-        if observed is None:
-            observations.append(
-                {"name": name, "executable": executable, "verification": "unverified"}
-            )
-            continue
-        if observed.executable != executable:
-            raise RuntimeProbeError(
-                f"runtime component {name!r} reports a different executable than its RuntimeBinding"
-            )
-        if observed.verification not in {"verified", "unverified"}:
-            raise RuntimeProbeError(
-                f"runtime component {name!r} reports an invalid verification status"
-            )
-        if observed.verification == "verified" and observed.version:
-            if not _RUNTIME_VERSION.fullmatch(observed.version):
-                raise RuntimeProbeError(
-                    f"runtime component {name!r} reports an invalid version"
-                )
-            observations.append(
-                {
-                    "name": name,
-                    "executable": executable,
-                    "version": observed.version,
-                    "verification": "verified",
-                }
-            )
-        else:
-            if observed.version:
-                raise RuntimeProbeError(
-                    f"runtime component {name!r} reports a version without verification"
-                )
-            observations.append(
-                {"name": name, "executable": executable, "verification": "unverified"}
-            )
-    return observations
+    return [
+        _runtime_component_observation(declaration, reports_by_name.get(declaration["name"]))
+        for declaration in declarations
+    ]
+
+
+def _runtime_component_observation(
+    declaration: Mapping[str, str], observed: Any | None
+) -> dict[str, str]:
+    """Validate one reported component and return the resolved binding record."""
+
+    name = declaration["name"]
+    executable = declaration["executable"]
+    if observed is None:
+        return {"name": name, "executable": executable, "verification": "unverified"}
+    if observed.executable != executable:
+        raise RuntimeProbeError(
+            f"runtime component {name!r} reports a different executable than its RuntimeBinding"
+        )
+    if observed.verification not in {"verified", "unverified"}:
+        raise RuntimeProbeError(
+            f"runtime component {name!r} reports an invalid verification status"
+        )
+    if observed.verification == "verified" and observed.version:
+        if not _RUNTIME_VERSION.fullmatch(observed.version):
+            raise RuntimeProbeError(f"runtime component {name!r} reports an invalid version")
+        return {
+            "name": name,
+            "executable": executable,
+            "version": observed.version,
+            "verification": "verified",
+        }
+    if observed.version:
+        raise RuntimeProbeError(
+            f"runtime component {name!r} reports a version without verification"
+        )
+    return {"name": name, "executable": executable, "verification": "unverified"}
 
 
 def _probe_execution_document(

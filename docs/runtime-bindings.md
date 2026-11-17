@@ -97,19 +97,27 @@ spec:
             buildTarget: python-pdf-image
 ```
 
-Each image option declares the runtime components it is expected to use. The
-declaration names an absolute executable path but does not contain a version.
-When the SDK builds a workload image, it adds the declarations to the image's
-registration manifest, starts that exact image in a local probe with an
-egress-restricted internal network,
-and asks its gRPC `Health` endpoint for observed runtime metadata. The SDK
-writes the observed version and verification status into the resolved
-RuntimeBinding. Python and GNU Bash have built-in probes. Components without a
-probe remain `unverified`; a failed probe or executable mismatch stops the
-build. The SDK does not infer an image's runtime version from plugin tags or
-project dependency constraints. On macOS with Podman, the SDK uses a temporary
-OpenSSH tunnel through the Podman machine to query the workload on its internal
-network; the workload remains disconnected from external networks.
+Each image option declares the runtime components and absolute executable
+paths that the SDK should probe. These fields identify probe targets; they do
+not supply runtime versions. When the SDK builds a workload image, it adds the
+probe targets to the image's registration manifest, starts that exact image in
+a local probe with an egress-restricted internal network, and asks its gRPC
+`Health` endpoint for observed runtime metadata. The SDK writes the observed
+version and verification status into the resolved RuntimeBinding. Python and
+GNU Bash have built-in probes. Components without a probe remain `unverified`;
+a failed probe or executable mismatch stops the build. The SDK does not infer
+an image's runtime version from plugin tags or project dependency constraints.
+On macOS with Podman, the SDK uses a temporary OpenSSH tunnel through the
+Podman machine to query the workload on its internal network; the workload
+remains disconnected from external networks.
+
+The SDK does not treat OCI labels such as `io.syntara.runtime.language` and
+`io.syntara.runtime.version` as verification evidence. OCI does not define
+these Syntara-specific labels, and an image publisher can set a label that
+does not match the executable in the image. The probe result is the source for
+the version stored in the binding. A future catalog may expose such labels as
+search hints, but it should compare them with the probe result rather than
+trust them as the runtime version.
 
 For example, the source declaration contains no version:
 

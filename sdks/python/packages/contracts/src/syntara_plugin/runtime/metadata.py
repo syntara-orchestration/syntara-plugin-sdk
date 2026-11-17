@@ -117,7 +117,7 @@ def _probe_python(executable: str) -> str:
 
 def _probe_bash(executable: str) -> str:
     output = _run_probe(executable, ("--version",))
-    match = re.search(r"GNU bash, version ([0-9]+\.[0-9]+(?:\.[0-9]+)?)", output)
+    match = re.search(r"GNU bash, version (\d+\.\d+(?:\.\d+)?)", output, flags=re.ASCII)
     if match is None:
         raise RuntimeComponentProbeError("the declared Bash executable is not GNU Bash")
     return match.group(1)

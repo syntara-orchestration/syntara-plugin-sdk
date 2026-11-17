@@ -63,7 +63,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["components"],
-      "description": "Runtime components expected in this image option. Versions are observed from the built image and are not authored here.",
+      "description": "Runtime components and executable paths the SDK must probe in this image option. These are probe targets, not version metadata. The SDK observes versions from the exact image during build.",
       "properties": {
         "components": {
           "type": "array",

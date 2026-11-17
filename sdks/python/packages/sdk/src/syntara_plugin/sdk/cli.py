@@ -104,6 +104,9 @@ _RUN_COMMAND_PREFIX = "syntara-plugin run "
 _API_VERSION = "syntara.io/v1alpha1"
 _RUNTIME_BINDING_SPEC_LABEL = "RuntimeBinding spec"
 _RUNTIME_BINDING_WORKLOADS_LABEL = "RuntimeBinding workloads"
+_RUNTIME_BINDING_OPTION_LABEL = "RuntimeBinding workload option"
+_RUNTIME_BINDING_OPTION_IMAGE_LABEL = "RuntimeBinding option image"
+_RUNTIME_BINDING_OPTION_RUNTIME_LABEL = "RuntimeBinding option runtime"
 _RUNTIME_BINDING_PLUGIN_LABEL = "RuntimeBinding plugin"
 _RUNTIME_BINDING_SPEC_PLUGIN_LABEL = "RuntimeBinding spec.plugin"
 _RELEASE_PLUGIN_LABEL = "release plugin"
@@ -2634,15 +2637,15 @@ def _runtime_binding_build_targets(
             raise SettingsError(f"RuntimeBinding workload {workload_id} options must be a list")
         for option in options:
             image = _mapping(
-                _mapping(option, "RuntimeBinding workload option").get("image"),
-                "RuntimeBinding option image",
+                _mapping(option, _RUNTIME_BINDING_OPTION_LABEL).get("image"),
+                _RUNTIME_BINDING_OPTION_IMAGE_LABEL,
             )
             build_target = image.get("buildTarget")
             if not isinstance(build_target, str):
                 continue
             runtime = _mapping(
-                _mapping(option, "RuntimeBinding workload option").get("runtime"),
-                "RuntimeBinding option runtime",
+                _mapping(option, _RUNTIME_BINDING_OPTION_LABEL).get("runtime"),
+                _RUNTIME_BINDING_OPTION_RUNTIME_LABEL,
             )
             components = tuple(dict(_mapping(item, "runtime component")) for item in runtime["components"])
             current = (workload_id, components)
@@ -2769,15 +2772,15 @@ def _observe_runtime_binding_options(
     for workload_id, workload_value in workloads.items():
         workload = _mapping(workload_value, f"RuntimeBinding workload {workload_id}")
         for option_value in workload["options"]:
-            option = _mapping(option_value, "RuntimeBinding workload option")
-            image_source = _mapping(option.get("image"), "RuntimeBinding option image")
+            option = _mapping(option_value, _RUNTIME_BINDING_OPTION_LABEL)
+            image_source = _mapping(option.get("image"), _RUNTIME_BINDING_OPTION_IMAGE_LABEL)
             if "reference" in image_source:
                 reference = image_source["reference"]
             else:
                 reference = image_bindings.get(image_source["buildTarget"])
             if reference is None:
                 continue
-            declarations = _mapping(option.get("runtime"), "RuntimeBinding option runtime")[
+            declarations = _mapping(option.get("runtime"), _RUNTIME_BINDING_OPTION_RUNTIME_LABEL)[
                 "components"
             ]
             components = observe_runtime_image(
@@ -2833,8 +2836,8 @@ def _observe_resolved_runtime_options(
     for workload_id, workload_value in workloads.items():
         workload = _mapping(workload_value, f"RuntimeBinding workload {workload_id}")
         for option_value in workload["options"]:
-            option = _mapping(option_value, "RuntimeBinding workload option")
-            expected = _mapping(option.get("runtime"), "RuntimeBinding option runtime")[
+            option = _mapping(option_value, _RUNTIME_BINDING_OPTION_LABEL)
+            expected = _mapping(option.get("runtime"), _RUNTIME_BINDING_OPTION_RUNTIME_LABEL)[
                 "components"
             ]
             declarations = [
@@ -3552,6 +3555,17 @@ def _read_release_inventory(path: Path) -> Mapping[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SettingsError(f"release inventory is not valid JSON: {error}") from error
     inventory = _mapping(value, "release inventory")
+    _validate_release_inventory_header(inventory)
+    normalized = dict(inventory)
+    normalized["policy"] = _validated_release_inventory_policy(
+        inventory.get("policy", {"requirements": [], "buildResults": []})
+    )
+    return normalized
+
+
+def _validate_release_inventory_header(inventory: Mapping[str, Any]) -> None:
+    """Check required top-level fields and the inventory identity."""
+
     required = {"apiVersion", "kind", "images", "plugin", "runtimeBinding"}
     if not required.issubset(inventory) or set(inventory) - (required | {"policy"}):
         raise SettingsError("release inventory has unknown or missing top-level fields")
@@ -3560,7 +3574,11 @@ def _read_release_inventory(path: Path) -> Mapping[str, Any]:
         or inventory.get("kind") != "PluginReleaseInventory"
     ):
         raise SettingsError("unsupported release inventory kind or apiVersion")
-    policy = inventory.get("policy", {"requirements": [], "buildResults": []})
+
+
+def _validated_release_inventory_policy(policy: Any) -> Mapping[str, Any]:
+    """Validate build policy evidence and return its normalized document."""
+
     policy_document = _mapping(policy, "release inventory policy")
     if set(policy_document) != {"requirements", "buildResults"}:
         raise SettingsError("release inventory policy has unknown or missing fields")
@@ -3573,6 +3591,15 @@ def _read_release_inventory(path: Path) -> Mapping[str, Any]:
         or not isinstance(results, list)
     ):
         raise SettingsError("release inventory policy requirements or build results are invalid")
+    _validate_release_inventory_policy_results(results, requirements)
+    return dict(policy_document)
+
+
+def _validate_release_inventory_policy_results(
+    results: Sequence[Any], requirements: Sequence[str]
+) -> None:
+    """Ensure each recorded build result belongs to a requested check."""
+
     for item in results:
         result = _mapping(item, "release inventory policy build result")
         if (
@@ -3582,9 +3609,6 @@ def _read_release_inventory(path: Path) -> Mapping[str, Any]:
             or result.get("name") not in requirements
         ):
             raise SettingsError("release inventory policy contains an invalid build result")
-    normalized = dict(inventory)
-    normalized["policy"] = dict(policy_document)
-    return normalized
 
 
 def _release_policy_requirements(inventory: Mapping[str, Any]) -> tuple[str, ...]:
