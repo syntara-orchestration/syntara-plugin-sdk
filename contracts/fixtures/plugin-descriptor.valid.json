@@ -20,8 +20,8 @@
         "size": 14
       }
     },
-    "contractBundleDigest": "sha256:ff6d347dffbf9fabd68a88e4240e34331cccc7c7a9c5e66230a18b45a573921b",
-    "plugin_revision_id": "sha256:571a16d144f15b8f8409f5b83220492632a23fc2e11aa7a6faf062a26fe97f19",
+    "contractBundleDigest": "sha256:f846cdbc6e5c562a5dabe2b6701e50be305e203b5ff9e3fc604bb7fefbcd84ad",
+    "plugin_revision_id": "sha256:759f84080fc03e90396d47ba2f542bdc9d7ca3a53761839a50341102963543bf",
     "sdkVersion": "0.1.0-alpha.1",
     "documentation": {
       "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
@@ -53,7 +53,7 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "steps/create-issue.yaml",
-        "step_revision_id": "sha256:cdaf0960b91e244e1841ba368cb1b229c990557115c60a91baaef2772d3579e0",
+        "step_revision_id": "sha256:173b0f24ca8d4962ce04ac26833acbaf6df7a23c400891035496df50ef0ddc6b",
         "version": "0.1.0"
       },
       {
@@ -85,7 +85,7 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "controls/invoke.yaml",
-        "step_revision_id": "sha256:35affb0ba896f9b2fdb5ac3ea8098c1252ab2c87db672374c9fbe5ac0c0421a4",
+        "step_revision_id": "sha256:46693a3471b5e0b3957e131f65c37579a348fa7cbc938b5e60b5a8df901a76cb",
         "version": "0.1.0"
       },
       {
@@ -131,7 +131,7 @@
           "output": "sha256:9165019f477995f6b0f38b7225ae22d3aee26feabba71afb8a2552918ebce43a"
         },
         "sourcePath": "triggers/issue-opened.yaml",
-        "step_revision_id": "sha256:8342415a27350c76f701dd6e41ac7610c30ae2c9771a08e728a70f0c5f2e65a0",
+        "step_revision_id": "sha256:3083198b7ae485a1ba068b09b6fece52342d0f8d6e661cc91b738ba7ba8b84b4",
         "version": "0.1.0"
       }
     ],
