@@ -528,6 +528,95 @@ class InstalledStepManifest:
         return installed_step
 
 
+def _installed_step_runtime(installed_step: InstalledStepManifest) -> Mapping[str, Any]:
+    """Return a verified custom-runner runtime from the installed document."""
+
+    specification = installed_step.document.get("spec")
+    runtime = specification.get("runtime") if isinstance(specification, Mapping) else None
+    if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
+        raise StepBindingError("installed step type bindings require a custom-runner runtime")
+    return runtime
+
+
+def _require_unchanged_credential_contract(
+    installed_step: InstalledStepManifest, provenance: _InstalledStepProvenance
+) -> None:
+    """Reject credential declarations changed after installation."""
+
+    if installed_step.credential_names != provenance.credential_names:
+        raise StepBindingError("the installed credential declarations were changed")
+    if installed_step.credential_schemas is not provenance.credential_schemas:
+        raise StepBindingError("the installed credential schemas were changed")
+    if not _schema_matches_digest(
+        installed_step.credential_schemas, provenance.credential_schemas_digest
+    ):
+        raise StepBindingError("the installed credential schemas were changed")
+
+
+def _require_unchanged_step_schemas(
+    installed_step: InstalledStepManifest, provenance: _InstalledStepProvenance
+) -> None:
+    """Reject installed step schemas changed after installation."""
+
+    installed_schemas = (
+        installed_step.input_schema,
+        installed_step.output_schema,
+        installed_step.error_schema,
+    )
+    expected_digests = (
+        provenance.input_schema_digest,
+        provenance.output_schema_digest,
+        provenance.error_schema_digest,
+    )
+    for schema, expected_digest in zip(installed_schemas, expected_digests, strict=True):
+        if not _schema_matches_digest(schema, expected_digest):
+            raise StepBindingError("the installed step type schema was changed after installation")
+
+
+def _validate_descriptor_schemas(descriptor: StepDescriptor) -> None:
+    """Validate every canonical schema retained by an installed descriptor."""
+
+    schemas: tuple[
+        tuple[Literal["input_schema", "output_schema", "error_schema"], Mapping[str, Any]], ...
+    ] = (
+        ("input_schema", descriptor.input_schema),
+        ("output_schema", descriptor.output_schema),
+        ("error_schema", descriptor.error_schema),
+    )
+    for schema_name, schema in schemas:
+        try:
+            Draft202012Validator.check_schema(_thaw_json_document(schema))
+        except SchemaError as error:
+            message = f"manifest {schema_name} must be a valid JSON Schema"
+            raise StepBindingError(message) from error
+        _validate_schema_references(schema, schema_name)
+
+
+def _retain_installed_descriptor_provenance(
+    descriptor: StepDescriptor, provenance: _InstalledStepProvenance
+) -> None:
+    """Bind a descriptor to its immutable installed contract provenance."""
+
+    _INSTALLED_STEP_DESCRIPTOR_PROVENANCE.append(
+        _InstalledStepDescriptorProvenance(
+            descriptor_ref=ref(descriptor),
+            step_identity=descriptor.step_identity,
+            kind=descriptor.kind,
+            input_schema_source="manifest",
+            entry_point=provenance.entry_point,
+            input_schema=descriptor.input_schema,
+            input_schema_digest=provenance.input_schema_digest,
+            output_schema=descriptor.output_schema,
+            output_schema_digest=provenance.output_schema_digest,
+            error_schema=descriptor.error_schema,
+            error_schema_digest=provenance.error_schema_digest,
+            credential_names=provenance.credential_names,
+            credential_schemas=provenance.credential_schemas,
+            credential_schemas_digest=provenance.credential_schemas_digest,
+        )
+    )
+
+
 @dataclass(frozen=True)
 class StepDescriptor:
     """Declared identity and schemas associated with a Python implementation.
@@ -682,32 +771,12 @@ class StepDescriptor:
         if provenance is None:
             message = "installed step type bindings require a verified installed manifest"
             raise StepBindingError(message)
-        specification = installed_step.document.get("spec")
-        runtime = specification.get("runtime") if isinstance(specification, Mapping) else None
-        if not isinstance(runtime, Mapping) or runtime.get("kind") != "custom-runner":
-            message = "installed step type bindings require a custom-runner runtime"
-            raise StepBindingError(message)
-        if installed_step.credential_names != provenance.credential_names:
-            raise StepBindingError("the installed credential declarations were changed")
-        if (
-            installed_step.credential_schemas is not provenance.credential_schemas
-            or not _schema_matches_digest(
-                installed_step.credential_schemas, provenance.credential_schemas_digest
-            )
-        ):
-            raise StepBindingError("the installed credential schemas were changed")
+        runtime = _installed_step_runtime(installed_step)
+        _require_unchanged_credential_contract(installed_step, provenance)
         if runtime.get("entryPoint") != provenance.entry_point:
             message = "the installed step type entry point was changed after installation"
             raise StepBindingError(message)
-        if not _schema_matches_digest(
-            installed_step.input_schema, provenance.input_schema_digest
-        ) or not _schema_matches_digest(
-            installed_step.output_schema, provenance.output_schema_digest
-        ) or not _schema_matches_digest(
-            installed_step.error_schema, provenance.error_schema_digest
-        ):
-            message = "the installed step type schema was changed after installation"
-            raise StepBindingError(message)
+        _require_unchanged_step_schemas(installed_step, provenance)
         kind, _ = _step_kind_and_category(type(step))
         if kind is not installed_step.kind:
             message = (
@@ -723,39 +792,11 @@ class StepDescriptor:
             output_schema=provenance.output_schema,
             error_schema=provenance.error_schema,
         )
-        schemas: tuple[tuple[Literal["input_schema", "output_schema", "error_schema"], Mapping[str, Any]], ...] = (
-            ("input_schema", descriptor.input_schema),
-            ("output_schema", descriptor.output_schema),
-            ("error_schema", descriptor.error_schema),
-        )
-        for schema_name, schema in schemas:
-            try:
-                Draft202012Validator.check_schema(_thaw_json_document(schema))
-            except SchemaError as error:
-                message = f"manifest {schema_name} must be a valid JSON Schema"
-                raise StepBindingError(message) from error
-            _validate_schema_references(schema, schema_name)
+        _validate_descriptor_schemas(descriptor)
         object.__setattr__(descriptor, "input_schema_source", "manifest")
         object.__setattr__(descriptor, "credential_names", provenance.credential_names)
         object.__setattr__(descriptor, "credential_schemas", provenance.credential_schemas)
-        _INSTALLED_STEP_DESCRIPTOR_PROVENANCE.append(
-            _InstalledStepDescriptorProvenance(
-                descriptor_ref=ref(descriptor),
-                step_identity=descriptor.step_identity,
-                kind=descriptor.kind,
-                input_schema_source="manifest",
-                entry_point=provenance.entry_point,
-                input_schema=descriptor.input_schema,
-                input_schema_digest=provenance.input_schema_digest,
-                output_schema=descriptor.output_schema,
-                output_schema_digest=provenance.output_schema_digest,
-                error_schema=descriptor.error_schema,
-                error_schema_digest=provenance.error_schema_digest,
-                credential_names=provenance.credential_names,
-                credential_schemas=provenance.credential_schemas,
-                credential_schemas_digest=provenance.credential_schemas_digest,
-            )
-        )
+        _retain_installed_descriptor_provenance(descriptor, provenance)
         return descriptor
 
 

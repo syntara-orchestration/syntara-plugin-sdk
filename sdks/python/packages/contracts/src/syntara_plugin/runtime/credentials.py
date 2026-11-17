@@ -243,6 +243,21 @@ def _enqueue_children(value: Any, pending: list[Any], remaining: int) -> bool | 
     return None
 
 
+def _follow_local_pointer_part(current: Any, part: str, root: Any) -> Any:
+    """Resolve one validated JSON Pointer part within the root resource."""
+
+    if current is not root and isinstance(current, Mapping) and "$id" in current:
+        return None
+    if re.search(r"~(?![01])", part):
+        return None
+    part = part.replace("~1", "/").replace("~0", "~")
+    if isinstance(current, Mapping):
+        return current[part]
+    if isinstance(current, (list, tuple)) and re.fullmatch(r"0|[1-9]\d*", part):
+        return current[int(part)]
+    return None
+
+
 def _local_schema_reference(root: Any, reference: Any) -> Any:
     """Resolve a local JSON Pointer without fetching external schemas."""
 
@@ -256,20 +271,32 @@ def _local_schema_reference(root: Any, reference: Any) -> Any:
             return None
         current = root
         for part in pointer[1:].split("/"):
-            if current is not root and isinstance(current, Mapping) and "$id" in current:
-                return None
-            if re.search(r"~(?![01])", part):
-                return None
-            part = part.replace("~1", "/").replace("~0", "~")
-            if isinstance(current, Mapping):
-                current = current[part]
-            elif isinstance(current, (list, tuple)) and re.fullmatch(r"0|[1-9][0-9]*", part):
-                current = current[int(part)]
-            else:
+            current = _follow_local_pointer_part(current, part, root)
+            if current is None:
                 return None
         return current
-    except (KeyError, IndexError, ValueError, UnicodeError):
+    except (KeyError, IndexError, ValueError):
         return None
+
+
+def _literal_pattern_matches(pattern: Any, key: str, budget: list[int]) -> bool | None:
+    """Match the supported literal subset of JSON Schema property patterns."""
+
+    if not isinstance(pattern, str):
+        return None
+    budget[0] -= 1 + len(pattern) + len(key)
+    if budget[0] < 0 or not re.fullmatch(r"\^?[A-Za-z0-9_-]+\$?", pattern):
+        return None
+    starts = pattern.startswith("^")
+    ends = pattern.endswith("$")
+    literal = pattern[int(starts):len(pattern) - int(ends)]
+    if starts and ends:
+        return key == literal
+    if starts:
+        return key.startswith(literal)
+    if ends:
+        return key.endswith(literal)
+    return literal in key
 
 
 def _additional_properties_apply(schema: Mapping[str, Any], key: Any, budget: list[int]) -> bool:
@@ -279,28 +306,85 @@ def _additional_properties_apply(schema: Mapping[str, Any], key: Any, budget: li
     if not isinstance(patterns, Mapping) or not isinstance(key, str):
         return False
     for pattern in patterns:
-        if not isinstance(pattern, str):
-            return False
-        # Literal validation and substring search are linear in their input lengths.
-        budget[0] -= 1 + len(pattern) + len(key)
-        if budget[0] < 0:
-            return False
-        if not re.fullmatch(r"\^?[A-Za-z0-9_-]+\$?", pattern):
-            return False
-        starts = pattern.startswith("^")
-        ends = pattern.endswith("$")
-        literal = pattern[int(starts):len(pattern) - int(ends)]
-        if starts and ends:
-            matches = key == literal
-        elif starts:
-            matches = key.startswith(literal)
-        elif ends:
-            matches = key.endswith(literal)
-        else:
-            matches = literal in key
-        if matches:
+        matches = _literal_pattern_matches(pattern, key, budget)
+        if matches is None or matches:
             return False
     return True
+
+
+def _direct_child_declarations(
+    schema: Mapping[str, Any], key: Any, budget: list[int], include_additional: bool
+) -> list[Any]:
+    """Collect declarations written directly on a schema object."""
+
+    declarations: list[Any] = []
+    if key is None:
+        if "items" in schema and isinstance(schema["items"], (Mapping, bool)):
+            declarations.append(schema["items"])
+    else:
+        properties = schema.get("properties")
+        if isinstance(properties, Mapping) and key in properties:
+            declarations.append(properties[key])
+        elif include_additional:
+            additional = schema.get("additionalProperties")
+            if isinstance(additional, (Mapping, bool)) and _additional_properties_apply(
+                schema, key, budget
+            ):
+                declarations.append(additional)
+    return declarations
+
+
+def _referenced_child_declaration(
+    schema: Mapping[str, Any], root: Any, key: Any, budget: list[int],
+    ancestors: frozenset[int], include_additional: bool,
+) -> Any:
+    """Resolve and inspect a local reference, if one is declared."""
+
+    if "$ref" not in schema:
+        return None
+    target = _local_schema_reference(root, schema["$ref"])
+    return _declared_child_schema(
+        target, root, key, budget, ancestors, include_additional=include_additional
+    )
+
+
+def _all_of_child_declarations(
+    schema: Mapping[str, Any], root: Any, key: Any, budget: list[int],
+    ancestors: frozenset[int], include_additional: bool,
+) -> list[Any]:
+    """Collect every available declaration from an allOf."""
+
+    branches = schema.get("allOf")
+    if not isinstance(branches, (list, tuple)):
+        return []
+    declarations: list[Any] = []
+    for branch in branches:
+        child = _declared_child_schema(
+            branch, root, key, budget, ancestors, include_additional=include_additional
+        )
+        if child is not None:
+            declarations.append(child)
+    return declarations
+
+
+def _alternative_child_declaration(
+    schema: Mapping[str, Any], keyword: str, root: Any, key: Any, budget: list[int],
+    ancestors: frozenset[int], include_additional: bool,
+) -> Any:
+    """Return an alternative only when every branch declares the child."""
+
+    branches = schema.get(keyword)
+    if not isinstance(branches, (list, tuple)) or not branches:
+        return None
+    children = [
+        _declared_child_schema(
+            branch, root, key, budget, ancestors, include_additional=include_additional
+        )
+        for branch in branches
+    ]
+    if all(child is not None for child in children):
+        return {keyword: children}
+    return None
 
 
 def _declared_child_schema(
@@ -319,46 +403,23 @@ def _declared_child_schema(
     if schema is not root and "$id" in schema:
         return None
     ancestors = ancestors | {id(schema)}
-    declarations: list[Any] = []
-    if key is None:
-        if "items" in schema and isinstance(schema["items"], (Mapping, bool)):
-            declarations.append(schema["items"])
-    else:
-        properties = schema.get("properties")
-        if isinstance(properties, Mapping) and key in properties:
-            declarations.append(properties[key])
-        elif include_additional:
-            additional = schema.get("additionalProperties")
-            if isinstance(additional, (Mapping, bool)) and _additional_properties_apply(
-                schema, key, budget
-            ):
-                declarations.append(additional)
-    if "$ref" in schema:
-        target = _local_schema_reference(root, schema["$ref"])
-        child = _declared_child_schema(
-            target, root, key, budget, ancestors, include_additional=include_additional
+    declarations = _direct_child_declarations(schema, key, budget, include_additional)
+    referenced = _referenced_child_declaration(
+        schema, root, key, budget, ancestors, include_additional
+    )
+    if referenced is not None:
+        declarations.append(referenced)
+    declarations.extend(
+        _all_of_child_declarations(
+            schema, root, key, budget, ancestors, include_additional
         )
-        if child is not None:
-            declarations.append(child)
-    all_of = schema.get("allOf")
-    if isinstance(all_of, (list, tuple)):
-        for branch in all_of:
-            child = _declared_child_schema(
-                branch, root, key, budget, ancestors, include_additional=include_additional
-            )
-            if child is not None:
-                declarations.append(child)
+    )
     for keyword in ("anyOf", "oneOf"):
-        branches = schema.get(keyword)
-        if isinstance(branches, (list, tuple)) and branches:
-            children = [
-                _declared_child_schema(
-                    branch, root, key, budget, ancestors, include_additional=include_additional
-                )
-                for branch in branches
-            ]
-            if all(child is not None for child in children):
-                declarations.append({keyword: children})
+        alternative = _alternative_child_declaration(
+            schema, keyword, root, key, budget, ancestors, include_additional
+        )
+        if alternative is not None:
+            declarations.append(alternative)
     if not declarations:
         return None
     if len(declarations) == 1:
@@ -521,6 +582,47 @@ class _CredentialScope:
         with self._record_lock:
             self._record_document(document, self._schemas.get(self._read_name.get()))
 
+    def _enqueue_mapping_children(
+        self, value: Mapping[Any, Any], current_schema: Any, root_schema: Any,
+        pending: list[tuple[Any, Any]], schema_budget: list[int], nodes: int,
+    ) -> int | None:
+        """Queue object values and any opaque keys within the node budget."""
+
+        if 2 * len(value) > _MAX_CREDENTIAL_NODES - nodes - len(pending):
+            return None
+        added_nodes = 0
+        for key, child in value.items():
+            declaration = _declared_child_schema(
+                current_schema, root_schema, key, schema_budget
+            )
+            child_schema = _declared_child_schema(
+                current_schema, root_schema, key, schema_budget, include_additional=True
+            )
+            if schema_budget[0] < 0:
+                return None
+            if declaration is None:
+                pending.append((key, None))
+            else:
+                # Public keys still count towards the traversal budget.
+                added_nodes += 1
+            pending.append((child, child_schema))
+        return added_nodes
+
+    def _enqueue_sequence_children(
+        self, value: list[Any] | tuple[Any, ...], current_schema: Any,
+        root_schema: Any, pending: list[tuple[Any, Any]], schema_budget: list[int],
+        nodes: int,
+    ) -> bool:
+        """Queue array items and their schemas within the node budget."""
+
+        if len(value) > _MAX_CREDENTIAL_NODES - nodes - len(pending):
+            return False
+        items_schema = _declared_child_schema(current_schema, root_schema, None, schema_budget)
+        if schema_budget[0] < 0:
+            return False
+        pending.extend((child, items_schema) for child in value)
+        return True
+
     def _record_document(self, document: Mapping[str, Any], schema: Any) -> None:
         self._has_read = True
         pending: list[tuple[Any, Any]] = [(document, schema)]
@@ -533,34 +635,19 @@ class _CredentialScope:
                 self._overflow = True
                 break
             if isinstance(value, Mapping):
-                if 2 * len(value) > _MAX_CREDENTIAL_NODES - nodes - len(pending):
+                added_nodes = self._enqueue_mapping_children(
+                    value, current_schema, schema, pending, schema_budget, nodes
+                )
+                if added_nodes is None:
                     self._overflow = True
                     break
-                for key, child in value.items():
-                    declaration = _declared_child_schema(
-                        current_schema, schema, key, schema_budget
-                    )
-                    child_schema = _declared_child_schema(
-                        current_schema, schema, key, schema_budget, include_additional=True
-                    )
-                    if schema_budget[0] < 0:
-                        self._overflow = True
-                        break
-                    if declaration is None:
-                        pending.append((key, None))
-                    else:
-                        # Public keys still count towards the traversal budget.
-                        nodes += 1
-                    pending.append((child, child_schema))
+                nodes += added_nodes
             elif isinstance(value, (list, tuple)):
-                if len(value) > _MAX_CREDENTIAL_NODES - nodes - len(pending):
+                if not self._enqueue_sequence_children(
+                    value, current_schema, schema, pending, schema_budget, nodes
+                ):
                     self._overflow = True
                     break
-                items = _declared_child_schema(current_schema, schema, None, schema_budget)
-                if schema_budget[0] < 0:
-                    self._overflow = True
-                    break
-                pending.extend((child, items) for child in value)
             else:
                 self._record_leaf(value)
 
