@@ -316,10 +316,25 @@ jobs:
           ref: ${{ needs.changes.outputs.base_sha }}
           path: sdk
           persist-credentials: false
+      - name: Resolve the base commit's step-types pin
+        id: base-pin
+        working-directory: sdk
+        run: |
+          # The recomputed baseline must run against the step-types revision
+          # the BASE commit pins, not this pull request's: a pin bump is
+          # judged strictly, so an incompatibility introduced by the pin
+          # itself must not look inherited.
+          pin="$(sed -n "s/^.*STEP_TYPES_REF:.*'\([^']*\)'.*$/\1/p" .github/workflows/step-types-compat.yml | tail -n 1)"
+          if [ -z "$pin" ]; then
+            echo "::error title=Base pin unavailable::Could not read STEP_TYPES_REF from the base commit's workflow; the baseline cannot be recomputed."
+            exit 1
+          fi
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          echo "base commit's step-types pin: $pin"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: syntara-orchestration/syntara-step-types
-          ref: ${{ needs.discover.outputs.pin }}
+          ref: ${{ steps.base-pin.outputs.pin }}
           path: step-types
           persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7

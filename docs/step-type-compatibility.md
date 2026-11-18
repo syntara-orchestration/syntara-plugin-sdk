@@ -162,10 +162,12 @@ downloaded when a leg fails. When that run's reports are unavailable (the
 merge happened minutes ago and it is still running, it was cancelled, or its
 artifacts expired after 90 days), the workflow recomputes them itself: a
 `baseline-recompute` job checks out the base commit, builds its wheels, and
-runs the same legs, so the pull request is self-sufficient and nobody
-refreshes anything by hand. When only the gate failed (after a label change,
-for example), re-running the `compat-report` job alone is enough, and the
-legs are reused.
+runs the same legs against the step-types revision that commit pins (a pin
+bump stays strictly judged: the pull request's new pin never becomes its own
+baseline), so the pull request is self-sufficient and nobody refreshes
+anything by hand. When only the gate failed (after a label change, for
+example), re-running the `compat-report` job alone is enough, and the legs
+are reused.
 
 ## The pinned revision
 
