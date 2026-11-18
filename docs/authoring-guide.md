@@ -612,8 +612,8 @@ as a nonzero-status result, while an unexpected exception becomes a terminal
 finish, raise `ContainerInvocationError` instead, as the next section shows.
 The failure code, message, and retryability are handed to the platform,
 which owns retry policy. The [contract registry](../contracts/README.md) lists
-the allowed category and code pairs. `FailureCode` is a separate registry for
-terminal failures with no wrapper.
+the allowed category/code pairs and explains when to use each code.
+`FailureCode` is a separate registry for terminal failures with no wrapper.
 
 ### Signal a terminal failure
 

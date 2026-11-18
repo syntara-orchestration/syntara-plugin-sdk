@@ -145,6 +145,33 @@ machine-readable reason. The registry is closed and each code has one category:
 - `timeout`: `TIMEOUT_EXCEEDED`; `cancelled`: `CANCELLED`; `policy`: `POLICY_DENIED`
 - `contract`: `CONTRACT_VIOLATION`; `internal`: `INTERNAL_ERROR`; `unknown`: `UNKNOWN`
 
+### Deliberate step failure codes
+
+Use these codes only in `errorResult`, when the step invocation completed and
+the step deliberately reported a failure. The step author sets `retryable`
+from the observed condition; the descriptions identify the condition and do
+not prescribe the platform retry policy.
+
+| Category | Code | Meaning |
+| --- | --- | --- |
+| `validation` | `INVALID_INPUT` | The supplied input cannot be accepted before the step performs its intended work. |
+| `validation` | `VALIDATION_FAILED` | The step evaluated input or business data and found it invalid for this operation. |
+| `validation` | `MISCONFIGURATION` | Required step configuration is missing, invalid, or inconsistent. |
+| `validation` | `UNSUPPORTED` | The request asks the step to perform a recognized operation, version, or option that it does not support. |
+| `authentication` | `AUTHENTICATION_FAILED` | The supplied identity or credential could not be authenticated. |
+| `authorization` | `AUTHORIZATION_FAILED` | An authenticated identity lacks permission for the requested operation. |
+| `business` | `BUSINESS_RULE_FAILED` | The request is valid but violates a domain rule enforced by the step or its service. |
+| `dependency` | `DEPENDENCY_FAILED` | A required external dependency failed for a reason not represented by a more specific dependency code. |
+| `dependency` | `RATE_LIMITED` | A dependency rejected the request because its rate limit was exceeded. |
+| `dependency` | `RESOURCE_EXHAUSTED` | A dependency or required local resource has insufficient capacity to complete the request. |
+| `dependency` | `NOT_FOUND` | A required remote resource does not exist or is unavailable under the requested identifier. |
+| `timeout` | `TIMEOUT_EXCEEDED` | The step's intended operation exceeded its applicable timeout. |
+| `cancelled` | `CANCELLED` | The operation stopped because cancellation was requested. |
+| `policy` | `POLICY_DENIED` | A policy decision rejected the operation. |
+| `contract` | `CONTRACT_VIOLATION` | The step or dependency produced data that violates its declared application-level contract. |
+| `internal` | `INTERNAL_ERROR` | The step reached an unexpected internal condition that is safe to report but has no more specific code. |
+| `unknown` | `UNKNOWN` | The step cannot safely classify the completed failure more precisely. |
+
 `retryable` is an advisory for this failure: true means another attempt using the
 same step definition and workflow input may succeed; false means no change is
 expected. It does not prescribe a retry policy. This registry is separate from
@@ -167,6 +194,28 @@ execution began and is known not to have completed; `unknown` means the runtime
 cannot determine whether execution completed. These values describe execution
 completion knowledge, not retryability. A `ContainerFailure` is not a deliberate
 step type result and carries no `StandardOutputWrapper`.
+
+### Container failure codes
+
+Use these codes only in `ContainerFailure`, when the runtime cannot produce a
+valid SDK wrapper. `retryable` remains an advisory for the observed failure.
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_INPUT` | The runtime rejected the invocation before it could begin execution. |
+| `AUTHENTICATION_FAILED` | The runtime or a required dependency could not authenticate with the supplied credentials or identity. |
+| `AUTHORIZATION_FAILED` | The runtime or a required dependency denied an authenticated request. |
+| `REMOTE_REJECTED` | A remote runtime or service rejected the invocation for a reason outside the other terminal-failure codes. |
+| `NOT_FOUND` | A required runtime resource, endpoint, image, or remote object could not be found. |
+| `CONFLICT` | The runtime detected a conflicting invocation or resource state that prevents a safe terminal result. |
+| `RATE_LIMITED` | A runtime dependency or transport endpoint rejected work because its rate limit was exceeded. |
+| `UPSTREAM_TRANSIENT` | A temporary upstream runtime, network, or service condition prevented completion. |
+| `TIMEOUT` | The runtime or transport timed out before it could produce a valid wrapper. |
+| `CANCELLED` | The invocation was cancelled before the runtime could produce a valid wrapper. |
+| `POLICY_DENIED` | Runtime or platform policy rejected the invocation. |
+| `ABI_VIOLATION` | The workload or peer violated the container ABI, including invalid protocol data or an incompatible runtime contract. |
+| `OUTCOME_UNKNOWN` | The runtime cannot determine a valid terminal outcome, including an unexpected exception, stream closure, or serialization failure. |
+| `CREDENTIAL_SCAN_LIMIT` | Credential scanning reached its safety limit before the runtime could complete the required scan. |
 
 The wrapper schema does not redefine protobuf transport fields. The
 `ContainerService` ABI remains the protocol contract for transporting runtime
