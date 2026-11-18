@@ -79,6 +79,7 @@ from .http import (
     map_http_response,
 )
 from .manifest_validation import ManifestInputValidationError
+from .metadata import supports_runtime_probe
 from .outcome import (
     ErrorCategory,
     ErrorMessage,
@@ -235,6 +236,7 @@ __all__ = [
     "StepExecutor",
     "StepFailure",
     "StepInputValidationError",
+    "supports_runtime_probe",
     "StepRegistry",
     "StepCategory",
     "StepKind",

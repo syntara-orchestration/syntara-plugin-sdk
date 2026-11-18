@@ -30,6 +30,9 @@ build:
       repository: quay.io/acme/report-tools-runtime
       tag: 1.0.0-python-base
       platform: linux/amd64
+      runtimeMetadata:
+        language: python
+        version: "3.12.8"
     python-pdf-image:
       engine: podman
       context: .
@@ -100,6 +103,7 @@ Each `build.workloads.<buildTarget>` entry accepts:
 | `repository` | Optional destination repository; defaults to `registry.workloadRepository`. |
 | `tag` | Local and temporary registry tag. The release identity is the resulting digest. |
 | `platform` | Target OS and architecture, such as `linux/amd64`. |
+| `runtimeMetadata` | Optional `language` and `version` to write as Syntara OCI image annotations. For an SDK-built image, provide these values unless the resulting image already carries both annotations. The SDK checks them against a supported runtime probe. For a prebuilt image reference, the annotations must already exist on that image. If the image and settings provide no complete pair, build fails. |
 
 For image-only updates, the SDK uses the exact plugin OCI archive supplied to
 `build --plugin-artifact-archive`. If the source binding manifest still names
@@ -120,9 +124,11 @@ For image-only updates, the SDK uses the exact plugin OCI archive supplied to
 
 `policy.requirements` is an optional list of checks applied by `build` and
 `publish`. It defaults to an empty list. The current check is
-`verified-runtime`, which requires every RuntimeBinding image option to report
-a supported runtime version. The special value `all` selects every check in
-the installed SDK:
+`verified-runtime`, which requires every RuntimeBinding image option's
+annotated language and version to match a supported runtime probe. A missing
+or unverified probe for a supported language already fails the build; this
+requirement also rejects languages for which the SDK has no probe. The special
+value `all` selects every check in the installed SDK:
 
 ```yaml
 policy:

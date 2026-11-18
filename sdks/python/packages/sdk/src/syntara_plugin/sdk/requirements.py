@@ -71,12 +71,8 @@ def _require_verified_runtimes(
     for option in runtime_options:
         workload = str(option.get("workload", "unknown"))
         option_name = str(option.get("option", "unknown"))
-        components = option.get("components", ())
-        if not isinstance(components, Sequence) or isinstance(components, str):
-            raise RequirementError("runtime evidence has an invalid components list")
-        for component in components:
-            if not isinstance(component, Mapping) or component.get("verification") != "verified":
-                unverified.append(f"{workload}/{option_name}")
+        if option.get("verification") != "verified":
+            unverified.append(f"{workload}/{option_name}")
     if unverified:
         labels = ", ".join(sorted(set(unverified)))
         raise RequirementError(

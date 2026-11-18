@@ -20,8 +20,7 @@
         "size": 14
       }
     },
-    "contractBundleDigest": "sha256:f846cdbc6e5c562a5dabe2b6701e50be305e203b5ff9e3fc604bb7fefbcd84ad",
-    "plugin_revision_id": "sha256:759f84080fc03e90396d47ba2f542bdc9d7ca3a53761839a50341102963543bf",
+    "contractBundleDigest": "sha256:556e65cad1e5e10869dade172cd79e711e80950533a13d20e0b5c686316bc7fe",
     "sdkVersion": "0.1.0-alpha.1",
     "documentation": {
       "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
@@ -53,8 +52,8 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "steps/create-issue.yaml",
-        "step_revision_id": "sha256:173b0f24ca8d4962ce04ac26833acbaf6df7a23c400891035496df50ef0ddc6b",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "step_revision_id": "sha256:39ded4a5806c818e282a9ff0aae5d2e0dc2ba25f4b16c45fb63311087d5f645e"
       },
       {
         "identity": "acme.issue-tools.invoke-deploy",
@@ -85,8 +84,8 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "controls/invoke.yaml",
-        "step_revision_id": "sha256:46693a3471b5e0b3957e131f65c37579a348fa7cbc938b5e60b5a8df901a76cb",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "step_revision_id": "sha256:41bb75f81f5bef0a0f33e141d0f77b743839aeec11b6d34673a0d67c560a1652"
       },
       {
         "configuration": {
@@ -131,8 +130,8 @@
           "output": "sha256:9165019f477995f6b0f38b7225ae22d3aee26feabba71afb8a2552918ebce43a"
         },
         "sourcePath": "triggers/issue-opened.yaml",
-        "step_revision_id": "sha256:3083198b7ae485a1ba068b09b6fece52342d0f8d6e661cc91b738ba7ba8b84b4",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "step_revision_id": "sha256:f38ed22dcbc28b881fa30ad2cb8ebe55f6ebe64901c80aa8d2e9b2215b55096f"
       }
     ],
     "workloads": {
@@ -140,6 +139,7 @@
         "abi": "syntara.container/v1alpha1",
         "image": "quay.io/acme/issue-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
-    }
+    },
+    "plugin_revision_id": "sha256:1a59789c8dcceb1add3218e95f4c54259cfc2ae7b3109fbf4a39fa3fb40e7136"
   }
 }

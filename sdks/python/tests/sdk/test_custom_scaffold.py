@@ -246,15 +246,20 @@ def test_generated_workspace_build_creates_local_runtime_binding_release(
     )
     monkeypatch.setattr(
         "syntara_plugin.sdk.cli.observe_runtime_image",
-        lambda _image, declarations, **_kwargs: [
-            {
-                "name": item["name"],
-                "executable": item["executable"],
-                "version": "3.12.8",
-                "verification": "verified",
-            }
-            for item in declarations
-        ],
+        lambda _image, declarations, **_kwargs: {
+            "language": "python",
+            "version": "3.12.8",
+            "verification": "verified",
+            "components": [
+                {
+                    "name": item["name"],
+                    "executable": item["executable"],
+                    "version": "3.12.8",
+                    "verification": "verified",
+                }
+                for item in declarations
+            ],
+        },
     )
     assert main(["build", str(workspace / "plugin.yaml"), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)

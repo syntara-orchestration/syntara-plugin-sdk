@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from syntara_plugin.contracts import registration_manifest
+from syntara_plugin.runtime import supports_runtime_probe
 from syntara_plugin.runtime.container import ContainerClient, ContainerHealth, ContainerRemoteError
 
 from .container_engine import load_oci_archive, managed_runtime
@@ -21,6 +23,9 @@ from .workload import WorkloadBuildError
 
 _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 _RUNTIME_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+()_-]{0,255}$")
+_RUNTIME_LANGUAGE = re.compile(r"^[a-z][a-z0-9.+_-]{0,63}$")
+_RUNTIME_LANGUAGE_ANNOTATION = "io.syntara.runtime.language"
+_RUNTIME_VERSION_ANNOTATION = "io.syntara.runtime.version"
 _PROBE_STARTUP_SECONDS = 15.0
 
 
@@ -37,8 +42,9 @@ def observe_runtime_image(
     archive: Path | None = None,
     auth_file: Path | None = None,
     allow_insecure_loopback_http: bool = False,
-) -> list[dict[str, str]]:
-    """Read a custom-runner Health report and match it to source declarations."""
+    expected_metadata: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Read image annotations and compare them with supported Health probes."""
 
     with _image_available(
         image,
@@ -46,6 +52,11 @@ def observe_runtime_image(
         auth_file=auth_file,
         allow_insecure_loopback_http=allow_insecure_loopback_http,
     ) as local_image:
+        metadata = _read_runtime_annotations(local_image)
+        if expected_metadata is not None and dict(expected_metadata) != metadata:
+            raise RuntimeProbeError(
+                "runtime annotations on the digest-pinned image differ from the build settings"
+            )
         try:
             resolved_execution = _probe_execution_document(descriptor, workload_id)
             with managed_runtime(
@@ -65,7 +76,65 @@ def observe_runtime_image(
                 message = f"{message}: {detail}"
             raise RuntimeProbeError(message) from error
 
-    return _runtime_observations(declarations, report.runtime_components)
+    components = _runtime_observations(declarations, report.runtime_components)
+    matching = next(
+        (item for item in components if item["name"].casefold() == metadata["language"]),
+        None,
+    )
+    if matching is None:
+        raise RuntimeProbeError(
+            f"runtime language {metadata['language']!r} has no matching component declaration"
+        )
+    verification = "unverified"
+    if supports_runtime_probe(metadata["language"]) and matching.get("verification") != "verified":
+        raise RuntimeProbeError(
+            f"supported runtime {metadata['language']!r} was not verified by its declared "
+            "executable; check runtime.components and the image"
+        )
+    if matching.get("verification") == "verified" and supports_runtime_probe(metadata["language"]):
+        if matching.get("version") != metadata["version"]:
+            raise RuntimeProbeError(
+                "runtime version annotation differs from the version reported by its executable"
+            )
+        verification = "verified"
+    return metadata | {"verification": verification, "components": components}
+
+
+def _read_runtime_annotations(image: str) -> dict[str, str]:
+    """Read and validate runtime annotations from the exact local image ID."""
+
+    try:
+        completed = subprocess.run(
+            ["podman", "image", "inspect", "--format", "{{json .Annotations}}", image],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeProbeError("could not inspect the digest-pinned workload image") from error
+    if completed.returncode != 0:
+        raise RuntimeProbeError("could not inspect the digest-pinned workload image")
+    try:
+        annotations = json.loads(completed.stdout.strip() or "null")
+    except json.JSONDecodeError as error:
+        raise RuntimeProbeError("workload image annotations are not valid JSON") from error
+    if annotations is None:
+        annotations = {}
+    if not isinstance(annotations, Mapping):
+        raise RuntimeProbeError("workload image annotations must be an object")
+    language = annotations.get(_RUNTIME_LANGUAGE_ANNOTATION)
+    version = annotations.get(_RUNTIME_VERSION_ANNOTATION)
+    if not isinstance(language, str) or not isinstance(version, str):
+        raise RuntimeProbeError(
+            "workload image is missing Syntara runtime annotations; provide both "
+            "io.syntara.runtime.language and io.syntara.runtime.version"
+        )
+    if _RUNTIME_LANGUAGE.fullmatch(language) is None:
+        raise RuntimeProbeError("workload image runtime language annotation is invalid")
+    if _RUNTIME_VERSION.fullmatch(version) is None:
+        raise RuntimeProbeError("workload image runtime version annotation is invalid")
+    return {"language": language, "version": version}
 
 
 def _runtime_observations(
@@ -89,8 +158,13 @@ def _runtime_component_observation(
 
     name = declaration["name"]
     executable = declaration["executable"]
-    if observed is None:
+    if not supports_runtime_probe(name):
         return {"name": name, "executable": executable, "verification": "unverified"}
+    if observed is None:
+        raise RuntimeProbeError(
+            f"supported runtime component {name!r} was not reported by Health; check its "
+            "runtime.components executable declaration"
+        )
     if observed.executable != executable:
         raise RuntimeProbeError(
             f"runtime component {name!r} reports a different executable than its RuntimeBinding"
@@ -99,20 +173,18 @@ def _runtime_component_observation(
         raise RuntimeProbeError(
             f"runtime component {name!r} reports an invalid verification status"
         )
-    if observed.verification == "verified" and observed.version:
-        if not _RUNTIME_VERSION.fullmatch(observed.version):
-            raise RuntimeProbeError(f"runtime component {name!r} reports an invalid version")
-        return {
-            "name": name,
-            "executable": executable,
-            "version": observed.version,
-            "verification": "verified",
-        }
-    if observed.version:
+    if observed.verification != "verified" or not observed.version:
         raise RuntimeProbeError(
-            f"runtime component {name!r} reports a version without verification"
+            f"supported runtime component {name!r} was not verified by its executable probe"
         )
-    return {"name": name, "executable": executable, "verification": "unverified"}
+    if not _RUNTIME_VERSION.fullmatch(observed.version):
+        raise RuntimeProbeError(f"runtime component {name!r} reports an invalid version")
+    return {
+        "name": name,
+        "executable": executable,
+        "version": observed.version,
+        "verification": "verified",
+    }
 
 
 def _probe_execution_document(
@@ -167,7 +239,9 @@ def _read_health_report(
                 time.sleep(0.25)
     finally:
         channel.close()
-    raise RuntimeProbeError("workload image did not provide a runtime Health response") from last_error
+    raise RuntimeProbeError(
+        "workload image did not provide a runtime Health response"
+    ) from last_error
 
 
 @contextmanager
@@ -184,14 +258,18 @@ def _image_available(
             with load_oci_archive(archive, expected_digest=expected_digest) as local_image:
                 yield local_image
         except (IndexError, ValueError, RunExecutionError) as error:
-            raise RuntimeProbeError("workload archive does not match its immutable image reference") from error
+            raise RuntimeProbeError(
+                "workload archive does not match its immutable image reference"
+            ) from error
         return
 
     if shutil.which("podman") is None:
         raise RuntimeProbeError("Podman is required to probe a prebuilt workload image")
     existed = _image_id(image) is not None
     if not existed:
-        _pull_image(image, auth_file=auth_file, allow_insecure_loopback_http=allow_insecure_loopback_http)
+        _pull_image(
+            image, auth_file=auth_file, allow_insecure_loopback_http=allow_insecure_loopback_http
+        )
     image_id = _image_id(image)
     if image_id is None:
         raise RuntimeProbeError("Podman could not resolve the immutable workload image")
@@ -250,7 +328,9 @@ def _run_podman(arguments: Sequence[str]) -> str:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeProbeError("Podman could not prepare the workload image for probing") from error
+        raise RuntimeProbeError(
+            "Podman could not prepare the workload image for probing"
+        ) from error
     if completed.returncode != 0:
         raise RuntimeProbeError("Podman could not prepare the workload image for probing")
     return completed.stdout.strip()

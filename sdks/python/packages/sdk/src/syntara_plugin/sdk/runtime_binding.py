@@ -120,7 +120,7 @@ def resolve_runtime_binding(
     plugin_repository: str,
     plugin_digest: str,
     image_bindings: Mapping[str, str],
-    runtime_observations: Mapping[tuple[str, str], list[Mapping[str, str]]] | None = None,
+    runtime_observations: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve source build targets to immutable image references for one plugin."""
 
@@ -171,7 +171,7 @@ def resolve_runtime_binding(
 def _resolve_workload_options(
     source_workloads: Mapping[str, Any],
     image_bindings: Mapping[str, str],
-    runtime_observations: Mapping[tuple[str, str], list[Mapping[str, str]]],
+    runtime_observations: Mapping[tuple[str, str], Mapping[str, Any]],
 ) -> dict[str, Any]:
     resolved: dict[str, Any] = {}
     for workload_id, workload in source_workloads.items():
@@ -192,7 +192,7 @@ def _resolve_workload_options(
 def _resolve_workload_option(
     option: Mapping[str, Any],
     image_bindings: Mapping[str, str],
-    runtime_observation: list[Mapping[str, str]] | None,
+    runtime_observation: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     image_source = option["image"]
     if "buildTarget" in image_source:
@@ -203,16 +203,23 @@ def _resolve_workload_option(
             )
     else:
         image = image_source["reference"]
+    if runtime_observation is None:
+        raise RuntimeBindingArtifactBuildError(
+            f"runtime metadata was not observed for workload image option {option['name']!r}"
+        )
+    required_observation_fields = {"language", "version", "verification", "components"}
+    if not required_observation_fields <= set(runtime_observation):
+        raise RuntimeBindingArtifactBuildError(
+            f"runtime observation for image option {option['name']!r} is incomplete"
+        )
     metadata = {key: option[key] for key in ("name", "displayName", "description") if key in option}
-    components = runtime_observation or [
-        {
-            "name": component["name"],
-            "executable": component["executable"],
-            "verification": "unverified",
-        }
-        for component in option["runtime"]["components"]
-    ]
-    return metadata | {"image": image, "runtime": {"components": components}}
+    runtime = {
+        "language": runtime_observation["language"],
+        "version": runtime_observation["version"],
+        "verification": runtime_observation["verification"],
+        "components": runtime_observation["components"],
+    }
+    return metadata | {"image": image, "runtime": runtime}
 
 
 def _custom_runner_step_revisions(targets: list[Mapping[str, Any]]) -> list[str]:

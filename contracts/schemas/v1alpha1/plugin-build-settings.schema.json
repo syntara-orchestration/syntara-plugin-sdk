@@ -144,6 +144,26 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "Target operating system and architecture, such as linux/amd64."
+              },
+              "runtimeMetadata": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["language", "version"],
+                "description": "Optional language and version values that the SDK writes as OCI image annotations. Supported runtime probes verify the values; when no probe supports the language, the binding records them as unverified.",
+                "properties": {
+                  "language": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-z][a-z0-9.+_-]*$"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[0-9A-Za-z][0-9A-Za-z.+()_-]*$"
+                  }
+                }
               }
             }
           }

@@ -36,6 +36,7 @@ class WorkloadBuildSettings:
     tag: str | None = None
     platform: str | None = None
     image_id: str | None = None
+    runtime_metadata: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -183,7 +184,9 @@ def _parse_settings(source: Path) -> PluginBuildSettings:
     )
     schema_errors = validate_document(load_bundle(), "plugin_build_settings", document)
     if schema_errors:
-        raise SettingsError("settings document schema validation failed: " + "; ".join(schema_errors))
+        raise SettingsError(
+            "settings document schema validation failed: " + "; ".join(schema_errors)
+        )
     return parsed
 
 
@@ -215,9 +218,7 @@ def _parse_registry(value: object, source: Path) -> RegistrySettings:
         workload_repository=_string(
             document.get("workloadRepository"), "registry.workloadRepository"
         ),
-        catalog_repository=_string(
-            document.get("catalogRepository"), "registry.catalogRepository"
-        ),
+        catalog_repository=_string(document.get("catalogRepository"), "registry.catalogRepository"),
         username=_string(document.get("username"), "registry.username"),
         auth_file=_path(document.get("authFile"), source, "registry.authFile"),
         allow_insecure_loopback_http=allow_insecure,
@@ -266,9 +267,7 @@ def _parse_build(value: object, source: Path) -> BuildSettings:
         assert parsed is not None
         parsed_workloads[identifier] = parsed
     return BuildSettings(
-        artifact_output=_path(
-            document.get("artifactOutput"), source, "build.artifactOutput"
-        ),
+        artifact_output=_path(document.get("artifactOutput"), source, "build.artifactOutput"),
         runtime_binding_manifest=_path(
             document.get("runtimeBindings"), source, "build.runtimeBindings"
         ),
@@ -291,9 +290,32 @@ def _parse_workload(
     document = _mapping(value, path)
     _reject_unknown_keys(
         document,
-        {"engine", "context", "containerfile", "repository", "tag", "platform", "imageId"},
+        {
+            "engine",
+            "context",
+            "containerfile",
+            "repository",
+            "tag",
+            "platform",
+            "imageId",
+            "runtimeMetadata",
+        },
         path,
     )
+    raw_runtime_metadata = document.get("runtimeMetadata")
+    runtime_metadata: dict[str, str] = {}
+    if raw_runtime_metadata is not None:
+        runtime_document = _mapping(raw_runtime_metadata, f"{path}.runtimeMetadata")
+        _reject_unknown_keys(
+            runtime_document,
+            {"language", "version"},
+            f"{path}.runtimeMetadata",
+        )
+        language = _string(runtime_document.get("language"), f"{path}.runtimeMetadata.language")
+        version = _string(runtime_document.get("version"), f"{path}.runtimeMetadata.version")
+        if language is None or version is None:
+            raise SettingsError(f"{path}.runtimeMetadata requires language and version")
+        runtime_metadata = {"language": language, "version": version}
     return WorkloadBuildSettings(
         engine=_string(document.get("engine"), f"{path}.engine"),
         context=_path(document.get("context"), source, f"{path}.context"),
@@ -302,6 +324,7 @@ def _parse_workload(
         tag=_string(document.get("tag"), f"{path}.tag"),
         platform=_string(document.get("platform"), f"{path}.platform"),
         image_id=_string(document.get("imageId"), f"{path}.imageId"),
+        runtime_metadata=runtime_metadata,
     )
 
 
@@ -343,9 +366,8 @@ def _parse_catalog(value: object) -> CatalogSettings:
     document = _mapping(value, "catalog")
     _reject_unknown_keys(document, {"sourceId", "channel", "expiresInHours"}, "catalog")
     expires_in_hours = document.get("expiresInHours")
-    if (
-        expires_in_hours is not None
-        and (not isinstance(expires_in_hours, int) or isinstance(expires_in_hours, bool))
+    if expires_in_hours is not None and (
+        not isinstance(expires_in_hours, int) or isinstance(expires_in_hours, bool)
     ):
         raise SettingsError("catalog.expiresInHours must be a positive integer")
     if expires_in_hours is not None and expires_in_hours <= 0:

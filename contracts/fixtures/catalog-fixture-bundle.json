@@ -1,7 +1,7 @@
 {
   "fixtureBundleVersion": "syntara.catalog-fixtures/v1alpha1",
-  "contractBundleDigest": "sha256:f846cdbc6e5c562a5dabe2b6701e50be305e203b5ff9e3fc604bb7fefbcd84ad",
-  "fixtureContentDigest": "sha256:b4b1bb5d35d78fc5f2e243b92c81c58b577f00a9a03ed6893f1912224aecbde8",
+  "contractBundleDigest": "sha256:556e65cad1e5e10869dade172cd79e711e80950533a13d20e0b5c686316bc7fe",
+  "fixtureContentDigest": "sha256:05fa4af237cae5efbaaa3f00ba1754fa56a1f099653283f9e75644193149f053",
   "catalogCases": [
     {
       "path": "catalog/valid-20.json",

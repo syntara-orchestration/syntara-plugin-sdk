@@ -19,6 +19,12 @@ class RuntimeComponentProbeError(ValueError):
     """Raised when a supported runtime probe fails or returns unsafe data."""
 
 
+def supports_runtime_probe(name: str) -> bool:
+    """Return whether this SDK release has a trusted probe for ``name``."""
+
+    return _probe_for_name(name) is not None
+
+
 def probe_runtime_components(
     declarations: Sequence[Mapping[str, Any]],
 ) -> tuple[dict[str, str], ...]:
@@ -83,7 +89,9 @@ def _run_probe(executable: str, arguments: Sequence[str]) -> str:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeComponentProbeError("a declared runtime executable could not be probed") from error
+        raise RuntimeComponentProbeError(
+            "a declared runtime executable could not be probed"
+        ) from error
     if completed.returncode != 0 or len(completed.stdout) > _MAX_PROBE_OUTPUT_BYTES:
         raise RuntimeComponentProbeError("a declared runtime executable probe failed")
     try:
@@ -103,7 +111,9 @@ def _probe_python(executable: str) -> str:
     try:
         value = json.loads(output)
     except json.JSONDecodeError as error:
-        raise RuntimeComponentProbeError("the Python runtime probe returned invalid data") from error
+        raise RuntimeComponentProbeError(
+            "the Python runtime probe returned invalid data"
+        ) from error
     version = value.get("version") if isinstance(value, Mapping) else None
     observed_executable = value.get("executable") if isinstance(value, Mapping) else None
     if not isinstance(version, str) or not isinstance(observed_executable, str):

@@ -514,6 +514,8 @@ def validate_runtime_binding(
                         f"workload option {option['name']!r} has duplicate runtime component names.",
                     )
                 )
+            if resolved:
+                diagnostics.extend(_runtime_observation_errors(workload_id, option))
         if workload["default"] not in names:
             diagnostics.append(
                 RuntimeBindingDiagnostic(
@@ -528,6 +530,52 @@ def validate_runtime_binding(
             _runtime_binding_plugin_link_errors(document, plugin_descriptor, resolved)
         )
     return tuple(sorted(diagnostics))
+
+
+def _runtime_observation_errors(
+    workload_id: str, option: Mapping[str, Any]
+) -> list[RuntimeBindingDiagnostic]:
+    """Keep annotation claims consistent with matching executable probe evidence."""
+
+    runtime = option["runtime"]
+    language = runtime["language"]
+    version = runtime["version"]
+    verification = runtime["verification"]
+    matching = [
+        component for component in runtime["components"] if component["name"].casefold() == language
+    ]
+    path = f"spec/workloads/{workload_id}/options/{option['name']}/runtime"
+    if not matching:
+        if verification == "verified":
+            return [
+                RuntimeBindingDiagnostic(
+                    "RUNTIME_BINDING_RUNTIME_VERIFICATION_MISMATCH",
+                    path,
+                    "runtime metadata cannot be verified without a matching declared component.",
+                )
+            ]
+        return []
+
+    component = matching[0]
+    component_verified = component["verification"] == "verified"
+    component_version = component.get("version")
+    if component_verified and component_version != version:
+        return [
+            RuntimeBindingDiagnostic(
+                "RUNTIME_BINDING_RUNTIME_VERSION_MISMATCH",
+                path,
+                "runtime version annotation differs from the matching executable probe.",
+            )
+        ]
+    if component_verified != (verification == "verified"):
+        return [
+            RuntimeBindingDiagnostic(
+                "RUNTIME_BINDING_RUNTIME_VERIFICATION_MISMATCH",
+                path,
+                "runtime verification status must reflect the matching executable probe.",
+            )
+        ]
+    return []
 
 
 def _runtime_binding_plugin_link_errors(

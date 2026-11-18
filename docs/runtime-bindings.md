@@ -98,28 +98,50 @@ spec:
 ```
 
 Each image option declares the runtime components and absolute executable
-paths that the SDK should probe. These fields identify probe targets; they do
-not supply runtime versions. When the SDK builds a workload image, it adds the
-probe targets to the image's registration manifest, starts that exact image in
-a local probe with an egress-restricted internal network, and asks its gRPC
-`Health` endpoint for observed runtime metadata. The SDK writes the observed
-version and verification status into the resolved RuntimeBinding. Python and
-GNU Bash have built-in probes. Components without a probe remain `unverified`;
-a failed probe or executable mismatch stops the build. The SDK does not infer
-an image's runtime version from plugin tags or project dependency constraints.
+paths that the SDK can probe. These fields identify probe targets; they do not
+duplicate the language or version. The image carries those two values as OCI
+annotations named `io.syntara.runtime.language` and
+`io.syntara.runtime.version`. The SDK reads them from the exact digest-pinned
+image and copies them into the resolved RuntimeBinding. For an image built by
+the SDK, provide the values in the corresponding `build.workloads.<target>`
+settings entry; Podman writes them onto the final image. A prebuilt `reference`
+image must already carry both annotations. If an image is missing either value,
+the build fails with guidance to add them.
+
+The annotated language must also match a declared runtime component name. If it
+does not, the build fails; the SDK does not treat a missing declaration as an
+unsupported runtime.
+
+The SDK also starts that exact image in a local probe with an egress-restricted
+internal network and asks its gRPC `Health` endpoint for runtime evidence.
+Python and GNU Bash have built-in executable probes. For these supported
+languages, the SDK requires Health to report a verified matching component.
+Missing or unverified probe evidence, a different executable, or a version
+mismatch fails the build. For a language without a built-in SDK probe, the SDK
+keeps the annotation and marks it `unverified`; the default build warns and
+continues, while `--require verified-runtime` rejects it. A Health or transport
+failure also fails the build.
+
+| Image and probe result | Build behavior |
+| --- | --- |
+| Supported language, verified component, and matching version | Pass; record `verified`. |
+| Supported language, but matching component is missing or unverified | Fail; correct the executable declaration or image. |
+| Supported language, but probe version differs from the image annotation | Fail; correct the image or its metadata. |
+| No SDK probe for the annotated language, with a matching declared component | Warn and record `unverified`; `--require verified-runtime` fails. |
+| Annotated language has no matching declared component | Fail; declare the correct runtime component. |
+| Missing image annotations or failed Health/transport probe | Fail. |
+
 On macOS with Podman, the SDK uses a temporary OpenSSH tunnel through the
 Podman machine to query the workload on its internal network; the workload
 remains disconnected from external networks.
 
-The SDK does not treat OCI labels such as `io.syntara.runtime.language` and
-`io.syntara.runtime.version` as verification evidence. OCI does not define
-these Syntara-specific labels, and an image publisher can set a label that
-does not match the executable in the image. The probe result is the source for
-the version stored in the binding. A future catalog may expose such labels as
-search hints, but it should compare them with the probe result rather than
-trust them as the runtime version.
+This keeps one declared value in the image metadata, while distinguishing the
+publisher's annotation from evidence that the SDK independently confirmed.
+Neither plugin tags nor project dependency constraints are used to infer the
+runtime version.
 
-For example, the source declaration contains no version:
+For example, the source declaration identifies an executable to probe, not a
+second version value:
 
 ```yaml
 runtime:
@@ -128,10 +150,34 @@ runtime:
       executable: /usr/bin/python3.12
 ```
 
+For an SDK-built image, set the image metadata alongside its build target:
+
+```yaml
+build:
+  workloads:
+    python-base-image:
+      engine: podman
+      context: .
+      containerfile: runtime/python-base/Containerfile
+      repository: quay.io/acme/report-tools-runtime
+      tag: 1.0.0-python-base
+      platform: linux/amd64
+      runtimeMetadata:
+        language: python
+        version: "3.12.8"
+```
+
+The version above is an example. Set it to the version actually present in the
+image; a supported probe checks that claim during `build` and again during
+`publish`.
+
 The resolved RuntimeBinding records what the image reports:
 
 ```yaml
 runtime:
+  language: python
+  version: "3.12.8"
+  verification: verified
   components:
     - name: python
       executable: /usr/bin/python3.12

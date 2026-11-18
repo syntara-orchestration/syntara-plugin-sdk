@@ -80,9 +80,7 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
                             "name": "python-base",
                             "displayName": "Python base",
                             "runtime": {
-                                "components": [
-                                    {"name": "python", "executable": "/usr/bin/python3"}
-                                ]
+                                "components": [{"name": "python", "executable": "/usr/bin/python3"}]
                             },
                             "image": {"buildTarget": "python-base"},
                         },
@@ -90,9 +88,7 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
                             "name": "python-aws",
                             "displayName": "Python with AWS SDK",
                             "runtime": {
-                                "components": [
-                                    {"name": "python", "executable": "/usr/bin/python3"}
-                                ]
+                                "components": [{"name": "python", "executable": "/usr/bin/python3"}]
                             },
                             "image": {"buildTarget": "python-aws"},
                         },
@@ -105,9 +101,7 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
                             "name": "bash-base",
                             "displayName": "Bash base",
                             "runtime": {
-                                "components": [
-                                    {"name": "bash", "executable": "/usr/bin/bash"}
-                                ]
+                                "components": [{"name": "bash", "executable": "/usr/bin/bash"}]
                             },
                             "image": {"buildTarget": "bash-base"},
                         }
@@ -125,6 +119,47 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
             "python-base": "quay.io/acme/python-base@sha256:" + "c" * 64,
             "python-aws": "quay.io/acme/python-aws@sha256:" + "d" * 64,
             "bash-base": "quay.io/acme/bash-base@sha256:" + "e" * 64,
+        },
+        runtime_observations={
+            ("python", "python-base"): {
+                "language": "python",
+                "version": "3.12.8",
+                "verification": "verified",
+                "components": [
+                    {
+                        "name": "python",
+                        "executable": "/usr/bin/python3",
+                        "version": "3.12.8",
+                        "verification": "verified",
+                    }
+                ],
+            },
+            ("python", "python-aws"): {
+                "language": "python",
+                "version": "3.12.8",
+                "verification": "verified",
+                "components": [
+                    {
+                        "name": "python",
+                        "executable": "/usr/bin/python3",
+                        "version": "3.12.8",
+                        "verification": "verified",
+                    }
+                ],
+            },
+            ("bash", "bash-base"): {
+                "language": "bash",
+                "version": "5.2.26",
+                "verification": "verified",
+                "components": [
+                    {
+                        "name": "bash",
+                        "executable": "/usr/bin/bash",
+                        "version": "5.2.26",
+                        "verification": "verified",
+                    }
+                ],
+            },
         },
     )
     binding_artifact = build_runtime_binding_artifact(
@@ -149,7 +184,10 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
     assert linked.digest == binding_artifact.digest
     assert linked_plugin.digest == plugin_artifact.digest
     assert linked_document["metadata"] == source["metadata"]
-    assert json.loads(reopened.binding_document.content)["spec"]["plugin"]["digest"] == plugin_artifact.digest
+    assert (
+        json.loads(reopened.binding_document.content)["spec"]["plugin"]["digest"]
+        == plugin_artifact.digest
+    )
     assert reopened.digest != plugin_artifact.digest
     assert resolved["spec"]["workloads"]["python"]["options"][1]["image"].endswith("d" * 64)
     changed_image = resolve_runtime_binding(
@@ -162,21 +200,65 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
             "python-aws": "quay.io/acme/python-aws@sha256:" + "1" * 64,
             "bash-base": "quay.io/acme/bash-base@sha256:" + "2" * 64,
         },
+        runtime_observations={
+            ("python", "python-base"): {
+                "language": "python",
+                "version": "3.12.8",
+                "verification": "verified",
+                "components": [
+                    {
+                        "name": "python",
+                        "executable": "/usr/bin/python3",
+                        "version": "3.12.8",
+                        "verification": "verified",
+                    }
+                ],
+            },
+            ("python", "python-aws"): {
+                "language": "python",
+                "version": "3.12.8",
+                "verification": "verified",
+                "components": [
+                    {
+                        "name": "python",
+                        "executable": "/usr/bin/python3",
+                        "version": "3.12.8",
+                        "verification": "verified",
+                    }
+                ],
+            },
+            ("bash", "bash-base"): {
+                "language": "bash",
+                "version": "5.2.26",
+                "verification": "verified",
+                "components": [
+                    {
+                        "name": "bash",
+                        "executable": "/usr/bin/bash",
+                        "version": "5.2.26",
+                        "verification": "verified",
+                    }
+                ],
+            },
+        },
     )
     changed_binding = build_runtime_binding_artifact(
         changed_image, descriptor, plugin_artifact.manifest.descriptor
     )
     assert changed_binding.digest != binding_artifact.digest
     assert changed_binding.config.content != binding_artifact.config.content
-    assert plugin_artifact.digest == build_plugin_artifact(
-        compile_workspace(
-            BuildRequest(
-                workspace / "plugin.yaml",
-                require_image_bindings=False,
-                bind_workload_images=False,
+    assert (
+        plugin_artifact.digest
+        == build_plugin_artifact(
+            compile_workspace(
+                BuildRequest(
+                    workspace / "plugin.yaml",
+                    require_image_bindings=False,
+                    bind_workload_images=False,
+                )
             )
-        )
-    ).digest
+        ).digest
+    )
 
     with pytest.raises(ValueError, match="registry.artifactRepository"):
         _read_linked_runtime_binding_archive(

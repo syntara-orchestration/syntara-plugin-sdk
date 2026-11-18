@@ -473,19 +473,33 @@ def test_platform_runner_accepts_registered_step_references(kind: str, implement
 @pytest.mark.parametrize(
     "implementation",
     [
-        "http.v1", "acme.tools.run", "acme.tools.run@1.2", "acme.tools.run@latest",
-        "acme.tools.run@01.2.3", "acme.tools.run@1.02.3", "acme.tools.run@1.2.03",
-        "acme.tools.run@1.2.3-alpha..1", "acme.tools.run@1.2.3-alpha.01",
-        "acme.tools.run@1.2.3-", "acme.tools.run@1.2.3+", "acme.tools.run@1.2.3+build..1",
-        "acme.tools.run.more@1.2.3", "Acme.tools.run@1.2.3", "acme.tools.run@1.2.3\n",
+        "http.v1",
+        "acme.tools.run",
+        "acme.tools.run@1.2",
+        "acme.tools.run@latest",
+        "acme.tools.run@01.2.3",
+        "acme.tools.run@1.02.3",
+        "acme.tools.run@1.2.03",
+        "acme.tools.run@1.2.3-alpha..1",
+        "acme.tools.run@1.2.3-alpha.01",
+        "acme.tools.run@1.2.3-",
+        "acme.tools.run@1.2.3+",
+        "acme.tools.run@1.2.3+build..1",
+        "acme.tools.run.more@1.2.3",
+        "Acme.tools.run@1.2.3",
+        "acme.tools.run@1.2.3\n",
     ],
 )
 def test_platform_runner_rejects_malformed_implementation_references(implementation: str) -> None:
     source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     document = step_document(
-        "Action", target_metadata("step", "Step", "A step."),
-        {"runtime": {"kind": "platform-runner", "implementation": implementation},
-         "input": source, "output": source},
+        "Action",
+        target_metadata("step", "Step", "A step."),
+        {
+            "runtime": {"kind": "platform-runner", "implementation": implementation},
+            "input": source,
+            "output": source,
+        },
     )
     assert validate_document(load_bundle(), "action", document)
 
@@ -507,7 +521,8 @@ def test_compiled_descriptor_validates_implementation_semver(
         (Path(__file__).parents[4] / "contracts/fixtures/plugin-descriptor.valid.json").read_text()
     )
     target = next(
-        target for target in descriptor["spec"]["targets"]
+        target
+        for target in descriptor["spec"]["targets"]
         if target.get("runtime", {}).get("kind") == "platform-runner"
     )
     target["runtime"]["implementation"] = implementation
@@ -517,9 +532,13 @@ def test_compiled_descriptor_validates_implementation_semver(
 def test_platform_runner_rejects_legacy_driver_and_custom_runner_rejects_implementation() -> None:
     source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     document = step_document(
-        "Action", target_metadata("step", "Step", "A step."),
-        {"runtime": {"kind": "platform-runner", "driver": "http.v1"},
-         "input": source, "output": source},
+        "Action",
+        target_metadata("step", "Step", "A step."),
+        {
+            "runtime": {"kind": "platform-runner", "driver": "http.v1"},
+            "input": source,
+            "output": source,
+        },
     )
     assert validate_document(load_bundle(), "action", document)
 
@@ -544,7 +563,8 @@ def test_http_operation_requires_the_builtin_http_runner() -> None:
     document["spec"]["runtime"]["implementation"] = "syntara.http.request@1.0.0"
     assert validate_document(load_bundle(), "action", document) == []
     document["spec"]["runtime"] = {
-        "kind": "custom-runner", "entryPoint": "steps:Run",
+        "kind": "custom-runner",
+        "entryPoint": "steps:Run",
         "implementation": "acme.tools.run@1.2.3",
     }
     assert validate_document(load_bundle(), "action", document)
@@ -826,9 +846,7 @@ def _runtime_binding_source() -> dict[str, Any]:
                             "name": "base",
                             "displayName": "Python base",
                             "runtime": {
-                                "components": [
-                                    {"name": "python", "executable": "/usr/bin/python3"}
-                                ]
+                                "components": [{"name": "python", "executable": "/usr/bin/python3"}]
                             },
                             "image": {"buildTarget": "python-base"},
                         },
@@ -836,9 +854,7 @@ def _runtime_binding_source() -> dict[str, Any]:
                             "name": "aws",
                             "displayName": "Python with AWS SDK",
                             "runtime": {
-                                "components": [
-                                    {"name": "python", "executable": "/usr/bin/python3"}
-                                ]
+                                "components": [{"name": "python", "executable": "/usr/bin/python3"}]
                             },
                             "image": {"buildTarget": "python-aws"},
                         },
@@ -873,6 +889,9 @@ def _runtime_binding_resolved() -> dict[str, Any]:
                             "displayName": "Python base",
                             "image": "quay.io/acme/python-base@sha256:" + "d" * 64,
                             "runtime": {
+                                "language": "python",
+                                "version": "3.12.8",
+                                "verification": "verified",
                                 "components": [
                                     {
                                         "name": "python",
@@ -880,7 +899,7 @@ def _runtime_binding_resolved() -> dict[str, Any]:
                                         "version": "3.12.8",
                                         "verification": "verified",
                                     }
-                                ]
+                                ],
                             },
                         }
                     ],
@@ -919,12 +938,15 @@ def test_runtime_binding_contracts_accept_source_resolved_and_index_documents() 
     assert validate_runtime_binding(bundle, _runtime_binding_source(), resolved=False) == ()
     resolved = _runtime_binding_resolved()
     assert validate_runtime_binding(bundle, resolved, resolved=True) == ()
-    assert validate_runtime_binding_index(
-        bundle,
-        _runtime_binding_index(),
-        plugin_digest="sha256:" + "a" * 64,
-        now=datetime.fromisoformat("2026-11-03T12:30:00+00:00"),
-    ) == ()
+    assert (
+        validate_runtime_binding_index(
+            bundle,
+            _runtime_binding_index(),
+            plugin_digest="sha256:" + "a" * 64,
+            now=datetime.fromisoformat("2026-11-03T12:30:00+00:00"),
+        )
+        == ()
+    )
 
 
 def test_runtime_binding_rejects_duplicate_option_names_and_unknown_defaults() -> None:
@@ -973,6 +995,16 @@ def test_resolved_runtime_binding_must_match_plugin_contract_and_workloads() -> 
     } <= {item.code for item in diagnostics}
 
 
+def test_resolved_runtime_binding_requires_annotation_and_probe_to_agree() -> None:
+    resolved = _runtime_binding_resolved()
+    runtime = resolved["spec"]["workloads"]["python"]["options"][0]["runtime"]
+    runtime["version"] = "3.12.9"
+
+    diagnostics = validate_runtime_binding(load_bundle(), resolved, resolved=True)
+
+    assert "RUNTIME_BINDING_RUNTIME_VERSION_MISMATCH" in {item.code for item in diagnostics}
+
+
 def test_runtime_binding_index_rejects_replay_and_duplicate_binding_digest() -> None:
     index = _runtime_binding_index()
     index["metadata"]["generation"] = 2
@@ -984,9 +1016,7 @@ def test_runtime_binding_index_rejects_replay_and_duplicate_binding_digest() -> 
         index,
         plugin_digest="sha256:" + "a" * 64,
         now=datetime.fromisoformat("2026-11-03T12:30:00+00:00"),
-        checkpoint=RuntimeBindingCheckpoint(
-            generation=1, index_digest="sha256:" + "0" * 64
-        ),
+        checkpoint=RuntimeBindingCheckpoint(generation=1, index_digest="sha256:" + "0" * 64),
     )
 
     assert {item.code for item in diagnostics} == {

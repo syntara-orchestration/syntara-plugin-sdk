@@ -302,15 +302,24 @@ artifacts published for deployment. They must record their immutable
 Konflux ownership and signing apply to those final images; the SDK repository
 does not create a long-lived shared runtime image.
 
-For each custom-runner image option, `runtime-bindings.yaml` can declare the
-absolute executable paths that the image is expected to use. The SDK injects
-those declarations into the image registration manifest. The runtime checks
-supported components at startup and reports the observed version and
-verification status in `Health`; the SDK records that result in the resolved
-RuntimeBinding after probing the exact image digest. This metadata describes
-the image contents and is separate from the runtime ABI version. See the
-[RuntimeBindings guide](runtime-bindings.md) for the supported probes and the
-`--require verified-runtime` and `--require all` policy options.
+For each custom-runner image option, `runtime-bindings.yaml` declares the
+absolute executable paths that the image is expected to use. The SDK adds
+those declarations to the image registration manifest. The image also carries
+`io.syntara.runtime.language` and `io.syntara.runtime.version` OCI annotations;
+SDK-built images get them from `build.workloads.<target>.runtimeMetadata`, and
+prebuilt images must already contain them. The SDK reads the annotations from
+the exact image digest, then compares them with supported runtime evidence
+reported through `Health`. Python and GNU Bash must return matching, verified
+probe evidence; missing evidence or a version mismatch fails the build. A
+language without an SDK probe is recorded as unverified when its component is
+declared, with a warning unless `--require verified-runtime` is set. If the
+annotated language has no matching component declaration, the build fails. The
+resolved RuntimeBinding stores both the annotated language/version and whether
+a supported probe verified them.
+This metadata describes image contents and is separate from the container ABI
+version. See the [RuntimeBindings guide](runtime-bindings.md) for the complete
+outcome table and the `--require verified-runtime` and `--require all` policy
+options.
 
 ### Workload servers in other languages
 

@@ -29,6 +29,10 @@ _MAX_OCI_ARCHIVE_MEMBERS = 100_000
 _MAX_OCI_INDEX_BYTES = 1024 * 1024
 _MAX_OCI_MANIFEST_BYTES = 16 * 1024 * 1024
 _OCI_IMAGE_MANIFEST_LABEL = "OCI image manifest"
+_RUNTIME_LANGUAGE_ANNOTATION = "io.syntara.runtime.language"
+_RUNTIME_VERSION_ANNOTATION = "io.syntara.runtime.version"
+_RUNTIME_LANGUAGE_PATTERN = re.compile(r"^[a-z][a-z0-9.+_-]{0,63}$")
+_RUNTIME_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+()_-]{0,255}$")
 
 
 class WorkloadBuildError(RuntimeError):
@@ -50,6 +54,7 @@ class WorkloadBuildRequest:
     registration_descriptor: Mapping[str, Any] | None = None
     workload_id: str | None = None
     runtime_components: tuple[Mapping[str, str], ...] = ()
+    runtime_metadata: Mapping[str, str] | None = None
 
     @property
     def tagged_reference(self) -> str:
@@ -315,6 +320,10 @@ def inspect_workload_archive(archive_path: Path) -> dict[str, Any]:
             manifest = _json_mapping(manifest_blob, _OCI_IMAGE_MANIFEST_LABEL)
             if manifest.get("schemaVersion") != 2:
                 raise WorkloadBuildError("OCI image manifest has an unsupported schema version")
+            runtime_metadata = _runtime_metadata_from_oci(
+                manifest_descriptor,
+                manifest,
+            )
 
             config_descriptor = _mapping(manifest.get("config"), "OCI image config descriptor")
             config_blob = _read_archive_blob(
@@ -360,6 +369,7 @@ def inspect_workload_archive(archive_path: Path) -> dict[str, Any]:
                 ),
                 "manifestMediaType": manifest_descriptor.get("mediaType"),
                 "platform": platform,
+                "runtimeMetadata": runtime_metadata,
                 "registrationManifest": {
                     "inspected": False,
                     "reason": "registration data is stored in image layers",
@@ -422,6 +432,44 @@ def _json_mapping(content: bytes, label: str) -> dict[str, Any]:
     return dict(_mapping(value, label))
 
 
+def _runtime_metadata_from_oci(
+    descriptor: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> dict[str, str] | None:
+    """Return the bounded Syntara runtime annotations on one OCI image."""
+
+    descriptor_annotations = descriptor.get("annotations", {})
+    manifest_annotations = manifest.get("annotations", {})
+    if not isinstance(descriptor_annotations, Mapping) or not isinstance(
+        manifest_annotations, Mapping
+    ):
+        raise WorkloadBuildError("OCI image annotations must be objects")
+    values: dict[str, str] = {}
+    for key in (_RUNTIME_LANGUAGE_ANNOTATION, _RUNTIME_VERSION_ANNOTATION):
+        descriptor_value = descriptor_annotations.get(key)
+        manifest_value = manifest_annotations.get(key)
+        if descriptor_value is not None and manifest_value is not None:
+            if descriptor_value != manifest_value:
+                raise WorkloadBuildError(f"OCI image has conflicting {key} annotations")
+        value = manifest_value if manifest_value is not None else descriptor_value
+        if value is not None:
+            if not isinstance(value, str):
+                raise WorkloadBuildError(f"OCI image annotation {key} must be a string")
+            values[key] = value
+    if not values:
+        return None
+    if set(values) != {_RUNTIME_LANGUAGE_ANNOTATION, _RUNTIME_VERSION_ANNOTATION}:
+        raise WorkloadBuildError(
+            "OCI image must provide both Syntara runtime language and version annotations"
+        )
+    language = values[_RUNTIME_LANGUAGE_ANNOTATION]
+    version = values[_RUNTIME_VERSION_ANNOTATION]
+    if _RUNTIME_LANGUAGE_PATTERN.fullmatch(language) is None:
+        raise WorkloadBuildError("OCI image runtime language annotation is invalid")
+    if _RUNTIME_VERSION_PATTERN.fullmatch(version) is None:
+        raise WorkloadBuildError("OCI image runtime version annotation is invalid")
+    return {"language": language, "version": version}
+
+
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise WorkloadBuildError(f"{label} must be an object")
@@ -449,6 +497,18 @@ def _validate_request(request: WorkloadBuildRequest) -> None:
         raise WorkloadBuildError("workload tag must be a non-empty tag without whitespace")
     if request.registration_descriptor is None or not request.workload_id:
         raise WorkloadBuildError("a compiled descriptor and workload ID are required")
+    if request.runtime_metadata is not None:
+        if set(request.runtime_metadata) != {"language", "version"}:
+            raise WorkloadBuildError("runtime metadata must contain only language and version")
+        language = request.runtime_metadata.get("language")
+        version = request.runtime_metadata.get("version")
+        if (
+            not isinstance(language, str)
+            or _RUNTIME_LANGUAGE_PATTERN.fullmatch(language) is None
+            or not isinstance(version, str)
+            or _RUNTIME_VERSION_PATTERN.fullmatch(version) is None
+        ):
+            raise WorkloadBuildError("runtime metadata must include a valid language and version")
     if not re.fullmatch(r"[A-Za-z0-9._:/-]+", request.tagged_reference):
         raise WorkloadBuildError("invalid workload image reference for registration layer")
     if not request.platform or "/" not in request.platform:
@@ -482,22 +542,21 @@ def _registration_manifest_bytes(request: WorkloadBuildRequest) -> bytes:
 def _build_staging_image(
     request: WorkloadBuildRequest, staging_reference: str, *, verbose: bool
 ) -> None:
-    _run(
-        [
-            request.engine,
-            "build",
-            "--format",
-            "oci",
-            "--platform",
-            request.platform,
-            "--file",
-            str(request.containerfile),
-            "--tag",
-            staging_reference,
-            str(request.context),
-        ],
-        verbose=verbose,
-    )
+    command = [
+        request.engine,
+        "build",
+        "--format",
+        "oci",
+        "--platform",
+        request.platform,
+        *_runtime_annotation_arguments(request.runtime_metadata),
+        "--file",
+        str(request.containerfile),
+        "--tag",
+        staging_reference,
+        str(request.context),
+    ]
+    _run(command, verbose=verbose)
 
 
 def _build_registration_layer(
@@ -524,6 +583,7 @@ def _build_registration_layer(
                 "oci",
                 "--platform",
                 request.platform,
+                *_runtime_annotation_arguments(request.runtime_metadata),
                 "--file",
                 str(containerfile),
                 "--tag",
@@ -532,6 +592,19 @@ def _build_registration_layer(
             ],
             verbose=verbose,
         )
+
+
+def _runtime_annotation_arguments(metadata: Mapping[str, str] | None) -> list[str]:
+    """Return the ordered Podman flags for author-supplied runtime metadata."""
+
+    if metadata is None:
+        return []
+    return [
+        "--annotation",
+        f"{_RUNTIME_LANGUAGE_ANNOTATION}={metadata['language']}",
+        "--annotation",
+        f"{_RUNTIME_VERSION_ANNOTATION}={metadata['version']}",
+    ]
 
 
 def _push_image(request: WorkloadBuildRequest, source_reference: str, *, verbose: bool) -> str:

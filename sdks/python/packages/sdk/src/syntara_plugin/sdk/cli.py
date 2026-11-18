@@ -920,12 +920,12 @@ def _validate_run_transport_options(
         value is not None for value in tls_files
     ):
         raise SettingsError("--tls-ca, --tls-cert, and --tls-key must be supplied together")
-    if arguments.mode == "image" and arguments.address is not None and not all(
-        value is not None for value in tls_files
+    if (
+        arguments.mode == "image"
+        and arguments.address is not None
+        and not all(value is not None for value in tls_files)
     ):
-        raise SettingsError(
-            "--address requires mutual TLS (--tls-ca, --tls-cert, --tls-key)"
-        )
+        raise SettingsError("--address requires mutual TLS (--tls-ca, --tls-cert, --tls-key)")
 
 
 def _resolve_publication_arguments(
@@ -2242,10 +2242,8 @@ def _build_runtime_binding_release(arguments: argparse.Namespace) -> int:
             resolved_document,
             image_archives,
             requirement_results,
-        ) = (
-            _create_runtime_binding_release_artifacts(
-                arguments, plugin_build, paths, plugin_archive
-            )
+        ) = _create_runtime_binding_release_artifacts(
+            arguments, plugin_build, paths, plugin_archive
         )
         _write_runtime_binding_release_outputs(
             arguments,
@@ -2440,9 +2438,7 @@ def _create_runtime_binding_release_artifacts(
     if source_diagnostics:
         raise SettingsError(
             "RuntimeBinding source contract validation failed: "
-            + "; ".join(
-                f"{item.code}: {item.message}" for item in source_diagnostics
-            )
+            + "; ".join(f"{item.code}: {item.message}" for item in source_diagnostics)
         )
     images = _build_runtime_binding_images(
         plugin_build.binding_source,
@@ -2647,7 +2643,9 @@ def _runtime_binding_build_targets(
                 _mapping(option, _RUNTIME_BINDING_OPTION_LABEL).get("runtime"),
                 _RUNTIME_BINDING_OPTION_RUNTIME_LABEL,
             )
-            components = tuple(dict(_mapping(item, "runtime component")) for item in runtime["components"])
+            components = tuple(
+                dict(_mapping(item, "runtime component")) for item in runtime["components"]
+            )
             current = (workload_id, components)
             previous = targets.setdefault(build_target, current)
             if previous != current:
@@ -2728,6 +2726,7 @@ def _build_one_workload_image(
         registration_descriptor=descriptor,
         workload_id=workload_id,
         runtime_components=runtime_components,
+        runtime_metadata=getattr(settings, "runtime_metadata", {}) or None,
     )
     with tempfile.TemporaryDirectory(prefix=f".{build_target}-", dir=image_directory) as directory:
         temporary_archive = Path(directory) / "image.oci.tar"
@@ -2762,13 +2761,13 @@ def _observe_runtime_binding_options(
     arguments: argparse.Namespace,
     *,
     descriptor: Mapping[str, Any],
-) -> dict[tuple[str, str], list[dict[str, str]]]:
-    """Probe every resolved image option through its runtime Health endpoint."""
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Read image annotations and verify them through each image's runtime Health endpoint."""
 
     archives = {image["reference"]: Path(image["archive"]) for image in images}
     specification = _mapping(source.get("spec"), _RUNTIME_BINDING_SPEC_LABEL)
     workloads = _mapping(specification.get("workloads"), _RUNTIME_BINDING_WORKLOADS_LABEL)
-    observations: dict[tuple[str, str], list[dict[str, str]]] = {}
+    observations: dict[tuple[str, str], dict[str, Any]] = {}
     for workload_id, workload_value in workloads.items():
         workload = _mapping(workload_value, f"RuntimeBinding workload {workload_id}")
         for option_value in workload["options"]:
@@ -2783,7 +2782,14 @@ def _observe_runtime_binding_options(
             declarations = _mapping(option.get("runtime"), _RUNTIME_BINDING_OPTION_RUNTIME_LABEL)[
                 "components"
             ]
-            components = observe_runtime_image(
+            expected_metadata: Mapping[str, str] | None = None
+            if "buildTarget" in image_source:
+                settings = getattr(arguments, "workload_targets", {}).get(
+                    image_source["buildTarget"]
+                )
+                if settings is not None and settings.runtime_metadata:
+                    expected_metadata = settings.runtime_metadata
+            observation = observe_runtime_image(
                 reference,
                 declarations,
                 descriptor=descriptor,
@@ -2791,9 +2797,12 @@ def _observe_runtime_binding_options(
                 archive=archives.get(reference),
                 auth_file=arguments.registry_auth_file,
                 allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
+                expected_metadata=expected_metadata,
             )
-            observations[(workload_id, option["name"])] = components
-            if any(item["verification"] != "verified" for item in components):
+            observations[(workload_id, option["name"])] = observation
+            if observation["verification"] != "verified" or any(
+                item["verification"] != "verified" for item in observation["components"]
+            ):
                 print(
                     f"warning: runtime metadata for {workload_id}/{option['name']} is unverified",
                     file=sys.stderr,
@@ -2810,12 +2819,13 @@ def _runtime_option_evidence(document: Mapping[str, Any]) -> list[dict[str, Any]
         {
             "workload": workload_id,
             "option": option["name"],
+            "language": option["runtime"]["language"],
+            "version": option["runtime"]["version"],
+            "verification": option["runtime"]["verification"],
             "components": option["runtime"]["components"],
         }
         for workload_id, workload_value in workloads.items()
-        for option in _mapping(workload_value, f"RuntimeBinding workload {workload_id}")[
-            "options"
-        ]
+        for option in _mapping(workload_value, f"RuntimeBinding workload {workload_id}")["options"]
     ]
 
 
@@ -2837,12 +2847,12 @@ def _observe_resolved_runtime_options(
         workload = _mapping(workload_value, f"RuntimeBinding workload {workload_id}")
         for option_value in workload["options"]:
             option = _mapping(option_value, _RUNTIME_BINDING_OPTION_LABEL)
-            expected = _mapping(option.get("runtime"), _RUNTIME_BINDING_OPTION_RUNTIME_LABEL)[
-                "components"
-            ]
+            expected_runtime = _mapping(
+                option.get("runtime"), _RUNTIME_BINDING_OPTION_RUNTIME_LABEL
+            )
+            expected = expected_runtime["components"]
             declarations = [
-                {"name": item["name"], "executable": item["executable"]}
-                for item in expected
+                {"name": item["name"], "executable": item["executable"]} for item in expected
             ]
             reference = _required_string(option.get("image"), "RuntimeBinding image reference")
             observed = observe_runtime_image(
@@ -2853,8 +2863,14 @@ def _observe_resolved_runtime_options(
                 archive=archives.get(reference),
                 auth_file=auth_file,
                 allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
+                expected_metadata={
+                    "language": expected_runtime["language"],
+                    "version": expected_runtime["version"],
+                },
             )
-            if _runtime_observation_identity(observed) != _runtime_observation_identity(expected):
+            if _runtime_observation_identity(observed) != _runtime_observation_identity(
+                expected_runtime
+            ):
                 raise WorkloadBuildError(
                     f"runtime metadata for {workload_id}/{option['name']} differs from its RuntimeBinding; rebuild the binding"
                 )
@@ -2862,25 +2878,35 @@ def _observe_resolved_runtime_options(
                 {
                     "workload": workload_id,
                     "option": option["name"],
-                    "components": observed,
+                    "language": observed["language"],
+                    "version": observed["version"],
+                    "verification": observed["verification"],
+                    "components": observed["components"],
                 }
             )
     return evidence
 
 
 def _runtime_observation_identity(
-    components: Sequence[Mapping[str, Any]],
-) -> tuple[tuple[str, str, str, str], ...]:
-    return tuple(
-        sorted(
-            (
-                str(component.get("name", "")),
-                str(component.get("executable", "")),
-                str(component.get("version", "")),
-                str(component.get("verification", "")),
+    observation: Mapping[str, Any],
+) -> tuple[str, str, str, tuple[tuple[str, str, str, str], ...]]:
+    components = observation.get("components", ())
+    return (
+        str(observation.get("language", "")),
+        str(observation.get("version", "")),
+        str(observation.get("verification", "")),
+        tuple(
+            sorted(
+                (
+                    str(component.get("name", "")),
+                    str(component.get("executable", "")),
+                    str(component.get("version", "")),
+                    str(component.get("verification", "")),
+                )
+                for component in components
+                if isinstance(component, Mapping)
             )
-            for component in components
-        )
+        ),
     )
 
 
@@ -4598,6 +4624,10 @@ def _settings_template(
         + f"  runtimeBindings: {_RUNTIME_BINDINGS_FILENAME}\n"
         + "  workloads:\n"
         + "    python-runtime:\n"
+        + "      # Set the actual values from this image before building.\n"
+        + "      # runtimeMetadata:\n"
+        + "      #   language: python\n"
+        + '      #   version: "3.12.8"\n'
         + "      engine: podman\n"
         + "      context: .\n"
         + "      containerfile: Containerfile\n"
