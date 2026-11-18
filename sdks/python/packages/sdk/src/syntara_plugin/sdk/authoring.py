@@ -15,15 +15,17 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
 import yaml
-from jsonschema import Draft202012Validator, SchemaError
+from jsonschema import SchemaError
 from syntara_plugin.contracts import (
     STEP_KINDS,
     ContractBundle,
+    SchemaDocumentError,
     load_bundle,
     plugin_revision_id,
     revision_errors,
     schema_digests,
     step_revision_id,
+    validate_authored_schema,
     validate_document,
 )
 from syntara_plugin.runtime.yaml_loader import UniqueKeyLoader
@@ -1299,7 +1301,16 @@ def _validate_schema_document(
         )
         return
     try:
-        Draft202012Validator.check_schema(value)
+        validate_authored_schema(value)
+    except SchemaDocumentError as error:
+        diagnostics.append(
+            _diagnostic(
+                "SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT",
+                error.message,
+                target_path,
+                "Declare $schema as https://json-schema.org/draft/2020-12/schema.",
+            )
+        )
     except SchemaError as error:
         diagnostics.append(
             _diagnostic(

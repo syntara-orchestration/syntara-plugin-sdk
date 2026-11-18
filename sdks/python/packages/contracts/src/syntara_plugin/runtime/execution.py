@@ -6,8 +6,8 @@ import traceback
 from collections.abc import Mapping
 from typing import Any, Literal, cast
 
-from jsonschema import Draft202012Validator, FormatChecker
 from syntara_plugin.contracts import (
+    build_validator,
     canonical_json_bytes,
     canonical_json_digest,
 )
@@ -256,7 +256,16 @@ class StepExecutor:
         outcome: Literal["not_started", "unknown"] = "unknown",
         validate_declared_error_schema: bool = True,
     ) -> StandardOutputWrapper[Mapping[str, Any]]:
-        """Validate an error against the SDK base and, when applicable, its schema."""
+        """Validate an error against the SDK base and, when applicable, its schema.
+
+        With ``validate_declared_error_schema`` (the default), the error is
+        validated against the base ``errorResultBase`` composition followed by
+        the step's declared ``spec.error`` schema. Without it, the error is
+        validated against the base alone; ``descriptor.error_schema`` is the
+        closed ``errorResult`` fallback whenever the step declares no
+        ``spec.error`` (see ``runtime.bindings``). The recorded digest always
+        covers the effective error schema that was validated.
+        """
 
         try:
             document = error.model_dump(mode="json")
@@ -264,17 +273,16 @@ class StepExecutor:
             schemas = [error_result_base_schema()]
             if validate_declared_error_schema:
                 schemas.append(self._binding.descriptor.error_schema)
+            effective_schema = (
+                self._binding.descriptor.error_schema
+                if validate_declared_error_schema
+                else error_result_base_schema()
+            )
             self._last_error_schema_digest = canonical_json_digest(
-                _thaw_json_document(
-                    self._binding.descriptor.error_schema
-                    if validate_declared_error_schema
-                    else error_result_base_schema()
-                )
+                _thaw_json_document(effective_schema)
             )
             for schema in schemas:
-                validator = Draft202012Validator(
-                    _thaw_json_document(schema), format_checker=FormatChecker()
-                )
+                validator = build_validator(_thaw_json_document(schema))
                 if not validator.is_valid(document):
                     raise ValueError("invalid error result")
         except Exception:
@@ -289,9 +297,8 @@ class StepExecutor:
         invalid_result = False
         try:
             schema_errors = sorted(
-                Draft202012Validator(
-                    _thaw_json_document(self._binding.descriptor.output_schema),
-                    format_checker=FormatChecker(),
+                build_validator(
+                    _thaw_json_document(self._binding.descriptor.output_schema)
                 ).iter_errors(result),
                 key=lambda error: list(error.path),
             )

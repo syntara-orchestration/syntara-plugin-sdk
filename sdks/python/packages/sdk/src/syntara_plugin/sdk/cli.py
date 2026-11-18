@@ -1299,8 +1299,9 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
     if not custom_workload:
         payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
         if isinstance(payload, dict):
+            document = {"$schema": "https://json-schema.org/draft/2020-12/schema", **payload}
             (directory / input_path).write_text(
-                yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+                yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
             )
         else:
             (directory / input_path).write_text(_input_template(payload), encoding="utf-8")
@@ -4303,6 +4304,7 @@ def _action_template(
             "  input:\n"
             "    kind: inline\n"
             "    value:\n"
+            "      $schema: https://json-schema.org/draft/2020-12/schema\n"
             "      type: object\n"
             "      additionalProperties: false\n"
             "      properties:\n"
@@ -4313,6 +4315,7 @@ def _action_template(
             "  output:\n"
             "    kind: inline\n"
             "    value:\n"
+            "      $schema: https://json-schema.org/draft/2020-12/schema\n"
             "      type: object\n"
             "      additionalProperties: false\n"
             "      properties:\n"
@@ -4322,6 +4325,7 @@ def _action_template(
             "  error:\n"
             "    kind: inline\n"
             "    value:\n"
+            "      $schema: https://json-schema.org/draft/2020-12/schema\n"
             "      type: object\n"
             "      additionalProperties: true\n"
         )
@@ -4345,11 +4349,13 @@ def _action_template(
         "  output:\n"
         "    kind: inline\n"
         "    value:\n"
+        "      $schema: https://json-schema.org/draft/2020-12/schema\n"
         "      type: object\n"
         "      description: Successful response returned by the provider.\n"
         "  error:\n"
         "    kind: inline\n"
         "    value:\n"
+        "      $schema: https://json-schema.org/draft/2020-12/schema\n"
         "      type: object\n"
         "      description: Error response returned when the operation cannot complete.\n"
     )
@@ -4368,6 +4374,7 @@ def _input_template(field_names: Sequence[str]) -> str:
         for field in fields
     )
     return (
+        "$schema: https://json-schema.org/draft/2020-12/schema\n"
         "type: object\n"
         "description: Inputs accepted by this action.\n"
         "additionalProperties: false\n"
@@ -4379,6 +4386,7 @@ def _input_template(field_names: Sequence[str]) -> str:
 def _input_schema(field_names: Sequence[str]) -> dict[str, Any]:
     """Construct the scaffold schema without interpreting field names as YAML scalars."""
     return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "description": "Inputs accepted by this action.",
         "additionalProperties": False,

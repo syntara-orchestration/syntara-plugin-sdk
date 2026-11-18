@@ -7,6 +7,16 @@ This directory is the language-neutral source of truth for the Syntara Plugin SD
 - `proto/` contains the language-neutral `ContainerService` ABI source shared
   by plugin workload runtimes and the Execution Plane.
 
+Every schema in this bundle, and every schema a plugin author writes for
+`spec.input`, `spec.output`, `spec.error`, or trigger `spec.configuration`,
+must declare `$schema: https://json-schema.org/draft/2020-12/schema`. SDKs
+reject authored schemas that declare another draft or omit the declaration.
+`common.schema.json` also declares the asserted format set
+(`$defs.assertedFormats`): only `date-time` (strict RFC 3339) and `uri`
+(absolute URI with a scheme) are asserted when validating documents. Any other
+`format` name is an annotation only, per Draft 2020-12 vocabulary semantics,
+and never rejects a value.
+
 The `http-operation.schema.json` contract defines the deliberately small,
 data-only HTTP operation format for a `platform-runner` action: a method,
 an origin-less relative path template, and bounded request/response maps whose

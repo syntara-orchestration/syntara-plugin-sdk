@@ -11,6 +11,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         title:
@@ -92,6 +93,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         issue_url:
@@ -100,4 +102,5 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object

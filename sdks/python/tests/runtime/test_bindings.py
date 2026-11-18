@@ -90,7 +90,7 @@ def _manifest(
         specification.update(
             {
                 "driver": "webhook.v1",
-                "configuration": {"kind": "inline", "value": {"type": "object"}},
+                "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             }
         )
     return {
@@ -133,7 +133,7 @@ def test_bind_and_resolve_all_step_categories(
     bindings = StepBindings()
     step = _make_step(base)
     descriptor = (
-        StepDescriptor.for_installed_step(step, _installed_step(EchoInput.model_json_schema()))
+        StepDescriptor.for_installed_step(step, _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}))
         if kind is StepKind.ACTION
         else StepDescriptor.for_step("acme.plugin.echo", step)
     )
@@ -194,7 +194,7 @@ def test_installed_step_descriptor_uses_the_manifest_schema() -> None:
 def test_installed_step_rejects_a_tampered_validation_mode() -> None:
     step = _make_step(ActionStep)
     descriptor = StepDescriptor.for_installed_step(
-        step, _installed_step(EchoInput.model_json_schema(), EchoOutput.model_json_schema())
+        step, _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}, {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()})
     )
     object.__setattr__(descriptor, "input_schema_source", "implementation")
 
@@ -212,7 +212,7 @@ def test_installed_step_rejects_a_mismatched_implementation_before_execution() -
             return EchoOutput(message=inputs.message, invocation_id=context.invocation_id)
 
     installed_step = _installed_step(
-        EchoInput.model_json_schema(), EchoOutput.model_json_schema()
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}, {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}
     )
     matching_step = _make_step(ActionStep)
     descriptor = StepDescriptor.for_installed_step(matching_step, installed_step)
@@ -250,8 +250,8 @@ def test_installed_step_rejects_entry_point_mismatch_for_every_kind(
 
     step = MismatchedStep()
     installed_step = _installed_step(
-        EchoInput.model_json_schema(),
-        EchoOutput.model_json_schema(),
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()},
         kind=kind,
         entry_point=installed_entry_point,
     )
@@ -268,7 +268,7 @@ def test_installed_step_accepts_a_loaded_reexported_entry_point() -> None:
     module.Echo = type(step)
     sys.modules["acme_reexport"] = module
     try:
-        manifest = _manifest(EchoInput.model_json_schema())
+        manifest = _manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
         manifest["spec"]["runtime"]["entryPoint"] = "acme_reexport:Echo"
         installed_step = InstalledStepManifest.from_manifest(
             "acme.plugin.echo", manifest, {}
@@ -287,7 +287,7 @@ def test_installed_step_accepts_a_loaded_current_entry_point(monkeypatch: pytest
     module.Echo = type(step)
     monkeypatch.setitem(sys.modules, "steps", module)
 
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
 
     descriptor = StepDescriptor.for_installed_step(step, installed_step)
 
@@ -300,7 +300,7 @@ def test_installed_step_rejects_matching_entry_point_when_module_is_unloaded(
     step = _make_step(ActionStep)
     monkeypatch.delitem(sys.modules, "steps", raising=False)
 
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
 
     with pytest.raises(StepBindingError, match="entry point"):
         StepDescriptor.for_installed_step(step, installed_step)
@@ -311,7 +311,7 @@ def test_installed_step_rejects_unresolved_entry_point_in_loaded_module(
 ) -> None:
     step = _make_step(ActionStep)
     monkeypatch.setitem(sys.modules, "steps", ModuleType("steps"))
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
 
     with pytest.raises(StepBindingError, match="entry point"):
         StepDescriptor.for_installed_step(step, installed_step)
@@ -331,14 +331,14 @@ def test_installed_step_rejects_a_stale_class_after_module_reload(
     module = ModuleType("steps")
     module.Echo = ReloadedEcho
     monkeypatch.setitem(sys.modules, "steps", module)
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
 
     with pytest.raises(StepBindingError, match="entry point"):
         StepDescriptor.for_installed_step(stale_step, installed_step)
 
 
 def test_immutable_documents_have_a_supported_json_export() -> None:
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
 
     exported = to_json_document(installed_step.document)
 
@@ -368,7 +368,7 @@ def test_installed_platform_runner_cannot_be_bound_to_python(
     kind: str, entry_point: str
 ) -> None:
     manifest = _manifest(
-        EchoInput.model_json_schema(), kind=kind, entry_point=entry_point
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}, kind=kind, entry_point=entry_point
     )
     manifest["spec"]["runtime"] = {
         "kind": "platform-runner",
@@ -401,7 +401,7 @@ def test_installed_step_rejects_entry_points_the_contract_rejects(entry_point: s
 def test_installed_step_requires_the_python_adapter_convention(entry_point: str) -> None:
     # The shared contract accepts any opaque identifier; binding a Python class
     # is the Python adapter's job, so only module:Class is bindable here.
-    schema = EchoInput.model_json_schema()
+    schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}
     with pytest.raises(StepBindingError, match="Python adapter requires a 'module:Class'"):
         _installed_step(schema, entry_point=entry_point)
 
@@ -418,7 +418,7 @@ def test_installed_step_requires_the_python_adapter_convention(entry_point: str)
 def test_installed_step_rejects_each_missing_category_field(
     kind: str, missing_field: str
 ) -> None:
-    manifest = _manifest(EchoInput.model_json_schema(), kind=kind)
+    manifest = _manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}, kind=kind)
     if missing_field == "metadata":
         del manifest["metadata"]
     else:
@@ -432,7 +432,7 @@ def test_installed_step_rejects_each_missing_category_field(
 
 @pytest.mark.parametrize("kind", ["Control", "Trigger"])
 def test_installed_step_manifest_rejects_unknown_category_fields(kind: str) -> None:
-    manifest = _manifest(EchoInput.model_json_schema(), kind=kind)
+    manifest = _manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}, kind=kind)
     manifest["spec"]["unexpected"] = True
 
     errors = validate_document(load_bundle(), kind.lower(), manifest)
@@ -466,7 +466,7 @@ def test_installed_step_manifest_resolves_an_asset_backed_schema() -> None:
 
 
 def test_installed_step_manifests_are_created_by_the_manifest_factory() -> None:
-    input_schema = EchoInput.model_json_schema()
+    input_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}
     manifest = _manifest(input_schema)
 
     with pytest.raises(TypeError):
@@ -562,7 +562,7 @@ def test_installed_step_documents_and_schemas_are_immutable(
 
 def test_base_mapping_mutation_is_rejected() -> None:
     step = _make_step(ActionStep)
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
     descriptor = StepDescriptor.for_installed_step(step, installed_step)
 
     with pytest.raises(TypeError):
@@ -571,7 +571,7 @@ def test_base_mapping_mutation_is_rejected() -> None:
 
 def test_base_list_mutation_is_rejected() -> None:
     step = _make_step(ActionStep)
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
     descriptor = StepDescriptor.for_installed_step(step, installed_step)
 
     with pytest.raises(TypeError):
@@ -579,13 +579,13 @@ def test_base_list_mutation_is_rejected() -> None:
 
 
 def test_installed_schema_cannot_be_mutated() -> None:
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
     with pytest.raises(TypeError):
         dict.__setitem__(installed_step.input_schema, "required", [])
 
 
 def test_installed_step_entry_point_cannot_be_mutated() -> None:
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
     runtime = installed_step.document["spec"]["runtime"]
     assert isinstance(runtime, Mapping)
 
@@ -644,7 +644,7 @@ def test_every_descriptor_schema_is_deeply_immutable() -> None:
 
 def test_installed_step_descriptor_rejects_a_mismatched_step_kind() -> None:
     step = _make_step(ControlStep)
-    installed_step = _installed_step(EchoInput.model_json_schema())
+    installed_step = _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
 
     with pytest.raises(StepBindingError, match="manifest kind 'Action'"):
         StepDescriptor.for_installed_step(step, installed_step)
@@ -662,7 +662,7 @@ def test_installed_step_descriptor_supports_non_action_custom_runners(
 ) -> None:
     step = _make_step(base)
     installed_step = _installed_step(
-        EchoInput.model_json_schema(),
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
         kind=kind,
         entry_point=entry_point,
     )
@@ -695,10 +695,10 @@ def test_installed_step_descriptor_identifies_the_invalid_manifest_schema(
 ) -> None:
     step = _make_step(ActionStep)
     input_schema = (
-        invalid_schema if schema_name == "input_schema" else EchoInput.model_json_schema()
+        invalid_schema if schema_name == "input_schema" else {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}
     )
     output_schema = (
-        invalid_schema if schema_name == "output_schema" else EchoOutput.model_json_schema()
+        invalid_schema if schema_name == "output_schema" else {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}
     )
     installed_step = _installed_step(input_schema, output_schema)
 
@@ -743,7 +743,7 @@ def test_installed_step_descriptor_rejects_nested_dangling_references() -> None:
         "$defs": {
             "message": {
                 "type": "object",
-                "properties": {"value": {"$ref": "#/$defs/missing"}},
+                "properties": {"value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "$ref": "#/$defs/missing"}},
             }
         },
     }
@@ -776,8 +776,8 @@ def test_duplicate_identity_is_rejected() -> None:
 
 
 def test_malformed_identity_is_rejected() -> None:
-    input_schema = EchoInput.model_json_schema()
-    output_schema = EchoOutput.model_json_schema()
+    input_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}
+    output_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}
 
     with pytest.raises(StepBindingError, match="step_identity"):
         StepDescriptor(
@@ -794,8 +794,8 @@ def test_kind_mismatch_is_rejected() -> None:
     descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
         kind=StepKind.ACTION,
-        input_schema=EchoInput.model_json_schema(),
-        output_schema=EchoOutput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
+        output_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()},
     )
 
     with pytest.raises(StepBindingError, match="does not match"):
@@ -806,8 +806,8 @@ def test_kind_strings_are_normalized_and_category_is_derived() -> None:
     descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
         kind="Control",
-        input_schema=EchoInput.model_json_schema(),
-        output_schema=EchoOutput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
+        output_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()},
     )
 
     assert descriptor.kind is StepKind.CONTROL
@@ -815,8 +815,8 @@ def test_kind_strings_are_normalized_and_category_is_derived() -> None:
 
 
 def test_invalid_kind_is_rejected() -> None:
-    input_schema = EchoInput.model_json_schema()
-    output_schema = EchoOutput.model_json_schema()
+    input_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}
+    output_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}
 
     with pytest.raises(StepBindingError, match="valid concrete step type kind"):
         StepDescriptor(
@@ -828,8 +828,8 @@ def test_invalid_kind_is_rejected() -> None:
 
 
 def test_callers_cannot_mark_a_plain_action_descriptor_as_manifest_trusted() -> None:
-    input_schema = EchoInput.model_json_schema()
-    output_schema = EchoOutput.model_json_schema()
+    input_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}
+    output_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}
 
     with pytest.raises(StepBindingError, match="for_installed_step"):
         StepDescriptor(
@@ -860,7 +860,7 @@ def test_binding_and_execution_reject_a_duck_typed_action_descriptor() -> None:
         step_identity="acme.plugin.echo",
         kind=StepKind.ACTION,
         input_schema={"type": "object"},
-        output_schema=EchoOutput.model_json_schema(),
+        output_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()},
         require_executable_contract=lambda: None,
     )
     bindings = StepBindings()
@@ -883,7 +883,7 @@ def test_binding_and_execution_reject_an_action_descriptor_subclass() -> None:
         step_identity="acme.plugin.echo",
         kind=StepKind.ACTION,
         input_schema={"type": "object"},
-        output_schema=EchoOutput.model_json_schema(),
+        output_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()},
     )
     bindings = StepBindings()
     binding = StepBinding(forged_descriptor, step)
@@ -906,7 +906,7 @@ def test_installed_step_execution_requires_factory_provenance(
     step = _make_step(base)
     duck_typed_manifest = SimpleNamespace(
         step_identity="acme.plugin.echo",
-        input_schema=EchoInput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
     )
 
     with pytest.raises(TypeError, match="InstalledStepManifest"):
@@ -917,7 +917,7 @@ def test_installed_step_execution_requires_factory_provenance(
 
     forged_manifest = InstalledStepManifest()
     object.__setattr__(forged_manifest, "step_identity", "acme.plugin.echo")
-    object.__setattr__(forged_manifest, "input_schema", EchoInput.model_json_schema())
+    object.__setattr__(forged_manifest, "input_schema", {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()})
 
     with pytest.raises(StepBindingError, match="verified installed manifest"):
         StepDescriptor.for_installed_step(step, forged_manifest)
@@ -932,8 +932,8 @@ def test_installed_step_execution_requires_factory_provenance(
     forged_descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
         kind=kind,
-        input_schema=EchoInput.model_json_schema(),
-        output_schema=EchoOutput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
+        output_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()},
     )
     bindings = StepBindings()
 
@@ -949,8 +949,8 @@ def test_platform_managed_driver_is_rejected_as_a_python_implementation() -> Non
     descriptor = StepDescriptor(
         step_identity="acme.plugin.echo",
         kind=StepKind.ACTION,
-        input_schema=EchoInput.model_json_schema(),
-        output_schema=EchoOutput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
+        output_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()},
     )
 
     def http_driver(_invocation: Any) -> Any:

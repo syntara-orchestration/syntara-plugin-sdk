@@ -12,6 +12,7 @@ spec:
   configuration:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: >-
         The child workflow's parameter schema, carried per workflow and passed
@@ -28,6 +29,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: >-
         The child workflow's parameters, passed through unchanged from the
@@ -45,6 +47,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: Event payload handed to the child workflow's first step.
       properties:

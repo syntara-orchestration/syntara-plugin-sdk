@@ -14,6 +14,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: Parameters the parent workflow passes to the child workflow.
       additionalProperties: false
@@ -28,6 +29,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: The result the child workflow surfaces to its parent.
       properties:

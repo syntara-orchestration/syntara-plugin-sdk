@@ -89,7 +89,7 @@ def _credential_reference_binding(credential_name: str) -> StepBinding:
             "spec": {
                 "id": credential_name,
                 "integrationType": "syntara.testing.reference-integration",
-                "credentialSchema": {"kind": "inline", "value": {"type": "object"}},
+                "credentialSchema": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
                 "secretFields": ["token"],
                 "issuance": {"kind": "static-bearer.v1"},
             },

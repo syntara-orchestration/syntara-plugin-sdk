@@ -125,14 +125,17 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """
     )

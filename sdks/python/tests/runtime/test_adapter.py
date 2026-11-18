@@ -186,7 +186,7 @@ def _installed_step(
         specification.update(
             {
                 "driver": "webhook.v1",
-                "configuration": {"kind": "inline", "value": {"type": "object"}},
+                "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             }
         )
     return InstalledStepManifest.from_manifest(
@@ -429,7 +429,7 @@ def test_output_violating_a_format_assertion_is_an_abi_violation() -> None:
             _echo_input_schema(),
             output_schema={
                 "type": "object",
-                "properties": {"message": {"type": "string", "format": "ipv4"}},
+                "properties": {"message": {"type": "string", "format": "date-time"}},
             },
         ),
     )

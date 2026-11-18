@@ -320,6 +320,12 @@ and must be distinguished by their pinned image digests.
 
 Use `asset` for reusable or substantial schemas. Both forms are immutable parts of the compiled plugin artifact.
 
+Every schema document — inline or asset — must declare
+`$schema: https://json-schema.org/draft/2020-12/schema`; other drafts and
+missing declarations are rejected. Only the `date-time` and `uri` formats are
+asserted; every other `format` name is an annotation that never rejects a
+value.
+
 ### Input presentation
 
 An executable step type may add `spec.inputPresentation` when the form needs

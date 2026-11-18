@@ -22,6 +22,7 @@ from syntara_plugin.sdk import Plugin, Target, compile_model
 DIGEST = "quay.io/acme/issue-tools@sha256:" + "a" * 64
 
 ENTRY_POINT = f"{__name__}:CreateIssueStep"
+_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
 class CreateIssueInput(BaseModel):
@@ -39,6 +40,7 @@ class CreateIssueStep(ActionStep[CreateIssueInput, CreateIssueOutput]):
 
 
 INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "title": {"type": "string"},
@@ -47,6 +49,7 @@ INPUT_SCHEMA: dict[str, Any] = {
     "required": ["title"],
 }
 OUTPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {"issue_url": {"type": "string"}},
     "required": ["issue_url"],
@@ -87,8 +90,14 @@ def _action(
         },
         "spec": {
             "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
-            "input": {"kind": "inline", "value": input_schema or INPUT_SCHEMA},
-            "output": {"kind": "inline", "value": output_schema or OUTPUT_SCHEMA},
+            "input": {
+                "kind": "inline",
+                "value": {"$schema": _DIALECT, **(input_schema or INPUT_SCHEMA)},
+            },
+            "output": {
+                "kind": "inline",
+                "value": {"$schema": _DIALECT, **(output_schema or OUTPUT_SCHEMA)},
+            },
         },
     }
 
@@ -107,8 +116,8 @@ def _bindings() -> StepBindings:
         StepDescriptor(
             "acme.issue-tools.create-issue",
             StepKind.ACTION,
-            CreateIssueInput.model_json_schema(),
-            CreateIssueOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **CreateIssueInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **CreateIssueOutput.model_json_schema()},
         ),
         CreateIssueStep(),
     )
@@ -247,9 +256,9 @@ def _trigger() -> dict[str, object]:
         "spec": {
             "driver": "webhook.v1",
             "runtime": {"kind": "custom-runner", "entryPoint": f"{__name__}:IssueOpenedTrigger"},
-            "configuration": {"kind": "inline", "value": {"type": "object"}},
-            "input": {"kind": "inline", "value": IssueOpenedInput.model_json_schema()},
-            "output": {"kind": "inline", "value": IssueOpenedOutput.model_json_schema()},
+            "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", **IssueOpenedInput.model_json_schema()}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", **IssueOpenedOutput.model_json_schema()}},
         },
     }
 
@@ -275,8 +284,8 @@ def test_compiled_trigger_binding_is_not_undeclared() -> None:
         StepDescriptor(
             "acme.issue-tools.issue-opened",
             StepKind.TRIGGER,
-            IssueOpenedInput.model_json_schema(),
-            IssueOpenedOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **IssueOpenedInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **IssueOpenedOutput.model_json_schema()},
         ),
         IssueOpenedTrigger(),
     )

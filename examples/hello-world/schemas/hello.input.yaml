@@ -1,3 +1,4 @@
+$schema: https://json-schema.org/draft/2020-12/schema
 type: object
 description: Inputs accepted by the greeting action.
 additionalProperties: false

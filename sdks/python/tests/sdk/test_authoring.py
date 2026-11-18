@@ -74,7 +74,7 @@ def _action(source: dict[str, object]) -> dict[str, object]:
                 "entryPoint": "issue_tools.actions:CreateIssue",
             },
             "input": source,
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
 
@@ -89,8 +89,8 @@ def _control() -> dict[str, object]:
                 "kind": "custom-runner",
                 "entryPoint": "issue_tools.controls:InvokeDeploy",
             },
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
 
@@ -104,15 +104,15 @@ def _trigger() -> dict[str, object]:
             "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
             "configuration": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"secret": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"secret": {"type": "string"}}},
             },
             "input": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"event": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"event": {"type": "string"}}},
             },
             "output": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"runId": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"runId": {"type": "string"}}},
             },
         },
     )
@@ -131,7 +131,7 @@ def test_compile_reports_an_unavailable_sdk_distribution(monkeypatch) -> None:
     targets = [
         Target(
             "steps/create-issue/manifest.yaml",
-            _action({"kind": "inline", "value": {"type": "object"}}),
+            _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}),
         )
     ]
 
@@ -156,7 +156,7 @@ def test_compile_reports_a_non_semver_sdk_distribution(monkeypatch) -> None:
             [
                 Target(
                     "steps/create-issue/manifest.yaml",
-                    _action({"kind": "inline", "value": {"type": "object"}}),
+                    _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}),
                 )
             ],
             image_bindings={"plugin-workload": DIGEST},
@@ -178,7 +178,7 @@ def _integration() -> dict[str, object]:
             "id": "acme.issue-tools.github-connection",
             "endpointKinds": ["github-cloud", "github-enterprise"],
             "credentialTypes": ["acme.issue-tools.github-token"],
-            "configuration": {"kind": "inline", "value": {"type": "object"}},
+            "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     }
 
@@ -199,7 +199,7 @@ def _credential_recipe(
             "integrationType": integration_type,
             "credentialSchema": {
                 "kind": "inline",
-                "value": {
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema",
                     "type": "object",
                     "additionalProperties": False,
                     "required": ["token"],
@@ -264,7 +264,7 @@ def test_compile_workspace_carries_an_opaque_entry_point_verbatim(
 def test_compile_workspace_rejects_malformed_custom_runner_entry_points(
     tmp_path: Path, entry_point: str
 ) -> None:
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     action["spec"]["runtime"]["entryPoint"] = entry_point
     root = _workspace(tmp_path, action=action)
 
@@ -297,7 +297,7 @@ def _http_operation(*, asset_maps: bool = False) -> dict[str, object]:
 
 def test_yaml_and_typed_authoring_compile_to_identical_canonical_output(tmp_path: Path) -> None:
     action = _action(
-        {"kind": "inline", "value": {"type": "object", "properties": {"title": {"type": "string"}}}}
+        {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"title": {"type": "string"}}}}
     )
     root = _workspace(tmp_path, action=action)
 
@@ -318,7 +318,7 @@ def test_yaml_and_typed_authoring_compile_to_identical_canonical_output(tmp_path
 
 
 def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path: Path) -> None:
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     root = _workspace(tmp_path, action=action)
     preflight = compile_workspace(BuildRequest(root, require_image_bindings=False))
     first = _compile(root)
@@ -349,7 +349,7 @@ def test_revision_ids_and_registration_bind_compiled_contract_not_image(tmp_path
 def test_sdk_version_changes_metadata_not_compiled_contract_revisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
+    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}))
     monkeypatch.setattr("syntara_plugin.sdk.authoring.version", lambda _name: "1.2.3")
     first = _compile(root)
     monkeypatch.setattr("syntara_plugin.sdk.authoring.version", lambda _name: "1.2.4")
@@ -385,7 +385,7 @@ def _assert_missing_workload_rejected(descriptor) -> None:
 
 
 def test_revision_ids_change_with_step_and_plugin_contracts(tmp_path: Path) -> None:
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     root = _workspace(tmp_path, action=action)
     original = _compile(root).descriptor
     action["spec"]["runtime"]["entryPoint"] = "issue_tools.actions:Other"
@@ -400,7 +400,7 @@ def test_revision_ids_change_with_step_and_plugin_contracts(tmp_path: Path) -> N
 
 
 def _descriptor_with_stale_step_revision(tmp_path: Path) -> dict[str, object]:
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     root = _workspace(tmp_path, action=action)
     descriptor = _compile(root).descriptor
     descriptor["spec"]["targets"][0]["step_revision_id"] = "sha256:" + "0" * 64
@@ -419,7 +419,7 @@ def test_stale_step_revision_is_rejected_by_registration(tmp_path: Path) -> None
 
 
 def test_authored_revision_ids_are_rejected() -> None:
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     action["spec"]["step_revision_id"] = "sha256:" + "0" * 64
     with pytest.raises(CompilationError):
         compile_model(_typed_plugin(_plugin()), [Target("steps/create-issue/manifest.yaml", action)], image_bindings={"plugin-workload": DIGEST})
@@ -431,7 +431,7 @@ def test_platform_runner_action_preserves_its_implementation() -> None:
         "documentation": {"path": "docs/README.md"},
         "targets": ["steps/create-issue/manifest.yaml"],
     }
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
     specification["runtime"] = {
@@ -520,12 +520,12 @@ def test_compiler_emits_kind_and_deterministic_schema_digests_for_all_step_categ
         "controls/invoke.yaml",
         "triggers/issue-opened.yaml",
     ]
-    action = _action({"kind": "inline", "value": {"type": "object"}})
-    action["spec"]["error"] = {"kind": "inline", "value": {"type": "object"}}
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
+    action["spec"]["error"] = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     control = _control()
-    control["spec"]["error"] = {"kind": "inline", "value": {"type": "object"}}
+    control["spec"]["error"] = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     trigger = _trigger()
-    trigger["spec"]["error"] = {"kind": "inline", "value": {"type": "object"}}
+    trigger["spec"]["error"] = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     result = compile_model(
         _typed_plugin(plugin),
         [
@@ -589,7 +589,7 @@ def test_action_runner_ownership_is_orthogonal_to_action_category() -> None:
     platform_spec = platform_plugin["spec"]
     assert isinstance(platform_spec, dict)
     del platform_spec["workloads"]
-    platform_action = _action({"kind": "inline", "value": {"type": "object"}})
+    platform_action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     platform_action_spec = platform_action["spec"]
     assert isinstance(platform_action_spec, dict)
     platform_action_spec["runtime"] = {"kind": "platform-runner", "implementation": "syntara.transform.run@1.0.0"}
@@ -601,7 +601,7 @@ def test_action_runner_ownership_is_orthogonal_to_action_category() -> None:
     )
     assert managed.descriptor["spec"]["targets"][0]["runtime"]["kind"] == "platform-runner"
 
-    custom_action = _action({"kind": "inline", "value": {"type": "object"}})
+    custom_action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     custom_spec = custom_action["spec"]
     assert isinstance(custom_spec, dict)
     custom_spec["runtime"] = {"kind": "custom-runner", "entryPoint": "steps:Transform"}
@@ -623,7 +623,7 @@ def test_compiler_rejects_duplicate_compiled_identities_across_step_types() -> N
     specification = plugin["spec"]
     assert isinstance(specification, dict)
     specification["targets"] = ["steps/create-issue.yaml", "steps/create-issue-copy.yaml"]
-    duplicate_action = _action({"kind": "inline", "value": {"type": "object"}})
+    duplicate_action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     duplicate_action["metadata"] = {
         "name": "create-issue",
         "displayName": "Duplicate identity",
@@ -633,7 +633,7 @@ def test_compiler_rejects_duplicate_compiled_identities_across_step_types() -> N
     targets = [
         Target(
             "steps/create-issue.yaml",
-            _action({"kind": "inline", "value": {"type": "object"}}),
+            _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}),
         ),
         Target("steps/create-issue-copy.yaml", duplicate_action),
     ]
@@ -652,7 +652,7 @@ def test_compiler_canonicalizes_connection_types_and_binds_an_action_to_them() -
             "steps/create-issue/manifest.yaml",
         ],
     }
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     action_spec = action["spec"]
     assert isinstance(action_spec, dict)
     action_spec["runtime"] = {
@@ -673,7 +673,10 @@ def test_compiler_canonicalizes_connection_types_and_binds_an_action_to_them() -
 
     integration, credential, compiled_action = result.descriptor["spec"]["targets"]
     assert integration["kind"] == "IntegrationType"
-    assert integration["configuration"] == {"type": "object"}
+    assert integration["configuration"] == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+    }
     assert credential["kind"] == "CredentialRecipe"
     assert credential["credentialSchema"]["required"] == ["token"]
     assert "output" not in credential
@@ -724,7 +727,7 @@ def test_compiler_rejects_a_connection_type_link_to_another_plugin_or_missing_ty
         "documentation": {"path": "docs/README.md"},
         "targets": ["credentials/github-token.yaml", "steps/create-issue/manifest.yaml"],
     }
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     action_spec = action["spec"]
     assert isinstance(action_spec, dict)
     action_spec["integrationType"] = "acme.issue-tools.github-connection"
@@ -749,7 +752,7 @@ def test_platform_runner_action_without_an_implementation_is_rejected() -> None:
         "documentation": {"path": "docs/README.md"},
         "targets": ["steps/create-issue/manifest.yaml"],
     }
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
     specification["runtime"] = {"kind": "platform-runner"}
@@ -770,7 +773,7 @@ def test_http_operation_assets_are_typed_and_bound_to_the_nested_operation_field
         "documentation": {"path": "docs/README.md"},
         "targets": ["steps/create-issue/manifest.yaml"],
     }
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
     specification["runtime"] = {
@@ -804,7 +807,7 @@ def test_http_operation_assets_are_typed_and_bound_to_the_nested_operation_field
 def test_http_operation_rejects_an_invalid_mapping_source() -> None:
     plugin = _plugin()
     plugin["spec"] = {"targets": ["steps/create-issue/manifest.yaml"]}
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
     specification["runtime"] = {
@@ -828,6 +831,7 @@ def test_http_operation_rejects_an_invalid_mapping_source() -> None:
 
 def test_inline_and_asset_documents_preserve_identical_schema_semantics(tmp_path: Path) -> None:
     schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "description": "Inputs used to create an issue.",
         "properties": {
@@ -846,7 +850,7 @@ def test_inline_and_asset_documents_preserve_identical_schema_semantics(tmp_path
     asset_path = asset_root.parent / "schemas/input.json"
     asset_path.parent.mkdir()
     asset_path.write_text(
-        '{"description":"Inputs used to create an issue.",'
+        '{"$schema":"https://json-schema.org/draft/2020-12/schema","description":"Inputs used to create an issue.",'
         '"properties":{"title":{"description":"Title shown to repository collaborators.",'
         '"type":"string"}},"type":"object"}'
     )
@@ -868,7 +872,7 @@ def test_inline_and_asset_documents_preserve_identical_schema_semantics(tmp_path
 
 
 def test_workspace_documentation_is_a_signed_markdown_asset(tmp_path: Path) -> None:
-    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
+    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}))
     document = b"# Issue tools\n\nCreate and label GitHub issues.\n"
     documentation = root.parent / "docs/README.md"
     documentation.parent.mkdir(exist_ok=True)
@@ -899,7 +903,7 @@ def test_workspace_documentation_is_a_signed_markdown_asset(tmp_path: Path) -> N
 def test_workspace_documentation_rejects_binary_or_non_utf8_content(
     tmp_path: Path, content: bytes
 ) -> None:
-    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
+    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}))
     documentation = root.parent / "docs/README.md"
     documentation.parent.mkdir(exist_ok=True)
     documentation.write_bytes(content)
@@ -923,7 +927,7 @@ def test_provider_binding_materializes_the_provider_abi() -> None:
         [
             Target(
                 "steps/create-issue/manifest.yaml",
-                _action({"kind": "inline", "value": {"type": "object"}}),
+                _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}),
             )
         ],
         image_bindings={"plugin-workload": DIGEST, "provider-image": DIGEST},
@@ -938,7 +942,7 @@ def test_provider_binding_materializes_the_provider_abi() -> None:
 
 def test_declared_workload_requires_a_binding_without_custom_runner_steps() -> None:
     plugin = _plugin()
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     action_spec = action["spec"]
     assert isinstance(action_spec, dict)
     action_spec["runtime"] = {
@@ -958,7 +962,7 @@ def test_declared_workload_requires_a_binding_without_custom_runner_steps() -> N
 def test_rejects_workload_and_provider_image_id_collisions() -> None:
     plugin = _plugin()
     plugin["spec"]["providers"] = [{"id": "resource-provider", "image": "plugin-workload"}]
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     typed_plugin = _typed_plugin(plugin)
     target = Target("steps/create-issue/manifest.yaml", action)
 
@@ -996,7 +1000,7 @@ def test_rejects_workload_id_and_provider_image_id_collisions() -> None:
 
 
 def test_authoring_reports_stable_path_diagnostics(tmp_path: Path) -> None:
-    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
+    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}))
     root.write_text(_yaml(_plugin("../outside.yaml")))
 
     with pytest.raises(CompilationError) as raised:
@@ -1015,7 +1019,7 @@ def test_rejects_duplicate_yaml_keys_recursive_alias_and_mutable_image(tmp_path:
     assert duplicate_error.value.diagnostics[0].code == "YAML_INVALID"
 
     root = _workspace(
-        tmp_path / "cycle", action=_action({"kind": "inline", "value": {"type": "object"}})
+        tmp_path / "cycle", action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     )
     action_path = root.parent / "steps/create-issue/manifest.yaml"
     action_path.write_text(
@@ -1026,7 +1030,7 @@ def test_rejects_duplicate_yaml_keys_recursive_alias_and_mutable_image(tmp_path:
     assert cycle_error.value.diagnostics[0].code == "YAML_ALIAS_FORBIDDEN"
 
     root = _workspace(
-        tmp_path / "image", action=_action({"kind": "inline", "value": {"type": "object"}})
+        tmp_path / "image", action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     )
     image_request = BuildRequest(
         root, image_bindings={"plugin-workload": "quay.io/acme/issue-tools:latest"}
@@ -1040,7 +1044,7 @@ def test_rejects_duplicate_yaml_keys_recursive_alias_and_mutable_image(tmp_path:
 
 def test_custom_runner_accepts_digest_pinned_registry_reference_with_port(tmp_path: Path) -> None:
     """A local OCI registry port is part of an immutable repository reference."""
-    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
+    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}))
     image = "localhost:8443/syntara-admin/plugins/echo@sha256:" + "a" * 64
 
     result = compile_workspace(BuildRequest(root, image_bindings={"plugin-workload": image}))
@@ -1058,7 +1062,7 @@ def test_plugin_supports_multiple_named_workloads() -> None:
         "python": {"image": "python-runtime"},
         "bash": {"image": "bash-runtime"},
     }
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     action["spec"]["runtime"]["workload"] = "python"
     target = Target("steps/create-issue/manifest.yaml", action)
 
@@ -1097,7 +1101,7 @@ def test_custom_runner_action_requires_one_root_workload() -> None:
     typed_plugin = _typed_plugin(plugin)
     target = Target(
         "steps/create-issue/manifest.yaml",
-        _action({"kind": "inline", "value": {"type": "object"}}),
+        _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}),
     )
 
     with pytest.raises(CompilationError) as error:
@@ -1107,7 +1111,7 @@ def test_custom_runner_action_requires_one_root_workload() -> None:
 
 
 def test_action_can_select_a_declared_workload() -> None:
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     specification = action["spec"]
     assert isinstance(specification, dict)
     runtime = specification["runtime"]
@@ -1147,7 +1151,7 @@ def test_multiple_workloads_require_explicit_step_assignment() -> None:
     targets = [
         Target(
             "steps/create-issue/manifest.yaml",
-            _action({"kind": "inline", "value": {"type": "object"}}),
+            _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}),
         )
     ]
 
@@ -1196,7 +1200,7 @@ def test_image_only_change_preserves_plugin_and_step_revision_ids() -> None:
     specification = plugin["spec"]
     assert isinstance(specification, dict)
     specification["workloads"] = {"python": {"image": "python-runtime"}}
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     action["spec"]["runtime"]["workload"] = "python"
     target = Target("steps/create-issue/manifest.yaml", action)
     first = compile_model(
@@ -1213,7 +1217,7 @@ def test_image_only_change_preserves_plugin_and_step_revision_ids() -> None:
 
 
 def test_rejects_case_collisions_archives_and_oversized_assets(tmp_path: Path) -> None:
-    first = _action({"kind": "inline", "value": {"type": "object"}})
+    first = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     second = {
         **first,
         "metadata": {
@@ -1301,15 +1305,54 @@ def test_rejects_non_object_and_invalid_schema_documents(tmp_path: Path) -> None
     assert "SCHEMA_DOCUMENT_INVALID" in {item.code for item in scalar_error.value.diagnostics}
 
     root = _workspace(
-        tmp_path / "invalid", action=_action({"kind": "inline", "value": {"not": "a JSON Schema"}})
+        tmp_path / "invalid",
+        action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "not": "a JSON Schema"}})
     )
     with pytest.raises(CompilationError) as invalid_error:
         _compile(root)
     assert "SCHEMA_DOCUMENT_INVALID" in {item.code for item in invalid_error.value.diagnostics}
 
 
+def test_rejects_authored_schemas_declaring_an_unsupported_draft(tmp_path: Path) -> None:
+    """Draft 2020-12 is the only accepted dialect for authored schemas."""
+
+    root = _workspace(
+        tmp_path / "draft-07",
+        action=_action(
+            {
+                "kind": "inline",
+                "value": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object",
+                },
+            }
+        ),
+    )
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+    codes = {item.code for item in error.value.diagnostics}
+    assert codes == {"SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT"}
+    assert "draft-07" in error.value.diagnostics[0].message
+
+
+def test_rejects_authored_schemas_without_a_dialect_declaration(tmp_path: Path) -> None:
+    """A missing $schema declaration is rejected, not defaulted."""
+
+    root = _workspace(
+        tmp_path / "missing-dialect",
+        action=_action({"kind": "inline", "value": {"type": "object"}}),
+    )
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+    codes = {item.code for item in error.value.diagnostics}
+    assert codes == {"SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT"}
+    assert "$schema" in error.value.diagnostics[0].message
+
+
 def test_rejects_yaml_anchors_and_aliases(tmp_path: Path) -> None:
-    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
+    root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}))
     root.write_text(
         "&root\napiVersion: syntara.io/v1alpha1\nkind: Plugin\nmetadata: {namespace: acme, name: issue-tools, version: 0.1.0, displayName: Issue tools, description: Creates GitHub issues.}\nspec: {targets: [steps/create-issue/manifest.yaml]}\n"
     )

@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator, FormatChecker
+from syntara_plugin.contracts import build_validator
 from syntara_plugin.testing import HarnessUsageError, NotPythonStepTypeError, load_step_class
 
 from .authoring import BuildRequest, compile_workspace
@@ -389,7 +389,7 @@ def _validate_case(schema: Mapping[str, Any], case: Mapping[str, Any]) -> list[s
     if not isinstance(schema, Mapping) or not schema:
         return []
     try:
-        validator = Draft202012Validator(schema, format_checker=FormatChecker())
+        validator = build_validator(schema)
         errors = sorted(validator.iter_errors(case), key=lambda error: list(error.path))
     except Exception:  # noqa: BLE001 - an unvalidatable schema must not break scaffolding
         return []

@@ -13,6 +13,14 @@ from typing import Any
 import pytest
 from syntara_plugin.sdk.cli import main
 
+_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+
+def _with_dialect(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return an authored schema with the mandatory Draft 2020-12 declaration."""
+
+    return {"$schema": _DIALECT, **schema}
+
 _STEP_SOURCE = '''"""A custom-runner Action step type used by the run command tests."""
 
 from __future__ import annotations
@@ -103,6 +111,7 @@ class TerminalStep(ActionStep[TerminalInput, TerminalOutput]):
 '''
 
 _ECHO_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "title": {"type": "string"},
@@ -112,6 +121,7 @@ _ECHO_SCHEMA: dict[str, Any] = {
     "required": ["title"],
 }
 _ECHO_OUTPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {"slug": {"type": "string"}},
     "required": ["slug"],
@@ -223,6 +233,9 @@ def _write_target(
 ) -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
+    input_schema = _with_dialect(input_schema)
+    if output_schema is not None:
+        output_schema = _with_dialect(output_schema)
     path.write_text(
         f"""apiVersion: syntara.io/v1alpha1
 kind: Action
@@ -236,13 +249,14 @@ spec:
     entryPoint: {entry_point}
   input:
     kind: inline
-    value: {input_schema}
+    value: {_with_dialect(input_schema)}
   output:
     kind: inline
-    value: {output_schema or _ECHO_OUTPUT_SCHEMA}
+    value: {_with_dialect(output_schema or _ECHO_OUTPUT_SCHEMA)}
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -288,6 +302,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         name:
@@ -296,6 +311,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -1266,7 +1282,7 @@ def test_nested_write_only_fields_are_redacted(tmp_path: Path, capsys) -> None:
             "title": {"type": "string"},
             "options": {
                 "type": "object",
-                "properties": {"value": {"type": "string", "writeOnly": True, "maxLength": 4}},
+                "properties": {"value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "string", "writeOnly": True, "maxLength": 4}},
             },
         },
         "required": ["title", "options"],
@@ -2084,6 +2100,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         title:
@@ -2093,6 +2110,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         slug:
@@ -2101,6 +2119,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -3314,13 +3333,14 @@ spec:
     entryPoint: {package}.steps:{class_name}
   input:
     kind: inline
-    value: {_ECHO_SCHEMA}
+    value: {_with_dialect(_ECHO_SCHEMA)}
   output:
     kind: inline
-    value: {output_schema}
+    value: {_with_dialect(output_schema)}
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -3339,7 +3359,7 @@ spec:
   credentialTypes: [{_RECIPE}]
   configuration:
     kind: inline
-    value: {{type: object}}
+    value: {{$schema: https://json-schema.org/draft/2020-12/schema, type: object}}
 """,
         encoding="utf-8",
     )
@@ -3356,7 +3376,7 @@ spec:
   integrationType: {_INTEGRATION}
   credentialSchema:
     kind: inline
-    value: {credential_schema or _CREDENTIAL_SCHEMA}
+    value: {_with_dialect(credential_schema or _CREDENTIAL_SCHEMA)}
   secretFields: [token, password]
   issuance:
     kind: static-bearer.v1

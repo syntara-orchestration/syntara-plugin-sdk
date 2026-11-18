@@ -90,7 +90,7 @@ def _action_manifest(
             "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
             "input": {"kind": "inline", "value": input_schema},
             "output": {"kind": "inline", "value": output_schema},
-            "error": {"kind": "inline", "value": {"type": "object"}},
+            "error": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     }
 
@@ -116,7 +116,7 @@ def _trigger_manifest(
     manifest["spec"]["driver"] = "webhook.v1"
     manifest["spec"]["configuration"] = {
         "kind": "inline",
-        "value": {"type": "object"},
+        "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
     }
     return manifest
 
@@ -156,7 +156,7 @@ def _workspace(tmp_path: Path, manifest: Mapping[str, Any]) -> Path:
 def _matching_workspace(tmp_path: Path) -> Path:
     return _workspace(
         tmp_path,
-        _action_manifest(GreetInput.model_json_schema(), GreetOutput.model_json_schema()),
+        _action_manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetInput.model_json_schema()}, {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetOutput.model_json_schema()}),
     )
 
 
@@ -188,15 +188,15 @@ def _two_action_workspace(tmp_path: Path) -> Path:
     )
     (workspace / "steps/greet/manifest.yaml").write_text(
         yaml.safe_dump(
-            _action_manifest(GreetInput.model_json_schema(), GreetOutput.model_json_schema())
+            _action_manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetInput.model_json_schema()}, {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetOutput.model_json_schema()})
         ),
         encoding="utf-8",
     )
     (workspace / "steps/wave/manifest.yaml").write_text(
         yaml.safe_dump(
             _action_manifest(
-                GreetInput.model_json_schema(),
-                GreetOutput.model_json_schema(),
+                {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetInput.model_json_schema()},
+                {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetOutput.model_json_schema()},
                 entry_point=f"{__name__}:WaveActionStep",
                 name="wave",
             )
@@ -229,8 +229,8 @@ def test_bind_step_installs_control_manifest(tmp_path: Path) -> None:
     workspace = _workspace(
         tmp_path,
         _control_manifest(
-            NormalizeInput.model_json_schema(),
-            NormalizeOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **NormalizeInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **NormalizeOutput.model_json_schema()},
             entry_point_of(NormalizeStep),
         ),
     )
@@ -243,8 +243,8 @@ def test_bind_step_installs_trigger_manifest(tmp_path: Path) -> None:
     workspace = _workspace(
         tmp_path,
         _trigger_manifest(
-            EmitEventInput.model_json_schema(),
-            EmitEventOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **EmitEventInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **EmitEventOutput.model_json_schema()},
             entry_point_of(EmitEventTrigger),
         ),
     )
@@ -267,8 +267,8 @@ def test_bind_step_matches_caller_supplied_entry_point_strings(
     workspace = _workspace(
         tmp_path,
         _action_manifest(
-            GreetInput.model_json_schema(),
-            GreetOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetOutput.model_json_schema()},
             entry_point="reexport_helper:GreetActionStep",
         ),
     )
@@ -334,8 +334,8 @@ def test_bind_step_rejects_platform_runner_targets_selected_by_identity(
                             },
                         },
                     },
-                    "input": {"kind": "inline", "value": {"type": "object"}},
-                    "output": {"kind": "inline", "value": {"type": "object"}},
+                    "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+                    "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
                 },
             }
         ),
@@ -431,12 +431,13 @@ def test_bind_step_executes_over_the_container_path(tmp_path: Path) -> None:
 
 def test_bind_step_fails_on_schema_drift(tmp_path: Path) -> None:
     drifted_input = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {"whom": {"type": "string"}},
         "required": ["whom"],
     }
     workspace = _workspace(
-        tmp_path, _action_manifest(drifted_input, GreetOutput.model_json_schema())
+        tmp_path, _action_manifest(drifted_input, {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetOutput.model_json_schema()})
     )
     factory = StepBindingsFactory()
     with pytest.raises(SchemaDriftError):
@@ -458,8 +459,8 @@ def test_bind_step_fails_on_entry_point_drift(tmp_path: Path) -> None:
     workspace = _workspace(
         tmp_path,
         _action_manifest(
-            GreetInput.model_json_schema(),
-            GreetOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetOutput.model_json_schema()},
             entry_point=f"{__name__}:NormalizeStep",
         ),
     )
@@ -474,8 +475,8 @@ def test_bind_step_rejects_unknown_entry_points(tmp_path: Path) -> None:
     workspace = _workspace(
         tmp_path,
         _action_manifest(
-            GreetInput.model_json_schema(),
-            GreetOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetOutput.model_json_schema()},
             entry_point="somewhere.else:Missing",
         ),
     )
@@ -497,12 +498,13 @@ def test_action_bound_with_bind_executes_through_the_local_install() -> None:
 
 def test_strict_factory_fails_on_warning_drift(tmp_path: Path) -> None:
     loosened_output = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {"message": {"type": "string", "maxLength": 3}},
         "required": ["message"],
     }
     workspace = _workspace(
-        tmp_path, _action_manifest(GreetInput.model_json_schema(), loosened_output)
+        tmp_path, _action_manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetInput.model_json_schema()}, loosened_output)
     )
     factory = StepBindingsFactory(strict=True)
     with pytest.raises(SchemaDriftError):
@@ -524,7 +526,7 @@ def test_declared_view_excludes_bindings_from_other_workspaces(tmp_path: Path) -
 
 
 def test_compiled_workspace_retains_credential_declarations(tmp_path: Path) -> None:
-    manifest = _action_manifest(GreetInput.model_json_schema(), GreetOutput.model_json_schema())
+    manifest = _action_manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetInput.model_json_schema()}, {"$schema": "https://json-schema.org/draft/2020-12/schema", **GreetOutput.model_json_schema()})
     manifest["spec"]["integrationType"] = "testing.demo.connection"
     workspace = _workspace(tmp_path, manifest)
     metadata = {"name": "connection", "displayName": "Connection", "description": "Example."}
@@ -532,12 +534,12 @@ def test_compiled_workspace_retains_credential_declarations(tmp_path: Path) -> N
         "apiVersion": "syntara.io/v1alpha1", "kind": "IntegrationType", "metadata": metadata,
         "spec": {"id": "testing.demo.connection", "endpointKinds": ["https"],
                  "credentialTypes": ["testing.demo.token"],
-                 "configuration": {"kind": "inline", "value": {"type": "object"}}},
+                 "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}},
     }
     recipe = {
         "apiVersion": "syntara.io/v1alpha1", "kind": "CredentialRecipe", "metadata": {**metadata, "name": "token"},
         "spec": {"id": "testing.demo.token", "integrationType": "testing.demo.connection",
-                 "credentialSchema": {"kind": "inline", "value": {"type": "object"}},
+                 "credentialSchema": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
                  "secretFields": ["token"], "issuance": {"kind": "static-bearer.v1"}},
     }
     (workspace / "integration.yaml").write_text(yaml.safe_dump(integration), encoding="utf-8")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import urllib.parse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -70,9 +71,27 @@ _SCHEMA_FILES: dict[ContractKind, str] = {
 _RFC3339_DATETIME = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
-_FORMAT_CHECKER = FormatChecker()
+# Start from an empty registry so only the contract-asserted format names are
+# checked; jsonschema's built-in checks (email, date, ...) would otherwise be
+# asserted too, which the authoring conformance contract does not allow.
+_FORMAT_CHECKER = FormatChecker(formats=())
 _STEP_TARGET_KINDS = frozenset({"Action", "Control", "Trigger"})
 _UTC_OFFSET_SUFFIX = "+00:00"
+_CANONICAL_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+
+def _asserted_formats(documents: Mapping[str, Mapping[str, Any]]) -> frozenset[str]:
+    """Read the asserted format names declared by the common contract."""
+
+    try:
+        enum = documents["common.schema.json"]["$defs"]["assertedFormats"]["enum"]
+    except (KeyError, TypeError) as error:
+        raise RuntimeError(
+            "common.schema.json is missing the $defs/assertedFormats/enum declaration"
+        ) from error
+    if not isinstance(enum, list) or not all(isinstance(name, str) for name in enum):
+        raise RuntimeError("assertedFormats enum must be a list of format names")
+    return frozenset(enum)
 
 
 @_FORMAT_CHECKER.checks("date-time", raises=ValueError)
@@ -87,6 +106,80 @@ def _is_rfc3339_datetime(value: object) -> bool:
     return True
 
 
+@_FORMAT_CHECKER.checks("uri", raises=ValueError)
+def _is_absolute_uri(value: object) -> bool:
+    """Accept absolute URIs with a scheme, per RFC 3986 ``URI`` semantics."""
+
+    if not isinstance(value, str):
+        return False
+    # urlsplit raises ValueError for inputs it cannot parse (for example a
+    # malformed IPv6 host); the registered ``raises`` turns that into a failed
+    # format check instead of an escaping exception.
+    return bool(urllib.parse.urlsplit(value).scheme)
+
+
+def format_checker() -> FormatChecker:
+    """Return the shared format checker asserting the contract format set.
+
+    Only the names declared in ``common.schema.json#/$defs/assertedFormats``
+    are registered; every other format name is an annotation only, per JSON
+    Schema Draft 2020-12 vocabulary semantics. The checker is a process-wide
+    singleton: callers must treat it as read-only and never register
+    additional checks on it.
+    """
+
+    return _FORMAT_CHECKER
+
+
+def build_validator(schema: object, *, registry: Registry | None = None) -> Draft202012Validator:
+    """Build a Draft 2020-12 validator with the shared asserted format checker."""
+
+    return Draft202012Validator(
+        schema,
+        registry=registry if registry is not None else Registry(),
+        format_checker=_FORMAT_CHECKER,
+    )
+
+
+class SchemaDocumentError(ValueError):
+    """An authored schema document violates the authoring conformance contract."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def validate_authored_schema(document: object) -> None:
+    """Validate an authored (inline or asset-backed) schema document.
+
+    Requires an explicit Draft 2020-12 ``$schema`` declaration and a document
+    that satisfies the Draft 2020-12 meta-schema. Raises ``SchemaDocumentError``
+    with a stable code for draft violations and jsonschema ``SchemaError`` for
+    structural meta-schema failures.
+    """
+
+    if not isinstance(document, Mapping):
+        raise SchemaDocumentError(
+            "SCHEMA_DOCUMENT_NOT_OBJECT",
+            "authored schema document must be a JSON object.",
+        )
+    declared = document.get("$schema")
+    if not isinstance(declared, str) or not declared:
+        raise SchemaDocumentError(
+            "SCHEMA_DOCUMENT_DIALECT_MISSING",
+            "authored schema must declare $schema as the Draft 2020-12 dialect "
+            f"{_CANONICAL_SCHEMA_DIALECT!r}.",
+        )
+    if declared != _CANONICAL_SCHEMA_DIALECT:
+        raise SchemaDocumentError(
+            "SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT",
+            f"authored schema declares unsupported dialect {declared!r}; only "
+            f"{_CANONICAL_SCHEMA_DIALECT!r} is accepted.",
+        )
+    Draft202012Validator.check_schema(document)
+
+
 @dataclass(frozen=True)
 class ContractBundle:
     """An immutable in-process view of the packaged contract documents."""
@@ -94,6 +187,7 @@ class ContractBundle:
     version: str
     digest: str
     documents: dict[str, dict[str, Any]]
+    asserted_formats: frozenset[str] = frozenset()
 
     def validator(self, kind: ContractKind) -> Draft202012Validator:
         """Return a validator with every local schema in this bundle registered."""
@@ -102,11 +196,7 @@ class ContractBundle:
             (document["$id"], Resource.from_contents(document))
             for document in self.documents.values()
         )
-        return Draft202012Validator(
-            target,
-            registry=registry,
-            format_checker=_FORMAT_CHECKER,
-        )
+        return build_validator(target, registry=registry)
 
 
 def _schema_directory() -> Any:
@@ -142,10 +232,21 @@ def load_bundle() -> ContractBundle:
             documents[entry.name] = json.loads(entry.read_text(encoding="utf-8"))
     if set(_SCHEMA_FILES.values()) - set(documents):
         raise RuntimeError("contract bundle is missing a required manifest or runtime schema")
+    asserted_formats = _asserted_formats(documents)
+    registered_formats = frozenset(_FORMAT_CHECKER.checkers)
+    if asserted_formats != registered_formats:
+        undeclared = sorted(registered_formats - asserted_formats)
+        unregistered = sorted(asserted_formats - registered_formats)
+        raise RuntimeError(
+            "asserted format set and registered format checks disagree: "
+            f"declared without a check: {undeclared or 'none'}; "
+            f"registered without a declaration: {unregistered or 'none'}"
+        )
     return ContractBundle(
         version="syntara.io/v1alpha1",
         digest=bundle_digest(documents),
         documents=documents,
+        asserted_formats=asserted_formats,
     )
 
 

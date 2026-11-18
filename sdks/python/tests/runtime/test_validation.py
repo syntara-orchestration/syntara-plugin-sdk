@@ -129,9 +129,7 @@ def test_check_step_contract_accepts_frozen_descriptor_schemas() -> None:
     )
 
     assert report.passed(strict=True)
-    assert report.input_schema_digest == canonical_json_digest(
-        TitleInput.model_json_schema()
-    )
+    assert report.input_schema_digest == canonical_json_digest(TitleInput.model_json_schema())
 
 
 def test_input_manifest_property_missing_from_model_is_an_error() -> None:
@@ -931,8 +929,8 @@ def _issue_bindings(step: BaseStep[Any, Any] | None = None) -> StepBindings:
         StepDescriptor(
             "acme.issue-tools.create-issue",
             StepKind.ACTION,
-            _IssueInput.model_json_schema(),
-            _IssueOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueOutput.model_json_schema()},
         ),
         step if step is not None else CreateIssueStep(),
     )
@@ -1189,8 +1187,8 @@ def test_check_plugin_bindings_checks_direct_control_and_trigger_targets() -> No
                     "identity": control_identity,
                     "version": "0.1.0",
                     "invocation": {"kind": "orchestration"},
-                    "input": _IssueInput.model_json_schema(),
-                    "output": _IssueOutput.model_json_schema(),
+                    "input": {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueInput.model_json_schema()},
+                    "output": {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueOutput.model_json_schema()},
                 },
                 {
                     "kind": "Trigger",
@@ -1198,8 +1196,8 @@ def test_check_plugin_bindings_checks_direct_control_and_trigger_targets() -> No
                     "version": "0.1.0",
                     "driver": "webhook.v1",
                     "configuration": {"type": "object"},
-                    "input": _IssueInput.model_json_schema(),
-                    "output": _IssueOutput.model_json_schema(),
+                    "input": {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueInput.model_json_schema()},
+                    "output": {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueOutput.model_json_schema()},
                 },
             ]
         }
@@ -1445,7 +1443,7 @@ def test_nullable_ref_memo_still_reports_nullability_drift() -> None:
         "$defs": {
             "Sub": {
                 "type": "object",
-                "properties": {"value": {"type": "string"}},
+                "properties": {"value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "string"}},
                 "required": ["value"],
             }
         },
@@ -1852,8 +1850,8 @@ def test_check_target_binding_reports_identity_mismatch() -> None:
         StepDescriptor(
             "acme.issue-tools.close-issue",
             StepKind.ACTION,
-            _IssueInput.model_json_schema(),
-            _IssueOutput.model_json_schema(),
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueInput.model_json_schema()},
+            {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueOutput.model_json_schema()},
         ),
         CreateIssueStep(),
     )
@@ -1994,7 +1992,7 @@ def test_finite_enum_proves_consumer_constraints() -> None:
 
     satisfied = {
         "type": "object",
-        "properties": {"value": {"type": "integer", "minimum": 0}},
+        "properties": {"value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "integer", "minimum": 0}},
         "required": ["value"],
     }
 
@@ -2018,7 +2016,7 @@ def test_finite_enum_still_reports_genuine_constraint_drift() -> None:
 
     violated = {
         "type": "object",
-        "properties": {"value": {"type": "integer", "minimum": 10}},
+        "properties": {"value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "integer", "minimum": 10}},
         "required": ["value"],
     }
 
@@ -2033,7 +2031,7 @@ def test_const_intersecting_a_disjoint_enum_accepts_nothing() -> None:
 
     contradictory = {
         "type": "object",
-        "properties": {"value": {"enum": ["a"], "const": "b"}},
+        "properties": {"value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "enum": ["a"], "const": "b"}},
         "required": ["value"],
     }
 
@@ -2112,8 +2110,8 @@ def test_check_target_binding_accepts_custom_runner_runtime_on_control_targets()
         "kind": "Control",
         "identity": identity,
         "version": "0.1.0",
-        "input": _IssueInput.model_json_schema(),
-        "output": _IssueOutput.model_json_schema(),
+        "input": {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueInput.model_json_schema()},
+        "output": {"$schema": "https://json-schema.org/draft/2020-12/schema", **_IssueOutput.model_json_schema()},
         "runtime": {
             "kind": "custom-runner",
             "entryPoint": f"{InventoryControl.__module__}:{InventoryControl.__qualname__}",

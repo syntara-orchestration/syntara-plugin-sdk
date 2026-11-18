@@ -258,6 +258,7 @@ def test_custom_schema_file_and_drift_detection(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": False,
         "required": ["resource", "count"],

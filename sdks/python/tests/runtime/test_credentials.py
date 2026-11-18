@@ -211,7 +211,7 @@ def _connection_targets() -> list[dict[str, Any]]:
                   "credentialTypes": [_NAME], "configuration": {"kind": "inline", "value": {}}}},
         {"apiVersion": "syntara.io/v1alpha1", "kind": "CredentialRecipe", "metadata": metadata,
          "spec": {"id": _NAME, "integrationType": "acme.demo.integration",
-                  "credentialSchema": {"kind": "inline", "value": {"type": "object"}},
+                  "credentialSchema": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
                   "secretFields": ["token"], "issuance": {"kind": "static-bearer.v1"}}},
     ]
 
@@ -224,8 +224,8 @@ def _binding(targets: list[dict[str, Any]] | None = None) -> StepBinding:
         "spec": {
             "runtime": {"kind": "custom-runner", "entryPoint": f"{__name__}:CredentialStep"},
             "integrationType": "acme.demo.integration",
-            "input": {"kind": "inline", "value": CredentialInput.model_json_schema()},
-            "output": {"kind": "inline", "value": CredentialOutput.model_json_schema()},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", **CredentialInput.model_json_schema()}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", **CredentialOutput.model_json_schema()}},
         },
     }
     installed = InstalledStepManifest.from_manifest(
@@ -266,7 +266,7 @@ def test_declared_credential_keys_can_appear_in_output_and_failure(tmp_path: Pat
     [
         ("Control", ControlCredentialStep, {"invocation": {"kind": "orchestration"}}),
         ("Trigger", TriggerCredentialStep, {
-            "driver": "webhook.v1", "configuration": {"kind": "inline", "value": {"type": "object"}}
+            "driver": "webhook.v1", "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
         }),
     ],
 )
@@ -279,8 +279,8 @@ def test_control_and_trigger_read_declared_credentials(
     spec = {
         "runtime": {"kind": "custom-runner", "entryPoint": f"{__name__}:{step_class.__name__}"},
         "integrationType": "acme.demo.integration",
-        "input": {"kind": "inline", "value": CredentialInput.model_json_schema()},
-        "output": {"kind": "inline", "value": CredentialOutput.model_json_schema()},
+        "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", **CredentialInput.model_json_schema()}},
+        "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", **CredentialOutput.model_json_schema()}},
         **kind_spec,
     }
     manifest = {

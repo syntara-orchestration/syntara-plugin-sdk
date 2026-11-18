@@ -19,6 +19,8 @@ from syntara_plugin.runtime import (
     ContainerInvocation,
     ContainerInvocationError,
     ControlStep,
+    ErrorCategory,
+    ErrorResult,
     ExecutionContext,
     FailureCode,
     InstalledStepManifest,
@@ -29,6 +31,7 @@ from syntara_plugin.runtime import (
     StepDescriptor,
     StepExecutionError,
     StepExecutor,
+    StepFailure,
     StepKind,
     TriggerStep,
     container_step_for_binding,
@@ -205,6 +208,7 @@ def _installed_step(
     step_class: type[BaseStep[Any, Any]] = ExampleStep,
     step_identity: str = "acme.plugin.example",
     configuration_schema: dict[str, object] | None = None,
+    error_schema: dict[str, object] | None = None,
 ) -> InstalledStepManifest:
     kind = (
         StepKind.ACTION
@@ -230,13 +234,15 @@ def _installed_step(
             "output": {"kind": "inline", "value": output_schema if output_schema is not None else {}},
         },
     }
+    if error_schema is not None:
+        manifest["spec"]["error"] = {"kind": "inline", "value": error_schema}
     if kind is StepKind.CONTROL:
         manifest["spec"]["invocation"] = {"kind": "orchestration"}
     elif kind is StepKind.TRIGGER:
         manifest["spec"].update(
             {
                 "driver": "webhook.v1",
-                "configuration": {"kind": "inline", "value": {"type": "object"}},
+                "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             }
         )
     if configuration_schema is not None:
@@ -373,7 +379,7 @@ def test_manifest_validation_uses_strict_json_mode_for_json_representations() ->
     bindings = StepBindings()
     descriptor = StepDescriptor.for_installed_step(
         step,
-        _installed_step(DateTimeInput.model_json_schema(), step_class=DateTimeActionStep),
+        _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **DateTimeInput.model_json_schema()}, step_class=DateTimeActionStep),
     )
     bindings.bind(descriptor, step)
 
@@ -389,6 +395,26 @@ def test_manifest_validation_uses_strict_json_mode_for_json_representations() ->
 def test_action_format_constraints_are_enforced_before_the_hook() -> None:
     step = ExampleStep()
     schema = _input_schema()
+    schema["properties"]["message"]["format"] = "date-time"  # type: ignore[index]
+    bindings = StepBindings()
+    descriptor = StepDescriptor.for_installed_step(step, _installed_step(schema))
+    bindings.bind(descriptor, step)
+
+    wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
+        {"message": "not-a-timestamp"}, _context()
+    )
+
+    assert wrapper.status != 0
+    assert wrapper.error is not None
+    assert "format" in wrapper.error.message
+    assert step.run_calls == 0
+
+
+def test_action_unasserted_formats_are_annotations_only() -> None:
+    """Format names outside the contract's asserted set never block a run."""
+
+    step = ExampleStep()
+    schema = _input_schema()
     schema["properties"]["message"]["format"] = "email"  # type: ignore[index]
     bindings = StepBindings()
     descriptor = StepDescriptor.for_installed_step(step, _installed_step(schema))
@@ -398,10 +424,8 @@ def test_action_format_constraints_are_enforced_before_the_hook() -> None:
         {"message": "not-an-email"}, _context()
     )
 
-    assert wrapper.status != 0
-    assert wrapper.error is not None
-    assert "format" in wrapper.error.message
-    assert step.run_calls == 0
+    assert wrapper.status == 0
+    assert step.run_calls == 1
 
 
 def test_model_construction_error_is_a_safe_invalid_input() -> None:
@@ -425,6 +449,66 @@ def test_model_construction_error_is_a_safe_invalid_input() -> None:
     assert "mode" in wrapper.error.message
     assert "instant" not in wrapper.error.message
     assert step.run_calls == 0
+
+
+class ExtraFieldErrorStep(ExampleStep):
+    def run(self, inputs: ExampleInput, context: ExecutionContext) -> ExampleOutput:
+        raise StepFailure(
+            1,
+            "deliberate",
+            error_result=ErrorResult(
+                category=ErrorCategory.BUSINESS,
+                code="STEP_FAILED",
+                message="deliberate",
+                retryable=False,
+                provider="unexpected-extra",
+            ),
+        )
+
+
+class DeclaredErrorStep(ExampleStep):
+    def run(self, inputs: ExampleInput, context: ExecutionContext) -> ExampleOutput:
+        raise StepFailure(
+            1,
+            "deliberate",
+            error_result=ErrorResult(
+                category=ErrorCategory.BUSINESS,
+                code="STEP_FAILED",
+                message="deliberate",
+                retryable=False,
+            ),
+        )
+
+
+def test_failure_without_declared_error_schema_rejects_extra_fields() -> None:
+    """The closed fallback ErrorResult applies when no spec.error is declared."""
+
+    with pytest.raises(StepExecutionError):
+        _executor(ExtraFieldErrorStep()).execute({"message": "hello"}, _context())
+
+
+def test_failure_with_declared_error_schema_enforces_base_composition() -> None:
+    """A declared spec.error is validated on top of the base composition."""
+
+    bindings = StepBindings()
+    manifest = _installed_step(
+        _input_schema(),
+        step_class=DeclaredErrorStep,
+        error_schema={
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["code"],
+            "properties": {"code": {"const": "TRACKER_DOWN"}},
+        },
+    )
+    descriptor = StepDescriptor.for_installed_step(DeclaredErrorStep(), manifest)
+    bindings.bind(descriptor, DeclaredErrorStep())
+
+    with pytest.raises(StepExecutionError):
+        StepExecutor(bindings.binding("acme.plugin.example")).execute(
+            {"message": "hello"}, _context()
+        )
 
 
 def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
@@ -471,7 +555,7 @@ def test_manifest_validation_reports_control_characters_safely() -> None:
         bindings,
         "acme.plugin.control",
         step,
-        input_schema=ConfiguredControlInput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **ConfiguredControlInput.model_json_schema()},
     )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.control")).execute(
@@ -552,7 +636,7 @@ def test_supported_action_adapter_maps_the_invalid_input_wrapper_to_the_envelope
 def test_supported_action_adapter_preserves_success_payload_and_digest() -> None:
     direct_step = ExampleStep()
     container_step = ExampleStep()
-    output_schema = ExampleOutput.model_json_schema()
+    output_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **ExampleOutput.model_json_schema()}
     valid_input = {"message": "hello", "count": 3, "mode": "slow"}
 
     direct_wrapper = _executor(direct_step, output_schema).execute(valid_input, _context())
@@ -816,7 +900,7 @@ def test_control_execution_uses_registered_pydantic_model_failures(
         bindings,
         "acme.plugin.configured",
         step,
-        input_schema=ConfiguredControlInput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **ConfiguredControlInput.model_json_schema()},
     )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.configured")).execute(
@@ -837,7 +921,7 @@ def test_control_execution_preserves_its_pydantic_model_configuration() -> None:
         bindings,
         "acme.plugin.configured",
         step,
-        input_schema=ConfiguredControlInput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **ConfiguredControlInput.model_json_schema()},
     )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.configured")).execute(
@@ -1067,7 +1151,7 @@ def test_output_validation_enforces_format_assertions() -> None:
     step = ExampleStep()
     executor = _executor(
         step,
-        {"type": "object", "properties": {"message": {"type": "string", "format": "ipv4"}}},
+        {"type": "object", "properties": {"message": {"type": "string", "format": "date-time"}}},
     )
     context = _context()
 

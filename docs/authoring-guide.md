@@ -236,6 +236,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         title:
@@ -252,6 +253,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         issue_url:
@@ -260,6 +262,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 ```
 
@@ -333,6 +336,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: Record names to normalize.
       properties:
@@ -345,6 +349,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: Normalized record names.
       properties:
@@ -371,6 +376,10 @@ Every `input`, `output`, and optional `error` source is a JSON Schema 2020-12
 document, either `inline` in the manifest or an `asset` file. Follow these
 practices:
 
+- Declare `$schema: https://json-schema.org/draft/2020-12/schema` at the root
+  of every schema document. The compiler rejects schemas that declare another
+  draft or omit the declaration; validation, compilation, and invocation all
+  share this one contract.
 - Add a `description` to the root object and to every user-facing property.
   Descriptions become form help and output documentation.
 - Use `asset` for schemas that are long or shared between step types.
@@ -380,6 +389,14 @@ practices:
 - Declare the output precisely. The output schema is all that downstream
   step types can rely on.
 - Mark secret input fields with `writeOnly: true` or `format: password`.
+
+Only the formats declared in the common contract are asserted when a schema
+uses `format`: `date-time` (strict RFC 3339) and `uri` (absolute URI with a
+scheme). Any other format name, such as `email`, is an annotation only; it
+never rejects a value. An optional `error` schema is validated on top of the
+SDK's base error composition, and when a step type declares no `error`
+schema, failures must fit the closed fallback `ErrorResult` shape (category,
+code, message, retryable — nothing else).
 
 > **Important:** Marking a field as secret controls local redaction in
 > `syntara-plugin run`, which also masks fields with credential-like names

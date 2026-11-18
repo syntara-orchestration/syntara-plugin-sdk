@@ -141,9 +141,9 @@ def installed_action_bindings(
                 },
                 "input": {
                     "kind": "inline",
-                    "value": input_schema if input_schema is not None else EchoInput.model_json_schema(),
+                    "value": input_schema if input_schema is not None else {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
                 },
-                "output": {"kind": "inline", "value": EchoOutput.model_json_schema()},
+                "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}},
             },
         },
         {},
@@ -178,8 +178,8 @@ def create_uncancellable_timeout_bindings() -> StepBindings:
 
 def _schema_digests(input_schema: Mapping[str, Any] | None = None) -> dict[str, str]:
     return {
-        "input": canonical_json_digest(input_schema or EchoInput.model_json_schema()),
-        "output": canonical_json_digest(EchoOutput.model_json_schema()),
+        "input": canonical_json_digest(input_schema or {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}),
+        "output": canonical_json_digest({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}),
     }
 
 

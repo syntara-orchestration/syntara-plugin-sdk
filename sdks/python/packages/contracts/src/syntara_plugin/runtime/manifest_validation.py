@@ -7,9 +7,9 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ValidationError
+from syntara_plugin.contracts import build_validator
 
 from .bindings import _thaw_json_document
 from .validation import (
@@ -36,9 +36,7 @@ def validate_manifest_inputs(
     if not _is_json_compatible(payload):
         raise ManifestInputValidationError("input: must contain only JSON-compatible values")
 
-    schema_validator = Draft202012Validator(
-        _thaw_json_document(input_schema), format_checker=FormatChecker()
-    )
+    schema_validator = build_validator(_thaw_json_document(input_schema))
     try:
         schema_errors = sorted(
             schema_validator.iter_errors(payload),

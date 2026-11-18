@@ -199,7 +199,7 @@ def _action_document(
             or {"kind": "asset", "path": "schemas/action-input.json"},
             "output": {
                 "kind": "inline",
-                "value": {
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema",
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {"ticket_id": {"type": "string"}},
@@ -240,7 +240,7 @@ def _trigger_document(entry_point: str, *, name: str = "record-opened") -> dict[
         "spec": {
             "driver": "webhook.v1",
             "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
-            "configuration": {"kind": "inline", "value": {"type": "object"}},
+            "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             "input": {"kind": "inline", "value": _TRIGGER_INPUT_SCHEMA},
             "output": {"kind": "inline", "value": _TRIGGER_OUTPUT_SCHEMA},
         },
@@ -261,8 +261,8 @@ def _platform_action_document() -> dict[str, Any]:
                 "kind": "platform-runner",
                 "implementation": "syntara.http.request@1.0.0",
             },
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     }
 
@@ -280,7 +280,7 @@ def _integration_document() -> dict[str, Any]:
             "id": "sample.demo.tracker",
             "endpointKinds": ["webhook"],
             "credentialTypes": ["sample.demo.token"],
-            "configuration": {"kind": "inline", "value": {"type": "object"}},
+            "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     }
 
@@ -297,7 +297,7 @@ def _credential_recipe_document() -> dict[str, Any]:
         "spec": {
             "id": "sample.demo.token",
             "integrationType": "sample.demo.tracker",
-            "credentialSchema": {"kind": "inline", "value": {"type": "object"}},
+            "credentialSchema": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             "secretFields": ["token"],
             "issuance": {
                 "kind": "oauth2-authorization-code.v1",
@@ -858,7 +858,7 @@ def test_integration_type_with_custom_runner_runtime_is_rejected(plugin_root: Pa
                     "id": "sample.demo.tracker",
                     "endpointKinds": ["webhook"],
                     "credentialTypes": ["sample.demo.token"],
-                    "configuration": {"kind": "inline", "value": {"type": "object"}},
+                    "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
                     "runtime": {
                         "kind": "custom-runner",
                         "entryPoint": f"{package_name}.steps:SampleActionStep",
@@ -896,8 +896,8 @@ def test_integration_type_with_custom_runner_runtime_is_rejected(plugin_root: Pa
             },
             "spec": {
                 "runtime": {"kind": "platform-runner"},
-                "input": {"kind": "inline", "value": {"type": "object"}},
-                "output": {"kind": "inline", "value": {"type": "object"}},
+                "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+                "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             },
         },
         # An IntegrationType missing its required spec fields.

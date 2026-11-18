@@ -604,7 +604,7 @@ def test_wrapper_result_is_recursively_immutable_and_detached_from_step_output()
 def test_invalid_input_failure_is_safe_and_does_not_echo_rejected_values() -> None:
     step = ActionEchoStep()
     secret = "secret-sentinel-input-value"
-    input_schema = copy.deepcopy(InvocationInput.model_json_schema())
+    input_schema = copy.deepcopy({"$schema": "https://json-schema.org/draft/2020-12/schema", **InvocationInput.model_json_schema()})
     input_schema["properties"]["value"]["minLength"] = 100
     input_schema["additionalProperties"] = False
 
@@ -620,7 +620,7 @@ def test_invalid_input_failure_is_safe_and_does_not_echo_rejected_values() -> No
 
 def test_invalid_input_uses_the_sdk_error_schema_with_a_strict_declared_schema() -> None:
     step = ExecuteCountingStep()
-    input_schema = copy.deepcopy(InvocationInput.model_json_schema())
+    input_schema = copy.deepcopy({"$schema": "https://json-schema.org/draft/2020-12/schema", **InvocationInput.model_json_schema()})
     input_schema["properties"]["value"]["minLength"] = 10
     error_schema = {
         "type": "object",
@@ -788,10 +788,10 @@ def test_input_model_preparation_exception_is_not_started(monkeypatch: pytest.Mo
             SchemaMismatchStep(),
             "tests.runtime.invoke.schema-mismatch",
             {
-                **copy.deepcopy(InvocationOutput.model_json_schema()),
+                **copy.deepcopy({"$schema": "https://json-schema.org/draft/2020-12/schema", **InvocationOutput.model_json_schema()}),
                 "properties": {
-                    **copy.deepcopy(InvocationOutput.model_json_schema()["properties"]),
-                    "value": {"type": "string", "maxLength": 2},
+                    **copy.deepcopy({"$schema": "https://json-schema.org/draft/2020-12/schema", **InvocationOutput.model_json_schema()}["properties"]),
+                    "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "string", "maxLength": 2},
                 },
             },
         ),

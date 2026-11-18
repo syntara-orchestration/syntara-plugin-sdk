@@ -9,10 +9,14 @@ import pytest
 from syntara_plugin.contracts import (
     CatalogCheckpoint,
     RuntimeBindingCheckpoint,
+    SchemaDocumentError,
+    build_validator,
     bundle_digest,
     fixture_content_digest,
+    format_checker,
     load_bundle,
     load_fixture_bundle,
+    validate_authored_schema,
     validate_catalog_index,
     validate_document,
     validate_runtime_binding,
@@ -86,6 +90,69 @@ def test_plugin_schema_accepts_only_nonempty_named_workloads() -> None:
     del plugin["spec"]["workload"]
     plugin["spec"]["workloads"] = {}
     assert validate_document(bundle, "plugin", plugin)
+
+
+def test_asserted_format_set_is_declared_by_the_common_contract() -> None:
+    bundle = load_bundle()
+
+    assert bundle.asserted_formats == frozenset({"date-time", "uri"})
+    assert bundle.asserted_formats <= frozenset(format_checker().checkers)
+
+
+def test_format_checker_asserts_only_the_contract_format_set() -> None:
+    checker = format_checker()
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "when": {"type": "string", "format": "date-time"},
+            "where": {"type": "string", "format": "uri"},
+            "who": {"type": "string", "format": "email"},
+        },
+    }
+    validator = build_validator(schema)
+
+    assert not validator.is_valid(
+        {"when": "not-a-timestamp", "where": "https://example.test", "who": "user@example.test"}
+    )
+    assert not validator.is_valid(
+        {"when": "2026-01-01T12:00:00Z", "where": "not-a-uri", "who": "not-an-email"}
+    )
+    # Format names outside the asserted set are annotations only.
+    assert validator.is_valid(
+        {"when": "2026-01-01T12:00:00Z", "where": "https://example.test", "who": "not-an-email"}
+    )
+    # Absolute URIs with a scheme are accepted, including fragments; values
+    # urlsplit cannot parse fail the check instead of raising.
+    for uri in ("https://example.test/a#section", "mailto:user@example.test"):
+        assert validator.is_valid(
+            {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}
+        )
+    for uri in ("//example.test/path", "not a uri", "http://[::1"):
+        assert not validator.is_valid(
+            {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}
+        )
+    assert not build_validator(
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", "properties": {"where": {"format": "uri"}}}
+    ).is_valid({"where": 42})
+    assert checker is format_checker()
+
+
+def test_validate_authored_schema_requires_the_2020_12_dialect() -> None:
+    dialect = "https://json-schema.org/draft/2020-12/schema"
+    validate_authored_schema({"$schema": dialect, "type": "object"})
+
+    for document, code in (
+        ({"type": "object"}, "SCHEMA_DOCUMENT_DIALECT_MISSING"),
+        (
+            {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
+            "SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT",
+        ),
+        ([], "SCHEMA_DOCUMENT_NOT_OBJECT"),
+    ):
+        with pytest.raises(SchemaDocumentError) as error:
+            validate_authored_schema(document)
+        assert error.value.code == code
 
 
 def test_resolved_execution_schema_is_strict() -> None:
@@ -173,7 +240,7 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
                 },
             },
             "input": {"kind": "asset", "path": "schemas/create-issue.input.json"},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
     trigger = step_document(
@@ -182,8 +249,8 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
         {
             "driver": "webhook.v1",
             "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
-            "configuration": {"kind": "inline", "value": {"type": "object"}},
-            "input": {"kind": "inline", "value": {"type": "object"}},
+            "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             "output": {"kind": "asset", "path": "schemas/pull-request.output.json"},
         },
     )
@@ -226,8 +293,8 @@ def test_target_metadata_rejects_out_of_scope_tags() -> None:
                 "implementation": "syntara.http.request@1.0.0",
                 "operation": {"method": "POST", "path": "/issues"},
             },
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
     assert validate_document(bundle, "action", action) == []
@@ -248,8 +315,8 @@ def test_custom_runner_action_requires_an_entry_point() -> None:
         target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
         {
             "runtime": {"kind": "custom-runner"},
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
 
@@ -270,8 +337,8 @@ def test_platform_runner_action_rejects_a_custom_runner_entry_point() -> None:
                 "operation": {"method": "POST", "path": "/repos/{input.owner}/issues"},
                 "entryPoint": "github.actions:CreateIssue",
             },
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
 
@@ -292,7 +359,7 @@ def test_platform_runner_action_rejects_a_custom_runner_entry_point() -> None:
     ],
 )
 def test_platform_runner_accepts_registered_step_references(kind: str, implementation: str) -> None:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     spec: dict[str, Any] = {
         "runtime": {"kind": "platform-runner", "implementation": implementation},
         "input": source,
@@ -317,7 +384,7 @@ def test_platform_runner_accepts_registered_step_references(kind: str, implement
     ],
 )
 def test_platform_runner_rejects_malformed_implementation_references(implementation: str) -> None:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     document = step_document(
         "Action", target_metadata("step", "Step", "A step."),
         {"runtime": {"kind": "platform-runner", "implementation": implementation},
@@ -351,7 +418,7 @@ def test_compiled_descriptor_validates_implementation_semver(
 
 
 def test_platform_runner_rejects_legacy_driver_and_custom_runner_rejects_implementation() -> None:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     document = step_document(
         "Action", target_metadata("step", "Step", "A step."),
         {"runtime": {"kind": "platform-runner", "driver": "http.v1"},
@@ -361,7 +428,7 @@ def test_platform_runner_rejects_legacy_driver_and_custom_runner_rejects_impleme
 
 
 def test_http_operation_requires_the_builtin_http_runner() -> None:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     document = step_document(
         "Action",
         target_metadata("step", "Step", "A step."),
@@ -412,7 +479,13 @@ MALFORMED_ENTRY_POINTS = [
 
 
 def _custom_runner_step(kind: str, entry_point: str) -> dict[str, Any]:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {
+        "kind": "inline",
+        "value": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+        },
+    }
     spec: dict[str, Any] = {
         "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
         "input": source,
@@ -471,7 +544,7 @@ def test_resolved_execution_carries_an_opaque_entry_point() -> None:
 
 def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
     bundle = load_bundle()
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     action = step_document(
         "Action",
         target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
@@ -514,7 +587,7 @@ def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
 
 def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantics() -> None:
     bundle = load_bundle()
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     metadata = {
         "name": "example",
         "displayName": "Example",
@@ -538,15 +611,15 @@ def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantic
             "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
             "configuration": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"secret": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"secret": {"type": "string"}}},
             },
             "input": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"event": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"event": {"type": "string"}}},
             },
             "output": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"runId": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"runId": {"type": "string"}}},
             },
         },
     )

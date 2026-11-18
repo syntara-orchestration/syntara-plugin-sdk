@@ -12,10 +12,12 @@ spec:
   configuration:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         repository:
@@ -24,6 +26,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         issue_url:
