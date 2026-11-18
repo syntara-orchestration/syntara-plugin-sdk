@@ -217,16 +217,151 @@ jobs:
         if: always()
         run: podman rm --force step-types-compat-registry || true
 
+  baseline:
+    name: Resolve the devel baseline
+    needs: [changes, discover]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # read the devel run's reports for the base commit
+    outputs:
+      run_id: ${{ steps.resolve.outputs.run_id }}
+      base_has_check: ${{ steps.resolve.outputs.base_has_check }}
+      available: ${{ steps.decide.outputs.available }}
+    steps:
+      - name: Resolve the devel run for the base commit
+        id: resolve
+        # Pull request runs only: devel and manual runs are judged as they are,
+        # so devel stays red while a break waits on step-types. The baseline is
+        # the devel run for this pull request's base commit (HEAD^1 of the
+        # merge commit), exactly the devel this pull request is tested against.
+        # Push and manual runs both count; cancelled runs are skipped, they
+        # produced no reports.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ needs.changes.outputs.base_sha }}
+        run: |
+          run_id=""
+          base_has_check=false
+          if [ -n "$BASE_SHA" ]; then
+            run_id="$(gh api "repos/$REPOSITORY/actions/workflows/step-types-compat.yml/runs?head_sha=$BASE_SHA&status=completed&per_page=20" \
+              --jq '[.workflow_runs[] | select((.event == "push" or .event == "workflow_dispatch") and (.conclusion == "success" or .conclusion == "failure"))][0].id // ""')"
+            # A base commit older than this check has no run and nothing to
+            # recompute; the gate reports that instead of failing oddly.
+            if gh api "repos/$REPOSITORY/contents/tests/step_types/driver.py?ref=$BASE_SHA" --silent 2>/dev/null; then
+              base_has_check=true
+            fi
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "base_has_check=$base_has_check" >> "$GITHUB_OUTPUT"
+          echo "baseline run for base ${BASE_SHA:-unknown}: ${run_id:-none} (base has the check: $base_has_check)"
+      - name: Download the devel run's reports
+        id: download
+        if: steps.resolve.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          run-id: ${{ steps.resolve.outputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: step-types-compat-*
+          path: baseline
+          merge-multiple: true
+      - name: Republish the baseline for this run
+        id: republish
+        if: steps.resolve.outputs.run_id != '' && steps.download.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: devel-baseline-download
+          path: baseline/
+          if-no-files-found: error
+          retention-days: 5
+      - name: Decide
+        id: decide
+        if: always()
+        env:
+          REPUBLISHED: ${{ steps.republish.outcome }}
+        run: |
+          available=false
+          if [ "$REPUBLISHED" = "success" ]; then
+            available=true
+          fi
+          echo "available=$available" >> "$GITHUB_OUTPUT"
+
+  baseline-recompute:
+    name: baseline-recompute (${{ matrix.plugin }})
+    needs: [changes, discover, baseline]
+    # The fallback that keeps pull requests self-sufficient: when the devel
+    # run's reports are unavailable (the run has not finished yet, was
+    # cancelled, or its artifacts expired), derive the baseline here, by
+    # running the same legs against the base commit's own wheels. Nobody
+    # refreshes anything by hand.
+    if: >-
+      github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true' &&
+      needs.baseline.outputs.available != 'true' && needs.baseline.outputs.base_has_check == 'true'
+    runs-on: ubuntu-latest
+    # Above the driver's own 40-minute budget, so a hang is classified, not cut off.
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJSON(needs.discover.outputs.plugins) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.changes.outputs.base_sha }}
+          path: sdk
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: syntara-orchestration/syntara-step-types
+          ref: ${{ needs.discover.outputs.pin }}
+          path: step-types
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          version: ${{ env.UV_VERSION }}
+      - name: Build the base commit's wheels
+        working-directory: sdk
+        run: uv build --all-packages --out-dir "$RUNNER_TEMP/wheels"
+      - name: Run the step type against the base commit
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+        run: |
+          podman --version
+          uv run --no-project --python 3.12 python sdk/tests/step_types/driver.py \
+            --plugin "$PLUGIN" \
+            --step-types-dir step-types \
+            --wheels-dir "$RUNNER_TEMP/wheels" \
+            --report-dir report \
+            --mode enforcing
+      - name: Upload the recomputed baseline
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: devel-baseline-${{ matrix.plugin }}
+          path: report/
+          if-no-files-found: warn
+          retention-days: 5
+          overwrite: true
+      - name: Remove the temporary registry
+        if: always()
+        run: podman rm --force step-types-compat-registry || true
+
   compat-report:
     name: compat-report
-    needs: [changes, discover, tooling, compat]
+    needs: [changes, discover, tooling, compat, baseline, baseline-recompute]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read # re-read the breaking-change label
-      actions: read # read the devel baseline run's reports (pull request runs only)
     steps:
       - name: Read the breaking-change label
         id: label
@@ -259,43 +394,33 @@ jobs:
           pattern: step-types-compat-*
           path: reports
           merge-multiple: true
-      - name: Resolve the devel baseline run
-        id: baseline-run
-        # Pull request runs only: devel and manual runs are judged as they are,
-        # so devel stays red while a break waits on step-types. The baseline is
-        # the devel run for this pull request's base commit (HEAD^1 of the
-        # merge commit), exactly the devel this pull request is tested against.
-        # Manual runs on devel count as well: they are how an expired baseline
-        # for a quiet devel commit gets rebuilt. Cancelled runs are skipped;
-        # they produced no reports.
-        if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          BASE_SHA: ${{ needs.changes.outputs.base_sha }}
-        run: |
-          mkdir -p baseline
-          run_id=""
-          if [ -n "$BASE_SHA" ]; then
-            run_id="$(gh api "repos/$REPOSITORY/actions/workflows/step-types-compat.yml/runs?head_sha=$BASE_SHA&status=completed&per_page=20" \
-              --jq '[.workflow_runs[] | select((.event == "push" or .event == "workflow_dispatch") and (.conclusion == "success" or .conclusion == "failure"))][0].id // ""')"
-          fi
-          printf '{"base_sha":"%s","run_id":"%s"}\n' "$BASE_SHA" "$run_id" > baseline/meta.json
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "baseline run for base ${BASE_SHA:-unknown}: ${run_id:-none}"
       - name: Download the devel baseline
-        if: >-
-          github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true' &&
-          steps.baseline-run.outputs.run_id != ''
+        if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
         continue-on-error: true
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          run-id: ${{ steps.baseline-run.outputs.run_id }}
-          github-token: ${{ github.token }}
-          pattern: step-types-compat-*
+          pattern: devel-baseline-*
           path: baseline
           merge-multiple: true
+      - name: Describe the baseline
+        if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
+        env:
+          BASE_SHA: ${{ needs.changes.outputs.base_sha }}
+          RUN_ID: ${{ needs.baseline.outputs.run_id }}
+          AVAILABLE: ${{ needs.baseline.outputs.available }}
+          RECOMPUTE_RESULT: ${{ needs.baseline-recompute.result }}
+        run: |
+          mkdir -p baseline
+          source="absent"
+          if [ "$AVAILABLE" = "true" ]; then
+            source="devel-run"
+          elif compgen -G "baseline/*.json" > /dev/null; then
+            source="recomputed"
+          elif [ "$RECOMPUTE_RESULT" = "failure" ]; then
+            source="failed"
+          fi
+          printf '{"base_sha":"%s","run_id":"%s","source":"%s"}\n' "$BASE_SHA" "$RUN_ID" "$source" > baseline/meta.json
+          echo "devel baseline source: $source"
       - name: Aggregate the verdict
         env:
           PLUGINS: ${{ needs.discover.outputs.plugins }}

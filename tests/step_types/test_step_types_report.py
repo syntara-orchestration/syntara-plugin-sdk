@@ -396,6 +396,17 @@ def test_baseline_summary_line(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert "devel baseline: bbbbbbbbbbbb (run 42)" in capsys.readouterr().out
 
 
+def test_recomputed_baseline_summary_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    baseline = tmp_path / "baseline"
+    write_leg(baseline, "http-request", "fail")
+    write_leg(baseline, "script-bash", "pass")
+    (baseline / "meta.json").write_text(json.dumps({"base_sha": "e" * 40, "source": "recomputed"}))
+    assert run(tmp_path, baseline=baseline) == 0
+    assert "devel baseline: eeeeeeeeeeee (recomputed at the base commit)" in capsys.readouterr().out
+
+
 def test_inherited_summary_wording(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

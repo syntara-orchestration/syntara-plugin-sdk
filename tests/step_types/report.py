@@ -300,9 +300,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 base = str(commit)[:12]
             run_id = str(baseline_meta.get("run_id", "") or "")
-            baseline_line = f"devel baseline: {base or 'present'}"
-            if run_id:
-                baseline_line += f" (run {run_id})"
+            if baseline_meta.get("source") == "recomputed":
+                baseline_line = f"devel baseline: {base or 'present'} (recomputed at the base commit)"
+            else:
+                baseline_line = f"devel baseline: {base or 'present'}"
+                if run_id:
+                    baseline_line += f" (run {run_id})"
         else:
             baseline_line = f"devel baseline: none ({absence_reason(baseline_meta)})"
         out.line(baseline_line)

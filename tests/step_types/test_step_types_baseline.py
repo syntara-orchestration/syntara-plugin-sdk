@@ -398,6 +398,9 @@ def test_absence_reasons() -> None:
     expired = absence_reason({"base_sha": PIN, "run_id": "42"})
     assert "could not be downloaded" in expired
     assert "42" in expired
+    failed = absence_reason({"source": "failed"})
+    assert "recomputing them at the base commit failed" in failed
+    assert "baseline-recompute" in failed
 
 
 def test_inherited_never_raises_on_garbage() -> None:

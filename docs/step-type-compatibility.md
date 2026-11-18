@@ -157,14 +157,15 @@ Not every failure can be inherited: `infra` and `unknown` failures never are
 stable enough to compare. The policy lives in `tests/step_types/baseline.py`,
 and a test fails when the classifier gains a rule the policy does not know.
 
-The baseline needs a completed `devel` run for the pull request's base
-commit. A pull request checked in the minutes after a merge fails with
-`no completed devel run ... yet`; re-running the failed jobs clears it once
-that run finishes. When only the gate failed (after a label change, for
-example), re-running the `compat-report` job alone is enough, and the legs
-are reused. Baseline reports are kept for 90 days; if they expire (a quiet
-`devel`), running the workflow manually on `devel` once rebuilds the baseline
-for that same commit, and counts as one.
+The baseline is a completed `devel` run for the pull request's base commit,
+downloaded when a leg fails. When that run's reports are unavailable (the
+merge happened minutes ago and it is still running, it was cancelled, or its
+artifacts expired after 90 days), the workflow recomputes them itself: a
+`baseline-recompute` job checks out the base commit, builds its wheels, and
+runs the same legs, so the pull request is self-sufficient and nobody
+refreshes anything by hand. When only the gate failed (after a label change,
+for example), re-running the `compat-report` job alone is enough, and the
+legs are reused.
 
 ## The pinned revision
 

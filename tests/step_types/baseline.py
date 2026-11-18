@@ -308,6 +308,11 @@ def load(directory: Path, plugins: Sequence[str]) -> tuple[dict[str, dict[str, A
 
 def absence_reason(meta: dict[str, Any]) -> str:
     """Why there is no baseline, for the gate's summary line."""
+    if meta.get("source") == "failed":
+        return (
+            "the devel run's reports could not be downloaded and recomputing them at the base "
+            "commit failed; open the baseline-recompute job logs"
+        )
     if "run_id" not in meta:
         return "the baseline lookup did not complete"
     run_id = meta.get("run_id")
@@ -315,8 +320,4 @@ def absence_reason(meta: dict[str, Any]) -> str:
         base = meta.get("base_sha")
         where = f" for base commit {str(base)[:12]}" if isinstance(base, str) and base else ""
         return f"no completed devel run{where} yet; re-run this job once it finishes"
-    return (
-        f"the baseline run's artifacts could not be downloaded (run {run_id}, expired or "
-        "deleted); run the workflow manually on devel once to rebuild the baseline for that "
-        "commit, then re-run this job"
-    )
+    return f"the devel run's reports could not be downloaded (run {run_id}, expired or deleted)"
