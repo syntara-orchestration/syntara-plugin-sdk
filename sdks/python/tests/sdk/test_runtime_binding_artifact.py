@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -223,6 +224,46 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
             )
         ).digest
     )
+
+    changed_runtime_source = deepcopy(source)
+    changed_runtime_source["spec"]["workloads"]["python"]["options"][0]["runtime"][
+        "components"
+    ][0]["executable"] = "/usr/local/bin/python"
+    changed_runtime_observations = _runtime_observations()
+    changed_runtime_observations[("python", "python-base")]["components"][0][
+        "executable"
+    ] = "/usr/local/bin/python"
+    changed_runtime = resolve_runtime_binding(
+        changed_runtime_source,
+        descriptor,
+        plugin_repository="acme/python-steps",
+        plugin_digest=plugin_artifact.digest,
+        image_bindings={
+            "python-base": "quay.io/acme/python-base@sha256:" + "c" * 64,
+            "python-aws": "quay.io/acme/python-aws@sha256:" + "d" * 64,
+            "bash-base": "quay.io/acme/bash-base@sha256:" + "e" * 64,
+        },
+        runtime_observations=changed_runtime_observations,
+    )
+    changed_runtime_artifact = build_runtime_binding_artifact(
+        changed_runtime, descriptor, plugin_artifact.manifest.descriptor
+    )
+    assert changed_runtime_artifact.digest != binding_artifact.digest
+    assert changed_runtime["spec"]["contract"]["pluginRevisionId"] == resolved["spec"][
+        "contract"
+    ]["pluginRevisionId"]
+    assert changed_runtime["spec"]["contract"]["stepRevisionIds"] == resolved["spec"][
+        "contract"
+    ]["stepRevisionIds"]
+    assert plugin_artifact.digest == build_plugin_artifact(
+        compile_workspace(
+            BuildRequest(
+                workspace / "plugin.yaml",
+                require_image_bindings=False,
+                bind_workload_images=False,
+            )
+        )
+    ).digest
 
     with pytest.raises(ValueError, match="registry.artifactRepository"):
         _read_linked_runtime_binding_archive(

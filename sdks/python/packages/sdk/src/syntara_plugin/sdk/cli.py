@@ -22,6 +22,8 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -4865,6 +4867,14 @@ def _write_custom_workload_scaffold(
     """Write a small Python runtime, image recipe, and binding source manifest."""
     from .custom_scaffold import DEFAULT_RUNTIME_BASE_IMAGE
 
+    try:
+        contracts_version = package_version("syntara-plugin-contracts")
+    except PackageNotFoundError as error:
+        raise ValueError(
+            "cannot determine the installed syntara-plugin-contracts version; "
+            "install the SDK with its contracts dependency before scaffolding"
+        ) from error
+
     binding_name = f"{name[:54].rstrip('-')}-runtime"
     package = directory / "src" / package_name
     manifests = package / "manifests"
@@ -4939,7 +4949,9 @@ class ExampleAction(ActionStep[ExampleInput, ExampleOutput]):
     )
     (directory / "pyproject.toml").write_text(
         f'[project]\nname = "{name}"\nversion = "{version}"\n'
-        'requires-python = ">=3.12"\ndependencies = ["syntara-plugin-contracts==0.1.0a3"]\n\n'
+        'requires-python = ">=3.12"\n'
+        "# Keep the image runtime API aligned with the SDK used to create this workspace.\n"
+        f'dependencies = ["syntara-plugin-contracts=={contracts_version}"]\n\n'
         '[build-system]\nrequires = ["hatchling>=1.25"]\n'
         'build-backend = "hatchling.build"\n\n'
         "[tool.hatch.build.targets.wheel]\n"

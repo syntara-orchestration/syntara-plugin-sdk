@@ -148,6 +148,10 @@ consuming the updated package or artifacts:
   `runtime.components` entry with `name` and absolute `executable`, to each
   RuntimeBinding image option. Rebuild and republish resolved binding artifacts
   with the updated SDK.
+- The `init --template custom-workload` scaffold pins the exact
+  `syntara-plugin-contracts` version installed with the SDK that created it.
+  Publish the matching contracts release before building the generated image,
+  and keep the SDK and contracts versions paired when updating the scaffold.
 - RuntimeBinding consumers must replace `runtime.verification` and component
   `verification` with `probeStatus`; values `verified` and `unverified` become
   `matched` and `unsupported`.

@@ -1210,6 +1210,25 @@ def test_settings_reject_build_target_names_that_are_not_safe_ids(tmp_path: Path
     assert "does not match" in capsys.readouterr().err
 
 
+def test_custom_workload_scaffold_pins_the_installed_contracts_version(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.package_version",
+        lambda distribution: "0.1.0a42"
+        if distribution == "syntara-plugin-contracts"
+        else pytest.fail(f"unexpected distribution lookup: {distribution}"),
+    )
+
+    workspace = tmp_path / "custom-workload"
+    assert main(["init", str(workspace), "--template", "custom-workload"]) == 0
+    capsys.readouterr()
+
+    generated = (workspace / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'dependencies = ["syntara-plugin-contracts==0.1.0a42"]' in generated
+    assert "syntara-plugin-contracts==0.1.0a3" not in generated
+
+
 def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
