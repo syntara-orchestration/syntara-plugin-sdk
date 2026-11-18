@@ -1028,7 +1028,14 @@ def test_base_error_digest_only_accepts_sdk_validation(error, accepted):
     result = ContainerResult(_expected_digest(), status_code=1, status_message="bad", error_result=error, error_schema_digest=canonical_json_digest(error_result_base_schema()))
     schema = {"type": "object", "required": ["reason"]}
     if accepted:
-        assert standard_output_from_container_result(result, output_schema=_permissive_output_schema(), error_schema=schema).error.code == "INVALID_INPUT"
+        output_schema = _permissive_output_schema()
+        wrapper = standard_output_from_container_result(
+            result, output_schema=output_schema, error_schema=schema
+        )
+        assert wrapper.error.code == "INVALID_INPUT"
     else:
+        output_schema = _permissive_output_schema()
         with pytest.raises(ContainerRemoteError):
-            standard_output_from_container_result(result, output_schema=_permissive_output_schema(), error_schema=schema)
+            standard_output_from_container_result(
+                result, output_schema=output_schema, error_schema=schema
+            )

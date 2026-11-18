@@ -477,6 +477,64 @@ def _scrub_structure(
     return _scrub_scalar(value, scalars)
 
 
+def _schema_resolver(schema: Mapping[str, Any], resolver: Any, scoped: bool) -> Any:
+    if scoped:
+        return resolver
+    return resolver.in_subresource(DRAFT202012.create_resource(schema))
+
+
+def _referenced_schemas(schema: Mapping[str, Any], resolver: Any) -> list[tuple[Any, Any, bool]]:
+    references: list[tuple[Any, Any, bool]] = []
+    for keyword in ("$ref", "$dynamicRef"):
+        reference = schema.get(keyword)
+        if isinstance(reference, str):
+            resolved = resolver.lookup(reference)
+            references.append((resolved.contents, resolved.resolver, True))
+    return references
+
+
+def _matching_branches(
+    schema: Mapping[str, Any], resolver: Any, value: Any, keyword: str, format_checker: FormatChecker
+) -> list[tuple[Any, Any, bool]]:
+    branches = schema.get(keyword)
+    if not isinstance(branches, (list, tuple)):
+        return []
+    matches: list[tuple[Any, Any, bool]] = []
+    for branch in branches:
+        try:
+            branch_resolver = resolver.in_subresource(DRAFT202012.create_resource(branch))
+            if Draft202012Validator(
+                branch, format_checker=format_checker, _resolver=branch_resolver
+            ).is_valid(value):
+                matches.append((branch, resolver, False))
+        except Unresolvable:
+            if keyword != "anyOf":
+                raise
+    return matches
+
+
+def _schema_children(
+    schema: Mapping[str, Any], resolver: Any, value: Any, format_checker: FormatChecker
+) -> list[tuple[Any, Any, bool]]:
+    children = _referenced_schemas(schema, resolver)
+    all_of = schema.get("allOf")
+    if isinstance(all_of, (list, tuple)):
+        children.extend((branch, resolver, False) for branch in all_of)
+    children.extend(_matching_branches(schema, resolver, value, "anyOf", format_checker))
+    children.extend(_matching_branches(schema, resolver, value, "oneOf", format_checker))
+    condition = schema.get("if")
+    if isinstance(condition, (Mapping, bool)):
+        condition_resolver = resolver.in_subresource(DRAFT202012.create_resource(condition))
+        selected = "then" if Draft202012Validator(
+            condition, format_checker=format_checker, _resolver=condition_resolver
+        ).is_valid(value) else "else"
+        children.append((schema.get(selected), resolver, False))
+    dependent = schema.get("dependentSchemas")
+    if isinstance(value, Mapping) and isinstance(dependent, Mapping):
+        children.extend((branch, resolver, False) for key, branch in dependent.items() if key in value)
+    return children
+
+
 def _error_schema_nodes(
     schemas: Sequence[tuple[Any, Any, bool]], value: Any,
 ) -> list[tuple[Mapping[str, Any], Any]]:
@@ -490,49 +548,13 @@ def _error_schema_nodes(
         schema, resolver, scoped = pending.pop()
         if not isinstance(schema, Mapping):
             continue
-        if not scoped:
-            resolver = resolver.in_subresource(DRAFT202012.create_resource(schema))
+        resolver = _schema_resolver(schema, resolver, scoped)
         marker = (id(schema), repr(resolver))
         if marker in seen:
             continue
         seen.add(marker)
         nodes.append((schema, resolver))
-        for keyword in ("$ref", "$dynamicRef"):
-            reference = schema.get(keyword)
-            if isinstance(reference, str):
-                resolved = resolver.lookup(reference)
-                pending.append((resolved.contents, resolved.resolver, True))
-        branches = schema.get("allOf")
-        if isinstance(branches, (list, tuple)):
-            pending.extend((branch, resolver, False) for branch in branches)
-        for keyword in ("anyOf", "oneOf"):
-            branches = schema.get(keyword)
-            if isinstance(branches, (list, tuple)):
-                for branch in branches:
-                    try:
-                        matches = Draft202012Validator(
-                            branch, format_checker=format_checker,
-                            _resolver=resolver.in_subresource(DRAFT202012.create_resource(branch)),
-                        ).is_valid(validation_value)
-                    except Unresolvable:
-                        if keyword != "anyOf":
-                            raise
-                        # The validated anyOf may have short-circuited before
-                        # this unused branch. Treat its names as dynamic.
-                        continue
-                    if matches:
-                        pending.append((branch, resolver, False))
-        condition = schema.get("if")
-        if isinstance(condition, (Mapping, bool)):
-            condition_matches = Draft202012Validator(
-                condition, format_checker=format_checker,
-                _resolver=resolver.in_subresource(DRAFT202012.create_resource(condition)),
-            ).is_valid(validation_value)
-            selected = "then" if condition_matches else "else"
-            pending.append((schema.get(selected), resolver, False))
-        dependent = schema.get("dependentSchemas")
-        if isinstance(value, Mapping) and isinstance(dependent, Mapping):
-            pending.extend((branch, resolver, False) for key, branch in dependent.items() if key in value)
+        pending.extend(_schema_children(schema, resolver, validation_value, format_checker))
     return nodes
 
 
@@ -551,6 +573,62 @@ def _scrub_error_extensions(
     return _scrub_error_value(value, scoped_schemas, secrets, scalars, selection_value=selection_value)
 
 
+def _property_schemas(
+    nodes: Sequence[tuple[Mapping[str, Any], Any]], key: Any
+) -> tuple[bool, list[tuple[Any, Any, bool]]]:
+    declared = False
+    children: list[tuple[Any, Any, bool]] = []
+    for node, resolver in nodes:
+        properties = node.get("properties")
+        property_declared = isinstance(properties, Mapping) and key in properties
+        if property_declared:
+            declared = True
+            children.append((properties[key], resolver, False))
+        patterns = node.get("patternProperties")
+        matched_pattern = False
+        if isinstance(patterns, Mapping) and isinstance(key, str):
+            for pattern, child in patterns.items():
+                if isinstance(pattern, str) and re.search(pattern, key):
+                    matched_pattern = True
+                    children.append((child, resolver, False))
+        if not matched_pattern and not property_declared:
+            children.append((node.get("additionalProperties"), resolver, False))
+    return declared, children
+
+
+def _scrub_error_mapping(
+    value: Mapping[Any, Any], nodes: Sequence[tuple[Mapping[str, Any], Any]],
+    secrets: tuple[str, ...], scalars: tuple[Any, ...],
+) -> dict[Any, Any]:
+    scrubbed: dict[Any, Any] = {}
+    for key, item in value.items():
+        declared, children = _property_schemas(nodes, key)
+        safe_key = key if declared or not isinstance(key, str) else _scrub_text(key, secrets)
+        scrubbed[safe_key] = _scrub_error_value(item, children, secrets, scalars)
+    return scrubbed
+
+
+def _item_schemas(
+    nodes: Sequence[tuple[Mapping[str, Any], Any]], index: int
+) -> list[tuple[Any, Any, bool]]:
+    children: list[tuple[Any, Any, bool]] = []
+    for node, resolver in nodes:
+        prefix = node.get("prefixItems")
+        child = prefix[index] if isinstance(prefix, (list, tuple)) and index < len(prefix) else node.get("items")
+        children.append((child, resolver, False))
+    return children
+
+
+def _scrub_error_sequence(
+    value: Sequence[Any], nodes: Sequence[tuple[Mapping[str, Any], Any]],
+    secrets: tuple[str, ...], scalars: tuple[Any, ...],
+) -> list[Any]:
+    return [
+        _scrub_error_value(item, _item_schemas(nodes, index), secrets, scalars)
+        for index, item in enumerate(value)
+    ]
+
+
 def _scrub_error_value(
     value: Any, schemas: Sequence[tuple[Any, Any, bool]],
     secrets: tuple[str, ...], scalars: tuple[Any, ...],
@@ -558,39 +636,9 @@ def _scrub_error_value(
 ) -> Any:
     nodes = _error_schema_nodes(schemas, value if selection_value is None else selection_value)
     if isinstance(value, Mapping):
-        scrubbed: dict[Any, Any] = {}
-        for key, item in value.items():
-            declared = False
-            children: list[tuple[Any, Any, bool]] = []
-            for node, resolver in nodes:
-                properties = node.get("properties")
-                if isinstance(properties, Mapping) and key in properties:
-                    declared = True
-                    children.append((properties[key], resolver, False))
-                patterns = node.get("patternProperties")
-                matched_pattern = False
-                if isinstance(patterns, Mapping) and isinstance(key, str):
-                    for pattern, child in patterns.items():
-                        if isinstance(pattern, str) and re.search(pattern, key):
-                            matched_pattern = True
-                            children.append((child, resolver, False))
-                if not matched_pattern and not (isinstance(properties, Mapping) and key in properties):
-                    children.append((node.get("additionalProperties"), resolver, False))
-            safe_key = key if declared or not isinstance(key, str) else _scrub_text(key, secrets)
-            scrubbed[safe_key] = _scrub_error_value(item, children, secrets, scalars)
-        return scrubbed
+        return _scrub_error_mapping(value, nodes, secrets, scalars)
     if isinstance(value, (list, tuple)):
-        scrubbed_items = []
-        for index, item in enumerate(value):
-            children = []
-            for node, resolver in nodes:
-                prefix = node.get("prefixItems")
-                if isinstance(prefix, (list, tuple)) and index < len(prefix):
-                    children.append((prefix[index], resolver, False))
-                else:
-                    children.append((node.get("items"), resolver, False))
-            scrubbed_items.append(_scrub_error_value(item, children, secrets, scalars))
-        return scrubbed_items
+        return _scrub_error_sequence(value, nodes, secrets, scalars)
     if isinstance(value, str):
         return _scrub_text(value, secrets)
     return _scrub_scalar(value, scalars)
@@ -1352,22 +1400,22 @@ def _collect_nested_scalars(value: Any, picked: list[Any]) -> None:
             _collect_nested_scalars(item, picked)
 
 
+def _collect_sensitive_input_scalars(original: Any, masked: Any, picked: list[Any]) -> None:
+    if masked == _REDACTED:
+        _collect_nested_scalars(original, picked)
+    elif isinstance(original, Mapping) and isinstance(masked, Mapping):
+        for key, value in original.items():
+            if key in masked:
+                _collect_sensitive_input_scalars(value, masked[key], picked)
+    elif isinstance(original, list) and isinstance(masked, list):
+        for value, masked_value in zip(original, masked, strict=True):
+            _collect_sensitive_input_scalars(value, masked_value, picked)
+
+
 def _sensitive_input_scalars(inputs: Any, redacted: Any) -> tuple[Any, ...]:
     """Collect typed values from input fields already marked sensitive."""
     picked: list[Any] = []
-
-    def collect(original: Any, masked: Any) -> None:
-        if masked == _REDACTED:
-            _collect_nested_scalars(original, picked)
-        elif isinstance(original, Mapping) and isinstance(masked, Mapping):
-            for key, value in original.items():
-                if key in masked:
-                    collect(value, masked[key])
-        elif isinstance(original, list) and isinstance(masked, list):
-            for value, masked_value in zip(original, masked, strict=True):
-                collect(value, masked_value)
-
-    collect(inputs, redacted)
+    _collect_sensitive_input_scalars(inputs, redacted, picked)
     return tuple(picked)
 
 
@@ -1615,6 +1663,53 @@ class _ChannelExecution:
     diagnostic_stream: Any = None
 
 
+def _scrub_run_error(
+    result: ContainerResult, target: RunTarget, secrets: tuple[str, ...], scalars: tuple[Any, ...]
+) -> RunErrorDetail | None:
+    if result.error_result is None:
+        return None
+    try:
+        _error_from_container_result(result, target.error_schema)
+    except ContainerRemoteError as error:
+        raise RunExecutionError(
+            "the runtime returned an invalid error result",
+            failure_code=error.code,
+            outcome=error.outcome,
+            retryable=error.retryable,
+        ) from error
+    error_result = result.error_result
+    extensions = {
+        key: value
+        for key, value in error_result.items()
+        if key not in {"category", "code", "message", "retryable"}
+    }
+    scrubbed_error = (
+        _scrub_error_extensions(
+            extensions,
+            [target.error_schema],
+            target.error_schema,
+            secrets,
+            scalars,
+            selection_value=error_result,
+        )
+        if extensions
+        else {}
+    )
+    scrubbed_error.update({key: error_result[key] for key in ("category", "code", "retryable")})
+    original_message = str(error_result["message"])
+    message = bounded_message(
+        _scrub_text(original_message, secrets)[:len(original_message)],
+        fallback="The step failed.",
+    )
+    scrubbed_error["message"] = message
+    return RunErrorDetail(
+        code=str(error_result["code"]),
+        message=message,
+        retryable=bool(error_result["retryable"]),
+        error_result=scrubbed_error,
+    )
+
+
 def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     client = ContainerClient(execution.channel)
     target = execution.target
@@ -1699,46 +1794,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
             credentials=credential_names,
         )
     result = terminal
-    error: RunErrorDetail | None = None
-    if result.error_result is not None:
-        try:
-            _error_from_container_result(result, target.error_schema)
-        except ContainerRemoteError as error:
-            raise RunExecutionError(
-                "the runtime returned an invalid error result",
-                failure_code=error.code,
-                outcome=error.outcome,
-                retryable=error.retryable,
-            ) from error
-        error_result = result.error_result
-        extensions = {
-            key: value for key, value in error_result.items()
-            if key not in {"category", "code", "message", "retryable"}
-        }
-        scrubbed_error = (
-            _scrub_error_extensions(
-                extensions, [target.error_schema], target.error_schema, secrets, scalars,
-                selection_value=error_result,
-            )
-            if extensions else {}
-        )
-        # Registry values and retryability are public contract metadata, not
-        # credential data; preserve them even if a credential happens to match.
-        scrubbed_error.update({key: error_result[key] for key in ("category", "code", "retryable")})
-        original_message = str(error_result["message"])
-        # A custom schema may set a smaller maximum than the shared 4096.
-        # Redaction can expand short secrets, so do not exceed the validated length.
-        message = bounded_message(
-            _scrub_text(original_message, secrets)[:len(original_message)],
-            fallback="The step failed.",
-        )
-        scrubbed_error["message"] = message
-        error = RunErrorDetail(
-            code=str(error_result["code"]),
-            message=message,
-            retryable=bool(error_result["retryable"]),
-            error_result=scrubbed_error,
-        )
+    error = _scrub_run_error(result, target, secrets, scalars)
     return RunReport(
         mode=execution.mode,
         target=target.identity,

@@ -4728,8 +4728,9 @@ def test_image_health_failure_is_container_failure(failure_code, capsys):
         def health(self, **kwargs):
             raise ContainerRemoteError(FailureCode(failure_code), retryable=False, outcome="unknown", source="transport")
 
+    client = FailedClient()
     with pytest.raises(runner.RunExecutionError) as raised:
-        runner._health(FailedClient(), "localhost:1", startup_seconds=0)
+        runner._health(client, "localhost:1", startup_seconds=0)
     cli._print_run_error(raised.value, argparse.Namespace(json=True))
     payload = json.loads(capsys.readouterr().out)
     assert payload["errorResult"] is None
