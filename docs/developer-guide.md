@@ -46,7 +46,7 @@ The **Execution Plane Integration** job in the `CI` GitHub Actions workflow
 runs on pull requests and pushes to `devel`. It builds the
 [Existing step types](../examples/existing-step) plugin
 from this checkout, pushes it to a disposable registry, and dispatches its
-Action, Control, and Trigger through the pinned Execution Plane Kubernetes
+Action, Control, and Trigger through the Execution Plane development-branch Kubernetes
 worker using the registry-resolved image digest. The workload advertises exact generated step revisions, and the tests select
 those revisions and check their outputs and schema digests. A skip or missing case fails the run.
 

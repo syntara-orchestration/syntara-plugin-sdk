@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       ep-ref:
-        description: Execution Plane commit SHA to test (defaults to the pinned revision)
+        description: Execution Plane branch, tag, or commit to test (defaults to devel)
         required: false
         type: string
 
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  EP_REVISION: ${{ inputs['ep-ref'] || '02b550d61d81f54a0194906777d7c8810367e6e9' }}
+  EP_REF: ${{ inputs['ep-ref'] || 'devel' }}
 
 jobs:
   test:
@@ -129,9 +129,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: syntara-orchestration/syntara-execution-plane
-          ref: ${{ env.EP_REVISION }}
+          ref: ${{ env.EP_REF }}
           path: execution-plane
           persist-credentials: false
+      - name: Record resolved Execution Plane revision
+        run: echo "EP_REVISION=$(git -C execution-plane rev-parse HEAD)" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.12"

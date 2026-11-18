@@ -3,9 +3,9 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-ep="${EP_PATH:?Set EP_PATH to the pinned Execution Plane checkout}"
+ep="${EP_PATH:?Set EP_PATH to the Execution Plane checkout}"
 ep="$(cd "$ep" && pwd)"
-revision="${EP_REVISION:?Set EP_REVISION to the full Execution Plane commit SHA}"
+revision="${EP_REVISION:?Set EP_REVISION to the resolved Execution Plane commit SHA}"
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'EP_REVISION must be a full 40-character commit SHA' >&2; exit 1; }
 engine="${CONTAINER_ENGINE:-docker}"
 cluster="${EP_KIND_CLUSTER_NAME:-integration-test}"

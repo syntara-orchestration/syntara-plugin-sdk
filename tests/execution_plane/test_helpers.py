@@ -71,9 +71,10 @@ def test_image_context_derives_resolved_bindings_and_avoids_checkout_build_hooks
     assert 'context.set_alpn_protocols(["h2"])' in (context / "tls_bridge.py").read_text()
 
 
-def test_ci_workflow_pins_ep_revision_with_workload_resolver() -> None:
+def test_ci_workflow_tracks_ep_devel_and_records_resolved_revision() -> None:
     workflow = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text()
-    assert "02b550d61d81f54a0194906777d7c8810367e6e9" in workflow
+    assert "EP_REF: ${{ inputs['ep-ref'] || 'devel' }}" in workflow
+    assert 'EP_REVISION=$(git -C execution-plane rev-parse HEAD)' in workflow
 
 
 @pytest.mark.parametrize(
