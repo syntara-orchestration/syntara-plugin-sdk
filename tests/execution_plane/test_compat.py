@@ -56,12 +56,12 @@ async def test_checkout_plugin_dispatch(
     database_url = os.environ["EP_TEST_DATABASE_URL"]
     settings = get_settings()
     client_id = "ep-it-sdk-compat"
-    workflow_run_id = str(uuid.uuid4())
+    execution_id = str(uuid.uuid4())
     payload = {
         "image": image,
         "selectors": {},
+        "runtime_context": {"execution_id": execution_id},
         "invocation": {
-            "workflow_run_id": workflow_run_id,
             "step_revision_id": revision,
             "inputs": inputs,
             "timeout_seconds": 120,
@@ -96,6 +96,6 @@ async def test_checkout_plugin_dispatch(
         assert item.result["output"]["ticket_id"].endswith(expected["ticket_id"])
         assert item.result["output"]["ticket_id"] != expected["ticket_id"]
     elif identity.endswith("record-opened"):
-        assert item.result["output"] == {**expected, "event_id": f"{workflow_run_id}:sdk"}
+        assert item.result["output"] == {**expected, "event_id": f"{execution_id}:sdk"}
     else:
         assert item.result["output"] == expected

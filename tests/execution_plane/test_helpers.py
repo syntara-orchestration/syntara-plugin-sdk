@@ -40,7 +40,8 @@ def test_image_context_derives_resolved_bindings_and_avoids_checkout_build_hooks
         "example.existing-step.normalize-records",
         "example.existing-step.record-opened",
     }
-    export, *builds = commands
+    export = commands[0]
+    builds = [command for command in commands if command[0:2] == ["uv", "build"]]
     assert export[1:4] == ["export", "--locked", "--package"]
     assert "--no-emit-workspace" in export
     for command in builds:
@@ -62,6 +63,12 @@ def test_image_context_derives_resolved_bindings_and_avoids_checkout_build_hooks
     assert "pip install --no-index --find-links /tmp/deps --require-hashes" in containerfile
     assert "pip install --no-index --no-deps /wheels/*.whl" in containerfile
     assert "pip check" in containerfile
+    assert "SYNTARA_RUNTIME_GRPC_ADDRESS=127.0.0.1:50052" in containerfile
+    assert "COPY certificates /run/secrets" in containerfile
+    assert 'ENTRYPOINT ["python3.12", "/opt/syntara/runtime_entrypoint.py"]' in containerfile
+    assert (context / "runtime_entrypoint.py").is_file()
+    assert (context / "tls_bridge.py").is_file()
+    assert 'context.set_alpn_protocols(["h2"])' in (context / "tls_bridge.py").read_text()
 
 
 @pytest.mark.parametrize(
@@ -76,9 +83,7 @@ def test_image_context_derives_resolved_bindings_and_avoids_checkout_build_hooks
         "containerfile",
     ],
 )
-def test_image_context_rejects_symlinked_sources_before_staging(
-    tmp_path, monkeypatch, source
-):
+def test_image_context_rejects_symlinked_sources_before_staging(tmp_path, monkeypatch, source):
     helper = _load("prepare_image")
     root = tmp_path / "checkout"
     example = root / "examples/existing-step"
@@ -246,7 +251,7 @@ def test_egress_firewall_blocks_new_pod_connections(tmp_path):
         '  *"get service"*) echo 10.96.0.1;;\n'
         '  *"get pod"*) echo 10.244.0.8;;\n'
         '  *"nc -z"*) [[ ! -e "$FIREWALL" ]];;\n'
-        'esac\n'
+        "esac\n"
     )
     kubectl.chmod(0o755)
     engine = bin_dir / "engine"
@@ -272,7 +277,10 @@ def test_egress_firewall_blocks_new_pod_connections(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     commands = calls.read_text()
-    assert "-A COMPAT-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j RETURN" in commands
+    assert (
+        "-A COMPAT-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j RETURN"
+        in commands
+    )
     assert "-A COMPAT-EGRESS -d 10.244.0.0/16 -j RETURN" not in commands
     assert commands.count("nc -z -w 3 10.244.0.8 80") == 2
 
@@ -357,22 +365,23 @@ def _run_with_fake_secrets(tmp_path, *, failure, preexisting=False):
             '  *"get pod"*) echo 10.244.0.8;;\n'
             '  *"nc -z"*) [[ ! -e "$FIREWALL" ]];;\n'
             '  *"certificate-authority-data"*) echo Y2E=;;\n'
-            'esac'
+            "esac"
         ),
-        "uv": 'exit 0',
+        "uv": "exit 0",
         "make": (
             'printf %s "$EP_AO_JWT_PUBLIC_KEY_PATH" > "$KEY_PATH"\n'
-            'mkdir -p .secrets\n'
-            'echo private > .secrets/ao-jwt-private.pem\n'
-            'echo public > .secrets/ao-jwt-public.pem\n'
+            "mkdir -p .secrets\n"
+            "echo private > .secrets/ao-jwt-private.pem\n"
+            "echo public > .secrets/ao-jwt-public.pem\n"
             '[[ "$FAILURE" != make ]]'
         ),
         "engine": (
             'if [[ "$FAILURE" == later ]]; then exit 1; fi\n'
             'if [[ "$*" == "push "* ]]; then echo "compat: digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa size: 856"; exit; fi\n'
+            'if [[ "$*" == "inspect "* ]]; then echo true; exit; fi\n'
             'if [[ "$*" == *"ip -o link show"* ]]; then echo "7: vethabc: <UP>"; fi\n'
             'if [[ "$*" == *"iptables -I FORWARD"* ]]; then touch "$FIREWALL"; fi\n'
-            'exit 0'
+            "exit 0"
         ),
     }
     for name, script in scripts.items():

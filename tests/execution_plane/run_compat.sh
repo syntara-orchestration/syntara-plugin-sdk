@@ -34,6 +34,8 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/sdk-ep-compat.XXXXXXXX")"
 test_file="$ep/tests/integration/kind/test_sdk_checkout_compat.py"
 [[ ! -e "$test_file" ]] || { echo "Refusing to overwrite $test_file" >&2; rm -rf "$tmp"; exit 1; }
 registry_started=0
+runtime_container="sdk-compat-runtime-${RANDOM}"
+runtime_started=0
 api_pid=""
 secrets_owned=0
 secrets_dir="$ep/.secrets"
@@ -44,8 +46,12 @@ cleanup() {
       kubectl get pods -A -o wide > "$logs/pods.txt" 2>&1 || true
       kubectl get events -A --sort-by=.lastTimestamp > "$logs/events.txt" 2>&1 || true
       kubectl describe pods -n execution-plane > "$logs/pod-details.txt" 2>&1 || true
+      kubectl logs -n execution-plane --all-containers --prefix \
+        --tail=-1 -l execution-plane.syntara.io/work-item \
+        > "$logs/worker-pod-logs.txt" 2>&1 || true
     fi
     if (( registry_started )); then "$engine" logs "$registry" > "$logs/registry.log" 2>&1 || true; fi
+    if (( runtime_started )); then "$engine" logs "$runtime_container" > "$logs/runtime-server.log" 2>&1 || true; fi
     echo "Compatibility test failed; diagnostics: $logs" >&2
   fi
   [[ -z "$api_pid" ]] || kill "$api_pid" 2>/dev/null || true
@@ -53,6 +59,7 @@ cleanup() {
   if (( secrets_owned )); then
     rm -rf -- "$secrets_dir" || status=1
   fi
+  if (( runtime_started )); then "$engine" rm -f "$runtime_container" >/dev/null 2>&1 || true; fi
   if (( registry_started )); then "$engine" rm -f "$registry" >/dev/null 2>&1 || true; fi
   rm -rf "$tmp"
   exit "$status"
@@ -89,6 +96,26 @@ digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.*digest: (sha256:[0-9a-f]{
 export EP_COMPAT_IMAGE="localhost:$port/sdk-existing-step@$digest"
 export EP_COMPAT_REGISTRATION="$tmp/context/registration.json"
 echo "Dispatching checkout image $EP_COMPAT_IMAGE"
+
+# Confirm that the staged checkout image can start its runtime server before
+# Kubernetes owns and promptly cleans up a failed worker pod.
+"$engine" run -d --name "$runtime_container" "$image" >/dev/null
+runtime_started=1
+sleep 1
+if [[ "$("$engine" inspect --format '{{.State.Running}}' "$runtime_container")" != true ]]; then
+  echo 'Checkout runtime image exited during startup' >&2
+  exit 1
+fi
+if ! "$engine" exec "$runtime_container" python3.12 -c '
+import grpc
+channel = grpc.insecure_channel("127.0.0.1:50051")
+grpc.channel_ready_future(channel).result(timeout=5)
+'; then
+  echo 'Checkout runtime image did not accept a gRPC connection through its compatibility bridge' >&2
+  exit 1
+fi
+"$engine" rm -f "$runtime_container" >/dev/null
+runtime_started=0
 
 CONTAINER_ENGINE="$engine" EP_KIND_CLUSTER_NAME="$cluster" bash "$root/tests/execution_plane/restrict_egress.sh"
 (cd "$ep" && UV_PROJECT_ENVIRONMENT="$tmp/ep-venv" uv run --no-sync python -c 'from execution_plane.api.main import main; main()') > "$logs/api.log" 2>&1 &

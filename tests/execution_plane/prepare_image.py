@@ -63,9 +63,16 @@ def prepare(context: Path) -> dict[str, object]:
     # Use the checkout's locked hashes for every third-party runtime dependency.
     subprocess.run(
         [
-            "uv", "export", "--locked", "--package", "syntara-plugin-contracts",
-            "--no-default-groups", "--no-emit-workspace", "--no-header",
-            "--output-file", str(context / "requirements.lock"),
+            "uv",
+            "export",
+            "--locked",
+            "--package",
+            "syntara-plugin-contracts",
+            "--no-default-groups",
+            "--no-emit-workspace",
+            "--no-header",
+            "--output-file",
+            str(context / "requirements.lock"),
         ],
         cwd=ROOT,
         stdout=subprocess.DEVNULL,
@@ -137,10 +144,19 @@ def prepare(context: Path) -> dict[str, object]:
     )
     (context / "resolved.json").write_text(json.dumps(resolved, sort_keys=True), encoding="utf-8")
     shutil.copyfile(EXAMPLE / "runtime.json", context / "runtime.json")
+    certificates = context / "certificates"
+    certificates.mkdir()
+    _generate_tls_material(certificates)
+    shutil.copyfile(
+        ROOT / "tests/execution_plane/runtime_entrypoint.py", context / "runtime_entrypoint.py"
+    )
+    shutil.copyfile(ROOT / "tests/execution_plane/tls_bridge.py", context / "tls_bridge.py")
     # EP's Kubernetes port-forward uses loopback and supplies no resolved file yet.
     # These generated bindings are only a compatibility fixture, not a release image.
     containerfile = (EXAMPLE / "Containerfile").read_text(encoding="utf-8")
-    original_install = "RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl"
+    original_install = (
+        "RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl"
+    )
     if containerfile.count(original_install) != 1:
         raise ValueError("Existing Step Containerfile install command changed")
     locked_install = (
@@ -156,13 +172,82 @@ def prepare(context: Path) -> dict[str, object]:
         containerfile.replace(original_install, locked_install)
         + "\nUSER 0\nCOPY registration.json /opt/syntara/registration-manifest.json\n"
         + "COPY resolved.json /opt/syntara/resolved.json\n"
+        + "COPY certificates /run/secrets\n"
+        + "COPY runtime_entrypoint.py tls_bridge.py /opt/syntara/\n"
+        + "RUN chown -R 1001:0 /run/secrets && chmod 0600 /run/secrets/*.key\n"
         + "ENV SYNTARA_RESOLVED_EXECUTION=/opt/syntara/resolved.json \\\n"
-        + "    SYNTARA_RUNTIME_GRPC_ADDRESS=127.0.0.1:50051 \\\n"
-        + '    SYNTARA_RUNTIME_GRPC_TLS_CERT="" SYNTARA_RUNTIME_GRPC_TLS_KEY="" SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=""\n'
-        + "USER 1001\n",
+        + "    SYNTARA_RUNTIME_GRPC_ADDRESS=127.0.0.1:50052\n"
+        + "USER 1001\n"
+        + 'ENTRYPOINT ["python3.12", "/opt/syntara/runtime_entrypoint.py"]\n',
         encoding="utf-8",
     )
     return manifest
+
+
+def _generate_tls_material(directory: Path) -> None:
+    """Create short-lived localhost mTLS material for the compatibility image."""
+    ca_key = directory / "ca.key"
+    ca_certificate = directory / "client-ca.crt"
+    subprocess.run(["openssl", "genrsa", "-out", str(ca_key), "2048"], check=True)
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-new",
+            "-key",
+            str(ca_key),
+            "-out",
+            str(ca_certificate),
+            "-subj",
+            "/CN=syntara-compat-ca",
+            "-days",
+            "1",
+        ],
+        check=True,
+    )
+    requests: list[Path] = []
+    for name in ("server", "client"):
+        key = directory / f"{name}.key"
+        request = directory / f"{name}.csr"
+        requests.append(request)
+        certificate = directory / f"{name}.crt"
+        subprocess.run(["openssl", "genrsa", "-out", str(key), "2048"], check=True)
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-new",
+                "-key",
+                str(key),
+                "-out",
+                str(request),
+                "-subj",
+                f"/CN={name if name == 'client' else 'localhost'}",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "openssl",
+                "x509",
+                "-req",
+                "-in",
+                str(request),
+                "-CA",
+                str(ca_certificate),
+                "-CAkey",
+                str(ca_key),
+                "-CAcreateserial",
+                "-out",
+                str(certificate),
+                "-days",
+                "1",
+            ],
+            check=True,
+        )
+    for path in (ca_key, *requests, directory / "client-ca.srl"):
+        path.unlink(missing_ok=True)
 
 
 def main() -> None:
