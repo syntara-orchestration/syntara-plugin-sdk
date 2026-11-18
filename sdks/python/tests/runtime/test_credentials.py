@@ -1020,7 +1020,8 @@ def test_close_serializes_recording_and_rejects_late_callbacks(
             release.set()
         recording.result(timeout=5)
         closing.result(timeout=5)
-    assert not scope._strings and not scope._scalars
+    assert not scope._strings
+    assert not scope._scalars
     with pytest.raises(CredentialAccessError, match="expired"):
         scope._record({"token": _SECRET})
     assert scope.scan("safe") is credentials_module._CredentialScanStatus.LIMIT_EXCEEDED

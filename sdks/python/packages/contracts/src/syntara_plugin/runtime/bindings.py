@@ -382,15 +382,10 @@ def _resolve_document_source(
     return schema
 
 
-def _credential_contracts(
-    specification: Mapping[str, Any],
+def _credential_targets_by_id(
     targets: Sequence[Mapping[str, Any]],
-    assets: Mapping[str, Mapping[str, Any]] | None,
-) -> tuple[tuple[str, ...], Mapping[str, Any]]:
-    """Resolve credential declarations from the trusted installed target graph."""
-    integration_id = specification.get("integrationType")
-    if integration_id is None:
-        return (), _freeze_json_document({})
+) -> tuple[dict[str, Mapping[str, Any]], dict[str, Mapping[str, Any]]]:
+    """Validate and index installed integrations and credential recipes."""
     integrations: dict[str, Mapping[str, Any]] = {}
     recipes: dict[str, Mapping[str, Any]] = {}
     for target in targets:
@@ -406,6 +401,19 @@ def _credential_contracts(
         if identifier in collection:
             raise StepBindingError("duplicate installed credential target")
         collection[identifier] = spec
+    return integrations, recipes
+
+
+def _credential_contracts(
+    specification: Mapping[str, Any],
+    targets: Sequence[Mapping[str, Any]],
+    assets: Mapping[str, Mapping[str, Any]] | None,
+) -> tuple[tuple[str, ...], Mapping[str, Any]]:
+    """Resolve credential declarations from the trusted installed target graph."""
+    integration_id = specification.get("integrationType")
+    if integration_id is None:
+        return (), _freeze_json_document({})
+    integrations, recipes = _credential_targets_by_id(targets)
     integration = integrations.get(integration_id)
     if integration is None:
         raise StepBindingError("the declared integration is not installed")
