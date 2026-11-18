@@ -295,7 +295,8 @@ def test_a_fully_executed_report_is_not_unchecked() -> None:
         {"index": 4, "name": "run", "status": "pass"},
     ]
     decision = inherited(report(stages=stages), report())
-    assert decision is not None and not decision.unchecked
+    assert decision is not None
+    assert not decision.unchecked
 
 
 # The adapter ------------------------------------------------------------------

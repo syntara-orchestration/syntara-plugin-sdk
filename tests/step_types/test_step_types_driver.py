@@ -389,7 +389,9 @@ def test_the_wheel_digest_is_cached_per_file(
     monkeypatch.setattr(
         driver_module, "sha256_file", lambda path: (calls.append(path), real(path))[1]
     )
-    assert wheel_digest(wheel) == wheel_digest(wheel)
+    first = wheel_digest(wheel)
+    second = wheel_digest(wheel)
+    assert first == second  # the cached digest is stable across calls
     assert len(calls) == 1
     wheel.write_bytes(b"different content")  # a new (size, mtime) keys a new digest
     wheel_digest(wheel)
