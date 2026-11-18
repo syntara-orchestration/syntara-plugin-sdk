@@ -7,9 +7,11 @@ consumers interpret the same failure without interpreting plugin-specific codes.
 
 A nonzero wrapper status is a valid deliberate failure. `retryable` advises
 whether another attempt with the same step definition and workflow input may
-succeed; the Execution Plane owns retry policy. A failure without a valid
-wrapper remains a `ContainerFailure`, with its own runtime and transport code
-registry and execution-completion outcome. The registries are independent.
+succeed. The Execution Plane marks the execution failed and preserves the
+advisory; it does not retry. Automation Orchestrator decides whether a workflow
+execution retries. A failure without a valid wrapper remains a
+`ContainerFailure`, with its own runtime and transport code registry and
+execution-completion outcome. The registries are independent.
 
 The [runtime contract](../../contracts/README.md) lists the current pairs and
 the extension rules. The credential authenticate and test operations remain

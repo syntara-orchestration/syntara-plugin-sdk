@@ -602,8 +602,9 @@ class CreateIssueStep(ActionStep[CreateIssueInput, CreateIssueOutput]):
 The first two arguments are the result's status code and status message; the
 third is the structured error message delivered to the workflow user. The
 status code can be any nonzero unsigned 32-bit integer you choose; retry
-policy belongs to the platform; `retryable` advises whether another attempt
-with the same step definition and workflow input may succeed.
+policy belongs to Automation Orchestrator; `retryable` advises whether another
+attempt with the same step definition and workflow input may succeed. The
+Execution Plane reports the failure and does not retry it.
 Keep both messages short, actionable, and free of secrets. `code` defaults to
 `BUSINESS_RULE_FAILED`, `category` to `business`, and `retryable` to `False`.
 `StepFailure` carries no `outcome` argument: a deliberate failure completes
@@ -611,7 +612,8 @@ as a nonzero-status result, while an unexpected exception becomes a terminal
 `OUTCOME_UNKNOWN` failure. To signal that the invocation itself did not
 finish, raise `ContainerInvocationError` instead, as the next section shows.
 The failure code, message, and retryability are handed to the platform,
-which owns retry policy. The [contract registry](../contracts/README.md) lists
+where Automation Orchestrator owns retry policy. The
+[contract registry](../contracts/README.md) lists
 the allowed category/code pairs and explains when to use each code.
 `FailureCode` is a separate registry for terminal failures with no wrapper.
 
