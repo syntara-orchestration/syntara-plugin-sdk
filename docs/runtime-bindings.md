@@ -54,6 +54,11 @@ spec:
     entryPoint: report_tools.actions:create_report
 ```
 
+The `entryPoint` syntax belongs to the image's language: this Python example
+uses the Python adapter's `module:Class` form, and the
+[Go and TypeScript examples](authoring-guide.md#implement-in-another-language)
+use their own.
+
 `runtime-bindings.yaml` is an author-maintained source manifest. It lists the
 image choices presented to workflow authors. Each option uses either a
 `buildTarget` that the SDK builds locally or an existing immutable image

@@ -89,7 +89,7 @@ The exit status is `0` when the step type completes with status `0`.
 The command resolves the target to run in this order:
 
 1. the full step type identity, for example `example.python-steps.create-issue`;
-2. the `module:Class` entry point, for example `python_steps.create_issue:CreateIssueStep`;
+2. the declared entry point string, for example `python_steps.create_issue:CreateIssueStep`;
 3. a unique short name, for example `create-issue`.
 
 When you omit the target, the command infers it only when the workspace
@@ -306,6 +306,15 @@ point must resolve against the workspace, and a workspace file that shadows a
 standard-library or SDK module name would take precedence during the run.
 
 Action, Control, and Trigger targets with source manifests are supported.
+Source mode runs Python step types only: a target whose entry point the
+Python harness cannot resolve as a Python step type (the wrong shape, or a
+module absent from the workspace), such as one implemented in
+[Go or TypeScript](authoring-guide.md#implement-in-another-language),
+stops with exit status 2 and asks you to build the workload image with
+`syntara-plugin build`, then run it with `--mode image --release
+dist/release.json --image-option <option>`; the shape of the entry point
+never decides this, only the load attempt does. A module that exists but
+fails to import is Python breakage and exits 1.
 
 ### Image mode
 

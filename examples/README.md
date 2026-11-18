@@ -1,13 +1,16 @@
 # SDK examples
 
 Examples are small complete plugin workspaces. They are intentionally safe to
-validate and package without a registry, a container engine, or credentials.
+validate without a registry, a container engine, or credentials. Building a
+custom-runner workload image needs a container engine.
 
 | Example | What it demonstrates |
 | --- | --- |
 | [Hello World](hello-world) | One credentialless `platform-runner` action, an asset-backed input schema, documentation, and a non-secret build and release settings template. |
 | [Existing step types](existing-step) | One checked-in plugin with Action, Control, and Trigger custom runners, manifest entry-point loading, direct/container equivalence, and the opt-in OCI runtime harness. |
 | [Python steps](python-steps) | One `custom-runner` step type per Syntara kind (an Action and a Trigger with source manifests), tested on both execution paths and used as the `syntara-plugin run` demo workspace. |
+| [Go steps](go-steps) | The Python `normalize-records` step implemented in Go: an opaque entry point and the step code with its own unit tests, demonstrating a non-Python entry point through `validate`. |
+| [TypeScript steps](typescript-steps) | The same step type in strict TypeScript, compiled with `tsc`, on Node.js 22. |
 | [Subworkflow composition](subworkflow-composition) | A parent-side `Control` that invokes a named child workflow and the child-side `Trigger` that starts it, with manifest validation, seam checks between the child's steps, and the parent surfacing the child's declared result. |
 
 Start with [Hello World](hello-world). Its directory is also the command
@@ -33,3 +36,8 @@ uv run --no-sync pytest sdks/python/tests/integration/test_existing_step_e2e.py 
 
 Its checked-in `Containerfile` is used by the repository's opt-in Podman
 integration test; see that example's README for the execution-plane boundary.
+
+The Go and TypeScript examples stop at the implementation: validating them
+needs no container engine, and their unit tests run with the language's own
+toolchain. See
+[Implement in another language](../docs/authoring-guide.md#implement-in-another-language).

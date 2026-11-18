@@ -163,7 +163,10 @@ def create_bindings() -> StepBindings:
 
 `load_plugin_bindings` reads `<package>/manifests/plugin.yaml`, the target
 manifests it declares, and any asset-backed schema documents from package
-resources, in the formats the compiler accepts. Package the plugin workspace
+resources, in the formats the compiler accepts. Pass `workload_id` to bind
+only the custom-runner step types assigned to that logical workload; a plugin
+whose other workloads are written in another language needs it, because this
+adapter cannot bind their entry points. Package the plugin workspace
 inside the plugin wheel under `manifests/`, mirroring the source layout the
 [Existing step types](../examples/existing-step) example uses. Each step type identity is
 derived as `namespace.plugin.step` from the plugin metadata and each target's
@@ -213,8 +216,8 @@ path consumes the supplied installed-binding identity, entry point, ABI, and
 schema digests. The SDK rejects startup when those digests differ from the
 selected installed binding, preventing a referencing step type from validating
 against a different contract than its implementation.
-Each entry point must import a typed `BaseStep` class matching that exact
-executable installed binding from the factory. Missing, malformed, duplicate, or
+In this Python adapter, each entry point must import a typed `BaseStep` class
+matching that exact executable installed binding from the factory. Missing, malformed, duplicate, or
 inconsistent data prevents server startup. This file is bootstrap data only: it
 does not contain invocation IDs, input, timeout, credentials,
 or runtime context. Those per-invocation values are supplied in the gRPC
@@ -243,7 +246,7 @@ Automation Orchestrator end-to-end coverage. See the
 Automation Orchestrator's workflow selection and platform-owned runners remain
 separate platform responsibilities.
 
-The workload image starts the SDK runtime server as its entry point:
+A Python workload image starts the SDK runtime server as its entry point:
 
 ```sh
 python -m syntara_plugin.runtime.server
@@ -251,18 +254,20 @@ python -m syntara_plugin.runtime.server
 
 The `syntara-plugin-runtime-server` console script runs the same `main()`. The
 server reads its runtime config from `SYNTARA_RUNTIME_CONFIG` and its listener
-settings from the `SYNTARA_RUNTIME_GRPC_*` variables. Authors never write or
-start their own gRPC server: the SDK runtime server is the only server in the
-image, and it owns input validation, execution dispatch, and the container
-ABI. [Existing step types](../examples/existing-step) shows the base image recipe:
+settings from the `SYNTARA_RUNTIME_GRPC_*` variables. Python authors never
+write or start their own gRPC server: the SDK runtime server is the only
+server in the image, and it owns input validation, execution dispatch, and the
+container ABI. [Existing step types](../examples/existing-step) shows the base image recipe:
 the `Containerfile` entry point and the mounted TLS material.
 The workload build adds the registration manifest the server requires at
 startup (see
 [Installed revision mapping](#installed-revision-mapping)).
+Workloads in other languages ship their own server instead; see
+[Workload servers in other languages](#workload-servers-in-other-languages).
 
-> **Warning:** Do not start a separate gRPC server or write your own listener
-> code: the SDK runtime server opens and configures the image's listener
-> itself. Do not hard-code step type identities. A hand-written server
+> **Warning:** In a Python image, do not start a separate gRPC server or write
+> your own listener code: the SDK runtime server opens and configures the
+> image's listener itself. Do not hard-code step type identities. A hand-written server
 > bypasses the runtime's validation and its mutual TLS requirement, and a
 > hard-coded identity drifts from the packaged manifest contract.
 
@@ -296,6 +301,44 @@ artifacts published for deployment. They must record their immutable
 `repository@sha256:...` digest and the container ABI version they implement.
 Konflux ownership and signing apply to those final images; the SDK repository
 does not create a long-lived shared runtime image.
+
+### Workload servers in other languages
+
+The container ABI, the resolved execution file, and the registration manifest
+are language-neutral. Only the runtime config's `adapter` fields and the
+`module:Class` entry point belong to the Python adapter. A workload image
+written in another language ships its own server, which must:
+
+- **Listen with mutual TLS.** Bind `SYNTARA_RUNTIME_GRPC_ADDRESS` (managed
+  image mode passes `0.0.0.0:50051`), load the PEM files named by
+  `SYNTARA_RUNTIME_GRPC_TLS_CERT`, `SYNTARA_RUNTIME_GRPC_TLS_KEY`, and
+  `SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA`, and require and verify a client
+  certificate. Refuse to start without all three.
+- **Bind revisions at startup.** Read the resolved execution file named by
+  `SYNTARA_RESOLVED_EXECUTION` and the registration manifest at
+  `/opt/syntara/registration-manifest.json` (or
+  `SYNTARA_REGISTRATION_MANIFEST`). Every resolved custom-runner binding must
+  match the manifest entry with the same `stepRevisionId` exactly in
+  `stepIdentity`, `entryPoint`, `abi`, and `schemaDigests`. Resolve that
+  `entryPoint` to a handler by the image's own rule, and refuse to start on any
+  mismatch or unknown entry point.
+- **Answer `Health`** with `ready`, `runtime_abi` set to
+  `syntara.container/v1alpha1`, and the bound step revision IDs.
+- **Dispatch `Execute` by `step_revision_id`.** The first client message is
+  `start`. An unknown revision is a `NOT_FOUND` failure and a different
+  `runtime_abi` an `ABI_VIOLATION` failure, both with outcome `not_started`. A
+  completed step returns one `Result` event: `output_json` holds the business
+  output as compact UTF-8 JSON with sorted keys, `output_schema_digest` is the
+  revision's `schemaDigests.output`, and `status_code` is `0` for success.
+- **Stop on `SIGTERM`**, because the server usually runs as PID 1.
+
+The Execution Plane and the SDK client never parse `entryPoint`: it travels
+only in these bootstrap files, never on the wire. Credential callbacks,
+progress events, `Cancel`, and timeouts follow the message semantics in
+[`container.proto`](../contracts/proto/syntara_plugin/runtime/protocol/container.proto).
+The [Go](../examples/go-steps) and [TypeScript](../examples/typescript-steps)
+examples stop at the implementation: they demonstrate the manifest and the
+step code in each language, not a runnable server for this contract.
 
 ## Typed Python step types
 
@@ -693,14 +736,14 @@ second execution identifier.
 
 ### Installed revision mapping
 
-An immutable installed step type revision maps a declared step type to its Python
-implementation:
+An immutable installed step type revision maps a declared step type to its
+implementation inside the workload image:
 
 - The step type identity comes from the installed descriptor. It is never inferred
   from a source filename.
 - Authors do not hard-code build-generated revision IDs.
-- The compiled contract carries the `module:Class` entry point and required
-  ABI. The SDK generates a registration manifest for each logical workload
+- The compiled contract carries the opaque entry point (`module:Class` for the
+  Python adapter) and required ABI. The SDK generates a registration manifest for each logical workload
   and includes it in the image before exporting the local image archive.
 - Revision IDs identify compiled contracts, not image bytes. In the
   multi-image flow, the RuntimeBinding artifact separately maps each workload

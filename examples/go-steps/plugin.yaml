@@ -1,0 +1,16 @@
+apiVersion: syntara.io/v1alpha1
+kind: Plugin
+metadata:
+  namespace: example
+  name: go-steps
+  version: 0.1.0
+  displayName: Go steps
+  description: A custom-runner step type implemented in Go.
+spec:
+  documentation:
+    path: docs/README.md
+  workloads:
+    go:
+      image: go-steps-runtime
+  targets:
+    - steps/normalize-records/manifest.yaml
