@@ -28,7 +28,10 @@ from pathlib import Path
 from typing import Any
 
 import grpc
-from jsonschema import Draft202012Validator, ValidationError, validators
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 from syntara_plugin.contracts import build_validator
 from syntara_plugin.runtime.abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from syntara_plugin.runtime.adapter import container_step_for_binding
@@ -471,6 +474,125 @@ def _scrub_structure(
         }
     if isinstance(value, (list, tuple)):
         return [_scrub_structure(item, secrets, scalars) for item in value]
+    return _scrub_scalar(value, scalars)
+
+
+def _error_schema_nodes(
+    schemas: Sequence[tuple[Any, Any, bool]], value: Any,
+) -> list[tuple[Mapping[str, Any], Any]]:
+    """Expand applicable branches and references in their resource scope."""
+    pending = list(schemas)
+    seen: set[tuple[int, str]] = set()
+    nodes: list[tuple[Mapping[str, Any], Any]] = []
+    validation_value = _scrub_structure(value, ())
+    format_checker = FormatChecker()
+    while pending and len(seen) < 10000:
+        schema, resolver, scoped = pending.pop()
+        if not isinstance(schema, Mapping):
+            continue
+        if not scoped:
+            resolver = resolver.in_subresource(DRAFT202012.create_resource(schema))
+        marker = (id(schema), repr(resolver))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        nodes.append((schema, resolver))
+        for keyword in ("$ref", "$dynamicRef"):
+            reference = schema.get(keyword)
+            if isinstance(reference, str):
+                resolved = resolver.lookup(reference)
+                pending.append((resolved.contents, resolved.resolver, True))
+        branches = schema.get("allOf")
+        if isinstance(branches, (list, tuple)):
+            pending.extend((branch, resolver, False) for branch in branches)
+        for keyword in ("anyOf", "oneOf"):
+            branches = schema.get(keyword)
+            if isinstance(branches, (list, tuple)):
+                for branch in branches:
+                    try:
+                        matches = Draft202012Validator(
+                            branch, format_checker=format_checker,
+                            _resolver=resolver.in_subresource(DRAFT202012.create_resource(branch)),
+                        ).is_valid(validation_value)
+                    except Unresolvable:
+                        if keyword != "anyOf":
+                            raise
+                        # The validated anyOf may have short-circuited before
+                        # this unused branch. Treat its names as dynamic.
+                        continue
+                    if matches:
+                        pending.append((branch, resolver, False))
+        condition = schema.get("if")
+        if isinstance(condition, (Mapping, bool)):
+            condition_matches = Draft202012Validator(
+                condition, format_checker=format_checker,
+                _resolver=resolver.in_subresource(DRAFT202012.create_resource(condition)),
+            ).is_valid(validation_value)
+            selected = "then" if condition_matches else "else"
+            pending.append((schema.get(selected), resolver, False))
+        dependent = schema.get("dependentSchemas")
+        if isinstance(value, Mapping) and isinstance(dependent, Mapping):
+            pending.extend((branch, resolver, False) for key, branch in dependent.items() if key in value)
+    return nodes
+
+
+def _scrub_error_extensions(
+    value: Any, schemas: Sequence[Any], root_schema: Mapping[str, Any],
+    secrets: tuple[str, ...], scalars: tuple[Any, ...],
+    *, selection_value: Any = None,
+) -> Any:
+    """Preserve declared names while scrubbing dynamic keys and all values."""
+    root = _scrub_structure(root_schema, ())
+    resolver = Registry().resolver_with_root(DRAFT202012.create_resource(root))
+    scoped_schemas = [
+        (root if schema is root_schema else _scrub_structure(schema, ()), resolver, schema is root_schema)
+        for schema in schemas
+    ]
+    return _scrub_error_value(value, scoped_schemas, secrets, scalars, selection_value=selection_value)
+
+
+def _scrub_error_value(
+    value: Any, schemas: Sequence[tuple[Any, Any, bool]],
+    secrets: tuple[str, ...], scalars: tuple[Any, ...],
+    *, selection_value: Any = None,
+) -> Any:
+    nodes = _error_schema_nodes(schemas, value if selection_value is None else selection_value)
+    if isinstance(value, Mapping):
+        scrubbed: dict[Any, Any] = {}
+        for key, item in value.items():
+            declared = False
+            children: list[tuple[Any, Any, bool]] = []
+            for node, resolver in nodes:
+                properties = node.get("properties")
+                if isinstance(properties, Mapping) and key in properties:
+                    declared = True
+                    children.append((properties[key], resolver, False))
+                patterns = node.get("patternProperties")
+                matched_pattern = False
+                if isinstance(patterns, Mapping) and isinstance(key, str):
+                    for pattern, child in patterns.items():
+                        if isinstance(pattern, str) and re.search(pattern, key):
+                            matched_pattern = True
+                            children.append((child, resolver, False))
+                if not matched_pattern and not (isinstance(properties, Mapping) and key in properties):
+                    children.append((node.get("additionalProperties"), resolver, False))
+            safe_key = key if declared or not isinstance(key, str) else _scrub_text(key, secrets)
+            scrubbed[safe_key] = _scrub_error_value(item, children, secrets, scalars)
+        return scrubbed
+    if isinstance(value, (list, tuple)):
+        scrubbed_items = []
+        for index, item in enumerate(value):
+            children = []
+            for node, resolver in nodes:
+                prefix = node.get("prefixItems")
+                if isinstance(prefix, (list, tuple)) and index < len(prefix):
+                    children.append((prefix[index], resolver, False))
+                else:
+                    children.append((node.get("items"), resolver, False))
+            scrubbed_items.append(_scrub_error_value(item, children, secrets, scalars))
+        return scrubbed_items
+    if isinstance(value, str):
+        return _scrub_text(value, secrets)
     return _scrub_scalar(value, scalars)
 
 
@@ -1589,10 +1711,16 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
                 retryable=error.retryable,
             ) from error
         error_result = result.error_result
-        scrubbed_error = _scrub_structure(
-            {key: value for key, value in error_result.items()
-             if key not in {"category", "code", "message", "retryable"}},
-            secrets, scalars,
+        extensions = {
+            key: value for key, value in error_result.items()
+            if key not in {"category", "code", "message", "retryable"}
+        }
+        scrubbed_error = (
+            _scrub_error_extensions(
+                extensions, [target.error_schema], target.error_schema, secrets, scalars,
+                selection_value=error_result,
+            )
+            if extensions else {}
         )
         # Registry values and retryability are public contract metadata, not
         # credential data; preserve them even if a credential happens to match.

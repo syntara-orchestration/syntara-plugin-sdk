@@ -636,6 +636,25 @@ def _custom_runner_workspace_with_entry_point(tmp_path: Path, capsys, entry_poin
     manifest["spec"]["runtime"]["entryPoint"] = entry_point
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     return workspace
+def test_validate_reports_structured_runtime_binding_diagnostics(tmp_path: Path, capsys) -> None:
+    workspace = tmp_path / "binding"
+    assert main(["init", str(workspace), "--template", "custom-workload"]) == 0
+    capsys.readouterr()
+    binding_path = workspace / "runtime-bindings.yaml"
+    binding = yaml.safe_load(binding_path.read_text(encoding="utf-8"))
+    options = binding["spec"]["workloads"]["python"]["options"]
+    options.append(dict(options[0]))
+    binding_path.write_text(yaml.safe_dump(binding, sort_keys=False), encoding="utf-8")
+
+    assert main(["validate", str(workspace / "plugin.yaml"), "--runtime-bindings", str(binding_path), "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["errorResult"]["code"] == "VALIDATION_FAILED"
+    assert payload["diagnostics"] == [{
+        "code": "RUNTIME_BINDING_OPTION_DUPLICATE",
+        "path": "spec/workloads/python/options",
+        "message": "workload 'python' has duplicate option names.",
+    }]
 
 
 @pytest.mark.parametrize(

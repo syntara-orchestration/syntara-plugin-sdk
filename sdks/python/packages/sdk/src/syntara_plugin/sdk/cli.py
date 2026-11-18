@@ -1435,8 +1435,17 @@ def _validate_workspace_binding(
         return False, 2
     if diagnostics:
         if arguments.json:
-            _print_error_json("ValidationError", "Runtime binding validation failed.",
-                              tuple(diagnostic.message for diagnostic in diagnostics), ())
+            payload = {
+                "ok": False,
+                "errorResult": _cli_error_result(
+                    "ValidationError", "Runtime binding validation failed."
+                ),
+                "diagnostics": [
+                    {"code": diagnostic.code, "path": diagnostic.path, "message": diagnostic.message}
+                    for diagnostic in diagnostics
+                ],
+            }
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
             return False, 1
         for diagnostic in diagnostics:
             print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)

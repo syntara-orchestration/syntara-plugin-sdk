@@ -4446,6 +4446,235 @@ def test_frozen_error_details_are_scrubbed_in_json_report(monkeypatch, capsys):
     assert payload["errorResult"]["details"] == [{"value": "***"}]
 
 
+def test_error_extension_keys_remain_valid_when_they_contain_a_secret(monkeypatch):
+    from jsonschema import Draft202012Validator
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_base_schema()
+    schema["properties"]["requestId"] = {"type": "string"}
+    schema["properties"]["details"] = {"type": "array", "items": {"$ref": "#/$defs/detail"}}
+    schema["$defs"] = {"detail": {"type": "object", "properties": {"requestId": {"type": "string"}}, "required": ["requestId"], "additionalProperties": False}}
+    schema["required"].extend(["requestId", "details"])
+    schema["additionalProperties"] = False
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "quest"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False, "requestId": "quest", "details": [{"requestId": "quest"}]}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+
+    report = runner._execute_over_channel(execution)
+    assert report.error.error_result["requestId"] == "***"
+    assert report.error.error_result["details"] == [{"requestId": "***"}]
+    assert Draft202012Validator(schema).is_valid(report.error.error_result)
+
+
+@pytest.mark.parametrize("keyword", ["oneOf", "anyOf"])
+@pytest.mark.parametrize("references", [False, True])
+def test_error_extension_keys_in_matching_alternative_are_preserved(monkeypatch, keyword, references):
+    from jsonschema import Draft202012Validator
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_base_schema()
+    schema["properties"]["details"] = {keyword: [
+        {"type": "object", "properties": {"kind": {"const": "request"}, "requestId": {"type": "string"}}, "required": ["kind", "requestId"], "additionalProperties": False},
+        {"type": "object", "properties": {"kind": {"const": "other"}, "otherId": {"type": "string"}}, "required": ["kind", "otherId"], "additionalProperties": False},
+    ]}
+    if references:
+        branches = schema["properties"]["details"][keyword]
+        schema["$defs"] = {"request": branches[0], "other": branches[1]}
+        schema["properties"]["details"][keyword] = [{"$ref": "#/$defs/request"}, {"$ref": "#/$defs/other"}]
+    schema["additionalProperties"] = False
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "Id"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False, "details": {"kind": "request", "requestId": "Id"}}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+
+    error = runner._execute_over_channel(execution).error.error_result
+    assert error["details"]["requestId"] == "***"
+    assert Draft202012Validator(schema).is_valid(error)
+
+
+def test_error_extension_unused_unresolvable_anyof_branch(monkeypatch):
+    from jsonschema import Draft202012Validator
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_base_schema()
+    schema["properties"]["details"] = {"anyOf": [
+        {"type": "object", "properties": {"requestId": {"type": "string"}}, "required": ["requestId"], "additionalProperties": False},
+        {"$ref": "#/$defs/missing"},
+    ]}
+    schema["additionalProperties"] = False
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "quest"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False, "details": {"requestId": "quest"}}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+
+    error = runner._execute_over_channel(execution).error.error_result
+    assert error["details"]["requestId"] == "***"
+    assert Draft202012Validator(schema).is_valid(error)
+
+
+@pytest.mark.parametrize("keyword", ["oneOf", "anyOf", "if"])
+def test_error_extension_branch_validation_uses_own_resource_scope(monkeypatch, keyword):
+    from jsonschema import Draft202012Validator
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_base_schema()
+    detail = {"type": "object", "properties": {"kind": {"const": "request"}, "requestId": {"type": "string"}}, "required": ["kind", "requestId"], "additionalProperties": False}
+    scoped = {"$id": "https://example.test/branch", "$defs": {"detail": detail}, "$ref": "#/$defs/detail"}
+    if keyword == "if":
+        schema["properties"]["details"] = {"if": scoped, "then": detail}
+    else:
+        other = {"type": "object", "properties": {"kind": {"const": "other"}}, "required": ["kind"]}
+        schema["properties"]["details"] = {keyword: [scoped, other]}
+    schema["additionalProperties"] = False
+    if keyword == "if":
+        value = {"kind": "request", "requestId": "Id"}
+        details_schema = schema["properties"]["details"]
+        assert runner._scrub_error_extensions(value, [details_schema], schema, ("Id",), ()) == {
+            "kind": "request", "requestId": "***",
+        }
+        return
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "Id"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False, "details": {"kind": "request", "requestId": "Id"}}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+
+    error = runner._execute_over_channel(execution).error.error_result
+    assert error["details"]["requestId"] == "***"
+    assert Draft202012Validator(schema).is_valid(error)
+
+
+@pytest.mark.parametrize("reference", ["#/$defs/detail", "#detail"])
+def test_error_extension_nested_resource_references_preserve_declared_keys(monkeypatch, reference):
+    from jsonschema import Draft202012Validator
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_base_schema()
+    schema["properties"]["details"] = {
+        "$id": "https://example.test/detail-schema",
+        "$defs": {"detail": {"$anchor": "detail", "type": "object", "properties": {"requestId": {"type": "string"}}, "required": ["requestId"], "additionalProperties": False}},
+        "$ref": reference,
+    }
+    schema["additionalProperties"] = False
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "quest"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False, "details": {"requestId": "quest"}}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+
+    error = runner._execute_over_channel(execution).error.error_result
+    assert error["details"]["requestId"] == "***"
+    assert Draft202012Validator(schema).is_valid(error)
+
+
+@pytest.mark.parametrize("keyword", ["oneOf", "anyOf", "if", "dependentSchemas"])
+def test_root_error_schema_selects_branch_from_full_result(monkeypatch, keyword):
+    from jsonschema import Draft202012Validator
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_base_schema()
+    extension = {"properties": {"requestId": {"type": "string"}}, "required": ["requestId"]}
+    condition = {"properties": {"category": {"const": "business"}}, "required": ["category"]}
+    if keyword in ("oneOf", "anyOf"):
+        schema[keyword] = [{"allOf": [condition, extension]}, {"properties": {"category": {"const": "timeout"}}, "required": ["category"]}]
+    elif keyword == "if":
+        schema.update({"if": condition, "then": extension})
+    else:
+        schema["dependentSchemas"] = {"category": extension}
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "quest"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False, "requestId": "quest"}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+
+    error = runner._execute_over_channel(execution).error.error_result
+    assert error["requestId"] == "***"
+    assert Draft202012Validator(schema).is_valid(error)
+
+
+def test_base_input_failure_skips_custom_error_schema_traversal(monkeypatch):
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import runner
+
+    schema = {"$ref": "#/$defs/missing"}
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "secret"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "validation", "code": "INVALID_INPUT", "message": "bad secret", "retryable": False}, error_schema_digest=canonical_json_digest(error_result_base_schema()))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+
+    error = runner._execute_over_channel(execution).error.error_result
+    assert error == {"category": "validation", "code": "INVALID_INPUT", "message": "bad ***", "retryable": False}
+
+
+def test_error_extension_key_declared_only_in_inactive_branch_is_scrubbed():
+    from syntara_plugin.sdk.runner import _scrub_error_extensions
+
+    schema = {"oneOf": [
+        {"properties": {"kind": {"const": "active"}}},
+        {"properties": {"kind": {"const": "inactive"}, "secret": {"type": "string"}}},
+    ]}
+    value = {"kind": "active", "secret": "value"}
+    assert _scrub_error_extensions(value, [schema], schema, ("secret",), ()) == {
+        "kind": "active", "***": "value",
+    }
+
+
+def test_error_extension_key_in_format_invalid_branch_is_scrubbed():
+    from syntara_plugin.sdk.runner import _scrub_error_extensions
+
+    schema = {"anyOf": [
+        {"properties": {"kind": {"const": "active"}}, "required": ["kind"]},
+        {"properties": {"recipient": {"type": "string", "format": "email"}, "secret": {"type": "string"}}, "required": ["recipient"]},
+    ]}
+    value = {"kind": "active", "recipient": "not-an-email", "secret": "value"}
+    assert _scrub_error_extensions(value, [schema], schema, ("secret",), ()) == {
+        "kind": "active", "recipient": "not-an-email", "***": "value",
+    }
+
+
+def test_undeclared_error_extension_keys_are_scrubbed(monkeypatch):
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_base_schema()
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "secret"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False, "secret": "value"}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+
+    report = runner._execute_over_channel(execution)
+    assert report.error.error_result["***"] == "value"
+    assert "secret" not in report.error.error_result
+
+
 def test_image_error_extensions_scrub_typed_sensitive_inputs(monkeypatch, capsys):
     from syntara_plugin.contracts import canonical_json_digest
     from syntara_plugin.runtime import ContainerResult, error_result_base_schema
