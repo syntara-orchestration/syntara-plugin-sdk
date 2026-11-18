@@ -573,25 +573,40 @@ def _scrub_error_extensions(
     return _scrub_error_value(value, scoped_schemas, secrets, scalars, selection_value=selection_value)
 
 
+def _explicit_property_schema(
+    node: Mapping[str, Any], resolver: Any, key: Any
+) -> tuple[bool, list[tuple[Any, Any, bool]]]:
+    properties = node.get("properties")
+    if not isinstance(properties, Mapping) or key not in properties:
+        return False, []
+    return True, [(properties[key], resolver, False)]
+
+
+def _pattern_property_schemas(
+    node: Mapping[str, Any], resolver: Any, key: Any
+) -> list[tuple[Any, Any, bool]]:
+    patterns = node.get("patternProperties")
+    if not isinstance(patterns, Mapping) or not isinstance(key, str):
+        return []
+    return [
+        (child, resolver, False)
+        for pattern, child in patterns.items()
+        if isinstance(pattern, str) and re.search(pattern, key)
+    ]
+
+
 def _property_schemas(
     nodes: Sequence[tuple[Mapping[str, Any], Any]], key: Any
 ) -> tuple[bool, list[tuple[Any, Any, bool]]]:
     declared = False
     children: list[tuple[Any, Any, bool]] = []
     for node, resolver in nodes:
-        properties = node.get("properties")
-        property_declared = isinstance(properties, Mapping) and key in properties
-        if property_declared:
-            declared = True
-            children.append((properties[key], resolver, False))
-        patterns = node.get("patternProperties")
-        matched_pattern = False
-        if isinstance(patterns, Mapping) and isinstance(key, str):
-            for pattern, child in patterns.items():
-                if isinstance(pattern, str) and re.search(pattern, key):
-                    matched_pattern = True
-                    children.append((child, resolver, False))
-        if not matched_pattern and not property_declared:
+        property_declared, property_children = _explicit_property_schema(node, resolver, key)
+        pattern_children = _pattern_property_schemas(node, resolver, key)
+        declared = declared or property_declared or bool(pattern_children)
+        children.extend(property_children)
+        children.extend(pattern_children)
+        if not property_declared and not pattern_children:
             children.append((node.get("additionalProperties"), resolver, False))
     return declared, children
 
