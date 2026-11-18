@@ -501,8 +501,11 @@ _DECLARED_ERROR_SCHEMA = {
 def test_failure_without_declared_error_schema_rejects_extra_fields() -> None:
     """The closed fallback ErrorResult applies when no spec.error is declared."""
 
+    executor = _executor(ExtraFieldErrorStep())
+    context = _context()
+
     with pytest.raises(StepExecutionError):
-        _executor(ExtraFieldErrorStep()).execute({"message": "hello"}, _context())
+        executor.execute({"message": "hello"}, context)
 
 
 def test_failure_with_declared_error_schema_accepts_a_matching_result() -> None:
@@ -539,11 +542,11 @@ def test_failure_with_declared_error_schema_rejects_a_mismatched_result() -> Non
     )
     descriptor = StepDescriptor.for_installed_step(step, manifest)
     bindings.bind(descriptor, step)
+    executor = StepExecutor(bindings.binding("acme.plugin.example"))
+    context = _context()
 
     with pytest.raises(StepExecutionError):
-        StepExecutor(bindings.binding("acme.plugin.example")).execute(
-            {"message": "hello"}, _context()
-        )
+        executor.execute({"message": "hello"}, context)
 
 
 def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
