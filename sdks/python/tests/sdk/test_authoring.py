@@ -1347,7 +1347,7 @@ def test_rejects_authored_schemas_without_a_dialect_declaration(tmp_path: Path) 
     with pytest.raises(CompilationError) as error:
         _compile(root)
     codes = {item.code for item in error.value.diagnostics}
-    assert codes == {"SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT"}
+    assert codes == {"SCHEMA_DOCUMENT_DIALECT_MISSING"}
     assert "$schema" in error.value.diagnostics[0].message
 
 

@@ -1305,7 +1305,7 @@ def _validate_schema_document(
     except SchemaDocumentError as error:
         diagnostics.append(
             _diagnostic(
-                "SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT",
+                error.code,
                 error.message,
                 target_path,
                 "Declare $schema as https://json-schema.org/draft/2020-12/schema.",

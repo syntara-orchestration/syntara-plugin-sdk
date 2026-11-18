@@ -1299,7 +1299,7 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
     if not custom_workload:
         payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
         if isinstance(payload, dict):
-            document = {"$schema": "https://json-schema.org/draft/2020-12/schema", **payload}
+            document = {**payload, "$schema": "https://json-schema.org/draft/2020-12/schema"}
             (directory / input_path).write_text(
                 yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
             )

@@ -15,9 +15,9 @@ for `spec.input`, `spec.output`, `spec.error`, and trigger
 `$schema: https://json-schema.org/draft/2020-12/schema` explicitly. The
 compiler rejects a schema that declares any other dialect
 (`SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT`) and rejects a schema that omits the
-declaration rather than defaulting it. A missing declaration is treated the
-same as a wrong one so the contract is unambiguous and authoring tools never
-need to guess a dialect.
+declaration (`SCHEMA_DOCUMENT_DIALECT_MISSING`) rather than defaulting it.
+Neither case is accepted, so the contract is unambiguous and authoring tools
+never need to guess a dialect.
 
 **A contract-defined asserted format set.** `common.schema.json` declares the
 set in `$defs.assertedFormats`: `date-time` (strict RFC 3339 subset) and

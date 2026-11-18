@@ -282,6 +282,29 @@ def test_custom_schema_file_and_drift_detection(
         bindings_factory.bind_step(entry_point, workspace=workspace)
 
 
+def test_custom_scaffold_forces_the_canonical_schema_dialect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fields document that declares another draft is rewritten to 2020-12."""
+
+    monkeypatch.chdir(tmp_path)
+    schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["resource"],
+        "properties": {"resource": {"type": "string", "minLength": 1}},
+    }
+    (tmp_path / "fields.json").write_text(json.dumps(schema), encoding="utf-8")
+    workspace = tmp_path / "forced-dialect"
+    assert (
+        main(["init", str(workspace), "--runner", "custom-runner", "--fields", "@fields.json"]) == 0
+    )
+    written = yaml.safe_load((workspace / "schemas/request.input.yaml").read_text())
+    assert written["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert main(["validate", str(workspace / "plugin.yaml")]) == 0
+
+
 def test_custom_field_names_that_look_like_yaml_values(tmp_path: Path) -> None:
     workspace = tmp_path / "yaml-fields"
     assert main(["init", str(workspace), "--runner", "custom-runner", "--fields", "yes,on"]) == 0

@@ -250,7 +250,7 @@ class ContainerResult:
             raise ValueError("a failed result requires an error result and schema digest")
         validate_json_object(self.error_result)
         document = _thaw_json_document(self.error_result)
-        if not Draft202012Validator(error_result_base_schema()).is_valid(document):
+        if not build_validator(error_result_base_schema()).is_valid(document):
             raise ValueError("error result must satisfy the SDK base schema")
         object.__setattr__(self, "error_result", freeze_json(document))
 

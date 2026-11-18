@@ -551,6 +551,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       title: EchoInput
       properties:
@@ -561,6 +562,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       title: EchoOutput
       properties:
@@ -571,6 +573,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -663,6 +666,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       title: EchoInput
       properties:
@@ -673,6 +677,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       title: EchoOutput
       properties:
@@ -683,6 +688,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -700,7 +706,9 @@ spec:
   credentialTypes: [{_CREDENTIAL_RECIPE}]
   configuration:
     kind: inline
-    value: {{type: object}}
+    value:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      type: object
 """,
         encoding="utf-8",
     )
@@ -717,6 +725,7 @@ spec:
   credentialSchema:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       additionalProperties: false
       required: [token]

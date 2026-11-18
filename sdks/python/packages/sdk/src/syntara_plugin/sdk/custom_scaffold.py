@@ -31,7 +31,7 @@ def write_custom_workspace(
     schema: dict[str, Any],
 ) -> None:
     """Write a self-contained workspace for one manifest-backed Action."""
-    schema = {"$schema": _DIALECT, **schema}
+    schema = {**schema, "$schema": _DIALECT}
     _validate_model_schema(schema)
     # Avoid shadowing the SDK's syntara_plugin namespace when name is "plugin".
     package = "syntara_step_" + name.replace("-", "_")

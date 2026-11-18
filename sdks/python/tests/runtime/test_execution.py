@@ -467,17 +467,35 @@ class ExtraFieldErrorStep(ExampleStep):
 
 
 class DeclaredErrorStep(ExampleStep):
+    def __init__(self, code: str = "TRACKER_DOWN") -> None:
+        super().__init__()
+        self._failure_code = code
+
     def run(self, inputs: ExampleInput, context: ExecutionContext) -> ExampleOutput:
         raise StepFailure(
             1,
             "deliberate",
             error_result=ErrorResult(
                 category=ErrorCategory.BUSINESS,
-                code="STEP_FAILED",
+                code=self._failure_code,
                 message="deliberate",
                 retryable=False,
             ),
         )
+
+
+_DECLARED_ERROR_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["category", "code", "message", "retryable"],
+    "properties": {
+        "category": {"type": "string"},
+        "code": {"const": "TRACKER_DOWN"},
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"},
+    },
+}
 
 
 def test_failure_without_declared_error_schema_rejects_extra_fields() -> None:
@@ -487,23 +505,40 @@ def test_failure_without_declared_error_schema_rejects_extra_fields() -> None:
         _executor(ExtraFieldErrorStep()).execute({"message": "hello"}, _context())
 
 
-def test_failure_with_declared_error_schema_enforces_base_composition() -> None:
+def test_failure_with_declared_error_schema_accepts_a_matching_result() -> None:
     """A declared spec.error is validated on top of the base composition."""
 
     bindings = StepBindings()
+    step = DeclaredErrorStep()
     manifest = _installed_step(
         _input_schema(),
         step_class=DeclaredErrorStep,
-        error_schema={
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["code"],
-            "properties": {"code": {"const": "TRACKER_DOWN"}},
-        },
+        error_schema=_DECLARED_ERROR_SCHEMA,
     )
-    descriptor = StepDescriptor.for_installed_step(DeclaredErrorStep(), manifest)
-    bindings.bind(descriptor, DeclaredErrorStep())
+    descriptor = StepDescriptor.for_installed_step(step, manifest)
+    bindings.bind(descriptor, step)
+
+    wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
+        {"message": "hello"}, _context()
+    )
+
+    assert wrapper.status != 0
+    assert wrapper.error is not None
+    assert wrapper.error.code == "TRACKER_DOWN"
+
+
+def test_failure_with_declared_error_schema_rejects_a_mismatched_result() -> None:
+    """Declared error constraints fail the wrapper when the result does not match."""
+
+    bindings = StepBindings()
+    step = DeclaredErrorStep(code="STEP_FAILED")
+    manifest = _installed_step(
+        _input_schema(),
+        step_class=DeclaredErrorStep,
+        error_schema=_DECLARED_ERROR_SCHEMA,
+    )
+    descriptor = StepDescriptor.for_installed_step(step, manifest)
+    bindings.bind(descriptor, step)
 
     with pytest.raises(StepExecutionError):
         StepExecutor(bindings.binding("acme.plugin.example")).execute(
