@@ -82,6 +82,7 @@ from .manifest_validation import ManifestInputValidationError
 from .metadata import supports_runtime_probe
 from .outcome import (
     ErrorCategory,
+    ErrorCode,
     ErrorMessage,
     ErrorResult,
     StandardOutputWrapper,
@@ -193,6 +194,7 @@ __all__ = [
     "DriftReport",
     "DriftSeverity",
     "ErrorCategory",
+    "ErrorCode",
     "EntryPointResolver",
     "ErrorMessage",
     "ErrorResult",

@@ -1810,6 +1810,11 @@ def test_json_failure_output_carries_the_error_detail(tmp_path: Path, capsys) ->
     assert document["error"]["code"] == "INVALID_INPUT"
     assert document["error"]["retryable"] is False
     assert document["error"]["message"] == "The tracker rejected the request."
+    assert document["errorResult"] == {
+        "category": "validation", "code": "INVALID_INPUT",
+        "message": "The tracker rejected the request.", "retryable": False,
+    }
+    assert "containerFailure" not in document
 
 
 def test_settings_supply_the_manifest_and_json_output(tmp_path: Path, capsys) -> None:
@@ -2595,7 +2600,8 @@ def test_json_failures_emit_one_document_on_stdout(tmp_path: Path, capsys, monke
     assert status == 1
     document = json.loads(capsys.readouterr().out)
     assert document["ok"] is False
-    assert document["error"]["kind"] == "RunExecutionError"
+    assert document["errorResult"] is None
+    assert document["containerFailure"]["outcome"] == "not_started"
 
     # Missing manifest (exit 2).
     status = main(["run", "--manifest", str(tmp_path / "nowhere"), "--json"])
@@ -4386,3 +4392,245 @@ def test_source_run_keeps_boolean_text_but_scrubs_boolean_attribute(
     assert record["message"] == f"value {text} {text.lower()}"
     assert record["event_name"] == f"value.{text}"
     assert record["attributes"] == {"value": "***"}
+def test_scrub_structure_thaws_nested_error_values():
+    from syntara_plugin.runtime import ErrorResult
+    from syntara_plugin.sdk.runner import _scrub_structure
+
+    error = ErrorResult(category="business", code="BUSINESS_RULE_FAILED", message="failed", details=[{"token": "secret-value"}])
+    result = _scrub_structure(error.__pydantic_extra__, ("secret-value",))
+    assert json.loads(json.dumps(result)) == {"details": [{"token": "***"}]}
+
+
+def test_json_import_failure_is_not_unknown_outcome(tmp_path: Path, capsys) -> None:
+    workspace = _write_custom_workspace(
+        tmp_path / "ws", source="def broken(:\n", class_name="BrokenStep",
+        input_schema={"type": "object", "properties": {"title": {"type": "string"}}},
+        output_schema=_ECHO_STRING_OUTPUT,
+    )
+    assert main(["run", "--manifest", str(workspace / "plugin.yaml"), "--input", '{"title": "x"}', "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errorResult"]["code"] == "INTERNAL_ERROR"
+    assert payload.get("containerFailure") is None
+    assert payload["outcome"] == "not_started"
+
+
+def test_workload_failure_preserves_registry_code_when_secret_is_substring(monkeypatch):
+    from syntara_plugin.sdk import runner
+
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={})
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "INPUT"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: runner._WorkloadFailure(error=runner.RunErrorDetail(code="INVALID_INPUT", message="INPUT", retryable=False), outcome="not_completed"))
+    report = runner._execute_over_channel(execution)
+    assert report.error.code == "INVALID_INPUT"
+    assert report.error.message == "***"
+
+
+def test_frozen_error_details_are_scrubbed_in_json_report(monkeypatch, capsys):
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import cli, runner
+
+    schema = error_result_base_schema()
+    schema["properties"]["details"] = {"type": "array"}
+    schema["additionalProperties"] = False
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "secret-value"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, status_message="failed", error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False, "details": [{"value": "secret-value"}]}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+    cli._print_run_report_json(runner._execute_over_channel(execution))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errorResult"]["details"] == [{"value": "***"}]
+
+
+def test_image_error_extensions_scrub_typed_sensitive_inputs(monkeypatch, capsys):
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_base_schema
+    from syntara_plugin.sdk import cli, runner
+
+    schema = error_result_base_schema()
+    schema["properties"]["details"] = {"type": "object"}
+    schema["additionalProperties"] = False
+    inputs = {"pin": 1234, "nested": {"flag": True}}
+    input_schema = {"type": "object", "properties": {
+        "pin": {"type": "integer", "writeOnly": True},
+        "nested": {"type": "object", "properties": {"flag": {"type": "boolean", "writeOnly": True}}},
+    }}
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema=input_schema, schema_digests={}, error_schema=schema, step_revision_id="revision")
+    execution = runner._ChannelExecution(channel=None, target=target, inputs=inputs, input_source="test", mode="image", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": True, "details": {"pin": 1234, "flag": True, "one": 1, "float": 1234.0}}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["revision"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+    cli._print_run_report_json(runner._execute_over_channel(execution))
+    error = json.loads(capsys.readouterr().out)["errorResult"]
+    assert error == {"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": True, "details": {"pin": "***", "flag": "***", "one": 1, "float": 1234.0}}
+
+
+def test_image_unadvertised_revision_is_container_failure(monkeypatch, capsys):
+    import argparse
+
+    from syntara_plugin.sdk import cli, runner
+
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={}, schema_digests={}, step_revision_id="revision")
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={}, input_source="test", mode="image", address="localhost:1", timeout_seconds=1, on_progress=None)
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["other"])
+    with pytest.raises(runner.RunExecutionError) as raised:
+        runner._execute_over_channel(execution)
+    cli._print_run_error(raised.value, argparse.Namespace(json=True))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errorResult"] is None
+    assert payload["containerFailure"]["code"] == "ABI_VIOLATION"
+    assert payload["containerFailure"]["outcome"] == "not_started"
+
+
+@pytest.mark.parametrize("failure_code", ["ABI_VIOLATION", "UPSTREAM_TRANSIENT"])
+def test_image_health_failure_is_container_failure(failure_code, capsys):
+    import argparse
+
+    from syntara_plugin.runtime import ContainerRemoteError, FailureCode
+    from syntara_plugin.sdk import cli, runner
+
+    class FailedClient:
+        def health(self, **kwargs):
+            raise ContainerRemoteError(FailureCode(failure_code), retryable=False, outcome="unknown", source="transport")
+
+    with pytest.raises(runner.RunExecutionError) as raised:
+        runner._health(FailedClient(), "localhost:1", startup_seconds=0)
+    cli._print_run_error(raised.value, argparse.Namespace(json=True))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errorResult"] is None
+    assert payload["containerFailure"]["code"] == failure_code
+    assert payload["containerFailure"]["outcome"] == "not_started"
+
+
+def test_corrupt_release_image_archive_is_json_setup_failure(tmp_path, capsys, monkeypatch):
+    from syntara_plugin.sdk import cli
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    (tmp_path / "broken.tar").write_text("not an OCI archive")
+    digest = "sha256:" + "a" * 64
+    monkeypatch.setattr(cli, "_load_release_binding_documents", lambda path: ({"images": [{"reference": "image", "digest": digest, "archive": "broken.tar"}]}, {}, {}))
+    monkeypatch.setattr(cli, "_resolve_binding_image_option", lambda *args: ("image", digest))
+    code = main(["run", "--manifest", str(workspace / "plugin.yaml"), "--mode", "image", "--image-option", "local", "--release", str(tmp_path / "release.json"), "--input", '{"title":"x"}', "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code != 0
+    assert payload["errorResult"]["code"] == "MISCONFIGURATION"
+    assert payload["outcome"] == "not_started"
+
+
+def test_json_schema_drift_reports_contract_failure(tmp_path: Path, capsys) -> None:
+    workspace = _write_custom_workspace(
+        tmp_path / "ws", source=_STEP_SOURCE, class_name="EchoStep",
+        input_schema={"type": "object", "properties": {"title": {"type": "integer"}}},
+        output_schema=_ECHO_STRING_OUTPUT,
+    )
+    assert main(["run", "--manifest", str(workspace / "plugin.yaml"), "--input", '{"title": 5}', "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errorResult"]["code"] == "CONTRACT_VIOLATION"
+    assert payload["outcome"] == "not_started"
+
+
+def test_json_missing_local_image_is_not_unknown_outcome(tmp_path: Path, capsys, monkeypatch) -> None:
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    monkeypatch.setattr("syntara_plugin.sdk.container_engine.detect_engines", lambda: [])
+    assert main(["run", "--manifest", str(workspace / "plugin.yaml"), "--mode", "image", "--input", '{"title": "x"}', "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errorResult"]["code"] == "MISCONFIGURATION"
+    assert payload["outcome"] == "not_started"
+
+
+def test_import_print_and_exception_keep_json_clean_and_scrubbed(tmp_path: Path, capsys) -> None:
+    workspace = _write_custom_workspace(
+        tmp_path / "ws", source='print("secret-value")\nraise RuntimeError("secret-value")\n',
+        class_name="BrokenStep", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}},
+        output_schema=_ECHO_STRING_OUTPUT,
+    )
+    assert main(["run", "--manifest", str(workspace / "plugin.yaml"), "--input", '{"token":"secret-value"}', "--json"]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["outcome"] == "not_started"
+    assert "secret-value" not in captured.out + captured.err
+    assert "***" in captured.err
+
+
+def test_preflight_without_failure_code_is_not_started(capsys) -> None:
+    import argparse
+
+    from syntara_plugin.sdk import cli, runner
+    cli._print_run_error(runner.RunExecutionError("runtime does not advertise target"), argparse.Namespace(json=True))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "not_started"
+    assert payload.get("containerFailure") is None
+
+
+@pytest.mark.parametrize("reference", [None, "result-ref"])
+@pytest.mark.parametrize("invalid", ["digest", "extension"])
+def test_untrusted_error_result_is_not_reported(monkeypatch, reference, invalid):
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import ContainerResult, error_result_schema
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_schema()
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={}, input_source="test", mode="image", address="localhost:1", timeout_seconds=1, on_progress=None)
+    document = {"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "failed", "retryable": False}
+    if invalid == "extension":
+        document["untrusted"] = "value"
+    digest = "sha256:" + "b" * 64 if invalid == "digest" else canonical_json_digest(schema)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, object_reference=reference, error_result=document, error_schema_digest=digest)
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: [""])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+    with pytest.raises(runner.RunExecutionError) as raised:
+        runner._execute_over_channel(execution)
+    assert raised.value.failure_code == runner.FailureCode.ABI_VIOLATION
+
+
+@pytest.mark.parametrize("limit", [8, 4096])
+def test_redacted_error_message_stays_within_schema_limit(monkeypatch, limit):
+    from jsonschema import Draft202012Validator
+    from syntara_plugin.contracts import canonical_json_digest
+    from syntara_plugin.runtime import (
+        ContainerResult,
+        error_result_schema,
+    )
+    from syntara_plugin.sdk import runner
+
+    schema = error_result_schema()
+    schema["properties"]["message"]["maxLength"] = limit
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={"type": "object", "properties": {"token": {"type": "string", "writeOnly": True}}}, schema_digests={}, error_schema=schema)
+    execution = runner._ChannelExecution(channel=None, target=target, inputs={"token": "x"}, input_source="test", mode="source", address="localhost:1", timeout_seconds=1, on_progress=None)
+    result = ContainerResult("sha256:" + "a" * 64, status_code=1, error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "x" * limit, "retryable": False}, error_schema_digest=canonical_json_digest(schema))
+    monkeypatch.setattr(runner, "ContainerClient", lambda channel: object())
+    monkeypatch.setattr(runner, "_health", lambda *args, **kwargs: ["example"])
+    monkeypatch.setattr(runner, "_consume", lambda *args, **kwargs: result)
+    report = runner._execute_over_channel(execution)
+    assert Draft202012Validator(schema).is_valid(report.error.error_result)
+    assert report.error.code == "BUSINESS_RULE_FAILED"
+
+
+def test_json_missing_engine_reports_not_started(tmp_path: Path, capsys, monkeypatch) -> None:
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    monkeypatch.setattr("syntara_plugin.sdk.container_engine.detect_engines", lambda: [])
+    assert main(["run", "--manifest", str(workspace / "plugin.yaml"), "--mode", "image", "--input", '{"title":"x"}', "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "not_started"
+    assert payload.get("containerFailure") is None
+
+
+def test_import_failure_scrubs_credential_values(monkeypatch, capsys, tmp_path):
+    from syntara_plugin.sdk import runner
+
+    target = runner.RunTarget(identity="example", kind="Action", entry_point="example", metadata_name="example", input_schema={}, schema_digests={})
+    credential = runner.LoadedCredential(name="recipe", document={"token": "credential-secret"}, secret_values=("credential-secret",))
+    def fail(*args):
+        print("credential-secret")
+        raise runner.RunExecutionError("credential-secret", error_kind="ImportError", detail=("credential-secret",))
+    monkeypatch.setattr(runner, "_bind_target", fail)
+    with pytest.raises(runner.RunExecutionError) as raised:
+        runner.run_source(tmp_path / "plugin.yaml", target, {}, "test", credentials=(credential,))
+    assert "credential-secret" not in str(raised.value) + str(raised.value.detail) + capsys.readouterr().err

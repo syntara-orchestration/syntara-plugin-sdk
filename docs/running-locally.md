@@ -174,9 +174,9 @@ the summary, and their values are redacted everywhere they could surface:
   error message;
 - a step type that interpolates a sensitive value into an exception message, a
   deliberate failure message, its output (values and mapping keys), an
-  object reference, an error code, or a progress update gets that value
+  object reference, a provider code, or a progress update gets that value
   scrubbed to `***` before anything is printed, including the
-  `Error detail:` traceback;
+  `Error detail:` traceback. Registered error codes are public and are preserved;
 - the template and field summary never print a declared default, example, or
   enum value of a sensitive field.
 
@@ -455,7 +455,7 @@ Input:          {"title": "Broken build"}
 Invocation:     run-3527941430244a87b9f046a21ce4279f
 Status:         1
 Status message: The tracker rejected the request.
-Error:          REMOTE_REJECTED (retryable: true)
+Error:          DEPENDENCY_FAILED (retryable: true)
 Message:        The tracker rejected the request.
 ```
 
@@ -517,12 +517,14 @@ under `--verbose`, and warnings. The document has three shapes:
   sensitive fields masked, `invocationId`, `status`,
   `statusMessage`, `output`, `objectReference`, `outcome`, `errorDetail`,
   `credentials` (the names supplied, never their values), and `error` with
-  `code`, `message`, and `retryable`.
+  `code`, `message`, and `retryable`. For a deliberate failure, `errorResult`
+  contains its complete shared error object, including any custom fields. A
+  terminal failure without a wrapper is reported as `containerFailure`.
 - **Usage or setup failure** (exit 2: invalid input, missing manifest, bad
   flag combination): `ok: false` and `error` with `kind`, `message`,
-  `detail` (the validation lines), and `nextSteps`.
+  `detail` (the validation lines), and `nextSteps`, plus `errorResult`.
 - **Compilation failure** (exit 1): `ok: false` with `diagnostics` (code,
-  location, message, remediation per diagnostic) and `next`.
+  location, message, remediation per diagnostic), `errorResult`, and `next`.
 
 Template mode is unchanged by `--json`: stdout stays the raw template so
 redirection keeps working.

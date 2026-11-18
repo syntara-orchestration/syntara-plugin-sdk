@@ -4,7 +4,7 @@
   "statusMessage": "The remote service rejected the request.",
   "errorResult": {
     "category": "dependency",
-    "code": "REMOTE_REJECTED",
+    "code": "DEPENDENCY_FAILED",
     "message": "The remote service rejected the request.",
     "retryable": false,
     "provider": {"requestId": "request-123"}

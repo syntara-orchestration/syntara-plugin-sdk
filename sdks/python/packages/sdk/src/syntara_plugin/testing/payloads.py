@@ -114,7 +114,7 @@ class FailingReferenceStep(ControlStep[ReferenceInput, ReferenceOutput]):
             17,
             "The upstream service rejected the request.",
             "The upstream service rejected the request.",
-            code="UPSTREAM_TRANSIENT",
+            code="DEPENDENCY_FAILED",
             category=ErrorCategory.DEPENDENCY,
             retryable=True,
         )

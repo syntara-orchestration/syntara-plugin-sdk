@@ -7,10 +7,19 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import lru_cache
 from types import MappingProxyType
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
+from jsonschema import Draft202012Validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, load_bundle
 
 MAX_MESSAGE_LENGTH = 4_096
@@ -30,6 +39,29 @@ class ErrorCategory(StrEnum):
     POLICY = "policy"
     CONTRACT = "contract"
     INTERNAL = "internal"
+    UNKNOWN = "unknown"
+
+
+class ErrorCode(StrEnum):
+    """Closed registry of codes for deliberate failures, distinct from ABI failures."""
+
+    INVALID_INPUT = "INVALID_INPUT"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    MISCONFIGURATION = "MISCONFIGURATION"
+    UNSUPPORTED = "UNSUPPORTED"
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+    AUTHORIZATION_FAILED = "AUTHORIZATION_FAILED"
+    BUSINESS_RULE_FAILED = "BUSINESS_RULE_FAILED"
+    DEPENDENCY_FAILED = "DEPENDENCY_FAILED"
+    RATE_LIMITED = "RATE_LIMITED"
+    RESOURCE_EXHAUSTED = "RESOURCE_EXHAUSTED"
+    NOT_FOUND = "NOT_FOUND"
+    TIMEOUT_EXCEEDED = "TIMEOUT_EXCEEDED"
+    CANCELLED = "CANCELLED"
+    POLICY_DENIED = "POLICY_DENIED"
+    CONTRACT_VIOLATION = "CONTRACT_VIOLATION"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+    UNKNOWN = "UNKNOWN"
 
 
 def bounded_message(value: str, *, fallback: str) -> str:
@@ -63,7 +95,7 @@ class ErrorResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
 
     category: ErrorCategory = ErrorCategory.BUSINESS
-    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,127}$")
+    code: ErrorCode
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
     retryable: bool = Field(default=False, strict=True)
 
@@ -73,6 +105,14 @@ class ErrorResult(BaseModel):
         if not isinstance(value, str):
             return _DEFAULT_FAILURE_MESSAGE
         return bounded_message(value, fallback=_DEFAULT_FAILURE_MESSAGE)
+
+    @model_validator(mode="after")
+    def _validate_registry(self) -> ErrorResult:
+        document = {"category": self.category.value, "code": self.code.value,
+                    "message": self.message, "retryable": self.retryable}
+        if not _error_result_validator().is_valid(document):
+            raise ValueError("error code does not belong to category")
+        return self
 
     def model_post_init(self, __context: Any) -> None:
         extras = self.__pydantic_extra__ or {}
@@ -87,7 +127,7 @@ class ErrorResult(BaseModel):
     def _serialize(self) -> dict[str, Any]:
         return {
             "category": self.category.value,
-            "code": self.code,
+            "code": self.code.value,
             "message": self.message,
             "retryable": self.retryable,
             **{
@@ -112,6 +152,13 @@ def error_result_base_schema() -> dict[str, Any]:
     """Return the shared schema that custom error schemas extend."""
 
     return load_bundle().documents["runtime.schema.json"]["$defs"]["errorResultBase"]
+
+
+@lru_cache(maxsize=1)
+def _error_result_validator() -> Draft202012Validator:
+    """Keep the registry validator private and independent of public schema copies."""
+
+    return Draft202012Validator(error_result_base_schema())
 
 
 def freeze_json(value: Any) -> Any:
@@ -222,7 +269,7 @@ class StandardOutputWrapper[TOutput]:
         status_message: str | None = None,
         error_result: ErrorResult | None = None,
         error_message: ErrorResult | str | None = None,
-        code: str = "STEP_FAILED",
+        code: str = "BUSINESS_RULE_FAILED",
         category: ErrorCategory = ErrorCategory.BUSINESS,
         retryable: bool = False,
         result: TOutput | None = None,

@@ -44,6 +44,7 @@ from syntara_plugin.runtime.container import (
     CredentialRequestContext,
     CredentialResolver,
     StepRegistry,
+    _error_from_container_result,
     add_container_runtime_service,
 )
 from syntara_plugin.runtime.contract_validation import SchemaDriftError
@@ -55,6 +56,7 @@ from syntara_plugin.testing import (
     NotPythonStepTypeError,
     StepBindingsFactory,
 )
+from syntara_plugin.runtime.outcome import bounded_message, error_result_schema
 
 from .authoring import CompilationResult
 from .input_template import is_declared_secret, is_sensitive
@@ -147,12 +149,18 @@ class RunExecutionError(RuntimeError):
         message: str,
         *,
         failure_code: FailureCode | None = None,
+        outcome: str = "not_started",
+        retryable: bool = False,
+        error_kind: str | None = None,
         detail: Sequence[str] = (),
         next_steps: Sequence[str] = (),
     ) -> None:
         super().__init__(message)
         self.message = message
         self.failure_code = failure_code
+        self.outcome = outcome
+        self.retryable = retryable
+        self.error_kind = error_kind
         self.detail = tuple(detail)
         self.next_steps = tuple(next_steps)
 
@@ -167,6 +175,7 @@ class RunTarget:
     metadata_name: str
     input_schema: Mapping[str, Any]
     schema_digests: Mapping[str, str]
+    error_schema: Mapping[str, Any] = field(default_factory=error_result_schema)
     workload_image: str | None = None
     workload_id: str | None = None
     step_revision_id: str = ""
@@ -182,6 +191,7 @@ class RunErrorDetail:
     retryable: bool
     # The workload's provider correlation code; empty when it carried none.
     provider_code: str = ""
+    error_result: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -459,7 +469,7 @@ def _scrub_structure(
             )
             for key, item in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_scrub_structure(item, secrets, scalars) for item in value]
     return _scrub_scalar(value, scalars)
 
@@ -682,6 +692,7 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         metadata_name=str(selected["metadata"]["name"]),
         input_schema=selected["input"],
         schema_digests=selected["schemaDigests"],
+        error_schema=selected.get("error", error_result_schema()),
         workload_image=workload_image,
         workload_id=workload_id,
         step_revision_id=str(selected["step_revision_id"]),
@@ -1219,16 +1230,23 @@ def _collect_nested_scalars(value: Any, picked: list[Any]) -> None:
             _collect_nested_scalars(item, picked)
 
 
-def _redacted_input_log_scalars(inputs: Any, redacted: Any, scalars: list[Any]) -> None:
-    """Collect hidden input scalars for exact local structured-log scrubbing."""
-    if redacted == _REDACTED:
-        _collect_nested_scalars(inputs, scalars)
-    elif isinstance(inputs, Mapping) and isinstance(redacted, Mapping):
-        for key, value in inputs.items():
-            _redacted_input_log_scalars(value, redacted[key], scalars)
-    elif isinstance(inputs, list) and isinstance(redacted, list):
-        for value, masked in zip(inputs, redacted, strict=True):
-            _redacted_input_log_scalars(value, masked, scalars)
+def _sensitive_input_scalars(inputs: Any, redacted: Any) -> tuple[Any, ...]:
+    """Collect typed values from input fields already marked sensitive."""
+    picked: list[Any] = []
+
+    def collect(original: Any, masked: Any) -> None:
+        if masked == _REDACTED:
+            _collect_nested_scalars(original, picked)
+        elif isinstance(original, Mapping) and isinstance(masked, Mapping):
+            for key, value in original.items():
+                if key in masked:
+                    collect(value, masked[key])
+        elif isinstance(original, list) and isinstance(masked, list):
+            for value, masked_value in zip(original, masked, strict=True):
+                collect(value, masked_value)
+
+    collect(inputs, redacted)
+    return tuple(picked)
 
 
 def credential_secret_values(credentials: Sequence[LoadedCredential]) -> tuple[str, ...]:
@@ -1296,7 +1314,21 @@ def run_source(
     """
 
     _make_importable(manifest.parent)
-    binding = _bind_target(manifest, target)
+    secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(credentials)
+    scrubbing_stderr = _ScrubbingWriter(sys.stderr, secrets)
+    try:
+        with contextlib.redirect_stdout(scrubbing_stderr), contextlib.redirect_stderr(scrubbing_stderr):
+            binding = _bind_target(manifest, target)
+    except RunExecutionError as error:
+        raise RunExecutionError(
+            _scrub_text(error.message, secrets),
+            failure_code=error.failure_code,
+            outcome=error.outcome,
+            retryable=error.retryable,
+            error_kind=error.error_kind,
+            detail=tuple(_scrub_text(line, secrets) for line in error.detail),
+            next_steps=tuple(_scrub_text(line, secrets) for line in error.next_steps),
+        ) from error
     captured: list[str] = []
     handler = BoundedStepHandler(
         _LocalErrorCapture(container_step_for_binding(binding), captured), timeout_seconds
@@ -1472,7 +1504,10 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(
         execution.credentials
     )
-    scalars = credential_secret_scalars(execution.credentials)
+    masked_inputs = redact_inputs(target.input_schema, inputs)
+    scalars = _sensitive_input_scalars(inputs, masked_inputs) + credential_secret_scalars(
+        execution.credentials
+    )
     advertised = _health(
         client,
         execution.address,
@@ -1484,6 +1519,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         listed = ", ".join(sorted(advertised)) or "none"
         raise RunExecutionError(
             f"the runtime at {execution.address} does not advertise {dispatch_id!r}",
+            failure_code=FailureCode.ABI_VIOLATION if execution.mode == "image" else None,
             detail=(f"Advertised step types: {listed}",),
             next_steps=(
                 "check that the runtime was built from this workspace",
@@ -1499,9 +1535,6 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         runtime_context={},
     )
     credential_names = tuple(credential.name for credential in execution.credentials)
-    masked_inputs = redact_inputs(target.input_schema, inputs)
-    input_scalars: list[Any] = []
-    _redacted_input_log_scalars(inputs, masked_inputs, input_scalars)
     redacted_inputs = _scrub_structure(masked_inputs, secrets, scalars)
     terminal = _consume(
         client,
@@ -1510,7 +1543,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         _credential_reader(execution.credentials),
         execution.diagnostic_stream or sys.stderr,
         secrets=secrets,
-        secret_scalars=scalars + tuple(input_scalars),
+        secret_scalars=scalars,
     )
     detail = (
         _scrub_text("\n\n".join(execution.captured_detail).rstrip(), secrets)
@@ -1533,7 +1566,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
             object_reference=None,
             output_schema_digest=None,
             error=RunErrorDetail(
-                code=_scrub_text(terminal.error.code, secrets),
+                code=terminal.error.code,
                 message=_scrub_text(terminal.error.message, secrets),
                 retryable=terminal.error.retryable,
                 provider_code=_scrub_text(terminal.error.provider_code, secrets),
@@ -1546,11 +1579,37 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     result = terminal
     error: RunErrorDetail | None = None
     if result.error_result is not None:
+        try:
+            _error_from_container_result(result, target.error_schema)
+        except ContainerRemoteError as error:
+            raise RunExecutionError(
+                "the runtime returned an invalid error result",
+                failure_code=error.code,
+                outcome=error.outcome,
+                retryable=error.retryable,
+            ) from error
         error_result = result.error_result
+        scrubbed_error = _scrub_structure(
+            {key: value for key, value in error_result.items()
+             if key not in {"category", "code", "message", "retryable"}},
+            secrets, scalars,
+        )
+        # Registry values and retryability are public contract metadata, not
+        # credential data; preserve them even if a credential happens to match.
+        scrubbed_error.update({key: error_result[key] for key in ("category", "code", "retryable")})
+        original_message = str(error_result["message"])
+        # A custom schema may set a smaller maximum than the shared 4096.
+        # Redaction can expand short secrets, so do not exceed the validated length.
+        message = bounded_message(
+            _scrub_text(original_message, secrets)[:len(original_message)],
+            fallback="The step failed.",
+        )
+        scrubbed_error["message"] = message
         error = RunErrorDetail(
-            code=_scrub_text(str(error_result["code"]), secrets),
-            message=_scrub_text(str(error_result["message"]), secrets),
+            code=str(error_result["code"]),
+            message=message,
             retryable=bool(error_result["retryable"]),
+            error_result=scrubbed_error,
         )
     return RunReport(
         mode=execution.mode,
@@ -1620,6 +1679,8 @@ def _health(
                     f"the runtime at {address} does not implement the supported "
                     f"container ABI ({CONTAINER_ABI})",
                     failure_code=error.code,
+                    outcome="not_started",
+                    retryable=error.retryable,
                     next_steps=("rebuild or update the workload image to the supported ABI",),
                 ) from error
             last_remote_error = error
@@ -1636,6 +1697,8 @@ def _health(
             f"the workload container never became healthy within "
             f"{startup_seconds:.0f} seconds",
             failure_code=last_remote_error.code,
+            outcome="not_started",
+            retryable=last_remote_error.retryable,
             next_steps=(
                 "check the container log for the startup failure",
                 "or rerun with --mode source to execute the step type from the workspace",
@@ -1644,6 +1707,8 @@ def _health(
     raise RunExecutionError(
         f"cannot reach a container runtime at {address}",
         failure_code=last_remote_error.code,
+        outcome="not_started",
+        retryable=last_remote_error.retryable,
         next_steps=(
             "start the workload image and publish its port",
             f"or pass --address HOST:PORT (default {DEFAULT_ADDRESS})",
@@ -1694,6 +1759,9 @@ def _scrubbing_liveness(
             raise RunExecutionError(
                 _scrub_text(error.message, secrets),
                 failure_code=error.failure_code,
+                outcome=error.outcome,
+                retryable=error.retryable,
+                error_kind=error.error_kind,
                 detail=tuple(_scrub_text(line, secrets) for line in error.detail),
                 next_steps=error.next_steps,
             ) from error
@@ -1761,6 +1829,8 @@ def _consume(
                 f"the invocation did not complete within its "
                 f"{invocation.timeout_seconds} second timeout",
                 failure_code=error.code,
+                outcome=error.outcome,
+                retryable=error.retryable,
                 detail=(f"outcome: {error.outcome}",),
                 next_steps=(
                     "make the step type finish within the timeout",
@@ -1770,10 +1840,15 @@ def _consume(
         raise RunExecutionError(
             f"the invocation did not complete ({error.code}, source: {error.source})",
             failure_code=error.code,
+            outcome=error.outcome,
+            retryable=error.retryable,
             detail=(f"outcome: {error.outcome}",),
             next_steps=("address the failure above and rerun",),
         ) from error
-    raise RunExecutionError("the runtime closed the stream without a terminal result")
+    raise RunExecutionError(
+        "the runtime closed the stream without a terminal result",
+        failure_code=FailureCode.OUTCOME_UNKNOWN, outcome="unknown",
+    )
 
 
 def _render_log_batch(
@@ -1811,6 +1886,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
     except SchemaDriftError as error:
         raise RunExecutionError(
             "the step type implementation drifted from the compiled manifest",
+            error_kind="SchemaDriftError",
             detail=(str(error),),
             next_steps=(
                 "fix the implementation or the manifest, then rerun",
@@ -1831,6 +1907,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
     except HarnessUsageError as error:
         raise RunExecutionError(
             f"the step type implementation could not be bound: {error}",
+            error_kind="ImportError",
             next_steps=(
                 "check that the entry point module imports and its dependencies are installed;"
                 " a step type implemented in another language runs with"
@@ -1843,6 +1920,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
         location = _raise_location(error)
         raise RunExecutionError(
             f"the step type implementation could not be loaded: {type(error).__name__}: {error}",
+            error_kind="ImportError",
             detail=(location,) if location is not None else (),
             next_steps=(
                 "fix the error above; the entry point module must import cleanly",

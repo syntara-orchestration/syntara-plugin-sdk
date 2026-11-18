@@ -136,16 +136,29 @@ may have a `null` result. `errorResult` requires `category`, stable uppercase `c
 bounded safe `message`, and boolean `retryable`. Its message must not expose
 credentials, secrets, raw sensitive provider responses, or tracebacks. The
 category identifies the broad failure class; the code identifies its stable,
-machine-readable reason. `retryable` communicates whether retrying may succeed.
+machine-readable reason. The registry is closed and each code has one category:
+
+- `validation`: `INVALID_INPUT`, `VALIDATION_FAILED`, `MISCONFIGURATION`, `UNSUPPORTED`
+- `authentication`: `AUTHENTICATION_FAILED`; `authorization`: `AUTHORIZATION_FAILED`
+- `business`: `BUSINESS_RULE_FAILED`
+- `dependency`: `DEPENDENCY_FAILED`, `RATE_LIMITED`, `RESOURCE_EXHAUSTED`, `NOT_FOUND`
+- `timeout`: `TIMEOUT_EXCEEDED`; `cancelled`: `CANCELLED`; `policy`: `POLICY_DENIED`
+- `contract`: `CONTRACT_VIOLATION`; `internal`: `INTERNAL_ERROR`; `unknown`: `UNKNOWN`
+
+`retryable` is an advisory for this failure: true means another attempt using the
+same step definition and workflow input may succeed; false means no change is
+expected. It does not prescribe a retry policy. This registry is separate from
+the `ContainerFailure` codes used when no wrapper exists.
 
 `spec.output` remains the schema for the successful business result, never for
 the wrapper. The separate `spec.error` schema is optional. When present, the
 runtime validates the entire error object against that schema and the SDK base
-schema, and the declared schema may add step type-specific fields. When absent, the
+schema, and the declared schema may add step type-specific fields, not codes. When absent, the
 SDK uses a closed fallback schema that accepts only the base fields; custom
-step type-specific fields require a declared `spec.error`. A failed container result
+step type-specific fields require a declared `spec.error`. Input validation errors
+use the SDK base schema because they occur before the step runs. A failed container result
 carries the complete error object and the canonical digest of the effective
-error schema. If an error, including an input-validation error, does not satisfy
+error schema. If an error does not satisfy
 the effective schema, no valid wrapper exists. A wrapper cannot represent an
 invocation that produced no valid outcome. In that case the runtime emits a
 `ContainerFailure` instead: its `outcome` is `not_started`, `not_completed`, or

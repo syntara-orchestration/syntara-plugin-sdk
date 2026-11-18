@@ -20,7 +20,7 @@ from syntara_plugin.runtime.protocol import container_pb2, container_pb2_grpc
 
 OUTPUT_SCHEMA_DIGEST = "sha256:" + "a" * 64
 ERROR_SCHEMA_DIGEST = "sha256:" + "b" * 64
-ERROR_RESULT = {"category": "dependency", "code": "REMOTE_REJECTED", "message": "Rejected", "retryable": True, "details": {"attempts": [1, 2]}}
+ERROR_RESULT = {"category": "dependency", "code": "DEPENDENCY_FAILED", "message": "Rejected", "retryable": True, "details": {"attempts": [1, 2]}}
 
 
 def test_generated_protocol_package_matches_container_abi() -> None:

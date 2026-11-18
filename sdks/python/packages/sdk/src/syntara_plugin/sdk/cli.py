@@ -181,7 +181,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # here, before argument resolution can import the runner, keeps stderr
     # clean on every path.
     os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
-    parser = _parser()
+    raw_arguments = list(argv) if argv is not None else sys.argv[1:]
+    json_errors = "--json" in raw_arguments and bool(
+        raw_arguments and raw_arguments[0] in {"validate", "run", "build"}
+    )
+    parser = _parser(json_errors=json_errors)
     arguments = parser.parse_args(argv)
     _normalize_manifest_directory(arguments)
     if arguments.command == "init":
@@ -236,15 +240,24 @@ def _dispatch_command(arguments: argparse.Namespace, parser: argparse.ArgumentPa
 def _print_settings_error(error: SettingsError | ValueError, arguments: argparse.Namespace) -> None:
     """Print one settings or flag failure, honoring the run command's JSON contract."""
 
-    if arguments.command == "run" and arguments.json:
+    if arguments.command in {"validate", "run", "build"} and arguments.json:
         _print_error_json("SettingsError", str(error), (), ())
         return
     print(f"error: {error}", file=sys.stderr)
 
 
-def _parser() -> argparse.ArgumentParser:
+class _JsonArgumentParser(argparse.ArgumentParser):
+    """Emit the same machine-readable failure for argument parsing errors."""
+
+    def error(self, message: str) -> None:
+        _print_error_json("InvalidInput", message, (), ())
+        raise SystemExit(2)
+
+
+def _parser(*, json_errors: bool = False) -> argparse.ArgumentParser:
     """Build the stable, dependency-free command surface."""
-    parser = argparse.ArgumentParser(
+    parser_type = _JsonArgumentParser if json_errors else argparse.ArgumentParser
+    parser = parser_type(
         prog="syntara-plugin", description="Author, build, and explicitly publish Syntara plugins."
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1382,7 +1395,7 @@ def _compile_workspace(arguments: argparse.Namespace) -> int:
         _print_compilation_failure(arguments, error)
         return 1
     except ValueError as error:
-        print(f"error: {error}", file=sys.stderr)
+        _print_value_error(error, arguments)
         return 2
 
     binding_validated, failure_code = _validate_workspace_binding(arguments, result)
@@ -1418,9 +1431,13 @@ def _validate_workspace_binding(
             load_bundle(), binding_source, resolved=False, plugin_descriptor=result.descriptor
         )
     except (OSError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        _print_value_error(error, arguments)
         return False, 2
     if diagnostics:
+        if arguments.json:
+            _print_error_json("ValidationError", "Runtime binding validation failed.",
+                              tuple(diagnostic.message for diagnostic in diagnostics), ())
+            return False, 1
         for diagnostic in diagnostics:
             print(f"{diagnostic.code}: {diagnostic.message}", file=sys.stderr)
         return False, 1
@@ -1459,6 +1476,7 @@ def _print_compilation_failure(
     if next_steps:
         payload["next"] = list(next_steps)
     if arguments.json:
+        payload["errorResult"] = _cli_error_result("ValidationError", "Plugin validation failed.")
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
         return
     for diagnostic in error.diagnostics:
@@ -1611,7 +1629,7 @@ def _image_option_from_release(
     option_name: str,
 ) -> tuple[str, Path | None, str]:
     """Resolve one image option from verified local P and RuntimeBinding archives."""
-    from .runner import RunUsageError
+    from .runner import RunExecutionError, RunUsageError
 
     try:
         inventory, plugin_descriptor, binding_document = _load_release_binding_documents(
@@ -1626,6 +1644,13 @@ def _image_option_from_release(
         return image_reference, image_archive, image_digest
     except RunUsageError:
         raise
+    except WorkloadBuildError as error:
+        raise RunExecutionError(
+            "could not resolve the requested image option from the local release",
+            error_kind="SettingsError",
+            detail=(str(error),),
+            next_steps=("inspect the release inventory and workload archive",),
+        ) from error
     except (ValueError, OSError, KeyError, TypeError) as error:
         raise RunUsageError(
             "could not resolve the requested image option from the local release",
@@ -1779,11 +1804,11 @@ def _print_run_warnings(warnings: Sequence[str]) -> None:
         print(_safe_text(warning), file=sys.stderr)
 
 
-def _print_value_error(error: ValueError, arguments: argparse.Namespace) -> None:
+def _print_value_error(error: Exception, arguments: argparse.Namespace) -> None:
     """Print one compile-path value failure, honoring the JSON contract."""
 
     if arguments.json:
-        _print_error_json("ValueError", str(error), (), ())
+        _print_error_json("OSError" if isinstance(error, OSError) else type(error).__name__, str(error), (), ())
         return
     print(f"error: {error}", file=sys.stderr)
 
@@ -1829,6 +1854,7 @@ def _run_image_mode(
     if target.workload_image is None:
         raise RunExecutionError(
             "this workspace declares no workload image to run",
+            error_kind="MissingImage",
             next_steps=(
                 "declare a workload under spec.workloads in plugin.yaml",
                 "or start the runtime yourself and pass --address HOST:PORT",
@@ -1889,6 +1915,9 @@ def _localized_error(
         RunExecutionError(
             error.message,
             failure_code=error.failure_code,
+            outcome=error.outcome,
+            retryable=error.retryable,
+            error_kind=error.error_kind,
             detail=error.detail,
             next_steps=localized,
         )
@@ -1941,6 +1970,26 @@ def _print_run_error(
     """
 
     if arguments is not None and arguments.json:
+        from .runner import RunExecutionError
+
+        if isinstance(error, RunExecutionError):
+            if error.failure_code is None:
+                _print_error_json(error.error_kind or "OSError", error.message, error.detail, error.next_steps, outcome=error.outcome)
+                return
+            payload = {
+                "ok": False,
+                "errorResult": None,
+                "containerFailure": {
+                    "code": str(error.failure_code),
+                    "message": error.message,
+                    "retryable": error.retryable,
+                    "outcome": error.outcome,
+                },
+                "detail": list(error.detail),
+                "nextSteps": list(error.next_steps),
+            }
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+            return
         _print_error_json(type(error).__name__, error.message, error.detail, error.next_steps)
         return
     print(f"error: {_safe_text(error.message)}", file=sys.stderr)
@@ -1954,12 +2003,14 @@ def _print_run_error(
 
 
 def _print_error_json(
-    kind: str, message: str, detail: Sequence[str], next_steps: Sequence[str]
+    kind: str, message: str, detail: Sequence[str], next_steps: Sequence[str],
+    *, outcome: str | None = None,
 ) -> None:
     """Print one failure as the machine-readable counterpart of the report."""
 
     payload = {
         "ok": False,
+        "errorResult": _cli_error_result(kind, message),
         "error": {
             "kind": kind,
             "message": message,
@@ -1967,7 +2018,28 @@ def _print_error_json(
             "nextSteps": list(next_steps),
         },
     }
+    if outcome is not None:
+        payload["outcome"] = outcome
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
+
+
+def _cli_error_result(kind: str, message: str) -> dict[str, Any]:
+    """Use the shared registry for CLI diagnostics and keep details outside it."""
+
+    from syntara_plugin.runtime import ErrorResult
+
+    category, code = {
+        "ValidationError": ("validation", "VALIDATION_FAILED"),
+        "SettingsError": ("validation", "MISCONFIGURATION"),
+        "ValueError": ("validation", "MISCONFIGURATION"),
+        "InvalidInput": ("validation", "INVALID_INPUT"),
+        "RunUsageError": ("validation", "INVALID_INPUT"),
+        "SchemaDriftError": ("contract", "CONTRACT_VIOLATION"),
+        "ImportError": ("internal", "INTERNAL_ERROR"),
+        "MissingImage": ("validation", "MISCONFIGURATION"),
+        "OSError": ("validation", "MISCONFIGURATION"),
+    }.get(kind, ("unknown", "UNKNOWN"))
+    return ErrorResult(category=category, code=code, message=message).model_dump(mode="json")
 
 
 def _print_run_template(arguments: argparse.Namespace, target: RunTarget) -> None:
@@ -2078,6 +2150,15 @@ def _print_run_report_json(report: RunReport) -> None:
             "providerCode": report.error.provider_code,
         }
     )
+    payload["errorResult"] = report.error.error_result if report.error is not None else None
+    if report.error is not None and report.error.error_result is None:
+        payload["containerFailure"] = {
+            "code": report.error.code,
+            "message": report.error.message,
+            "retryable": report.error.retryable,
+            "outcome": report.outcome,
+            "providerCode": report.error.provider_code,
+        }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))
 
 
@@ -2197,10 +2278,10 @@ def _progress_printer(arguments: argparse.Namespace) -> Callable[[Any], None] | 
 def _build_artifact(arguments: argparse.Namespace) -> int:
     """Build local immutable metadata archives without publishing registry content."""
     if arguments.plugin_artifact_archive is not None and arguments.runtime_bindings is None:
-        print("error: --plugin-artifact-archive requires --runtime-bindings", file=sys.stderr)
+        _print_value_error(ValueError("--plugin-artifact-archive requires --runtime-bindings"), arguments)
         return 2
     if arguments.binding_output is not None and arguments.runtime_bindings is None:
-        print("error: --binding-output requires --runtime-bindings", file=sys.stderr)
+        _print_value_error(ValueError("--binding-output requires --runtime-bindings"), arguments)
         return 2
     if arguments.runtime_bindings is not None:
         return _build_runtime_binding_release(arguments)
@@ -2213,16 +2294,20 @@ def _build_artifact(arguments: argparse.Namespace) -> int:
     try:
         result, artifact, output = _build_archive(arguments)
     except SettingsError as error:
-        print(f"error: {error}", file=sys.stderr)
+        _print_value_error(error, arguments)
         return 2
     except (
         ArtifactArchiveError,
         ArtifactBuildError,
         CompilationError,
         ValueError,
+        OSError,
         WorkloadBuildError,
     ) as error:
-        print(f"error: {error}", file=sys.stderr)
+        if isinstance(error, CompilationError):
+            _print_compilation_failure(arguments, error)
+        else:
+            _print_value_error(error, arguments)
         return 1
 
     payload = {**_artifact_payload(result.digest, artifact), "archive": str(output)}
@@ -2272,7 +2357,10 @@ def _build_runtime_binding_release(arguments: argparse.Namespace) -> int:
             requirement_results=requirement_results,
         )
     except (CompilationError, ValueError, OSError, WorkloadBuildError) as error:
-        print(f"error: {error}", file=sys.stderr)
+        if isinstance(error, CompilationError):
+            _print_compilation_failure(arguments, error)
+        else:
+            _print_value_error(error, arguments)
         return 1
 
     if arguments.json:

@@ -745,7 +745,7 @@ spec:
         )
         == 1
     )
-    assert "IMAGE_BINDING_MISSING" in capsys.readouterr().err
+    assert any(d["code"] == "IMAGE_BINDING_MISSING" for d in json.loads(capsys.readouterr().out)["diagnostics"])
 
 
 def test_validate_rejects_malformed_or_repeated_image_binding(tmp_path: Path, capsys) -> None:

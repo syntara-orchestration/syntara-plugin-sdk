@@ -138,3 +138,17 @@ def test_live_missing_target_diagnostic_still_classifies(
     assert (result.category, result.rule_id) == ("misconfiguration", "MC006")
     assert result.facts["codes"] == ["TARGET_PATH_INVALID"]
     assert code != 0
+
+
+def test_every_error_result_code_is_mapped_exactly_once() -> None:
+    import classifier
+    from syntara_plugin.runtime import ErrorCode
+
+    buckets = (classifier._RESULT_TRANSIENT_CODES, classifier._RESULT_BOUNDARY_CODES,
+               classifier._RESULT_INPUT_CODES, classifier._RESULT_STEP_CODES,
+               classifier._RESULT_UNDETERMINED_CODES)
+    mapped: set[str] = set()
+    for bucket in buckets:
+        assert not mapped & bucket
+        mapped |= bucket
+    assert mapped == {code.value for code in ErrorCode}

@@ -8,7 +8,7 @@
   "errorSchemaDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "errorResult": {
     "category": "dependency",
-    "code": "REMOTE_REJECTED",
+    "code": "DEPENDENCY_FAILED",
     "message": "The upstream service rejected the request.",
     "retryable": false,
     "provider": {"requestId": "request-123"}

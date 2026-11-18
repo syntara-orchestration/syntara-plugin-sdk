@@ -1,0 +1,11 @@
+{
+  "result": null,
+  "statusCode": 1,
+  "statusMessage": "The service failed.",
+  "errorResult": {
+    "category": "dependency",
+    "code": "VENDOR_FAILURE",
+    "message": "The service failed.",
+    "retryable": false
+  }
+}

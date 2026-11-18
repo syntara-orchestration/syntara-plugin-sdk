@@ -16,18 +16,28 @@
     "digestReference": {"type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$"},
     "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "errorResultBase": {
-      "description": "Required SDK fields for a deliberate failure; runtime validates step type-specific fields against the declared error schema.",
+      "description": "Required fields and closed category/code registry for a deliberate failure.",
       "type": "object",
       "required": ["category", "code", "message", "retryable"],
       "properties": {
-        "category": {
-          "type": "string",
-          "enum": ["validation", "authentication", "authorization", "business", "dependency", "timeout", "cancelled", "policy", "contract", "internal"]
-        },
-        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$"},
+        "category": {"enum": ["validation", "authentication", "authorization", "business", "dependency", "timeout", "cancelled", "policy", "contract", "internal", "unknown"]},
+        "code": {"enum": ["INVALID_INPUT", "VALIDATION_FAILED", "MISCONFIGURATION", "UNSUPPORTED", "AUTHENTICATION_FAILED", "AUTHORIZATION_FAILED", "BUSINESS_RULE_FAILED", "DEPENDENCY_FAILED", "RATE_LIMITED", "RESOURCE_EXHAUSTED", "NOT_FOUND", "TIMEOUT_EXCEEDED", "CANCELLED", "POLICY_DENIED", "CONTRACT_VIOLATION", "INTERNAL_ERROR", "UNKNOWN"]},
         "message": {"type": "string", "minLength": 1, "maxLength": 4096},
-        "retryable": {"type": "boolean"}
-      }
+        "retryable": {"type": "boolean", "description": "Whether another attempt with the same step definition and workflow input may succeed."}
+      },
+      "oneOf": [
+        {"properties": {"category": {"const": "validation"}, "code": {"enum": ["INVALID_INPUT", "VALIDATION_FAILED", "MISCONFIGURATION", "UNSUPPORTED"]}}},
+        {"properties": {"category": {"const": "authentication"}, "code": {"enum": ["AUTHENTICATION_FAILED"]}}},
+        {"properties": {"category": {"const": "authorization"}, "code": {"enum": ["AUTHORIZATION_FAILED"]}}},
+        {"properties": {"category": {"const": "business"}, "code": {"enum": ["BUSINESS_RULE_FAILED"]}}},
+        {"properties": {"category": {"const": "dependency"}, "code": {"enum": ["DEPENDENCY_FAILED", "RATE_LIMITED", "RESOURCE_EXHAUSTED", "NOT_FOUND"]}}},
+        {"properties": {"category": {"const": "timeout"}, "code": {"enum": ["TIMEOUT_EXCEEDED"]}}},
+        {"properties": {"category": {"const": "cancelled"}, "code": {"enum": ["CANCELLED"]}}},
+        {"properties": {"category": {"const": "policy"}, "code": {"enum": ["POLICY_DENIED"]}}},
+        {"properties": {"category": {"const": "contract"}, "code": {"enum": ["CONTRACT_VIOLATION"]}}},
+        {"properties": {"category": {"const": "internal"}, "code": {"enum": ["INTERNAL_ERROR"]}}},
+        {"properties": {"category": {"const": "unknown"}, "code": {"enum": ["UNKNOWN"]}}}
+      ]
     },
     "errorResult": {
       "description": "SDK fallback ErrorResult when no step type-specific error schema is declared.",
@@ -35,11 +45,24 @@
       "additionalProperties": false,
       "required": ["category", "code", "message", "retryable"],
       "properties": {
-        "category": {"type": "string", "enum": ["validation", "authentication", "authorization", "business", "dependency", "timeout", "cancelled", "policy", "contract", "internal"]},
-        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$"},
+        "category": {"enum": ["validation", "authentication", "authorization", "business", "dependency", "timeout", "cancelled", "policy", "contract", "internal", "unknown"]},
+        "code": {"enum": ["INVALID_INPUT", "VALIDATION_FAILED", "MISCONFIGURATION", "UNSUPPORTED", "AUTHENTICATION_FAILED", "AUTHORIZATION_FAILED", "BUSINESS_RULE_FAILED", "DEPENDENCY_FAILED", "RATE_LIMITED", "RESOURCE_EXHAUSTED", "NOT_FOUND", "TIMEOUT_EXCEEDED", "CANCELLED", "POLICY_DENIED", "CONTRACT_VIOLATION", "INTERNAL_ERROR", "UNKNOWN"]},
         "message": {"type": "string", "minLength": 1, "maxLength": 4096},
-        "retryable": {"type": "boolean"}
-      }
+        "retryable": {"type": "boolean", "description": "Whether another attempt with the same step definition and workflow input may succeed."}
+      },
+      "oneOf": [
+        {"properties": {"category": {"const": "validation"}, "code": {"enum": ["INVALID_INPUT", "VALIDATION_FAILED", "MISCONFIGURATION", "UNSUPPORTED"]}}},
+        {"properties": {"category": {"const": "authentication"}, "code": {"enum": ["AUTHENTICATION_FAILED"]}}},
+        {"properties": {"category": {"const": "authorization"}, "code": {"enum": ["AUTHORIZATION_FAILED"]}}},
+        {"properties": {"category": {"const": "business"}, "code": {"enum": ["BUSINESS_RULE_FAILED"]}}},
+        {"properties": {"category": {"const": "dependency"}, "code": {"enum": ["DEPENDENCY_FAILED", "RATE_LIMITED", "RESOURCE_EXHAUSTED", "NOT_FOUND"]}}},
+        {"properties": {"category": {"const": "timeout"}, "code": {"enum": ["TIMEOUT_EXCEEDED"]}}},
+        {"properties": {"category": {"const": "cancelled"}, "code": {"enum": ["CANCELLED"]}}},
+        {"properties": {"category": {"const": "policy"}, "code": {"enum": ["POLICY_DENIED"]}}},
+        {"properties": {"category": {"const": "contract"}, "code": {"enum": ["CONTRACT_VIOLATION"]}}},
+        {"properties": {"category": {"const": "internal"}, "code": {"enum": ["INTERNAL_ERROR"]}}},
+        {"properties": {"category": {"const": "unknown"}, "code": {"enum": ["UNKNOWN"]}}}
+      ]
     },
     "standardOutputWrapper": {
       "description": "Immutable StandardOutputWrapper containing a business result or structured error result.",
@@ -97,7 +120,7 @@
       ]
     },
     "failure": {
-      "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "code", "message", "retryable", "outcome"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerFailure"}, "invocationId": {"$ref": "#/$defs/id"}, "code": {"enum": ["INVALID_INPUT", "AUTHENTICATION_FAILED", "AUTHORIZATION_FAILED", "REMOTE_REJECTED", "NOT_FOUND", "CONFLICT", "RATE_LIMITED", "UPSTREAM_TRANSIENT", "TIMEOUT", "CANCELLED", "POLICY_DENIED", "ABI_VIOLATION", "OUTCOME_UNKNOWN"]}, "message": {"type": "string", "minLength": 1, "maxLength": 4096}, "retryable": {"type": "boolean"}, "outcome": {"enum": ["not_started", "not_completed", "unknown"]}, "correlationId": {"$ref": "#/$defs/id"}, "providerCode": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"}}}]
+      "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "code", "message", "retryable", "outcome"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerFailure"}, "invocationId": {"$ref": "#/$defs/id"}, "code": {"enum": ["INVALID_INPUT", "AUTHENTICATION_FAILED", "AUTHORIZATION_FAILED", "REMOTE_REJECTED", "NOT_FOUND", "CONFLICT", "RATE_LIMITED", "UPSTREAM_TRANSIENT", "TIMEOUT", "CANCELLED", "POLICY_DENIED", "ABI_VIOLATION", "OUTCOME_UNKNOWN", "CREDENTIAL_SCAN_LIMIT"]}, "message": {"type": "string", "minLength": 1, "maxLength": 4096}, "retryable": {"type": "boolean"}, "outcome": {"enum": ["not_started", "not_completed", "unknown"]}, "correlationId": {"$ref": "#/$defs/id"}, "providerCode": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"}}}]
     },
     "cancellation": {
       "allOf": [{"$ref": "#/$defs/base"}, {"type": "object", "additionalProperties": false, "required": ["apiVersion", "kind", "invocationId", "fenceToken", "requestedAt"], "properties": {"apiVersion": {"const": "syntara.io/v1alpha1"}, "kind": {"const": "ContainerCancellation"}, "invocationId": {"$ref": "#/$defs/id"}, "fenceToken": {"$ref": "#/$defs/id"}, "requestedAt": {"type": "string", "format": "date-time"}}}]

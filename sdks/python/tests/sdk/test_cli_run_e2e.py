@@ -493,7 +493,7 @@ def test_image_mode_scrubs_a_remote_error_code(capsys) -> None:
     assert status == 1
     captured = capsys.readouterr()
     assert "GHPTOKEN123XYZ" not in captured.out
-    assert _report_field(captured.out, "Error").startswith("***")
+    assert _report_field(captured.out, "Error").startswith("OUTCOME_UNKNOWN")
 
 
 _E2E_STEPS_SOURCE = '''"""Real step type implementations served over gRPC for image-mode e2e."""
@@ -529,7 +529,7 @@ class FailStep(ActionStep[StepInput, StepOutput]):
             1,
             "The tracker rejected the request.",
             error_message="The tracker rejected the request.",
-            code=FailureCode.REMOTE_REJECTED.value,
+            code="DEPENDENCY_FAILED",
             category=ErrorCategory.DEPENDENCY,
             retryable=True,
         )
@@ -693,7 +693,7 @@ def test_image_mode_reports_a_real_steps_deliberate_failure(
         _stop(server)
 
     assert status == 1
-    assert _report_field(captured.out, "Error") == "REMOTE_REJECTED (retryable: true)"
+    assert _report_field(captured.out, "Error") == "DEPENDENCY_FAILED (retryable: true)"
     assert _report_field(captured.out, "Message") == "The tracker rejected the request."
     assert "Error detail:" not in captured.out
 
