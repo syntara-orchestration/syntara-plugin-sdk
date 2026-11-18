@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from queue import Queue
+from threading import Event
 from typing import Any, ClassVar
 
 import grpc
@@ -947,6 +948,184 @@ class _FakeProvider:
     ) -> _FakeView:
         return _FakeView(names, self._document, on_read)
 
+
+def test_missing_credential_assets_preserves_opaque_compatibility() -> None:
+    targets = _connection_targets()
+    targets[1]["spec"]["credentialSchema"] = {"kind": "asset", "path": "schemas/credential.json"}
+    manifest = {
+        "apiVersion": "syntara.io/v1alpha1", "kind": "Action",
+        "metadata": {"name": "use", "displayName": "Use", "description": "Use a credential."},
+        "spec": {
+            "runtime": {"kind": "custom-runner", "entryPoint": f"{__name__}:CredentialStep"},
+            "integrationType": "acme.demo.integration",
+            "input": {"kind": "inline", "value": CredentialInput.model_json_schema()},
+            "output": {"kind": "inline", "value": CredentialOutput.model_json_schema()},
+        },
+    }
+    asset = {"properties": {"username": {}}}
+    # Step assets have a different namespace and cannot attest to recipe fields.
+    for step_assets in ({}, {"schemas/credential.json": asset}):
+        installed = InstalledStepManifest.from_manifest(
+            "acme.demo.use", manifest, step_assets, credential_targets=targets,
+        )
+        assert installed.credential_names == (_NAME,)
+        scope = credentials_module._CredentialScope(
+            (_NAME,), _FakeProvider({"username": _SECRET}), installed.credential_schemas,
+        )
+        try:
+            scope.read(_NAME)
+            assert scope.contains_secret("username")
+        finally:
+            scope.close()
+    installed = InstalledStepManifest.from_manifest(
+        "acme.demo.use", manifest, {}, credential_targets=targets,
+        credential_assets={"schemas/credential.json": asset},
+    )
+    assert "username" in installed.credential_schemas[_NAME]["properties"]
+    with pytest.raises(StepBindingError):
+        InstalledStepManifest.from_manifest(
+            "acme.demo.use", manifest, {}, credential_targets=targets, credential_assets={},
+        )
+
+
+def test_close_serializes_recording_and_rejects_late_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release, close_started, closed = Event(), Event(), Event(), Event()
+    original = credentials_module._CredentialScope._record_document
+
+    def delayed_record(
+        scope: credentials_module._CredentialScope, document: Mapping[str, Any], schema: Any,
+    ) -> None:
+        started.set()
+        if not release.wait(5):
+            raise AssertionError("record was not released")
+        original(scope, document, schema)
+
+    def close_scope(scope: credentials_module._CredentialScope) -> None:
+        close_started.set()
+        scope.close()
+        closed.set()
+
+    monkeypatch.setattr(credentials_module._CredentialScope, "_record_document", delayed_record)
+    scope = credentials_module._CredentialScope((_NAME,), None)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        recording = pool.submit(scope._record, {"token": _SECRET})
+        assert started.wait(5)
+        closing = pool.submit(close_scope, scope)
+        assert close_started.wait(5)
+        try:
+            assert not closed.wait(0.2)
+        finally:
+            release.set()
+        recording.result(timeout=5)
+        closing.result(timeout=5)
+    assert not scope._strings and not scope._scalars
+    with pytest.raises(CredentialAccessError, match="expired"):
+        scope._record({"token": _SECRET})
+    assert scope.scan("safe") is credentials_module._CredentialScanStatus.LIMIT_EXCEEDED
+
+
+def test_pending_read_is_revoked_after_callback_before_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    normalization_started, release = Event(), Event()
+    original = credentials_module.canonical_json_bytes
+
+    def delayed_normalization(document: Any) -> bytes:
+        normalization_started.set()
+        if not release.wait(5):
+            raise AssertionError("normalization was not released")
+        return original(document)
+
+    monkeypatch.setattr(credentials_module, "canonical_json_bytes", delayed_normalization)
+    scope = credentials_module._CredentialScope((_NAME,), _FakeProvider({"token": _SECRET}))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        reading = pool.submit(scope.read, _NAME)
+        try:
+            assert normalization_started.wait(5)
+            assert scope.has_read
+            scope.close()
+        finally:
+            release.set()
+        with pytest.raises(CredentialAccessError, match="expired"):
+            reading.result(timeout=5)
+
+
+@pytest.mark.parametrize(
+    ("reference", "public", "sensitive"),
+    [
+        ("#/$defs/a~1b", "literal_only", "nested_only"),
+        ("#/$defs/a%2Fb", "nested_only", "literal_only"),
+    ],
+)
+def test_schema_uri_fragment_decodes_before_pointer_split(
+    reference: str, public: str, sensitive: str,
+) -> None:
+    schema = {
+        "$defs": {
+            "a/b": {"properties": {"literal_only": {}}},
+            "a": {"b": {"properties": {"nested_only": {}}}},
+        },
+        "$ref": reference,
+    }
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"literal_only": "value-one", "nested_only": "value-two"}),
+        {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert not scope.contains_secret(public)
+        assert scope.contains_secret(sensitive)
+    finally:
+        scope.close()
+
+
+
+@pytest.mark.parametrize("bad_token", ["bad%", "bad%2", "bad%2Z", "bad%ZZ"])
+def test_malformed_reference_percent_escapes_do_not_declare_keys(bad_token: str) -> None:
+    schema = {"$defs": {bad_token: {"properties": {"public_name": {}}}},
+              "$ref": f"#/$defs/{bad_token}"}
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"public_name": _SECRET}), {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.contains_secret("public_name")
+    finally:
+        scope.close()
+
+
+@pytest.mark.parametrize(("index", "sensitive"), [("1١", True), ("11", False)])
+def test_reference_array_index_uses_ascii_digits(index: str, sensitive: bool) -> None:
+    schema = {"$defs": {"collection": {"allOf": [False] * 11 + [
+        {"properties": {"public_name": {}}},
+    ]}}, "$ref": f"#/$defs/collection/allOf/{index}"}
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({"public_name": _SECRET}), {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.contains_secret("public_name") is sensitive
+    finally:
+        scope.close()
+
+
+@pytest.mark.parametrize("reference_length", [20, 100])
+def test_reference_processing_is_charged_to_schema_budget(
+    monkeypatch: pytest.MonkeyPatch, reference_length: int,
+) -> None:
+    monkeypatch.setattr(credentials_module, "_MAX_CREDENTIAL_NODES", 60)
+    name = "a" * reference_length
+    schema = {"$defs": {name: {"properties": {}}}, "$ref": f"#/$defs/{name}"}
+    scope = credentials_module._CredentialScope(
+        (_NAME,), _FakeProvider({f"key{i}": "value" for i in range(4)}), {_NAME: schema},
+    )
+    try:
+        scope.read(_NAME)
+        assert scope.scan("safe") is credentials_module._CredentialScanStatus.LIMIT_EXCEEDED
+    finally:
+        scope.close()
 
 def test_scanner_tracks_values_and_only_excludes_declared_keys_at_their_location() -> None:
     schema = {"properties": {"outer": {"properties": {"known": {}}}, "public": {}}}

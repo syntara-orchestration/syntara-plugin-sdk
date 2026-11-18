@@ -7,6 +7,7 @@ import json
 import os
 import re
 import weakref
+from _thread import LockType
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from enum import StrEnum
@@ -253,7 +254,7 @@ def _follow_local_pointer_part(current: Any, part: str, root: Any) -> Any:
     part = part.replace("~1", "/").replace("~0", "~")
     if isinstance(current, Mapping):
         return current[part]
-    if isinstance(current, (list, tuple)) and re.fullmatch(r"0|[1-9]\d*", part):
+    if isinstance(current, (list, tuple)) and re.fullmatch(r"0|[1-9]\d*", part, flags=re.ASCII):
         return current[int(part)]
     return None
 
@@ -262,6 +263,8 @@ def _local_schema_reference(root: Any, reference: Any) -> Any:
     """Resolve a local JSON Pointer without fetching external schemas."""
 
     if not isinstance(reference, str) or not reference.startswith("#"):
+        return None
+    if re.search(r"%(?![\da-fA-F]{2})", reference, flags=re.ASCII):
         return None
     try:
         pointer = unquote(reference[1:], errors="strict")
@@ -342,7 +345,12 @@ def _referenced_child_declaration(
 
     if "$ref" not in schema:
         return None
-    target = _local_schema_reference(root, schema["$ref"])
+    reference = schema["$ref"]
+    if isinstance(reference, str) and reference.startswith("#"):
+        budget[0] -= 1 + len(reference)
+        if budget[0] < 0:
+            return None
+    target = _local_schema_reference(root, reference)
     return _declared_child_schema(
         target, root, key, budget, ancestors, include_additional=include_additional
     )
@@ -430,7 +438,7 @@ def _declared_child_schema(
 class _ScopedCredentialProvider:
     """Restrict provider reads and track every successful read in the scope."""
 
-    __slots__ = ("__allowed", "__provider", "__record", "__active", "__read_name")
+    __slots__ = ("__allowed", "__provider", "__record", "__active", "__read_name", "__lock")
 
     def __init__(
         self,
@@ -438,12 +446,14 @@ class _ScopedCredentialProvider:
         provider: ScopedCredentialProvider,
         record: Callable[[Mapping[str, Any]], None],
         read_name: ContextVar[str | None],
+        lock: LockType,
     ) -> None:
         self.__allowed = allowed
         self.__provider: ScopedCredentialProvider | None = provider
         self.__record: Callable[[Mapping[str, Any]], None] | None = record
         self.__active = True
         self.__read_name = read_name
+        self.__lock = lock
 
     def __repr__(self) -> str:
         return "ScopedCredentialProvider(<opaque>)"
@@ -455,14 +465,15 @@ class _ScopedCredentialProvider:
         raise TypeError(_PROVIDER_SERIALIZATION_ERROR)
 
     def read(self, name: str) -> dict[str, Any]:
-        if not self.__active:
-            raise CredentialAccessError("expired")
-        if not isinstance(name, str) or name not in self.__allowed:
-            raise CredentialAccessError("undeclared")
-        provider = self.__provider
-        record = self.__record
-        if provider is None or record is None:
-            raise CredentialAccessError("expired")
+        with self.__lock:
+            if not self.__active:
+                raise CredentialAccessError("expired")
+            if not isinstance(name, str) or name not in self.__allowed:
+                raise CredentialAccessError("undeclared")
+            provider = self.__provider
+            record = self.__record
+            if provider is None or record is None:
+                raise CredentialAccessError("expired")
         # Providers call on_read before exposing the document. Attribute only
         # callbacks in this read's context; any other read keeps every key secret.
         token = self.__read_name.set(name)
@@ -480,13 +491,21 @@ class _ScopedCredentialProvider:
             raise CredentialAccessError("unavailable") from None
         finally:
             self.__read_name.reset(token)
-        return document
+        with self.__lock:
+            if not self.__active:
+                raise CredentialAccessError("expired")
+            return document
+
+    def _revoke(self) -> None:
+        """Revoke the view while the scope's shared lock is held."""
+        self.__active = False
 
     def close(self) -> None:
-        self.__active = False
-        provider = self.__provider
-        self.__provider = None
-        self.__record = None
+        with self.__lock:
+            self._revoke()
+            provider = self.__provider
+            self.__provider = None
+            self.__record = None
         if provider is not None:
             try:
                 provider.close()
@@ -540,7 +559,7 @@ class _CredentialScope:
                 self._restriction_failed = True
             else:
                 self._provider = _ScopedCredentialProvider(
-                    self._allowed, restricted, self._record, self._read_name
+                    self._allowed, restricted, self._record, self._read_name, self._record_lock
                 )
 
     def __repr__(self) -> str:
@@ -562,10 +581,12 @@ class _CredentialScope:
         return CredentialBinding(self, name)
 
     def read(self, name: str) -> dict[str, Any]:
-        self._authorize(name)
-        if self._provider is None:
-            raise CredentialAccessError("unauthorized" if self._restriction_failed else "missing")
-        return self._provider.read(name)
+        with self._record_lock:
+            self._authorize(name)
+            provider = self._provider
+            if provider is None:
+                raise CredentialAccessError("unauthorized" if self._restriction_failed else "missing")
+        return provider.read(name)
 
     def _add_text(self, value: str) -> None:
         if not value or self._overflow:
@@ -580,6 +601,8 @@ class _CredentialScope:
 
     def _record(self, document: Mapping[str, Any]) -> None:
         with self._record_lock:
+            if not self._active:
+                raise CredentialAccessError("expired")
             self._record_document(document, self._schemas.get(self._read_name.get()))
 
     def _enqueue_mapping_children(
@@ -677,6 +700,12 @@ class _CredentialScope:
 
     def scan(self, value: Any) -> _CredentialScanStatus:
         """Distinguish clean data, a detected secret, and an incomplete scan."""
+        with self._record_lock:
+            if not self._active:
+                return _CredentialScanStatus.LIMIT_EXCEEDED
+            return self._scan_active(value)
+
+    def _scan_active(self, value: Any) -> _CredentialScanStatus:
         if self._overflow:
             return _CredentialScanStatus.LIMIT_EXCEEDED
         if not self._strings and not self._scalars:
@@ -742,13 +771,18 @@ class _CredentialScope:
         return _CredentialScanStatus.CLEAN
 
     def close(self) -> None:
-        self._active = False
-        if self._provider is not None:
-            self._provider.close()
-        self._provider = None
-        self._strings.clear()
-        self._scalars.clear()
-        self._schemas = {}
+        with self._record_lock:
+            self._active = False
+            provider = self._provider
+            self._provider = None
+            if provider is not None:
+                provider._revoke()
+            self._strings.clear()
+            self._scalars.clear()
+            self._schemas = {}
+        # The provider may wait for a callback; do not hold the record lock.
+        if provider is not None:
+            provider.close()
 
 
 class CredentialBinding:

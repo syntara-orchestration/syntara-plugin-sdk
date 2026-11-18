@@ -385,7 +385,7 @@ def _resolve_document_source(
 def _credential_contracts(
     specification: Mapping[str, Any],
     targets: Sequence[Mapping[str, Any]],
-    assets: Mapping[str, Mapping[str, Any]],
+    assets: Mapping[str, Mapping[str, Any]] | None,
 ) -> tuple[tuple[str, ...], Mapping[str, Any]]:
     """Resolve credential declarations from the trusted installed target graph."""
     integration_id = specification.get("integrationType")
@@ -414,8 +414,14 @@ def _credential_contracts(
         recipe = recipes.get(name)
         if recipe is None or recipe.get("integrationType") != integration_id:
             raise StepBindingError("the declared credential graph is incomplete or inconsistent")
+    # A caller using the original API may not supply recipe assets. Do not
+    # infer them from step assets: equal paths need not identify the same file.
     schemas = {
-        name: _resolve_document_source(recipes[name], "credentialSchema", assets)
+        name: (
+            {}
+            if assets is None and recipes[name]["credentialSchema"].get("kind") == "asset"
+            else _resolve_document_source(recipes[name], "credentialSchema", assets or {})
+        )
         for name in names
     }
     return tuple(sorted(names)), _freeze_json_document(schemas)
@@ -452,7 +458,7 @@ class InstalledStepManifest:
         credential_targets: Sequence[Mapping[str, Any]] = (),
         credential_assets: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> InstalledStepManifest:
-        """Resolve the Step and credential schemas from installed manifests and assets."""
+        """Resolve installed schemas; omitted recipe assets remain opaque to scans."""
 
         if not _IDENTITY.fullmatch(step_identity):
             message = "step_identity must be a Syntara identity"
@@ -496,8 +502,7 @@ class InstalledStepManifest:
             if "error" in specification else error_result_schema()
         )
         credential_names, credential_schemas = _credential_contracts(
-            specification, credential_targets,
-            assets if credential_assets is None else credential_assets,
+            specification, credential_targets, credential_assets,
         )
         installed_step = InstalledStepManifest()
         object.__setattr__(installed_step, "step_identity", step_identity)
