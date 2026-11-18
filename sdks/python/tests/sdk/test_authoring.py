@@ -954,18 +954,21 @@ def test_rejects_workload_id_and_provider_image_id_collisions() -> None:
         "steps/create-issue/manifest.yaml",
         _action({"kind": "inline", "value": {"type": "object"}}),
     )
+    typed_plugin = _typed_plugin(plugin)
+    image_bindings = {"workload-image": DIGEST, "provider-image": DIGEST}
 
     with pytest.raises(CompilationError) as error:
         compile_model(
-            _typed_plugin(plugin),
+            typed_plugin,
             [target],
-            image_bindings={"workload-image": DIGEST, "provider-image": DIGEST},
+            image_bindings=image_bindings,
         )
 
     diagnostic = next(item for item in error.value.diagnostics if item.code == "WORKLOAD_PROVIDER_ID_CONFLICT")
     assert "provider-image" in diagnostic.message
     assert diagnostic.location.file == "plugin.yaml"
-    assert "workload" in diagnostic.remediation and "provider" in diagnostic.remediation
+    assert "workload" in diagnostic.remediation
+    assert "provider" in diagnostic.remediation
 
 
 def test_authoring_reports_stable_path_diagnostics(tmp_path: Path) -> None:
@@ -1139,9 +1142,10 @@ def test_rejects_unknown_workload_assignment() -> None:
     action = _action({"kind": "inline", "value": {"type": "object"}})
     action["spec"]["runtime"]["workload"] = "unknown"
     target = Target("steps/create-issue/manifest.yaml", action)
+    typed_plugin = _typed_plugin(_plugin())
 
     with pytest.raises(CompilationError) as error:
-        compile_model(_typed_plugin(_plugin()), [target], image_bindings={"plugin-workload": DIGEST})
+        compile_model(typed_plugin, [target], image_bindings={"plugin-workload": DIGEST})
 
     diagnostic = next(item for item in error.value.diagnostics if item.code == "WORKLOAD_STEP_ASSIGNMENT_INVALID")
     assert "unknown" in diagnostic.message
@@ -1154,9 +1158,10 @@ def test_rejects_legacy_singular_workload() -> None:
     plugin["spec"]["workload"] = {"image": "plugin-workload"}
     del plugin["spec"]["workloads"]
     target = Target("steps/create-issue/manifest.yaml", _action({"kind": "inline", "value": {"type": "object"}}))
+    typed_plugin = _typed_plugin(plugin)
 
     with pytest.raises(CompilationError) as error:
-        compile_model(_typed_plugin(plugin), [target])
+        compile_model(typed_plugin, [target])
 
     assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
 
