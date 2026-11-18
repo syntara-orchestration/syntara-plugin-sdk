@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from baseline import Inherited, absence_reason, inherited, skipped_stages
+from baseline import Inherited, absence_reason, failure_entries, inherited, skipped_stages
 from baseline import load as load_baseline
 from classifier import outcome_word
 from render import CYAN, GREEN, RED, YELLOW, Renderer, append_summary, md_table
@@ -62,9 +62,13 @@ def load_reports(directory: Path, plugins: Sequence[str]) -> dict[str, dict[str,
     for plugin in plugins:
         path = directory / f"{plugin}.json"
         try:
-            reports[plugin] = json.loads(path.read_text(encoding="utf-8"))
+            document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            reports[plugin] = None
+            document = None
+        # A file that parses to something other than an object (a truncated
+        # or foreign artifact) is no report: it must land on the "leg left no
+        # report" failure path, never on a traceback in the gate.
+        reports[plugin] = document if isinstance(document, dict) else None
     return reports
 
 
@@ -180,8 +184,10 @@ def analysis_mix(reports: dict[str, dict[str, Any] | None]) -> str:
     """One line describing how the failing reports were classified, or ""."""
     counts = {"deterministic": 0, "inferred": 0, "unclassified": 0}
     for report in reports.values():
-        if isinstance(report, dict) and report.get("result") == "fail":
-            confidence = str((report.get("failure") or {}).get("confidence", ""))
+        if not (isinstance(report, dict) and report.get("result") == "fail"):
+            continue
+        for failure in failure_entries(report):
+            confidence = str(failure.get("confidence", ""))
             counts[confidence if confidence in counts else "unclassified"] += 1
     if not any(counts.values()):
         return ""

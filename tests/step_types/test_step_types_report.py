@@ -421,3 +421,48 @@ def test_inherited_summary_wording(
     assert "PASS, inherited" in text
     assert "**Inherited:**" in text
     assert "| http-request | incompatible, inherited |" in text
+
+
+def test_a_non_object_report_is_no_report(tmp_path: Path) -> None:
+    # A truncated or foreign artifact that parses to a JSON non-dict must
+    # land on the "leg left no report" failure, never on a traceback.
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "http-request.json").write_text(json.dumps(["not", "an", "object"]))
+    write_leg(reports, "script-bash", "pass")
+    assert run(tmp_path, compat="failure") == 1
+
+
+def test_analysis_mix_counts_every_failing_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    inherited_failure = {
+        "stage": "validate",
+        "index": 3,
+        "category": "misconfiguration",
+        "rule_id": "MC001",
+        "confidence": "deterministic",
+        "facts": BASE_FACTS,
+        "frames": [],
+        "exception": None,
+    }
+    unknown_failure = {
+        "stage": "run",
+        "index": 4,
+        "category": "unknown",
+        "rule_id": "UN000",
+        "confidence": "unclassified",
+        "facts": {},
+        "frames": [],
+        "exception": None,
+    }
+    write_leg(
+        tmp_path / "reports", "http-request", "fail",
+        failures=[inherited_failure, unknown_failure],
+    )
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    assert run(tmp_path, compat="failure") == 1
+    output = capsys.readouterr().out
+    assert "failure analysis: 1 deterministic, 1 unclassified" in output
+    assert "failures without a rule" in output

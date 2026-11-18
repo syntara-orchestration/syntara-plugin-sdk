@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import hashlib
 import json
 import os
@@ -321,7 +322,7 @@ def _wheel_mismatch(raw: str | None, wheel: Path) -> str | None:
     recorded = str(archive.get("hash", "")) if isinstance(archive, dict) else ""
     for prefix in ("sha256=", "sha256:"):
         if recorded.startswith(prefix):
-            if recorded.removeprefix(prefix) != sha256_file(wheel):
+            if recorded.removeprefix(prefix) != wheel_digest(wheel):
                 return f"from a different build of {wheel.name} (hash mismatch)"
             break
     return None
@@ -374,6 +375,19 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def wheel_digest(path: Path) -> str:
+    """The wheel's sha256, hashed once per file: the import check compares
+    the same wheels once per log line, so the digest is cached per
+    (path, size, mtime)."""
+    stat = path.stat()
+    return _wheel_digest(path, stat.st_size, stat.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize=16)
+def _wheel_digest(path: Path, size: int, mtime_ns: int) -> str:
+    return sha256_file(path)
 
 
 def workload_tag(env: dict[str, str]) -> str:
@@ -501,6 +515,23 @@ class Driver:
             env["PYTHONPATH"] = str(self.hook_dir)
             env[IMPORT_LOG_ENV] = str(self.import_log)
             self.import_log.write_text("", encoding="utf-8")
+        if self.remaining() <= 0:
+            # The budget is gone. Starting another command anyway (the
+            # minimum window below would grant one more per command) would
+            # push the run past its budget toward the job timeout, where the
+            # failure is cut off unclassified instead of reported.
+            self.out.group_start(f"{title}: {display}")
+            self.out.line(self.out.paint(f"$ {display}", DIM))
+            self.out.line(self.out.paint("budget exhausted before the command started", DIM))
+            self.out.group_end()
+            return CommandResult(
+                display=display,
+                exit_code=None,
+                stdout="",
+                stderr="",
+                duration=0.0,
+                timed_out=True,
+            )
         timeout = max(MIN_COMMAND_SECONDS, min(TIMEOUTS.get(stage, 300), self.remaining()))
         self.out.group_start(f"{title}: {display}")
         self.out.line(self.out.paint(f"$ {'UV_NO_SYNC=1 ' if no_sync else ''}{display}", DIM))
@@ -961,7 +992,18 @@ class Driver:
         transform_name = classification.facts.get("transform")
         if not transform_name or self.args.no_adapter:
             return
-        transform = adapter.TRANSFORMS[transform_name]
+        transform = adapter.TRANSFORMS.get(transform_name)
+        if transform is None:
+            # A classifier rule named a migration the adapter does not know:
+            # a check-tooling drift. Skip the adapter loudly rather than
+            # crashing the leg without a compatibility verdict.
+            self.out.annotation(
+                "warning",
+                f"step-types compat {self.out.dot} {self.plugin}",
+                f"unknown transform {transform_name!r}: the adapter has no such migration; "
+                "add it to adapter.TRANSFORMS",
+            )
+            return
         self.out.blank()
         self.out.rule(f"Adapter: {transform.title}", BLUE)
         info: dict[str, Any] = {
@@ -1173,7 +1215,7 @@ class Driver:
         lines = [f"step-types checkout: {self.step_types}", f"workload tag: {self.tag}"]
         if self.wheels is not None:
             for wheel in sorted(self.wheels.paths.values()):
-                lines.append(f"candidate wheel: {wheel.name} sha256={sha256_file(wheel)}")
+                lines.append(f"candidate wheel: {wheel.name} sha256={wheel_digest(wheel)}")
         python = Path(self.venv_bin("python"))
         if python.exists() and self.tools.get("uv"):
             listed = subprocess.run(

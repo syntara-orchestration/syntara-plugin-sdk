@@ -184,7 +184,7 @@ def _same_rule(pr: Any, base: Any) -> tuple[bool, bool]:
     return False, False  # unlisted rules are never inherited
 
 
-def _failure_entries(report: Any) -> list[Any]:
+def failure_entries(report: Any) -> list[Any]:
     """Every failing stage's entry: the ``failures`` list, or the legacy first."""
     if not isinstance(report, dict):
         return []
@@ -252,8 +252,8 @@ def inherited(pr_report: Any, base_report: Any) -> Inherited | None:
     pins = (_pin_of(pr_report), _pin_of(base_report))
     if pins[0] is None or pins[0] != pins[1]:
         return None
-    pr_failures = _failure_entries(pr_report)
-    base_failures = _failure_entries(base_report)
+    pr_failures = failure_entries(pr_report)
+    base_failures = failure_entries(base_report)
     if not pr_failures:
         return None
     improved = False

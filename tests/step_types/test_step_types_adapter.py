@@ -123,3 +123,19 @@ def test_invalid_plugin_directory_name(tmp_path: Path) -> None:
     directory.mkdir()
     with pytest.raises(NotApplicable, match="not a valid workload ID"):
         migrate_workload_settings(directory)
+
+
+def test_every_classifier_transform_is_registered() -> None:
+    # A classifier rule naming a migration the adapter does not know would
+    # skip the adapter loudly at runtime; this fails at development time
+    # instead, before the drift can ship.
+    import re
+
+    import adapter
+    import classifier
+
+    source = Path(classifier.__file__).read_text(encoding="utf-8")
+    emitted = set(re.findall(r'"transform"\]\s*=\s*"([a-z][a-z0-9-]*)"', source))
+    assert emitted, "no transform names found in classifier.py; update this test's pattern"
+    missing = emitted - set(adapter.TRANSFORMS)
+    assert not missing, f"classifier emits transform(s) the adapter lacks: {sorted(missing)}"

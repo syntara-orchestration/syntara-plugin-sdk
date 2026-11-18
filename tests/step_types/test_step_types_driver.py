@@ -322,3 +322,75 @@ def test_a_registry_failure_blocks_only_build_inspect() -> None:
 def test_an_exhausted_budget_skips_the_remaining_stages() -> None:
     records = ladder(set(), budget=-1.0)
     assert all(r.status == "skip" and r.note == "budget exhausted" for r in records)
+
+
+def test_an_unknown_transform_skips_the_adapter_loudly(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import argparse
+
+    from classifier import Classification
+    from render import Renderer
+
+    check = object.__new__(Driver)
+    check.out = Renderer()
+    check.plugin = "http-request"
+    check.args = argparse.Namespace(no_adapter=False)
+    check.adapter_info = {}
+    record = StageRecord(index=3, name="validate", status="fail")
+    record.classification = Classification(
+        category="misconfiguration",
+        rule_id="MC001",
+        rule_name="unsupported-setting",
+        confidence="deterministic",
+        what="w",
+        evidence=(),
+        cause="c",
+        actions=(),
+        facts={"transform": "no-such-transform"},
+    )
+    check.try_adapter(record)
+    assert check.adapter_info == {}
+    assert "unknown transform" in capsys.readouterr().out
+
+
+def test_a_command_is_not_started_once_the_budget_is_exhausted() -> None:
+    import threading
+
+    from render import Renderer
+
+    check = object.__new__(Driver)
+    check.out = Renderer()
+    check.step_types = Path(".")
+    check.env = {}
+    check.started = time.monotonic()
+    check.deadline = check.started - 1  # the budget is already gone
+    check.output_lock = threading.Lock()
+    result = check.run(
+        ["true"],
+        cwd=Path("."),
+        stage="validate",
+        title="a command",
+        no_sync=False,
+    )
+    assert result.timed_out
+    assert result.exit_code is None
+
+
+def test_the_wheel_digest_is_cached_per_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import driver as driver_module
+    from driver import wheel_digest
+
+    wheel = make_wheel(tmp_path, "syntara_plugin_sdk", "1.0")
+    calls: list[Path] = []
+    real = driver_module.sha256_file
+    monkeypatch.setattr(
+        driver_module, "sha256_file", lambda path: (calls.append(path), real(path))[1]
+    )
+    assert wheel_digest(wheel) == wheel_digest(wheel)
+    assert len(calls) == 1
+    wheel.write_bytes(b"different content")  # a new (size, mtime) keys a new digest
+    wheel_digest(wheel)
+    assert len(calls) == 2
