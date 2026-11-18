@@ -66,7 +66,10 @@ build:
       tag: "0.1.0"
       platform: linux/amd64
       runtimeMetadata:
-        # OCI annotations only. Match the Python version installed by Containerfile.
+        # Adds io.syntara.runtime.language=python and
+        # io.syntara.runtime.version=3.12.8 to the built image.
+        # Match the version installed by this Containerfile; these annotations
+        # describe the image and do not install or select Python.
         language: python
         version: "3.12.8"
 ```
@@ -74,7 +77,7 @@ build:
 The example version must be the Python version installed in the image's
 Containerfile. Replace `3.12.8` with the version actually installed in your
 image. `runtimeMetadata` adds OCI annotations; it does not install Python or
-choose its version. During `build`, the SDK probes the declared
-executable in the built image. For a supported runtime such as Python, a
-missing executable or version mismatch fails the build. The same digest-pinned
-image is checked again during `publish`.
+choose its version. For this example, if the image's interpreter reports
+Python `3.12.8`, the annotation and the Health probe agree. If the image reports
+a different version, the SDK rejects the mismatch during `build`. The same
+digest-pinned image is checked again during `publish`.

@@ -609,7 +609,11 @@ def _build_registration_layer(
 
 
 def _runtime_annotation_arguments(metadata: Mapping[str, str] | None) -> list[str]:
-    """Return the ordered Podman flags for author-supplied runtime metadata."""
+    """Return Podman flags for runtime identity annotations supplied by the author.
+
+    These annotations describe the final image; they do not install or select
+    a runtime. The SDK compares them with the in-image Health probe result.
+    """
 
     if metadata is None:
         return []

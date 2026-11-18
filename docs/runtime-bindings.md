@@ -151,6 +151,8 @@ consuming the updated package or artifacts:
 - RuntimeBinding consumers must replace `runtime.verification` and component
   `verification` with `probeStatus`; values `verified` and `unverified` become
   `matched` and `unsupported`.
+- Authors must rename the `verified-runtime` policy requirement in
+  `syntara-plugin.yaml` and on the CLI to `runtime-metadata-match`.
 - Workload and host implementers must update the Health `RuntimeComponent`
   protobuf accessor from `verification` to `probe_status` (field number 4 is
   unchanged) and use the new status values.
