@@ -49,6 +49,50 @@ def _plugin(tmp_path: Path) -> tuple[dict[str, object], Path]:
     return dict(compiled.descriptor), workspace
 
 
+def _runtime_observations() -> dict[tuple[str, str], dict[str, object]]:
+    return {
+        ("python", "python-base"): {
+            "language": "python",
+            "version": "3.12.8",
+            "verification": "verified",
+            "components": [
+                {
+                    "name": "python",
+                    "executable": "/usr/bin/python3",
+                    "version": "3.12.8",
+                    "verification": "verified",
+                }
+            ],
+        },
+        ("python", "python-aws"): {
+            "language": "python",
+            "version": "3.12.8",
+            "verification": "verified",
+            "components": [
+                {
+                    "name": "python",
+                    "executable": "/usr/bin/python3",
+                    "version": "3.12.8",
+                    "verification": "verified",
+                }
+            ],
+        },
+        ("bash", "bash-base"): {
+            "language": "bash",
+            "version": "5.2.26",
+            "verification": "verified",
+            "components": [
+                {
+                    "name": "bash",
+                    "executable": "/usr/bin/bash",
+                    "version": "5.2.26",
+                    "verification": "verified",
+                }
+            ],
+        },
+    }
+
+
 def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
     tmp_path: Path,
 ) -> None:
@@ -120,47 +164,7 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
             "python-aws": "quay.io/acme/python-aws@sha256:" + "d" * 64,
             "bash-base": "quay.io/acme/bash-base@sha256:" + "e" * 64,
         },
-        runtime_observations={
-            ("python", "python-base"): {
-                "language": "python",
-                "version": "3.12.8",
-                "verification": "verified",
-                "components": [
-                    {
-                        "name": "python",
-                        "executable": "/usr/bin/python3",
-                        "version": "3.12.8",
-                        "verification": "verified",
-                    }
-                ],
-            },
-            ("python", "python-aws"): {
-                "language": "python",
-                "version": "3.12.8",
-                "verification": "verified",
-                "components": [
-                    {
-                        "name": "python",
-                        "executable": "/usr/bin/python3",
-                        "version": "3.12.8",
-                        "verification": "verified",
-                    }
-                ],
-            },
-            ("bash", "bash-base"): {
-                "language": "bash",
-                "version": "5.2.26",
-                "verification": "verified",
-                "components": [
-                    {
-                        "name": "bash",
-                        "executable": "/usr/bin/bash",
-                        "version": "5.2.26",
-                        "verification": "verified",
-                    }
-                ],
-            },
-        },
+        runtime_observations=_runtime_observations(),
     )
     binding_artifact = build_runtime_binding_artifact(
         resolved, descriptor, plugin_artifact.manifest.descriptor
@@ -200,47 +204,7 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
             "python-aws": "quay.io/acme/python-aws@sha256:" + "1" * 64,
             "bash-base": "quay.io/acme/bash-base@sha256:" + "2" * 64,
         },
-        runtime_observations={
-            ("python", "python-base"): {
-                "language": "python",
-                "version": "3.12.8",
-                "verification": "verified",
-                "components": [
-                    {
-                        "name": "python",
-                        "executable": "/usr/bin/python3",
-                        "version": "3.12.8",
-                        "verification": "verified",
-                    }
-                ],
-            },
-            ("python", "python-aws"): {
-                "language": "python",
-                "version": "3.12.8",
-                "verification": "verified",
-                "components": [
-                    {
-                        "name": "python",
-                        "executable": "/usr/bin/python3",
-                        "version": "3.12.8",
-                        "verification": "verified",
-                    }
-                ],
-            },
-            ("bash", "bash-base"): {
-                "language": "bash",
-                "version": "5.2.26",
-                "verification": "verified",
-                "components": [
-                    {
-                        "name": "bash",
-                        "executable": "/usr/bin/bash",
-                        "version": "5.2.26",
-                        "verification": "verified",
-                    }
-                ],
-            },
-        },
+        runtime_observations=_runtime_observations(),
     )
     changed_binding = build_runtime_binding_artifact(
         changed_image, descriptor, plugin_artifact.manifest.descriptor
