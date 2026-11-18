@@ -219,8 +219,8 @@ pushed to it).
 - Built images are inspected, not executed. Source-mode runs use the candidate
   on both sides of the runtime protocol, so a protocol change between the
   platform host and an already-built image is outside this check. The
-  Execution Plane compatibility workflow covers dispatching an image through
-  the host.
+  Execution Plane Integration CI job covers dispatching an image through the
+  host.
 - Classification reads error text and traceback frames. When the SDK reports
   structured error categories, the check will read them instead.
 - The `http-request` example calls a public HTTP endpoint, so an outage there

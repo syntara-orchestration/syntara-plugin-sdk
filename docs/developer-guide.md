@@ -42,8 +42,8 @@ plugin from local wheels, starts the server with mutual TLS, and invokes its
 Action, Control, and Trigger steps over gRPC. It does not require the backend,
 Kubernetes, or the Execution Plane.
 
-The **Execution Plane compatibility** GitHub Actions workflow runs on pull
-requests and pushes to `devel`. It builds the
+The **Execution Plane Integration** job in the `CI` GitHub Actions workflow
+runs on pull requests and pushes to `devel`. It builds the
 [Existing step types](../examples/existing-step) plugin
 from this checkout, pushes it to a disposable registry, and dispatches its
 Action, Control, and Trigger through the pinned Execution Plane Kubernetes
