@@ -122,19 +122,33 @@ def test_format_checker_asserts_only_the_contract_format_set() -> None:
     assert validator.is_valid(
         {"when": "2026-01-01T12:00:00Z", "where": "https://example.test", "who": "not-an-email"}
     )
-    # Absolute URIs with a scheme are accepted, including fragments; values
-    # urlsplit cannot parse fail the check instead of raising.
+    # Absolute URIs with a scheme are accepted, including fragments and
+    # scheme-specific forms such as mailto; values urlsplit cannot parse fail
+    # the check instead of raising.
     for uri in ("https://example.test/a#section", "mailto:user@example.test"):
         assert validator.is_valid(
             {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}
         )
-    for uri in ("//example.test/path", "not a uri", "http://[::1"):
+    for uri in (
+        "//example.test/path",  # scheme-relative reference, not an absolute URI
+        "not a uri",  # space is not allowed in a URI
+        "http://[::1",  # unparseable IPv6 authority
+        "https://example.test/a b",  # space inside the path
+        "https://exämple.test",  # non-ASCII (IRIs are a different format)
+        "https://example.test/a%zz",  # malformed percent-encoding
+    ):
         assert not validator.is_valid(
             {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}
         )
-    assert not build_validator(
+    # Formats apply to string instances only; non-strings succeed per the
+    # Draft 2020-12 format-assertion vocabulary.
+    format_only = build_validator(
         {"$schema": "https://json-schema.org/draft/2020-12/schema", "properties": {"where": {"format": "uri"}}}
-    ).is_valid({"where": 42})
+    )
+    assert format_only.is_valid({"where": 42})
+    assert build_validator(
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", "properties": {"when": {"format": "date-time"}}}
+    ).is_valid({"when": 42})
     assert checker is format_checker()
 
 

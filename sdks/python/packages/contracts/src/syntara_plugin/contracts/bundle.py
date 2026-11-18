@@ -96,9 +96,15 @@ def _asserted_formats(documents: Mapping[str, Mapping[str, Any]]) -> frozenset[s
 
 @_FORMAT_CHECKER.checks("date-time", raises=ValueError)
 def _is_rfc3339_datetime(value: object) -> bool:
-    """Accept the RFC 3339 subset used by Syntara runtime envelopes."""
+    """Accept the RFC 3339 subset used by Syntara runtime envelopes.
 
-    if not isinstance(value, str) or not _RFC3339_DATETIME.fullmatch(value):
+    Per the Draft 2020-12 format-assertion vocabulary, a format only applies
+    to string instances; non-strings succeed.
+    """
+
+    if not isinstance(value, str):
+        return True
+    if not _RFC3339_DATETIME.fullmatch(value):
         return False
     datetime.fromisoformat(
         value.removesuffix("Z") + _UTC_OFFSET_SUFFIX if value.endswith("Z") else value
@@ -106,16 +112,36 @@ def _is_rfc3339_datetime(value: object) -> bool:
     return True
 
 
+# RFC 3986: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+_URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*")
+# Characters RFC 3986 does not allow anywhere in a URI: ASCII controls,
+# space, and the delimiters excluded from every component grammar.
+_URI_FORBIDDEN = re.compile(r"[\x00-\x20\x7f<>\"{}|\\^`]")
+# A "%" must introduce a valid percent-encoded octet.
+_MALFORMED_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
+
 @_FORMAT_CHECKER.checks("uri", raises=ValueError)
 def _is_absolute_uri(value: object) -> bool:
-    """Accept absolute URIs with a scheme, per RFC 3986 ``URI`` semantics."""
+    """Accept absolute RFC 3986 URIs: a valid scheme plus a valid remainder.
+
+    Non-strings succeed, per the Draft 2020-12 format-assertion vocabulary.
+    """
 
     if not isinstance(value, str):
-        return False
+        return True
     # urlsplit raises ValueError for inputs it cannot parse (for example a
     # malformed IPv6 host); the registered ``raises`` turns that into a failed
     # format check instead of an escaping exception.
-    return bool(urllib.parse.urlsplit(value).scheme)
+    try:
+        scheme = urllib.parse.urlsplit(value).scheme
+    except ValueError:
+        return False
+    if not scheme or not _URI_SCHEME.fullmatch(scheme):
+        return False
+    if not value.isascii() or _URI_FORBIDDEN.search(value) or _MALFORMED_PERCENT.search(value):
+        return False
+    return True
 
 
 def format_checker() -> FormatChecker:
