@@ -162,6 +162,8 @@ build:
       repository: quay.io/acme/report-tools-runtime
       tag: 1.0.0-python-base
       platform: linux/amd64
+      # These values label the final image; use what its Containerfile installs.
+      # The SDK checks the declared executable against this version during build.
       runtimeMetadata:
         language: python
         version: "3.12.8"

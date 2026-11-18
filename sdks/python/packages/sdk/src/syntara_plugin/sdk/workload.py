@@ -22,6 +22,14 @@ from syntara_plugin.contracts import (
 )
 
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE
+from .runtime_metadata import (
+    RUNTIME_LANGUAGE_ANNOTATION,
+    RUNTIME_VERSION_ANNOTATION,
+    RuntimeMetadataError,
+    is_valid_runtime_language,
+    is_valid_runtime_version,
+    runtime_metadata_from_annotations,
+)
 
 _SHA256_DIGEST_PREFIX = "sha256:"
 REGISTRATION_MANIFEST_PATH = "/opt/syntara/registration-manifest.json"
@@ -29,10 +37,6 @@ _MAX_OCI_ARCHIVE_MEMBERS = 100_000
 _MAX_OCI_INDEX_BYTES = 1024 * 1024
 _MAX_OCI_MANIFEST_BYTES = 16 * 1024 * 1024
 _OCI_IMAGE_MANIFEST_LABEL = "OCI image manifest"
-_RUNTIME_LANGUAGE_ANNOTATION = "io.syntara.runtime.language"
-_RUNTIME_VERSION_ANNOTATION = "io.syntara.runtime.version"
-_RUNTIME_LANGUAGE_PATTERN = re.compile(r"^[a-z][a-z0-9.+_-]{0,63}$")
-_RUNTIME_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+()_-]{0,255}$")
 
 
 class WorkloadBuildError(RuntimeError):
@@ -437,37 +441,19 @@ def _runtime_metadata_from_oci(
 ) -> dict[str, str] | None:
     """Return the bounded Syntara runtime annotations on one OCI image."""
 
-    descriptor_annotations = descriptor.get("annotations", {})
-    manifest_annotations = manifest.get("annotations", {})
-    if not isinstance(descriptor_annotations, Mapping) or not isinstance(
-        manifest_annotations, Mapping
-    ):
+    descriptor_annotations = _oci_annotations(descriptor)
+    manifest_annotations = _oci_annotations(manifest)
+    try:
+        return runtime_metadata_from_annotations(descriptor_annotations, manifest_annotations)
+    except RuntimeMetadataError as error:
+        raise WorkloadBuildError(str(error)) from error
+
+
+def _oci_annotations(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    annotations = document.get("annotations", {})
+    if not isinstance(annotations, Mapping):
         raise WorkloadBuildError("OCI image annotations must be objects")
-    values: dict[str, str] = {}
-    for key in (_RUNTIME_LANGUAGE_ANNOTATION, _RUNTIME_VERSION_ANNOTATION):
-        descriptor_value = descriptor_annotations.get(key)
-        manifest_value = manifest_annotations.get(key)
-        if descriptor_value is not None and manifest_value is not None:
-            if descriptor_value != manifest_value:
-                raise WorkloadBuildError(f"OCI image has conflicting {key} annotations")
-        value = manifest_value if manifest_value is not None else descriptor_value
-        if value is not None:
-            if not isinstance(value, str):
-                raise WorkloadBuildError(f"OCI image annotation {key} must be a string")
-            values[key] = value
-    if not values:
-        return None
-    if set(values) != {_RUNTIME_LANGUAGE_ANNOTATION, _RUNTIME_VERSION_ANNOTATION}:
-        raise WorkloadBuildError(
-            "OCI image must provide both Syntara runtime language and version annotations"
-        )
-    language = values[_RUNTIME_LANGUAGE_ANNOTATION]
-    version = values[_RUNTIME_VERSION_ANNOTATION]
-    if _RUNTIME_LANGUAGE_PATTERN.fullmatch(language) is None:
-        raise WorkloadBuildError("OCI image runtime language annotation is invalid")
-    if _RUNTIME_VERSION_PATTERN.fullmatch(version) is None:
-        raise WorkloadBuildError("OCI image runtime version annotation is invalid")
-    return {"language": language, "version": version}
+    return annotations
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
@@ -483,6 +469,16 @@ def _archive_digest(value: object, label: str) -> str:
 
 
 def _validate_request(request: WorkloadBuildRequest) -> None:
+    _validate_workload_source(request)
+    _validate_workload_reference(request)
+    _validate_registration_descriptor(request)
+    _validate_runtime_metadata(request.runtime_metadata)
+    _validate_registration_reference(request)
+    _validate_workload_platform(request)
+    _validate_publication_policy(request)
+
+
+def _validate_workload_source(request: WorkloadBuildRequest) -> None:
     if request.engine != "podman":
         raise WorkloadBuildError("only the podman workload engine is supported")
     if not request.context.is_dir():
@@ -491,28 +487,42 @@ def _validate_request(request: WorkloadBuildRequest) -> None:
         raise WorkloadBuildError(
             f"workload containerfile is not a regular file: {request.containerfile}"
         )
+
+
+def _validate_workload_reference(request: WorkloadBuildRequest) -> None:
     if not request.repository or "@" in request.repository:
         raise WorkloadBuildError("workload repository must be a non-empty taggable repository")
     if not request.tag or any(character.isspace() for character in request.tag):
         raise WorkloadBuildError("workload tag must be a non-empty tag without whitespace")
+
+
+def _validate_runtime_metadata(metadata: Mapping[str, str] | None) -> None:
+    if metadata is None:
+        return
+    if set(metadata) != {"language", "version"}:
+        raise WorkloadBuildError("runtime metadata must contain only language and version")
+    if not is_valid_runtime_language(metadata.get("language")) or not is_valid_runtime_version(
+        metadata.get("version")
+    ):
+        raise WorkloadBuildError("runtime metadata must include a valid language and version")
+
+
+def _validate_registration_descriptor(request: WorkloadBuildRequest) -> None:
     if request.registration_descriptor is None or not request.workload_id:
         raise WorkloadBuildError("a compiled descriptor and workload ID are required")
-    if request.runtime_metadata is not None:
-        if set(request.runtime_metadata) != {"language", "version"}:
-            raise WorkloadBuildError("runtime metadata must contain only language and version")
-        language = request.runtime_metadata.get("language")
-        version = request.runtime_metadata.get("version")
-        if (
-            not isinstance(language, str)
-            or _RUNTIME_LANGUAGE_PATTERN.fullmatch(language) is None
-            or not isinstance(version, str)
-            or _RUNTIME_VERSION_PATTERN.fullmatch(version) is None
-        ):
-            raise WorkloadBuildError("runtime metadata must include a valid language and version")
+
+
+def _validate_registration_reference(request: WorkloadBuildRequest) -> None:
     if not re.fullmatch(r"[A-Za-z0-9._:/-]+", request.tagged_reference):
         raise WorkloadBuildError("invalid workload image reference for registration layer")
+
+
+def _validate_workload_platform(request: WorkloadBuildRequest) -> None:
     if not request.platform or "/" not in request.platform:
         raise WorkloadBuildError("workload platform must be explicit, for example linux/amd64")
+
+
+def _validate_publication_policy(request: WorkloadBuildRequest) -> None:
     if request.allow_insecure_loopback_http and not _is_loopback_repository(request.repository):
         raise WorkloadBuildError(
             "insecure workload publication is restricted to localhost or 127.0.0.1"
@@ -601,9 +611,9 @@ def _runtime_annotation_arguments(metadata: Mapping[str, str] | None) -> list[st
         return []
     return [
         "--annotation",
-        f"{_RUNTIME_LANGUAGE_ANNOTATION}={metadata['language']}",
+        f"{RUNTIME_LANGUAGE_ANNOTATION}={metadata['language']}",
         "--annotation",
-        f"{_RUNTIME_VERSION_ANNOTATION}={metadata['version']}",
+        f"{RUNTIME_VERSION_ANNOTATION}={metadata['version']}",
     ]
 
 

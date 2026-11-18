@@ -2770,44 +2770,94 @@ def _observe_runtime_binding_options(
     observations: dict[tuple[str, str], dict[str, Any]] = {}
     for workload_id, workload_value in workloads.items():
         workload = _mapping(workload_value, f"RuntimeBinding workload {workload_id}")
-        for option_value in workload["options"]:
-            option = _mapping(option_value, _RUNTIME_BINDING_OPTION_LABEL)
-            image_source = _mapping(option.get("image"), _RUNTIME_BINDING_OPTION_IMAGE_LABEL)
-            if "reference" in image_source:
-                reference = image_source["reference"]
-            else:
-                reference = image_bindings.get(image_source["buildTarget"])
-            if reference is None:
-                continue
-            declarations = _mapping(option.get("runtime"), _RUNTIME_BINDING_OPTION_RUNTIME_LABEL)[
-                "components"
-            ]
-            expected_metadata: Mapping[str, str] | None = None
-            if "buildTarget" in image_source:
-                settings = getattr(arguments, "workload_targets", {}).get(
-                    image_source["buildTarget"]
-                )
-                if settings is not None and settings.runtime_metadata:
-                    expected_metadata = settings.runtime_metadata
-            observation = observe_runtime_image(
-                reference,
-                declarations,
+        observations.update(
+            _observe_runtime_binding_workload_options(
+                workload_id,
+                workload,
+                image_bindings,
+                archives,
+                arguments,
                 descriptor=descriptor,
-                workload_id=workload_id,
-                archive=archives.get(reference),
-                auth_file=arguments.registry_auth_file,
-                allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
-                expected_metadata=expected_metadata,
             )
-            observations[(workload_id, option["name"])] = observation
-            if observation["verification"] != "verified" or any(
-                item["verification"] != "verified" for item in observation["components"]
-            ):
-                print(
-                    f"warning: runtime metadata for {workload_id}/{option['name']} is unverified",
-                    file=sys.stderr,
-                )
+        )
     return observations
+
+
+def _observe_runtime_binding_workload_options(
+    workload_id: str,
+    workload: Mapping[str, Any],
+    image_bindings: Mapping[str, str],
+    archives: Mapping[str, Path],
+    arguments: argparse.Namespace,
+    *,
+    descriptor: Mapping[str, Any],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    observations: dict[tuple[str, str], dict[str, Any]] = {}
+    for option_value in workload["options"]:
+        option = _mapping(option_value, _RUNTIME_BINDING_OPTION_LABEL)
+        observation = _observe_runtime_binding_option(
+            workload_id,
+            option,
+            image_bindings,
+            archives,
+            arguments,
+            descriptor=descriptor,
+        )
+        if observation is not None:
+            observations[(workload_id, option["name"])] = observation
+    return observations
+
+
+def _observe_runtime_binding_option(
+    workload_id: str,
+    option: Mapping[str, Any],
+    image_bindings: Mapping[str, str],
+    archives: Mapping[str, Path],
+    arguments: argparse.Namespace,
+    *,
+    descriptor: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    image_source = _mapping(option.get("image"), _RUNTIME_BINDING_OPTION_IMAGE_LABEL)
+    if "reference" in image_source:
+        reference = image_source["reference"]
+    else:
+        reference = image_bindings.get(image_source["buildTarget"])
+    if reference is None:
+        return None
+    declarations = _mapping(option.get("runtime"), _RUNTIME_BINDING_OPTION_RUNTIME_LABEL)[
+        "components"
+    ]
+    expected_metadata = _expected_runtime_metadata(image_source, arguments)
+    observation = observe_runtime_image(
+        reference,
+        declarations,
+        descriptor=descriptor,
+        workload_id=workload_id,
+        archive=archives.get(reference),
+        auth_file=arguments.registry_auth_file,
+        allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
+        expected_metadata=expected_metadata,
+    )
+    if _runtime_observation_is_unverified(observation):
+        print(
+            f"warning: runtime metadata for {workload_id}/{option['name']} is unverified",
+            file=sys.stderr,
+        )
+    return observation
+
+
+def _expected_runtime_metadata(
+    image_source: Mapping[str, Any], arguments: argparse.Namespace
+) -> Mapping[str, str] | None:
+    build_target = image_source.get("buildTarget")
+    settings = getattr(arguments, "workload_targets", {}).get(build_target)
+    return settings.runtime_metadata if settings is not None and settings.runtime_metadata else None
+
+
+def _runtime_observation_is_unverified(observation: Mapping[str, Any]) -> bool:
+    return observation["verification"] != "verified" or any(
+        item["verification"] != "verified" for item in observation["components"]
+    )
 
 
 def _runtime_option_evidence(document: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -4624,7 +4674,8 @@ def _settings_template(
         + f"  runtimeBindings: {_RUNTIME_BINDINGS_FILENAME}\n"
         + "  workloads:\n"
         + "    python-runtime:\n"
-        + "      # Set the actual values from this image before building.\n"
+        + "      # OCI annotations only: use the runtime this Containerfile installs.\n"
+        + "      # The SDK probes runtime.components and fails on a supported mismatch.\n"
         + "      # runtimeMetadata:\n"
         + "      #   language: python\n"
         + '      #   version: "3.12.8"\n'

@@ -19,13 +19,14 @@ from syntara_plugin.runtime.container import ContainerClient, ContainerHealth, C
 
 from .container_engine import load_oci_archive, managed_runtime
 from .runner import RunExecutionError, TlsOptions, _channel
+from .runtime_metadata import (
+    RuntimeMetadataError,
+    is_valid_runtime_version,
+    runtime_metadata_from_annotations,
+)
 from .workload import WorkloadBuildError
 
 _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
-_RUNTIME_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+()_-]{0,255}$")
-_RUNTIME_LANGUAGE = re.compile(r"^[a-z][a-z0-9.+_-]{0,63}$")
-_RUNTIME_LANGUAGE_ANNOTATION = "io.syntara.runtime.language"
-_RUNTIME_VERSION_ANNOTATION = "io.syntara.runtime.version"
 _PROBE_STARTUP_SECONDS = 15.0
 
 
@@ -123,18 +124,19 @@ def _read_runtime_annotations(image: str) -> dict[str, str]:
         annotations = {}
     if not isinstance(annotations, Mapping):
         raise RuntimeProbeError("workload image annotations must be an object")
-    language = annotations.get(_RUNTIME_LANGUAGE_ANNOTATION)
-    version = annotations.get(_RUNTIME_VERSION_ANNOTATION)
-    if not isinstance(language, str) or not isinstance(version, str):
+    try:
+        metadata = runtime_metadata_from_annotations(
+            annotations,
+            source_name="workload image",
+        )
+    except RuntimeMetadataError as error:
+        raise RuntimeProbeError(str(error)) from error
+    if metadata is None:
         raise RuntimeProbeError(
             "workload image is missing Syntara runtime annotations; provide both "
             "io.syntara.runtime.language and io.syntara.runtime.version"
         )
-    if _RUNTIME_LANGUAGE.fullmatch(language) is None:
-        raise RuntimeProbeError("workload image runtime language annotation is invalid")
-    if _RUNTIME_VERSION.fullmatch(version) is None:
-        raise RuntimeProbeError("workload image runtime version annotation is invalid")
-    return {"language": language, "version": version}
+    return metadata
 
 
 def _runtime_observations(
@@ -177,7 +179,7 @@ def _runtime_component_observation(
         raise RuntimeProbeError(
             f"supported runtime component {name!r} was not verified by its executable probe"
         )
-    if not _RUNTIME_VERSION.fullmatch(observed.version):
+    if not is_valid_runtime_version(observed.version):
         raise RuntimeProbeError(f"runtime component {name!r} reports an invalid version")
     return {
         "name": name,

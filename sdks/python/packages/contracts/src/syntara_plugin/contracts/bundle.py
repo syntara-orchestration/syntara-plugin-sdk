@@ -491,7 +491,19 @@ def validate_runtime_binding(
         return tuple(sorted(diagnostics))
 
     spec = document["spec"]
-    workloads = spec["workloads"]
+    diagnostics.extend(_runtime_binding_workload_errors(spec["workloads"], resolved))
+
+    if plugin_descriptor is not None:
+        diagnostics.extend(
+            _runtime_binding_plugin_link_errors(document, plugin_descriptor, resolved)
+        )
+    return tuple(sorted(diagnostics))
+
+
+def _runtime_binding_workload_errors(
+    workloads: Mapping[str, Any], resolved: bool
+) -> list[RuntimeBindingDiagnostic]:
+    diagnostics: list[RuntimeBindingDiagnostic] = []
     for workload_id, workload in workloads.items():
         options = workload["options"]
         names = [option["name"] for option in options]
@@ -504,18 +516,7 @@ def validate_runtime_binding(
                 )
             )
         for option in options:
-            components = option["runtime"]["components"]
-            component_names = [component["name"] for component in components]
-            if len(component_names) != len(set(component_names)):
-                diagnostics.append(
-                    RuntimeBindingDiagnostic(
-                        "RUNTIME_BINDING_COMPONENT_DUPLICATE",
-                        f"spec/workloads/{workload_id}/options/{option['name']}/runtime/components",
-                        f"workload option {option['name']!r} has duplicate runtime component names.",
-                    )
-                )
-            if resolved:
-                diagnostics.extend(_runtime_observation_errors(workload_id, option))
+            diagnostics.extend(_runtime_binding_option_errors(workload_id, option, resolved))
         if workload["default"] not in names:
             diagnostics.append(
                 RuntimeBindingDiagnostic(
@@ -524,12 +525,26 @@ def validate_runtime_binding(
                     f"default option {workload['default']!r} is not declared for workload {workload_id!r}.",
                 )
             )
+    return diagnostics
 
-    if plugin_descriptor is not None:
-        diagnostics.extend(
-            _runtime_binding_plugin_link_errors(document, plugin_descriptor, resolved)
+
+def _runtime_binding_option_errors(
+    workload_id: str, option: Mapping[str, Any], resolved: bool
+) -> list[RuntimeBindingDiagnostic]:
+    components = option["runtime"]["components"]
+    component_names = [component["name"] for component in components]
+    if len(component_names) == len(set(component_names)):
+        return _runtime_observation_errors(workload_id, option) if resolved else []
+    diagnostics = [
+        RuntimeBindingDiagnostic(
+            "RUNTIME_BINDING_COMPONENT_DUPLICATE",
+            f"spec/workloads/{workload_id}/options/{option['name']}/runtime/components",
+            f"workload option {option['name']!r} has duplicate runtime component names.",
         )
-    return tuple(sorted(diagnostics))
+    ]
+    if resolved:
+        diagnostics.extend(_runtime_observation_errors(workload_id, option))
+    return diagnostics
 
 
 def _runtime_observation_errors(
