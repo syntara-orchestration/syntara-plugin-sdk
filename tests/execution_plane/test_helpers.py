@@ -71,6 +71,11 @@ def test_image_context_derives_resolved_bindings_and_avoids_checkout_build_hooks
     assert 'context.set_alpn_protocols(["h2"])' in (context / "tls_bridge.py").read_text()
 
 
+def test_compatibility_workflow_pins_ep_revision_with_workload_resolver() -> None:
+    workflow = (Path(__file__).parents[2] / ".github/workflows/execution-plane-compat.yml").read_text()
+    assert "02b550d61d81f54a0194906777d7c8810367e6e9" in workflow
+
+
 @pytest.mark.parametrize(
     "source",
     [

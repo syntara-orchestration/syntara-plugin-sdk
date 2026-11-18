@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  EP_REVISION: ${{ inputs['ep-ref'] || '67bea4e48dcb15063fcdce1b98b7bd7d443da961' }}
+  EP_REVISION: ${{ inputs['ep-ref'] || '02b550d61d81f54a0194906777d7c8810367e6e9' }}
 
 jobs:
   dispatch:
