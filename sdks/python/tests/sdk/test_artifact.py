@@ -41,8 +41,9 @@ metadata:
   displayName: Issue tools
   description: Creates GitHub issues.
 spec:
-  workload:
-    image: plugin-workload
+  workloads:
+    plugin-workload:
+      image: plugin-workload
   documentation:
     path: docs/README.md
   targets:

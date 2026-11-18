@@ -146,7 +146,8 @@ def _bind_declared_targets(
         if target is None:
             continue
         target_name, runtime = target
-        if workload_id is not None and runtime.get("workload") != workload_id:
+        selected_workload = _selected_workload(specification, runtime, target_path)
+        if workload_id is not None and selected_workload != workload_id:
             continue
         identity = f"{namespace}.{plugin_name}.{target_name}"
         previous = declared.get(identity)
@@ -170,6 +171,30 @@ def _bind_declared_targets(
         )
         raise StepBindingError(message)
     return bindings
+
+
+def _selected_workload(
+    specification: Mapping[str, Any], runtime: Mapping[str, Any], target_path: str
+) -> str:
+    """Resolve and validate a packaged custom-runner target's workload."""
+
+    workloads = specification.get("workloads", {})
+    if not workloads:
+        raise StepBindingError(
+            f"packaged target manifest {target_path!r}: declare a non-empty spec.workloads map in plugin.yaml"
+        )
+    selected = runtime.get("workload")
+    if selected is None:
+        if len(workloads) == 1:
+            return next(iter(workloads))
+        raise StepBindingError(
+            f"packaged target manifest {target_path!r}: set runtime.workload when multiple workloads are declared"
+        )
+    if selected not in workloads:
+        raise StepBindingError(
+            f"packaged target manifest {target_path!r} references undeclared workload {selected!r}"
+        )
+    return selected
 
 
 def _custom_runner_target(

@@ -171,8 +171,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: run-workload
+  workloads:
+    run-workload:
+      image: run-workload
   targets:
 {targets}
 """,
@@ -552,8 +553,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: run-workload
+  workloads:
+    run-workload:
+      image: run-workload
   targets:
     - steps/echo/manifest.yaml
 """,
@@ -1913,7 +1915,7 @@ def test_image_mode_with_a_missing_workload_image_reports_guidance(
     missing = f"missing-workload-{uuid.uuid4().hex[:8]}"
     manifest = workspace / "plugin.yaml"
     manifest.write_text(
-        manifest.read_text().replace("image: run-workload", f"image: {missing}")
+        manifest.read_text().replace("run-workload", missing)
     )
     monkeypatch.setattr(
         "syntara_plugin.sdk.container_engine.detect_engines",
@@ -1947,7 +1949,7 @@ def test_image_mode_without_a_declared_workload_image_reports_guidance(
     workspace = _write_echo_workspace(tmp_path / "ws")
     manifest = workspace / "plugin.yaml"
     manifest.write_text(
-        manifest.read_text().replace("  workload:\n    image: run-workload\n", "")
+        manifest.read_text().replace("  workloads:\n    run-workload:\n      image: run-workload\n", "")
     )
 
     status = main(
@@ -1965,7 +1967,7 @@ def test_image_mode_without_a_declared_workload_image_reports_guidance(
     assert status == 1
     captured = capsys.readouterr()
     assert "WORKLOAD_MISSING" in captured.err
-    assert "spec.workload.image" in captured.err
+    assert "spec.workloads" in captured.err
     assert "syntara-plugin validate" in captured.err
 
 
@@ -3154,8 +3156,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: run-workload
+  workloads:
+    run-workload:
+      image: run-workload
   targets:
     - steps/echo/manifest.yaml
     - steps/connection/manifest.yaml

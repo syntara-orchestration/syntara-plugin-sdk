@@ -176,7 +176,7 @@ def _plugin_document(targets: list[str]) -> dict[str, Any]:
         },
         "spec": {
             "documentation": {"path": "docs/README.md"},
-            "workload": {"image": "demo-workload"},
+            "workloads": {"demo-workload": {"image": "demo-workload"}},
             "targets": targets,
         },
     }
@@ -404,7 +404,6 @@ def test_workload_selection_binds_only_steps_assigned_to_that_workload(
     plugin = _plugin_document(["steps/python.yaml", "steps/bash.yaml"])
     specification = plugin["spec"]
     assert isinstance(specification, dict)
-    specification.pop("workload")
     specification["workloads"] = {
         "python": {"image": "python-image"},
         "bash": {"image": "bash-image"},
@@ -435,6 +434,56 @@ def test_workload_selection_binds_only_steps_assigned_to_that_workload(
     assert bash_bindings.step_identities == ("sample.demo.bash-step",)
     with pytest.raises(StepBindingError, match="no custom-runner Step targets for workload"):
         load_plugin_bindings(package, workload_id="missing")
+
+
+def test_single_workload_is_selected_when_step_omits_it(plugin_root: Path) -> None:
+    package = _standard_plugin(plugin_root)
+
+    bindings = load_plugin_bindings(package, workload_id="demo-workload")
+
+    assert len(bindings.step_identities) == 3
+
+
+@pytest.mark.parametrize(
+    ("workloads", "selected", "message"),
+    [
+        (None, None, "declare.*spec.workloads"),
+        ({"one": {"image": "one"}, "two": {"image": "two"}}, None, "runtime.workload"),
+        ({"one": {"image": "one"}}, "missing", "undeclared workload 'missing'"),
+    ],
+)
+def test_packaged_plugin_rejects_invalid_workload_assignments(
+    plugin_root: Path, workloads: dict[str, Any] | None, selected: str | None, message: str
+) -> None:
+    plugin = _plugin_document(["steps/action.yaml"])
+    if workloads is None:
+        del plugin["spec"]["workloads"]
+    else:
+        plugin["spec"]["workloads"] = workloads
+
+    def manifests(package: str) -> dict[str, Any]:
+        action = _action_document(f"{package}.steps:SampleActionStep")
+        if selected is not None:
+            action["spec"]["runtime"]["workload"] = selected
+        return {
+            "docs/README.md": "# Demo plugin\n",
+            "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
+            "steps/action.yaml": action,
+        }
+
+    package = _write_plugin(plugin_root, plugin=plugin, manifests=manifests)
+    with pytest.raises(StepBindingError, match=message):
+        load_plugin_bindings(package)
+
+
+def test_packaged_plugin_rejects_legacy_workload(plugin_root: Path) -> None:
+    plugin = _plugin_document(["steps/action.yaml"])
+    del plugin["spec"]["workloads"]
+    plugin["spec"]["workload"] = {"image": "demo-workload"}
+    package = _write_plugin(plugin_root, plugin=plugin, manifests={})
+
+    with pytest.raises(StepBindingError, match="workload"):
+        load_plugin_bindings(package)
 
 
 @pytest.mark.parametrize(

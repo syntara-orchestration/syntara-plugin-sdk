@@ -669,8 +669,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: custom-runner-image
+  workloads:
+    custom-runner-image:
+      image: custom-runner-image
   targets:
     - steps/request/manifest.yaml
 """,
@@ -1741,8 +1742,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: custom-runner
+  workloads:
+    custom-runner:
+      image: custom-runner
   targets:
     - steps/create/manifest.yaml
 """,

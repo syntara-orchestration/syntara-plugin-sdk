@@ -70,6 +70,24 @@ def test_bundle_has_stable_digest_and_required_contracts() -> None:
     assert RuntimeContractBundle is SdkContractBundle
 
 
+def test_plugin_schema_accepts_only_nonempty_named_workloads() -> None:
+    plugin: dict[str, Any] = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Plugin",
+        "metadata": _metadata(),
+        "spec": {"documentation": {"path": "docs/README.md"}, "targets": ["step.yaml"]},
+    }
+    bundle = load_bundle()
+    assert validate_document(bundle, "plugin", plugin) == []
+    plugin["spec"]["workloads"] = {"python": {"image": "runtime-image"}}
+    assert validate_document(bundle, "plugin", plugin) == []
+    plugin["spec"]["workload"] = {"image": "runtime-image"}
+    assert validate_document(bundle, "plugin", plugin)
+    del plugin["spec"]["workload"]
+    plugin["spec"]["workloads"] = {}
+    assert validate_document(bundle, "plugin", plugin)
+
+
 def test_resolved_execution_schema_is_strict() -> None:
     document = {
         "bindings": [

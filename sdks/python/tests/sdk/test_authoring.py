@@ -58,7 +58,7 @@ def _plugin(target: str = "steps/create-issue/manifest.yaml") -> dict[str, objec
         },
         "spec": {
             "documentation": {"path": "docs/README.md"},
-            "workload": {"image": "plugin-workload"},
+            "workloads": {"plugin-workload": {"image": "plugin-workload"}},
             "targets": [target],
         },
     }
@@ -564,7 +564,7 @@ def test_action_runner_ownership_is_orthogonal_to_action_category() -> None:
     platform_plugin = _plugin("steps/transform.yaml")
     platform_spec = platform_plugin["spec"]
     assert isinstance(platform_spec, dict)
-    del platform_spec["workload"]
+    del platform_spec["workloads"]
     platform_action = _action({"kind": "inline", "value": {"type": "object"}})
     platform_action_spec = platform_action["spec"]
     assert isinstance(platform_action_spec, dict)
@@ -662,7 +662,7 @@ def test_compiler_binds_control_and_trigger_to_declared_integration(kind: str) -
     plugin = _plugin()
     plugin["spec"] = {
         "documentation": {"path": "docs/README.md"},
-        "workload": {"image": "plugin-workload"},
+        "workloads": {"plugin-workload": {"image": "plugin-workload"}},
         "targets": ["integrations/github.yaml", "credentials/github-token.yaml", path],
     }
     document = _control() if kind == "Control" else _trigger()
@@ -682,7 +682,7 @@ def test_compiler_binds_control_and_trigger_to_declared_integration(kind: str) -
 
     missing_plugin = _plugin()
     missing_plugin["spec"] = {
-        "documentation": {"path": "docs/README.md"}, "workload": {"image": "plugin-workload"},
+        "documentation": {"path": "docs/README.md"}, "workloads": {"plugin-workload": {"image": "plugin-workload"}},
         "targets": [path],
     }
     typed_missing_plugin = _typed_plugin(missing_plugin)
@@ -946,6 +946,28 @@ def test_rejects_workload_and_provider_image_id_collisions() -> None:
     }
 
 
+def test_rejects_workload_id_and_provider_image_id_collisions() -> None:
+    plugin = _plugin()
+    plugin["spec"]["workloads"] = {"provider-image": {"image": "workload-image"}}
+    plugin["spec"]["providers"] = [{"id": "resource-provider", "image": "provider-image"}]
+    target = Target(
+        "steps/create-issue/manifest.yaml",
+        _action({"kind": "inline", "value": {"type": "object"}}),
+    )
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(
+            _typed_plugin(plugin),
+            [target],
+            image_bindings={"workload-image": DIGEST, "provider-image": DIGEST},
+        )
+
+    diagnostic = next(item for item in error.value.diagnostics if item.code == "WORKLOAD_PROVIDER_ID_CONFLICT")
+    assert "provider-image" in diagnostic.message
+    assert diagnostic.location.file == "plugin.yaml"
+    assert "workload" in diagnostic.remediation and "provider" in diagnostic.remediation
+
+
 def test_authoring_reports_stable_path_diagnostics(tmp_path: Path) -> None:
     root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"type": "object"}}))
     root.write_text(_yaml(_plugin("../outside.yaml")))
@@ -1009,7 +1031,6 @@ def test_plugin_supports_multiple_named_workloads() -> None:
         "python": {"image": "python-runtime"},
         "bash": {"image": "bash-runtime"},
     }
-    del specification["workload"]
     action = _action({"kind": "inline", "value": {"type": "object"}})
     action["spec"]["runtime"]["workload"] = "python"
     target = Target("steps/create-issue/manifest.yaml", action)
@@ -1031,7 +1052,7 @@ def test_plugin_workload_does_not_declare_a_language() -> None:
     plugin = _plugin()
     specification = plugin["spec"]
     assert isinstance(specification, dict)
-    specification["workload"] = {"image": "plugin-workload", "language": "python"}
+    specification["workloads"] = {"plugin-workload": {"image": "plugin-workload", "language": "python"}}
 
     typed_plugin = _typed_plugin(plugin)
 
@@ -1045,7 +1066,7 @@ def test_custom_runner_action_requires_one_root_workload() -> None:
     plugin = _plugin()
     specification = plugin["spec"]
     assert isinstance(specification, dict)
-    del specification["workload"]
+    del specification["workloads"]
     typed_plugin = _typed_plugin(plugin)
     target = Target(
         "steps/create-issue/manifest.yaml",
@@ -1072,11 +1093,24 @@ def test_action_can_select_a_declared_workload() -> None:
     assert result.descriptor["spec"]["targets"][0]["runtime"]["workload"] == "plugin-workload"
 
 
+def test_sole_workload_is_selected_by_id_not_image() -> None:
+    plugin = _plugin()
+    plugin["spec"]["workloads"] = {"python": {"image": "python-runtime"}}
+    target = Target(
+        "steps/create-issue/manifest.yaml",
+        _action({"kind": "inline", "value": {"type": "object"}}),
+    )
+
+    result = compile_model(_typed_plugin(plugin), [target], image_bindings={"python-runtime": DIGEST})
+
+    assert result.descriptor["spec"]["targets"][0]["runtime"]["workload"] == "python"
+    assert result.descriptor["spec"]["workloads"]["python"]["image"] == DIGEST
+
+
 def test_multiple_workloads_require_explicit_step_assignment() -> None:
     plugin = _plugin()
     specification = plugin["spec"]
     assert isinstance(specification, dict)
-    del specification["workload"]
     specification["workloads"] = {
         "python": {"image": "python-runtime"},
         "bash": {"image": "bash-runtime"},
@@ -1096,14 +1130,41 @@ def test_multiple_workloads_require_explicit_step_assignment() -> None:
             image_bindings={"python-runtime": DIGEST, "bash-runtime": DIGEST},
         )
 
-    assert "WORKLOAD_STEP_ASSIGNMENT_INVALID" in {item.code for item in error.value.diagnostics}
+    diagnostic = next(item for item in error.value.diagnostics if item.code == "WORKLOAD_STEP_ASSIGNMENT_MISSING")
+    assert diagnostic.location.file == "steps/create-issue/manifest.yaml"
+    assert "spec.runtime.workload" in diagnostic.remediation
+
+
+def test_rejects_unknown_workload_assignment() -> None:
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action["spec"]["runtime"]["workload"] = "unknown"
+    target = Target("steps/create-issue/manifest.yaml", action)
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(_typed_plugin(_plugin()), [target], image_bindings={"plugin-workload": DIGEST})
+
+    diagnostic = next(item for item in error.value.diagnostics if item.code == "WORKLOAD_STEP_ASSIGNMENT_INVALID")
+    assert "unknown" in diagnostic.message
+    assert diagnostic.location.file == "steps/create-issue/manifest.yaml"
+    assert "spec.runtime.workload" in diagnostic.remediation
+
+
+def test_rejects_legacy_singular_workload() -> None:
+    plugin = _plugin()
+    plugin["spec"]["workload"] = {"image": "plugin-workload"}
+    del plugin["spec"]["workloads"]
+    target = Target("steps/create-issue/manifest.yaml", _action({"kind": "inline", "value": {"type": "object"}}))
+
+    with pytest.raises(CompilationError) as error:
+        compile_model(_typed_plugin(plugin), [target])
+
+    assert "SCHEMA_INVALID" in {item.code for item in error.value.diagnostics}
 
 
 def test_image_only_change_preserves_plugin_and_step_revision_ids() -> None:
     plugin = _plugin()
     specification = plugin["spec"]
     assert isinstance(specification, dict)
-    del specification["workload"]
     specification["workloads"] = {"python": {"image": "python-runtime"}}
     action = _action({"kind": "inline", "value": {"type": "object"}})
     action["spec"]["runtime"]["workload"] = "python"

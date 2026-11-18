@@ -26,7 +26,6 @@ def _plugin(tmp_path: Path) -> tuple[dict[str, object], Path]:
     shutil.copytree(source, workspace)
     plugin_path = workspace / "plugin.yaml"
     plugin = yaml.safe_load(plugin_path.read_text(encoding="utf-8"))
-    plugin["spec"].pop("workload")
     plugin["spec"]["workloads"] = {
         "python": {"image": "python"},
         "bash": {"image": "bash"},

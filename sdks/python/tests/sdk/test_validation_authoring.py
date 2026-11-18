@@ -66,7 +66,7 @@ def _plugin() -> dict[str, object]:
         },
         "spec": {
             "documentation": {"path": "docs/README.md"},
-            "workload": {"image": "plugin-workload"},
+            "workloads": {"plugin-workload": {"image": "plugin-workload"}},
             "targets": ["steps/create-issue/manifest.yaml"],
         },
     }

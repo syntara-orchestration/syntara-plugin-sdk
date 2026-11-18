@@ -9,8 +9,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: python-steps-workload
+  workloads:
+    python-steps-workload:
+      image: python-steps-workload
   targets:
     - steps/create-issue/manifest.yaml
     - steps/record-opened/manifest.yaml
