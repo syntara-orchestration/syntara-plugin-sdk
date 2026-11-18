@@ -25,6 +25,24 @@ def is_valid_runtime_version(value: object) -> bool:
     return isinstance(value, str) and _VERSION_PATTERN.fullmatch(value) is not None
 
 
+def validated_runtime_metadata(
+    language: object,
+    version: object,
+    *,
+    source_name: str,
+    combined_error: bool = False,
+) -> dict[str, str]:
+    """Validate a language/version pair and return its normalized mapping."""
+
+    if not is_valid_runtime_language(language) or not is_valid_runtime_version(version):
+        if combined_error:
+            raise RuntimeMetadataError(f"{source_name} must include a valid language and version")
+        if not is_valid_runtime_language(language):
+            raise RuntimeMetadataError(f"{source_name} runtime language annotation is invalid")
+        raise RuntimeMetadataError(f"{source_name} runtime version annotation is invalid")
+    return {"language": language, "version": version}
+
+
 def runtime_metadata_from_annotations(
     *sources: Mapping[str, Any],
     source_name: str = "OCI image",
@@ -34,15 +52,7 @@ def runtime_metadata_from_annotations(
     keys = (RUNTIME_LANGUAGE_ANNOTATION, RUNTIME_VERSION_ANNOTATION)
     values: dict[str, str] = {}
     for source in sources:
-        for key in keys:
-            value = source.get(key)
-            if value is None:
-                continue
-            if not isinstance(value, str):
-                raise RuntimeMetadataError(f"{source_name} annotation {key} must be a string")
-            if key in values and values[key] != value:
-                raise RuntimeMetadataError(f"{source_name} has conflicting {key} annotations")
-            values[key] = value
+        _merge_runtime_annotation_source(values, source, keys, source_name)
 
     if not values:
         return None
@@ -50,10 +60,25 @@ def runtime_metadata_from_annotations(
         raise RuntimeMetadataError(
             f"{source_name} must provide both Syntara runtime language and version annotations"
         )
-    language = values[RUNTIME_LANGUAGE_ANNOTATION]
-    version = values[RUNTIME_VERSION_ANNOTATION]
-    if not is_valid_runtime_language(language):
-        raise RuntimeMetadataError(f"{source_name} runtime language annotation is invalid")
-    if not is_valid_runtime_version(version):
-        raise RuntimeMetadataError(f"{source_name} runtime version annotation is invalid")
-    return {"language": language, "version": version}
+    return validated_runtime_metadata(
+        values[RUNTIME_LANGUAGE_ANNOTATION],
+        values[RUNTIME_VERSION_ANNOTATION],
+        source_name=source_name,
+    )
+
+
+def _merge_runtime_annotation_source(
+    values: dict[str, str],
+    source: Mapping[str, Any],
+    keys: tuple[str, str],
+    source_name: str,
+) -> None:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise RuntimeMetadataError(f"{source_name} annotation {key} must be a string")
+        if key in values and values[key] != value:
+            raise RuntimeMetadataError(f"{source_name} has conflicting {key} annotations")
+        values[key] = value

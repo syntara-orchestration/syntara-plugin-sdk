@@ -26,9 +26,8 @@ from .runtime_metadata import (
     RUNTIME_LANGUAGE_ANNOTATION,
     RUNTIME_VERSION_ANNOTATION,
     RuntimeMetadataError,
-    is_valid_runtime_language,
-    is_valid_runtime_version,
     runtime_metadata_from_annotations,
+    validated_runtime_metadata,
 )
 
 _SHA256_DIGEST_PREFIX = "sha256:"
@@ -501,10 +500,15 @@ def _validate_runtime_metadata(metadata: Mapping[str, str] | None) -> None:
         return
     if set(metadata) != {"language", "version"}:
         raise WorkloadBuildError("runtime metadata must contain only language and version")
-    if not is_valid_runtime_language(metadata.get("language")) or not is_valid_runtime_version(
-        metadata.get("version")
-    ):
-        raise WorkloadBuildError("runtime metadata must include a valid language and version")
+    try:
+        validated_runtime_metadata(
+            metadata.get("language"),
+            metadata.get("version"),
+            source_name="runtime metadata",
+            combined_error=True,
+        )
+    except RuntimeMetadataError as error:
+        raise WorkloadBuildError(str(error)) from error
 
 
 def _validate_registration_descriptor(request: WorkloadBuildRequest) -> None:
