@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeGuard, cast
 from weakref import ReferenceType, ref
 
 from jsonschema import Draft202012Validator
@@ -23,9 +23,24 @@ from .outcome import error_result_schema
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
 
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
-_ENTRY_POINT = re.compile(
+_PYTHON_ENTRY_POINT = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$"
 )
+_PYTHON_ENTRY_POINT_HINT = (
+    "the Python adapter requires a 'module:Class' entry point, for example"
+    " 'my_plugin.steps:NotifyStep'"
+)
+
+
+def is_python_entry_point(entry_point: object) -> TypeGuard[str]:
+    """Return whether one entry point uses the Python adapter's ``module:Class`` form.
+
+    The shared contract treats ``spec.runtime.entryPoint`` as an opaque,
+    language-SDK-defined handler identifier. ``module:Class`` is only the Python
+    adapter's convention: other language adapters define their own syntax.
+    """
+
+    return isinstance(entry_point, str) and _PYTHON_ENTRY_POINT.fullmatch(entry_point) is not None
 
 
 def _freeze_json_document(value: Any) -> Any:
@@ -500,8 +515,11 @@ class InstalledStepManifest:
             message = "installed step type bindings require a custom-runner implementation"
             raise StepBindingError(message)
         entry_point = runtime.get("entryPoint")
-        if not isinstance(entry_point, str) or _ENTRY_POINT.fullmatch(entry_point) is None:
-            message = "installed step type bindings require a valid runtime entryPoint"
+        if not is_python_entry_point(entry_point):
+            message = (
+                f"installed step type entry point {entry_point!r} is not bindable:"
+                f" {_PYTHON_ENTRY_POINT_HINT}"
+            )
             raise StepBindingError(message)
         input_schema = _resolve_document_source(specification, "input", assets)
         output_schema = _resolve_document_source(specification, "output", assets)

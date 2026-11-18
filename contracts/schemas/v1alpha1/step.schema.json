@@ -13,7 +13,8 @@
     },
     "entryPoint": {
       "type": "string",
-      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
+      "description": "An opaque handler identifier whose syntax is defined by the language SDK that owns the workload image. The platform never parses it; the image-level server dispatches by step revision ID and resolves this value itself. The Python adapter uses module:Class.",
+      "pattern": "^[!-~]{1,256}$(?![\\s\\S])"
     },
     "driver": {
       "type": "string",

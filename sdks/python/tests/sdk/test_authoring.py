@@ -235,8 +235,32 @@ def _compile(root: Path):
 
 
 @pytest.mark.parametrize(
-    "entry_point", ["steps..bad:Run", "steps.bad.:Run", "steps:Run.More"]
+    "entry_point",
+    [
+        "github.com/acme/issue-tools/handlers.CreateIssue",
+        "./dist/handlers.js#createIssue",
+        "greeter",
+    ],
 )
+def test_compile_workspace_carries_an_opaque_entry_point_verbatim(
+    tmp_path: Path, entry_point: str
+) -> None:
+    """A non-Python handler identifier compiles and reaches the registration manifest."""
+    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action["spec"]["runtime"]["entryPoint"] = entry_point
+    root = _workspace(tmp_path, action=action)
+
+    descriptor = _compile(root).descriptor
+    (target,) = descriptor["spec"]["targets"]
+    assert target["runtime"]["entryPoint"] == entry_point
+
+    manifest = registration_manifest(descriptor, "plugin-workload")
+    assert validate_document(load_bundle(), "registration_manifest", manifest) == []
+    validate_registration_manifest(descriptor, "plugin-workload", manifest)
+    assert manifest["steps"][target["step_revision_id"]]["entryPoint"] == entry_point
+
+
+@pytest.mark.parametrize("entry_point", ["", "has space", "steps:Run\n", "x" * 257])
 def test_compile_workspace_rejects_malformed_custom_runner_entry_points(
     tmp_path: Path, entry_point: str
 ) -> None:

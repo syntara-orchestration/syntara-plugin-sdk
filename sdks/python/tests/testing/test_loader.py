@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 from syntara_plugin.runtime import ActionStep, BaseStep, ControlStep, ExecutionContext
 from syntara_plugin.testing import (
     HarnessUsageError,
+    NotPythonStepTypeError,
     ReferenceControlStep,
     entry_point_of,
     load_step_class,
@@ -49,10 +51,13 @@ def test_parse_entry_point_splits_module_and_class() -> None:
 
 
 @pytest.mark.parametrize(
-    "entry_point", ["", "no-colon", ":NoModule", "pkg.mod:", "pkg.mod:9Class", "a b:C"]
+    "entry_point",
+    ["", "no-colon", ":NoModule", "pkg.mod:", "pkg.mod:9Class", "a b:C", "pkg..mod:C", "cmd/x#run"],
 )
-def test_parse_entry_point_rejects_malformed_strings(entry_point: str) -> None:
-    with pytest.raises(HarnessUsageError):
+def test_parse_entry_point_rejects_non_python_entry_points(entry_point: str) -> None:
+    # The harness loads Python step types, so only the Python adapter's
+    # module:Class convention is accepted even though the contract is opaque.
+    with pytest.raises(NotPythonStepTypeError, match="is not a Python step type"):
         parse_entry_point(entry_point)
 
 
@@ -61,9 +66,27 @@ def test_load_step_class_imports_module_level_step() -> None:
     assert step_class is LocalStep
 
 
-def test_load_step_class_rejects_missing_module() -> None:
-    with pytest.raises(HarnessUsageError, match="could not import module"):
+def test_load_step_class_reports_an_absent_module_as_not_python() -> None:
+    # A module:Class-shaped entry point whose module is absent from this
+    # workspace may belong to another language adapter, so it is classified
+    # rather than reported as Python breakage.
+    with pytest.raises(NotPythonStepTypeError, match="is not a Python step type in this workspace"):
         load_step_class("not_a_real_module_xyz:Step")
+
+
+def test_load_step_class_keeps_a_broken_existing_module_as_python_breakage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A module file that exists but fails to import (here: a missing
+    # dependency of its own) is Python breakage, not another language, so it
+    # stays a plain usage error.
+    (tmp_path / "broken_step_module_xyz.py").write_text(
+        "import not_a_real_dependency_xyz\n", encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(HarnessUsageError, match="could not import module") as info:
+        load_step_class("broken_step_module_xyz:Step")
+    assert not isinstance(info.value, NotPythonStepTypeError)
 
 
 def test_load_step_class_rejects_missing_class() -> None:

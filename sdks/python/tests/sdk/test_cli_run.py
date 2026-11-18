@@ -1005,6 +1005,57 @@ def test_valid_input_executes_and_reports_the_result(tmp_path: Path, capsys) -> 
     assert json.loads(captured.out.split("Output:\n", 1)[1]) == {"slug": "broken-build"}
 
 
+def test_source_mode_rejects_a_non_python_entry_point_with_image_mode_guidance(
+    tmp_path: Path, capsys
+) -> None:
+    """Source mode runs the Python adapter in-process; other languages use image mode."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    manifest_path = workspace / "steps/echo/manifest.yaml"
+    manifest = manifest_path.read_text(encoding="utf-8")
+    entry_line = next(line for line in manifest.splitlines() if "entryPoint:" in line)
+    manifest_path.write_text(
+        manifest.replace(entry_line, "    entryPoint: cmd/echo#run"), encoding="utf-8"
+    )
+
+    status = main(
+        ["run", "--manifest", str(workspace / "plugin.yaml"), "--input", '{"title": "Broken Build"}']
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "source mode runs Python step types in-process" in captured.err
+    assert "'cmd/echo#run' is not a Python step type" in captured.err
+    assert "--mode image --release dist/release.json --image-option" in captured.err
+    assert "Status:" not in captured.out
+
+
+def test_source_mode_guides_a_module_class_shaped_non_python_entry_point_to_image_mode(
+    tmp_path: Path, capsys
+) -> None:
+    """A non-Python id that happens to look like module:Class gets the same
+    image-mode guidance instead of an import failure (the shape alone never
+    decides that a target is Python)."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    manifest_path = workspace / "steps/echo/manifest.yaml"
+    manifest = manifest_path.read_text(encoding="utf-8")
+    entry_line = next(line for line in manifest.splitlines() if "entryPoint:" in line)
+    manifest_path.write_text(
+        manifest.replace(entry_line, "    entryPoint: handlers:Echo"), encoding="utf-8"
+    )
+
+    status = main(
+        ["run", "--manifest", str(workspace / "plugin.yaml"), "--input", '{"title": "Broken Build"}']
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "'handlers:Echo' is not a Python step type in this workspace" in captured.err
+    assert "--mode image --release dist/release.json --image-option" in captured.err
+    assert "Status:" not in captured.out
+
+
 def test_target_selection_by_identity_entry_point_and_short_name(
     tmp_path: Path, capsys
 ) -> None:

@@ -1,0 +1,28 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Action",
+  "metadata": {
+    "name": "normalize-records",
+    "displayName": "Normalize records",
+    "description": "Trims and lowercases record names in a Go workload."
+  },
+  "spec": {
+    "runtime": {
+      "kind": "custom-runner",
+      "workload": "go-workload",
+      "entryPoint": "github.com/acme/records/handlers.NormalizeRecords"
+    },
+    "input": {
+      "kind": "inline",
+      "value": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "kind": "inline",
+      "value": {
+        "type": "object"
+      }
+    }
+  }
+}

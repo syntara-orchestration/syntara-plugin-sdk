@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 from syntara_plugin.sdk.cli import main
-from syntara_plugin.sdk.testgen import ScaffoldError, generate_step_tests
+from syntara_plugin.sdk.testgen import (
+    _TEMPLATE,
+    ScaffoldError,
+    _render_cases,
+    generate_step_tests,
+)
 
 STEP_SOURCE = '''"""A custom-runner Action step type used by the generated tests."""
 
@@ -136,7 +141,7 @@ def test_generate_creates_a_test_module_and_import_shim(tmp_path: Path) -> None:
     names = {path.name for path in written}
     assert names == {"test_create.py", "conftest.py"}
     content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
-    assert 'ENTRY_POINT = "gen_pkg.steps:CreateStep"' in content
+    assert "ENTRY_POINT = 'gen_pkg.steps:CreateStep'" in content
     assert "'title': 'example-title'" in content
     assert "step_bindings.bind_step" in content
 
@@ -217,6 +222,191 @@ def test_cli_test_init_creates_and_reports_tests(
     assert "Created" in captured
     assert "test_create.py" in captured
     assert (workspace / "tests/test_create.py").is_file()
+
+
+def _add_go_target(workspace: Path) -> None:
+    """Add a second custom-runner target implemented outside Python."""
+
+    _add_target_with_entry_point(workspace, "github.com/acme/gen/handlers.Normalize")
+
+
+def _add_target_with_entry_point(workspace: Path, entry_point: str) -> None:
+    """Add a second custom-runner target declaring the given entry point."""
+
+    plugin = workspace / "plugin.yaml"
+    plugin.write_text(
+        plugin.read_text(encoding="utf-8").replace(
+            "    - steps/create/manifest.yaml",
+            "    - steps/create/manifest.yaml\n    - steps/normalize/manifest.yaml",
+        ),
+        encoding="utf-8",
+    )
+    source = (workspace / "steps/create/manifest.yaml").read_text(encoding="utf-8")
+    (workspace / "steps/normalize").mkdir()
+    (workspace / "steps/normalize/manifest.yaml").write_text(
+        source.replace("name: create", "name: normalize").replace(
+            "gen_pkg.steps:CreateStep", entry_point
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_generate_selects_only_targets_that_load_as_python(tmp_path: Path) -> None:
+    """Selection is by load attempt, never by syntax: a target whose entry
+    point does not resolve to a Python step type gets no module and is
+    reported with its reason."""
+    workspace = _write_workspace(tmp_path / "gen")
+    _add_go_target(workspace)
+    skipped: list[tuple[str, str, str]] = []
+
+    written = generate_step_tests(workspace / "plugin.yaml", on_skip=lambda *item: skipped.append(item))
+
+    assert workspace / "tests/test_create.py" in written
+    assert not (workspace / "tests/test_normalize.py").exists()
+    assert len(skipped) == 1
+    identity, entry_point, reason = skipped[0]
+    assert identity == "gen.gen-plugin.normalize"
+    assert entry_point == "github.com/acme/gen/handlers.Normalize"
+    assert "is not a Python step type" in reason
+
+
+def test_generate_reports_a_module_class_shaped_collision_without_a_module(
+    tmp_path: Path,
+) -> None:
+    """A non-Python module:Class-shaped id whose module is absent is reported
+    and generates nothing, instead of erroring at collection."""
+    workspace = _write_workspace(tmp_path / "gen")
+    _add_target_with_entry_point(workspace, "handlers:NormalizeRecords")
+    skipped: list[tuple[str, str, str]] = []
+
+    written = generate_step_tests(workspace / "plugin.yaml", on_skip=lambda *item: skipped.append(item))
+
+    assert workspace / "tests/test_create.py" in written
+    assert not (workspace / "tests/test_normalize.py").exists()
+    assert skipped[0][1] == "handlers:NormalizeRecords"
+    assert "is not a Python step type in this workspace" in skipped[0][2]
+
+
+def test_generate_reports_a_stdlib_colliding_entry_point_without_a_module(
+    tmp_path: Path,
+) -> None:
+    """A non-Python id whose module happens to be importable (the stdlib
+    collision) is reported for its real failure, the missing class, and
+    generates nothing, so test collection can never fail on it."""
+    workspace = _write_workspace(tmp_path / "gen")
+    _add_target_with_entry_point(workspace, "json:NoSuchStep")
+    skipped: list[tuple[str, str, str]] = []
+
+    generate_step_tests(workspace / "plugin.yaml", on_skip=lambda *item: skipped.append(item))
+
+    assert (workspace / "tests/test_create.py").is_file()
+    assert not (workspace / "tests/test_normalize.py").exists()
+    assert "has no class" in skipped[0][2]
+
+
+def test_generate_reports_a_missing_python_implementation_loudly(tmp_path: Path) -> None:
+    """A Python target whose module is missing (a typo) is reported with the
+    import error and generates nothing: the failure is visible at generation,
+    never a silent skip."""
+    workspace = _write_workspace(tmp_path / "gen")
+    _add_target_with_entry_point(workspace, "gen_pkg.stpes:CreateStep")
+    skipped: list[tuple[str, str, str]] = []
+
+    generate_step_tests(workspace / "plugin.yaml", on_skip=lambda *item: skipped.append(item))
+
+    assert (workspace / "tests/test_create.py").is_file()
+    assert not (workspace / "tests/test_normalize.py").exists()
+    assert "No module named" in skipped[0][2]
+
+
+def test_generate_writes_no_guard_for_an_in_workspace_python_target(tmp_path: Path) -> None:
+    workspace = _write_workspace(tmp_path / "gen")
+
+    generate_step_tests(workspace / "plugin.yaml")
+
+    content = (workspace / "tests/test_create.py").read_text(encoding="utf-8")
+    assert "NotPythonStepTypeError" not in content
+    assert "load_step_class" not in content
+
+
+def test_generated_module_fails_when_a_python_module_is_deleted_after_generation(
+    pytester: pytest.Pytester,
+) -> None:
+    _write_workspace(pytester.path)
+    generate_step_tests(pytester.path / "plugin.yaml")
+    # The module loaded at generation time, so no guard exists: deleting it
+    # afterwards is Python breakage and must fail.
+    (pytester.path / "gen_pkg/steps.py").unlink()
+
+    result = pytester.runpytest_subprocess("tests")
+
+    outcomes = result.parseoutcomes()
+    # The invalid-input test must fail on the missing module, not skip: the
+    # two placeholder-dependent skips are unrelated.
+    assert outcomes.get("failed", 0) + outcomes.get("errors", 0) > 0
+    assert outcomes.get("skipped", 0) < 3
+
+
+def test_generated_entry_point_round_trips_opaque_characters() -> None:
+    """The widened schema admits quotes and backslashes; the rendered template
+    must compile and carry the exact entry-point value (a bare interpolated
+    string literal would mangle it or break collection)."""
+    import ast
+
+    for entry_point in ['say"hi"', "bin\\nhandlers.js#run", "back\\slash"]:
+        source = _TEMPLATE.format(
+            identity="example.plugin.echo",
+            kind="Action",
+            manifest="plugin.yaml",
+            entry_point=entry_point,
+            workspace_relative="..",
+            valid_cases=_render_cases([{"message": "hi"}]),
+            invalid_cases=_render_cases([{"message": ""}]),
+            valid_guard="",
+            invalid_guard="",
+        )
+        compile(source, "test_echo.py", "exec")  # must not raise
+        tree = ast.parse(source)
+        (assign,) = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign) and node.targets[0].id == "ENTRY_POINT"
+        ]
+        assert ast.literal_eval(assign.value) == entry_point
+
+
+def test_cli_test_init_reports_targets_that_do_not_load_as_python(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = _write_workspace(tmp_path / "gen")
+    _add_go_target(workspace)
+
+    assert main(["test-init", str(workspace)]) == 0
+    captured = capsys.readouterr()
+    assert "test_create.py" in captured.out
+    assert not (workspace / "tests/test_normalize.py").exists()
+    assert (
+        "Skipped gen.gen-plugin.normalize: cannot load entry point"
+        " 'github.com/acme/gen/handlers.Normalize' as a Python step type"
+    ) in captured.err
+    assert "test it with that language's tooling" in captured.err
+
+
+def test_cli_test_init_refuses_a_workspace_where_no_target_loads(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = _write_workspace(tmp_path / "gen")
+    manifest = workspace / "steps/create/manifest.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("gen_pkg.steps:CreateStep", "cmd/create#run"),
+        encoding="utf-8",
+    )
+
+    assert main(["test-init", str(workspace)]) == 2
+    captured = capsys.readouterr()
+    assert "cannot load entry point 'cmd/create#run' as a Python step type" in captured.err
+    assert "no custom-runner step type target that loads as a Python step type" in captured.err
+    assert not (workspace / "tests").exists()
 
 
 def test_cli_test_init_refuses_to_overwrite(tmp_path: Path) -> None:

@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+import sys
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
+from syntara_plugin.testing import HarnessUsageError, NotPythonStepTypeError, load_step_class
 
 from .authoring import BuildRequest, compile_workspace
 
@@ -49,7 +51,7 @@ from syntara_plugin.testing import (
     invoke_step_in_container,
 )
 
-ENTRY_POINT = "{entry_point}"
+ENTRY_POINT = {entry_point!r}
 WORKSPACE = (Path(__file__).resolve().parent / {workspace_relative!r}).resolve()
 
 VALID_CASES = [
@@ -123,12 +125,19 @@ def generate_step_tests(
     *,
     tests_dir: Path | None = None,
     force: bool = False,
+    on_skip: Callable[[str, str, str], None] | None = None,
 ) -> list[Path]:
-    """Generate pytest modules for every custom-runner step type target.
+    """Generate pytest modules for every Python custom-runner step type target.
 
     Returns the written paths. Existing files are only replaced when ``force``
     is true; the ``tests/conftest.py`` import shim is written only when absent
-    so author-owned conftest content is never overwritten.
+    so author-owned conftest content is never overwritten. A target is
+    selected by attempting its load, never by the entry point's syntax: the
+    workspace is made importable and each entry point must resolve to a
+    Python step type. Targets that do not load are reported to ``on_skip`` as
+    ``(identity, entry_point, reason)`` and get no module, so a target
+    implemented in another language never produces failing tests and a
+    missing Python implementation is reported instead of silently skipped.
     """
 
     manifest = _resolve_manifest(root_manifest)
@@ -138,9 +147,30 @@ def generate_step_tests(
     workspace = manifest.parent
     tests = _resolve_tests_dir(workspace, tests_dir)
     workspace_relative = os.path.relpath(workspace, tests)
-    planned = _plan_test_modules(result, tests, manifest.name, workspace_relative)
+    # Make the workspace importable exactly like the generated conftest shim,
+    # so the selection load resolves entry points the way the tests will.
+    resolved_workspace = str(workspace.resolve())
+    if resolved_workspace not in sys.path:
+        sys.path.insert(0, resolved_workspace)
+    skipped: list[tuple[str, str, str]] = []
+    # The selection load imports author modules; keep the workspace free of
+    # __pycache__ artifacts the author did not create.
+    previous_dont_write_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        planned = _plan_test_modules(result, tests, manifest.name, workspace_relative, skipped)
+    finally:
+        sys.dont_write_bytecode = previous_dont_write_bytecode
+    if on_skip is not None:
+        for identity, entry_point, reason in skipped:
+            on_skip(identity, entry_point, reason)
     if not planned:
-        message = "the workspace declares no custom-runner step type targets"
+        message = (
+            "the workspace declares no custom-runner step type target that loads"
+            " as a Python step type"
+            if skipped
+            else "the workspace declares no custom-runner step type targets"
+        )
         raise ScaffoldError(message)
     _refuse_existing(planned, force)
     written = _write_planned_modules(planned)
@@ -182,9 +212,17 @@ def _plan_test_modules(
     tests: Path,
     manifest_name: str,
     workspace_relative: str,
+    skipped: list[tuple[str, str, str]],
 ) -> list[tuple[Path, str]]:
     """Plan every module before writing so a mid-run overwrite refusal never
-    leaves a half-generated suite behind."""
+    leaves a half-generated suite behind.
+
+    Selection is by load attempt, never by entry-point syntax: the workspace
+    is made importable exactly like the generated ``conftest.py`` shim does,
+    and every custom-runner target whose entry point resolves to a Python
+    step type gets a module. A target that does not load is reported with its
+    reason and gets no module.
+    """
 
     planned: list[tuple[Path, str]] = []
     for target in result.descriptor["spec"]["targets"]:
@@ -195,6 +233,10 @@ def _plan_test_modules(
         ):
             continue
         entry_point = str(runtime["entryPoint"])
+        reason = _load_failure_reason(entry_point)
+        if reason is not None:
+            skipped.append((str(target["identity"]), entry_point, reason))
+            continue
         valid, invalid, valid_errors = _cases_from_schema(target["input"])
         path = tests / f"test_{_slug(str(target['metadata']['name']))}.py"
         planned.append(
@@ -214,6 +256,25 @@ def _plan_test_modules(
             )
         )
     return planned
+
+
+def _load_failure_reason(entry_point: str) -> str | None:
+    """Why one entry point cannot load as a Python step type, or None if it can.
+
+    Runs in the CLI process with the workspace importable, like
+    ``run --mode source`` does; an import-time failure of any shape is a
+    selection result here, reported to the author, not a traceback.
+    """
+
+    try:
+        load_step_class(entry_point)
+    except NotPythonStepTypeError as error:
+        return str(error)
+    except HarnessUsageError as error:
+        return str(error)
+    except Exception as error:  # noqa: BLE001 - author module import-time failure
+        return f"{type(error).__name__}: {error}"
+    return None
 
 
 def _refuse_existing(planned: list[tuple[Path, str]], force: bool) -> None:

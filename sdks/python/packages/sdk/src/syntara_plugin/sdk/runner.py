@@ -48,7 +48,12 @@ from syntara_plugin.runtime.container import (
 from syntara_plugin.runtime.contract_validation import SchemaDriftError
 from syntara_plugin.runtime.credentials import CredentialAccessError
 from syntara_plugin.runtime.execution import StepExecutionError
-from syntara_plugin.testing import BoundedStepHandler, HarnessUsageError, StepBindingsFactory
+from syntara_plugin.testing import (
+    BoundedStepHandler,
+    HarnessUsageError,
+    NotPythonStepTypeError,
+    StepBindingsFactory,
+)
 
 from .authoring import CompilationResult
 from .input_template import is_declared_secret, is_sensitive
@@ -1811,11 +1816,24 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
                 _VALIDATE_NEXT_STEP,
             ),
         ) from error
+    except NotPythonStepTypeError as error:
+        raise RunUsageError(
+            "source mode runs Python step types in-process; "
+            f"the implementation could not be bound: {error}",
+            next_steps=(
+                "if this step type is implemented in another language, build the workload"
+                " image with 'syntara-plugin build', then rerun with"
+                " --mode image --release dist/release.json --image-option <option>",
+                "if it is a Python step type, check the entry point's module and class names",
+            ),
+        ) from error
     except HarnessUsageError as error:
         raise RunExecutionError(
             f"the step type implementation could not be bound: {error}",
             next_steps=(
-                "check that the entry point module imports and its dependencies are installed",
+                "check that the entry point module imports and its dependencies are installed;"
+                " a step type implemented in another language runs with"
+                " --mode image --release dist/release.json --image-option <option>",
                 _VALIDATE_NEXT_STEP,
             ),
         ) from error

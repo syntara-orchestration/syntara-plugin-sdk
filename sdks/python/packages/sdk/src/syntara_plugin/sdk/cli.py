@@ -294,7 +294,7 @@ def _parser() -> argparse.ArgumentParser:
         description="Validate invocation inputs and run one custom-runner step type locally.",
         epilog=textwrap.dedent(
             """\
-            The target is the full step type identity, the module:Class entry point,
+            The target is the full step type identity, the declared entry point,
             or a unique short name; it is inferred when the workspace declares
             exactly one runnable target. Inputs come from --input (inline JSON)
             or --input-file (a JSON file, - reads stdin). Without inputs the
@@ -326,7 +326,7 @@ def _parser() -> argparse.ArgumentParser:
         "target",
         nargs="?",
         default=None,
-        help="Step type identity, module:Class entry point, or unique short name.",
+        help="Step type identity, declared entry point, or unique short name.",
     )
     run.add_argument(
         "--manifest",
@@ -1003,6 +1003,16 @@ def _boolean_option(command_line: bool | None, settings: bool | None, *, default
     return default
 
 
+def _report_skipped_test_target(identity: str, entry_point: str, reason: str) -> None:
+    print(
+        f"Skipped {identity}: cannot load entry point {entry_point!r} as a Python"
+        f" step type ({reason}); if this target is implemented in another"
+        " language, test it with that language's tooling, otherwise fix the"
+        " entry point",
+        file=sys.stderr,
+    )
+
+
 def _init_tests(arguments: argparse.Namespace) -> int:
     """Generate local pytest tests for custom-runner step type targets."""
     try:
@@ -1010,6 +1020,7 @@ def _init_tests(arguments: argparse.Namespace) -> int:
             arguments.manifest,
             tests_dir=arguments.tests_dir,
             force=arguments.force,
+            on_skip=_report_skipped_test_target,
         )
     except (ScaffoldError, CompilationError) as error:
         print(f"error: {error}", file=sys.stderr)

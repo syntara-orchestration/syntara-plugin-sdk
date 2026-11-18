@@ -1,7 +1,7 @@
 {
   "fixtureBundleVersion": "syntara.catalog-fixtures/v1alpha1",
-  "contractBundleDigest": "sha256:c0d0fe7c19671f67c30f3e8c6e45bfb8da5c58e9275b9fde6c5759cc65d013b9",
-  "fixtureContentDigest": "sha256:cd08e22235de1d0d957d28caa77f84b7707c68ee2d570c517e11f1a552c22198",
+  "contractBundleDigest": "sha256:d6a8b9d4d12feac4aa181e1655a4475aea98f908988e0e0780ee8a2454deb6ff",
+  "fixtureContentDigest": "sha256:fef84c361790eb17b93ca9295ca3ea93b5983d77e6a91783dc6d679f8f028bf3",
   "catalogCases": [
     {
       "path": "catalog/valid-20.json",
@@ -114,6 +114,10 @@
     {
       "path": "installed-identity.valid.json",
       "kind": "installed_identity"
+    },
+    {
+      "path": "action.opaque-entry-point.valid.json",
+      "kind": "action"
     },
     {
       "path": "control.valid.json",

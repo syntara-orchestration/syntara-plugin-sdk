@@ -31,6 +31,7 @@ from .bindings import (
     StepCategory,
     StepDescriptor,
     StepKind,
+    is_python_entry_point,
     to_json_document,
 )
 from .context import ExecutionContext
@@ -213,6 +214,7 @@ __all__ = [
     "HttpRunnerContext",
     "HttpRunnerContextError",
     "InstalledStepManifest",
+    "is_python_entry_point",
     "PROVIDER_ABI",
     "ResultObjectStore",
     "RuntimeBinding",

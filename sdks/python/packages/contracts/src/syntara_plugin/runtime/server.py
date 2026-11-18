@@ -21,7 +21,14 @@ from syntara_plugin.contracts import load_bundle, validate_document
 
 from .abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from .adapter import container_step_for_binding
-from .bindings import StepBinding, StepBindingError, StepBindings, validate_executable_step_binding
+from .bindings import (
+    _PYTHON_ENTRY_POINT_HINT,
+    StepBinding,
+    StepBindingError,
+    StepBindings,
+    is_python_entry_point,
+    validate_executable_step_binding,
+)
 from .container import (
     INCOMPLETE_STEP_MESSAGE,
     ContainerInvocation,
@@ -622,6 +629,12 @@ def _validate_custom_runner_mapping(
 
 
 def _load_typed_step(entry_point: str) -> type[BaseStep[Any, Any]]:
+    if not is_python_entry_point(entry_point):
+        message = (
+            f"resolved entry point {entry_point!r} is not served by this Python image:"
+            f" {_PYTHON_ENTRY_POINT_HINT}"
+        )
+        raise RuntimeServerError(message)
     module_name, _, class_name = entry_point.partition(":")
     try:
         implementation = getattr(importlib.import_module(module_name), class_name)
