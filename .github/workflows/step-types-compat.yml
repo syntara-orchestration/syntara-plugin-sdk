@@ -323,8 +323,11 @@ jobs:
           # The recomputed baseline must run against the step-types revision
           # the BASE commit pins, not this pull request's: a pin bump is
           # judged strictly, so an incompatibility introduced by the pin
-          # itself must not look inherited.
-          pin="$(sed -n "s/^.*STEP_TYPES_REF:.*'\([^']*\)'.*$/\1/p" .github/workflows/step-types-compat.yml | tail -n 1)"
+          # itself must not look inherited. Anchored on the two-space env
+          # declaration and quitting at the first match: this file also
+          # contains this very command line, which mentions STEP_TYPES_REF
+          # too, and must never be the match.
+          pin="$(sed -n "/^  STEP_TYPES_REF: /{s/.*'\([^']*\)'.*/\1/p;q;}" .github/workflows/step-types-compat.yml)"
           if [ -z "$pin" ]; then
             echo "::error title=Base pin unavailable::Could not read STEP_TYPES_REF from the base commit's workflow; the baseline cannot be recomputed."
             exit 1
