@@ -555,26 +555,26 @@ def _runtime_observation_errors(
     runtime = option["runtime"]
     language = runtime["language"]
     version = runtime["version"]
-    verification = runtime["verification"]
+    probe_status = runtime["probeStatus"]
     matching = [
         component for component in runtime["components"] if component["name"].casefold() == language
     ]
     path = f"spec/workloads/{workload_id}/options/{option['name']}/runtime"
     if not matching:
-        if verification == "verified":
+        if probe_status == "matched":
             return [
                 RuntimeBindingDiagnostic(
-                    "RUNTIME_BINDING_RUNTIME_VERIFICATION_MISMATCH",
+                    "RUNTIME_BINDING_RUNTIME_PROBE_STATUS_MISMATCH",
                     path,
-                    "runtime metadata cannot be verified without a matching declared component.",
+                    "runtime metadata cannot be matched without a matching declared component.",
                 )
             ]
         return []
 
     component = matching[0]
-    component_verified = component["verification"] == "verified"
+    component_matched = component["probeStatus"] == "matched"
     component_version = component.get("version")
-    if component_verified and component_version != version:
+    if component_matched and component_version != version:
         return [
             RuntimeBindingDiagnostic(
                 "RUNTIME_BINDING_RUNTIME_VERSION_MISMATCH",
@@ -582,12 +582,12 @@ def _runtime_observation_errors(
                 "runtime version annotation differs from the matching executable probe.",
             )
         ]
-    if component_verified != (verification == "verified"):
+    if component_matched != (probe_status == "matched"):
         return [
             RuntimeBindingDiagnostic(
-                "RUNTIME_BINDING_RUNTIME_VERIFICATION_MISMATCH",
+                "RUNTIME_BINDING_RUNTIME_PROBE_STATUS_MISMATCH",
                 path,
-                "runtime verification status must reflect the matching executable probe.",
+                "runtime probe status must reflect the matching executable probe.",
             )
         ]
     return []

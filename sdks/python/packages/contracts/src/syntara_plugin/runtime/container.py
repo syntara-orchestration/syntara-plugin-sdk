@@ -170,12 +170,16 @@ class ContainerLogBatch:
 
 @dataclass(frozen=True)
 class RuntimeComponentInfo:
-    """One runtime component reported by a workload's Health response."""
+    """One runtime component reported by a workload's Health response.
+
+    ``probe_status`` is compatibility evidence supplied by the workload image,
+    not proof of image integrity or publisher identity.
+    """
 
     name: str
     executable: str
     version: str | None
-    verification: str
+    probe_status: str
 
 
 @dataclass(frozen=True)
@@ -1162,7 +1166,7 @@ class ContainerClient:
                 name=item.name,
                 executable=item.executable,
                 version=item.version or None,
-                verification=item.verification,
+                probe_status=item.probe_status,
             )
             for item in response.runtime_components
         )

@@ -21,7 +21,8 @@ def _observe(
     report=True,
     component_name="python",
     component_executable="/usr/bin/python3.12",
-    component_verification="verified",
+    reported_executable=None,
+    component_probe_status="matched",
     component_version="3.12.8",
     expected_metadata=None,
 ):
@@ -38,9 +39,9 @@ def _observe(
         components = (
             SimpleNamespace(
                 name=component_name,
-                executable=component_executable,
+                executable=reported_executable or component_executable,
                 version=component_version,
-                verification=component_verification,
+                probe_status=component_probe_status,
             ),
         )
     monkeypatch.setattr(runtime_probe, "_image_available", image_available)
@@ -65,7 +66,7 @@ def _observe(
     )
 
 
-def test_runtime_probe_verifies_image_annotations_against_supported_probe(
+def test_runtime_probe_matches_image_annotations_against_supported_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed = _observe(monkeypatch)
@@ -73,13 +74,13 @@ def test_runtime_probe_verifies_image_annotations_against_supported_probe(
     assert observed == {
         "language": "python",
         "version": "3.12.8",
-        "verification": "verified",
+        "probeStatus": "matched",
         "components": [
             {
                 "name": "python",
                 "executable": "/usr/bin/python3.12",
                 "version": "3.12.8",
-                "verification": "verified",
+                "probeStatus": "matched",
             }
         ],
     }
@@ -146,7 +147,7 @@ def test_runtime_probe_rejects_annotation_probe_version_mismatch(
                     name="python",
                     executable="/usr/bin/python3.12",
                     version="3.12.8",
-                    verification="verified",
+                    probe_status="matched",
                 ),
             )
         ),
@@ -171,17 +172,33 @@ def test_runtime_probe_rejects_supported_language_without_matching_health_compon
         _observe(monkeypatch, report=False)
 
 
-def test_runtime_probe_rejects_supported_language_with_unverified_health_component(
+def test_runtime_probe_rejects_supported_language_with_unsupported_health_component(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with pytest.raises(
-        RuntimeProbeError, match="supported runtime component 'python' was not verified"
+        RuntimeProbeError, match="supported runtime component 'python' did not report a version"
     ):
         _observe(
             monkeypatch,
-            component_verification="unverified",
+            component_probe_status="unsupported",
             component_version="",
         )
+
+
+def test_runtime_probe_rejects_matched_component_without_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(
+        RuntimeProbeError, match="supported runtime component 'python' did not report a version"
+    ):
+        _observe(monkeypatch, component_probe_status="matched", component_version="")
+
+
+def test_runtime_probe_rejects_health_component_with_wrong_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(RuntimeProbeError, match="reports a different executable"):
+        _observe(monkeypatch, reported_executable="/opt/python")
 
 
 def test_runtime_probe_fails_when_health_transport_fails(
@@ -224,7 +241,7 @@ def test_runtime_probe_rejects_language_without_a_declared_component(
         _observe(monkeypatch, language="ruby", component_name="python")
 
 
-def test_runtime_probe_retains_annotations_as_unverified_without_a_supported_probe(
+def test_runtime_probe_retains_annotations_as_unsupported_without_a_supported_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed = _observe(
@@ -237,9 +254,9 @@ def test_runtime_probe_retains_annotations_as_unverified_without_a_supported_pro
 
     assert observed["language"] == "ruby"
     assert observed["version"] == "3.3.0"
-    assert observed["verification"] == "unverified"
+    assert observed["probeStatus"] == "unsupported"
     assert observed["components"] == [
-        {"name": "ruby", "executable": "/usr/bin/ruby", "verification": "unverified"}
+        {"name": "ruby", "executable": "/usr/bin/ruby", "probeStatus": "unsupported"}
     ]
 
 

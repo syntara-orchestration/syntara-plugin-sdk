@@ -308,17 +308,18 @@ those declarations to the image registration manifest. The image also carries
 `io.syntara.runtime.language` and `io.syntara.runtime.version` OCI annotations;
 SDK-built images get them from `build.workloads.<target>.runtimeMetadata`, and
 prebuilt images must already contain them. The SDK reads the annotations from
-the exact image digest, then compares them with supported runtime evidence
-reported through `Health`. Python and GNU Bash must return matching, verified
-probe evidence; missing evidence or a version mismatch fails the build. A
-language without an SDK probe is recorded as unverified when its component is
-declared, with a warning unless `--require verified-runtime` is set. If the
-annotated language has no matching component declaration, the build fails. The
-resolved RuntimeBinding stores both the annotated language/version and whether
-a supported probe verified them.
+the exact image digest, then compares them with probe data reported through the
+image's `Health` endpoint. Python and GNU Bash must report a matching executable
+and version; missing evidence or a version mismatch fails the build. A language
+without an SDK probe is recorded as `unsupported` when its component is
+declared, with a warning unless `--require runtime-metadata-match` is set. If
+the annotated language has no matching component declaration, the build fails.
+The resolved RuntimeBinding stores the annotations and the workload-reported
+`probeStatus`. This is compatibility metadata, not proof of image integrity or
+publisher identity; trust checks remain separate.
 This metadata describes image contents and is separate from the container ABI
 version. See the [RuntimeBindings guide](runtime-bindings.md) for the complete
-outcome table and the `--require verified-runtime` and `--require all` policy
+outcome table and the `--require runtime-metadata-match` and `--require all` policy
 options.
 
 ### Workload servers in other languages

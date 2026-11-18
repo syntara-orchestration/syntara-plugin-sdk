@@ -112,22 +112,63 @@ The annotated language must also match a declared runtime component name. If it
 does not, the build fails; the SDK does not treat a missing declaration as an
 unsupported runtime.
 
-The SDK also starts that exact image in a local probe with an egress-restricted
-internal network and asks its gRPC `Health` endpoint for runtime evidence.
-Python and GNU Bash have built-in executable probes. For these supported
-languages, the SDK requires Health to report a verified matching component.
-Missing or unverified probe evidence, a different executable, or a version
-mismatch fails the build. For a language without a built-in SDK probe, the SDK
-keeps the annotation and marks it `unverified`; the default build warns and
-continues, while `--require verified-runtime` rejects it. A Health or transport
+The SDK starts every exact image option in a local probe with an egress-restricted
+internal network and asks its gRPC `Health` endpoint for runtime evidence. The
+image supplies that endpoint and its probe helper, so the response is not an
+independent trust signal. For Python and GNU Bash, the SDK compares the
+workload-reported executable and version with the image annotation. A matching
+report is recorded as `probeStatus: matched`. Missing or unsupported evidence,
+a different executable, or a version mismatch fails the build for these
+supported languages. For a language without a built-in SDK probe, the SDK
+records `probeStatus: unsupported`; the default build warns and continues,
+while `--require runtime-metadata-match` rejects it. A Health or transport
 failure also fails the build.
+
+The SDK probes every image option in the RuntimeBinding, including non-default
+options and prebuilt `reference` images. A referenced image may need to be
+pulled using the configured registry credentials. `--require` does not enable
+probing; it only decides whether unsupported probe evidence is allowed. Publish
+repeats the probes for all options before publishing. This costs one image
+startup per option at build and again at publish, and ensures that the binding
+contains metadata for each selectable image.
+
+`matched` only means the image's Health response reported a supported probe
+version that matched its OCI annotation. A publisher-controlled image can
+change or falsify its own Health response, so this result is compatibility
+metadata, not proof of image integrity, publisher identity, or safety. EP and
+other consumers must enforce trust using separate digest, signature, and
+publisher policies.
+
+### Alpha migration for SDK and Execution Plane consumers
+
+This is a forward-only change to the pre-release `v1alpha1` contracts. Before
+consuming the updated package or artifacts:
+
+- Plugin authors must add a `runtime` declaration, including at least one
+  `runtime.components` entry with `name` and absolute `executable`, to each
+  RuntimeBinding image option. Rebuild and republish resolved binding artifacts
+  with the updated SDK.
+- RuntimeBinding consumers must replace `runtime.verification` and component
+  `verification` with `probeStatus`; values `verified` and `unverified` become
+  `matched` and `unsupported`.
+- Workload and host implementers must update the Health `RuntimeComponent`
+  protobuf accessor from `verification` to `probe_status` (field number 4 is
+  unchanged) and use the new status values.
+- The Execution Plane must consume the updated shared contracts package,
+  regenerate its protobuf bindings, update any parsing or policy code, and must
+  not use `probeStatus` as an image-trust decision. Digest/signature and
+  publisher authorization checks remain separate.
+
+The SDK and Execution Plane must agree on the same contracts package version
+before they exchange these records. Older `v1alpha1` producers and consumers
+are not wire or artifact compatible with this alpha change.
 
 | Image and probe result | Build behavior |
 | --- | --- |
-| Supported language, verified component, and matching version | Pass; record `verified`. |
-| Supported language, but matching component is missing or unverified | Fail; correct the executable declaration or image. |
+| Supported language, matching component, and matching version | Pass; record `probeStatus: matched`. |
+| Supported language, but matching component is missing or unsupported | Fail; correct the executable declaration or image. |
 | Supported language, but probe version differs from the image annotation | Fail; correct the image or its metadata. |
-| No SDK probe for the annotated language, with a matching declared component | Warn and record `unverified`; `--require verified-runtime` fails. |
+| No SDK probe for the annotated language, with a matching declared component | Warn and record `probeStatus: unsupported`; `--require runtime-metadata-match` fails. |
 | Annotated language has no matching declared component | Fail; declare the correct runtime component. |
 | Missing image annotations or failed Health/transport probe | Fail. |
 
@@ -135,10 +176,11 @@ On macOS with Podman, the SDK uses a temporary OpenSSH tunnel through the
 Podman machine to query the workload on its internal network; the workload
 remains disconnected from external networks.
 
-This keeps one declared value in the image metadata, while distinguishing the
-publisher's annotation from evidence that the SDK independently confirmed.
-Neither plugin tags nor project dependency constraints are used to infer the
-runtime version.
+The image annotation remains the declared version, and the Health response
+supplies a second value for the SDK to compare. Because the image controls that
+response, the comparison does not independently confirm the executable's
+identity or protect against a modified image. Neither plugin tags nor project
+dependency constraints are used to infer the runtime version.
 
 For example, the source declaration identifies an executable to probe, not a
 second version value:
@@ -163,7 +205,7 @@ build:
       tag: 1.0.0-python-base
       platform: linux/amd64
       # These values label the final image; use what its Containerfile installs.
-      # The SDK checks the declared executable against this version during build.
+      # The SDK compares the Health-reported probe version with this annotation.
       runtimeMetadata:
         language: python
         version: "3.12.8"
@@ -179,23 +221,25 @@ The resolved RuntimeBinding records what the image reports:
 runtime:
   language: python
   version: "3.12.8"
-  verification: verified
+  probeStatus: matched
   components:
     - name: python
       executable: /usr/bin/python3.12
       version: "3.12.8"
-      verification: verified
+      probeStatus: matched
 ```
 
-`--require verified-runtime` makes `build` and `publish` fail if any image
-option is unverified. `--require all` expands to every check registered by the
-installed SDK. Requirements can also be set persistently in
+`--require runtime-metadata-match` makes `build` and `publish` fail unless
+every declared component of every image option has a supported matching probe
+and non-empty version. An image option with no components, a missing component
+version, or any unsupported component fails this requirement. `--require all`
+expands to every check registered by the installed SDK. Requirements can also be set persistently in
 `syntara-plugin.yaml`:
 
 ```yaml
 policy:
   requirements:
-    - verified-runtime
+    - runtime-metadata-match
 ```
 
 The default is an empty requirement list. CLI requirements add to the
@@ -263,7 +307,7 @@ container gRPC runtime:
 syntara-plugin build plugin.yaml \
   --runtime-bindings runtime-bindings.yaml \
   --output dist/report-tools.oci.tar \
-  --require verified-runtime
+  --require runtime-metadata-match
 syntara-plugin inspect dist/release.json
 syntara-plugin inspect dist/report-tools.oci.tar
 syntara-plugin inspect dist/runtime-bindings.yaml

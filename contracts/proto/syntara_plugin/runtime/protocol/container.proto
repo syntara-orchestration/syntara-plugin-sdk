@@ -181,10 +181,11 @@ message RuntimeComponent {
   string name = 1;
   // Absolute executable path inside the image.
   string executable = 2;
-  // Observed version, empty when verification is unverified.
+  // Version reported by the in-image probe; empty when it is unsupported.
   string version = 3;
-  // "verified" or "unverified" according to the workload's probe support.
-  string verification = 4;
+  // "matched" or "unsupported". This is workload-reported consistency data,
+  // not evidence of image integrity or publisher identity.
+  string probe_status = 4;
 }
 message HealthResponse {
   bool ready = 1;

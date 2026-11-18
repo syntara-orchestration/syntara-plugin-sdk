@@ -26,17 +26,17 @@ from syntara_plugin.sdk.settings import SETTINGS_FILENAME, SettingsError, load_s
 _WORKLOAD_DIGEST = "sha256:" + "a" * 64
 
 
-def _verified_runtime_observation(declarations, *, language="python", version="3.12.8"):
+def _matched_runtime_observation(declarations, *, language="python", version="3.12.8"):
     return {
         "language": language,
         "version": version,
-        "verification": "verified",
+        "probeStatus": "matched",
         "components": [
             {
                 "name": item["name"],
                 "executable": item["executable"],
                 "version": version,
-                "verification": "verified",
+                "probeStatus": "matched",
             }
             for item in declarations
         ],
@@ -1241,7 +1241,7 @@ def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
 
     monkeypatch.setattr(
         "syntara_plugin.sdk.cli.observe_runtime_image",
-        lambda _image, declarations, **_kwargs: _verified_runtime_observation(declarations),
+        lambda _image, declarations, **_kwargs: _matched_runtime_observation(declarations),
     )
 
     assert main(["build", "--settings", str(settings), "--json"]) == 0
@@ -1334,7 +1334,7 @@ def test_image_only_release_keeps_plugin_and_catalog_unchanged(
     monkeypatch.setattr("syntara_plugin.sdk.cli._build_runtime_binding_images", build_images)
     monkeypatch.setattr(
         "syntara_plugin.sdk.cli.observe_runtime_image",
-        lambda _image, declarations, **_kwargs: _verified_runtime_observation(declarations),
+        lambda _image, declarations, **_kwargs: _matched_runtime_observation(declarations),
     )
     assert main(["build", "--settings", str(settings_path), "--json"]) == 0
     first_build = json.loads(capsys.readouterr().out)

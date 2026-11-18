@@ -891,13 +891,13 @@ def _runtime_binding_resolved() -> dict[str, Any]:
                             "runtime": {
                                 "language": "python",
                                 "version": "3.12.8",
-                                "verification": "verified",
+                                "probeStatus": "matched",
                                 "components": [
                                     {
                                         "name": "python",
                                         "executable": "/usr/bin/python3",
                                         "version": "3.12.8",
-                                        "verification": "verified",
+                                        "probeStatus": "matched",
                                     }
                                 ],
                             },
@@ -947,6 +947,19 @@ def test_runtime_binding_contracts_accept_source_resolved_and_index_documents() 
         )
         == ()
     )
+
+
+def test_runtime_binding_component_version_is_present_only_for_matched_probe() -> None:
+    bundle = load_bundle()
+    matched = _runtime_binding_resolved()
+    component = matched["spec"]["workloads"]["python"]["options"][0]["runtime"]["components"][0]
+    component["version"] = ""
+    assert list(bundle.validator("runtime_binding_resolved").iter_errors(matched))
+
+    unsupported = _runtime_binding_resolved()
+    component = unsupported["spec"]["workloads"]["python"]["options"][0]["runtime"]["components"][0]
+    component["probeStatus"] = "unsupported"
+    assert list(bundle.validator("runtime_binding_resolved").iter_errors(unsupported))
 
 
 def test_runtime_binding_rejects_duplicate_option_names_and_unknown_defaults() -> None:

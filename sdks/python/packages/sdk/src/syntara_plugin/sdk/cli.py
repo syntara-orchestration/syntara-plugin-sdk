@@ -2838,9 +2838,9 @@ def _observe_runtime_binding_option(
         allow_insecure_loopback_http=arguments.allow_insecure_loopback_http,
         expected_metadata=expected_metadata,
     )
-    if _runtime_observation_is_unverified(observation):
+    if _runtime_observation_is_unsupported(observation):
         print(
-            f"warning: runtime metadata for {workload_id}/{option['name']} is unverified",
+            f"warning: runtime metadata probe for {workload_id}/{option['name']} is unsupported",
             file=sys.stderr,
         )
     return observation
@@ -2854,9 +2854,9 @@ def _expected_runtime_metadata(
     return settings.runtime_metadata if settings is not None and settings.runtime_metadata else None
 
 
-def _runtime_observation_is_unverified(observation: Mapping[str, Any]) -> bool:
-    return observation["verification"] != "verified" or any(
-        item["verification"] != "verified" for item in observation["components"]
+def _runtime_observation_is_unsupported(observation: Mapping[str, Any]) -> bool:
+    return observation["probeStatus"] != "matched" or any(
+        item["probeStatus"] != "matched" for item in observation["components"]
     )
 
 
@@ -2871,7 +2871,7 @@ def _runtime_option_evidence(document: Mapping[str, Any]) -> list[dict[str, Any]
             "option": option["name"],
             "language": option["runtime"]["language"],
             "version": option["runtime"]["version"],
-            "verification": option["runtime"]["verification"],
+            "probeStatus": option["runtime"]["probeStatus"],
             "components": option["runtime"]["components"],
         }
         for workload_id, workload_value in workloads.items()
@@ -2930,7 +2930,7 @@ def _observe_resolved_runtime_options(
                     "option": option["name"],
                     "language": observed["language"],
                     "version": observed["version"],
-                    "verification": observed["verification"],
+                    "probeStatus": observed["probeStatus"],
                     "components": observed["components"],
                 }
             )
@@ -2944,14 +2944,14 @@ def _runtime_observation_identity(
     return (
         str(observation.get("language", "")),
         str(observation.get("version", "")),
-        str(observation.get("verification", "")),
+        str(observation.get("probeStatus", "")),
         tuple(
             sorted(
                 (
                     str(component.get("name", "")),
                     str(component.get("executable", "")),
                     str(component.get("version", "")),
-                    str(component.get("verification", "")),
+                    str(component.get("probeStatus", "")),
                 )
                 for component in components
                 if isinstance(component, Mapping)

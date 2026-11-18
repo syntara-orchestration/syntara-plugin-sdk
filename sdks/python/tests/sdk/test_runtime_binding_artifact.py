@@ -54,39 +54,39 @@ def _runtime_observations() -> dict[tuple[str, str], dict[str, object]]:
         ("python", "python-base"): {
             "language": "python",
             "version": "3.12.8",
-            "verification": "verified",
+            "probeStatus": "matched",
             "components": [
                 {
                     "name": "python",
                     "executable": "/usr/bin/python3",
                     "version": "3.12.8",
-                    "verification": "verified",
+                    "probeStatus": "matched",
                 }
             ],
         },
         ("python", "python-aws"): {
             "language": "python",
             "version": "3.12.8",
-            "verification": "verified",
+            "probeStatus": "matched",
             "components": [
                 {
                     "name": "python",
                     "executable": "/usr/bin/python3",
                     "version": "3.12.8",
-                    "verification": "verified",
+                    "probeStatus": "matched",
                 }
             ],
         },
         ("bash", "bash-base"): {
             "language": "bash",
             "version": "5.2.26",
-            "verification": "verified",
+            "probeStatus": "matched",
             "components": [
                 {
                     "name": "bash",
                     "executable": "/usr/bin/bash",
                     "version": "5.2.26",
-                    "verification": "verified",
+                    "probeStatus": "matched",
                 }
             ],
         },

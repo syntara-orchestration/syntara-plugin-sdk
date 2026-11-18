@@ -249,13 +249,13 @@ def test_generated_workspace_build_creates_local_runtime_binding_release(
         lambda _image, declarations, **_kwargs: {
             "language": "python",
             "version": "3.12.8",
-            "verification": "verified",
+            "probeStatus": "matched",
             "components": [
                 {
                     "name": item["name"],
                     "executable": item["executable"],
                     "version": "3.12.8",
-                    "verification": "verified",
+                    "probeStatus": "matched",
                 }
                 for item in declarations
             ],

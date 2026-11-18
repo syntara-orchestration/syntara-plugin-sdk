@@ -57,14 +57,14 @@
     "runtimeObservation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["language", "version", "verification", "components"],
-      "description": "Language and version annotations read from the digest-pinned image, with verification evidence from supported runtime probes.",
+      "required": ["language", "version", "probeStatus", "components"],
+      "description": "Language and version annotations read from the digest-pinned image, with compatibility probe status reported by the image's Health implementation. This is not image-integrity or publisher verification.",
       "properties": {
         "language": {"$ref": "#/$defs/runtimeLanguage"},
         "version": {"$ref": "#/$defs/runtimeVersion"},
-        "verification": {
-          "enum": ["verified", "unverified"],
-          "description": "Whether a supported probe verified the annotated language and version against an executable in the image."
+        "probeStatus": {
+          "enum": ["matched", "unsupported"],
+          "description": "Whether the workload-reported supported probe version matches the image annotation. This status is supplied by the image and is not an integrity attestation."
         },
         "components": {
           "type": "array",
@@ -77,17 +77,18 @@
     "runtimeComponentObservation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "executable", "verification"],
+      "required": ["name", "executable", "probeStatus"],
       "properties": {
         "name": {"$ref": "common.schema.json#/$defs/identifier"},
         "executable": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/"},
-        "version": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Version reported by a supported runtime probe; omitted when unverified."},
-        "verification": {"enum": ["verified", "unverified"], "description": "Whether this SDK version successfully identified the declared runtime executable and version."}
+        "version": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Version reported by a supported in-image runtime probe; omitted when unsupported."},
+        "probeStatus": {"enum": ["matched", "unsupported"], "description": "Whether the workload-reported probe matched the declared executable and image annotation; this is compatibility data, not proof of trust."}
       },
       "allOf": [
         {
-          "if": {"properties": {"verification": {"const": "verified"}}, "required": ["verification"]},
-          "then": {"required": ["version"]}
+          "if": {"properties": {"probeStatus": {"const": "matched"}}, "required": ["probeStatus"]},
+          "then": {"required": ["version"]},
+          "else": {"not": {"required": ["version"]}}
         }
       ]
     },

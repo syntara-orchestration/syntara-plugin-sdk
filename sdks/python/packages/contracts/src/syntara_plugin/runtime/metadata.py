@@ -20,7 +20,7 @@ class RuntimeComponentProbeError(ValueError):
 
 
 def supports_runtime_probe(name: str) -> bool:
-    """Return whether this SDK release has a trusted probe for ``name``."""
+    """Return whether this SDK release has a built-in version probe for ``name``."""
 
     return _probe_for_name(name) is not None
 
@@ -33,7 +33,9 @@ def probe_runtime_components(
     The probe never invokes a shell. It uses a small allowlist of version
     commands and a minimal environment so secrets in the server environment
     are not copied into a child process. Unknown component names remain
-    explicitly unverified instead of guessing a version convention.
+    marked unsupported instead of guessing a version convention. The result is
+    reported by the workload's Health implementation and is not an integrity
+    attestation: the image controls that implementation.
     """
 
     observations: list[dict[str, str]] = []
@@ -48,7 +50,7 @@ def probe_runtime_components(
             raise RuntimeComponentProbeError(
                 "the running Python interpreter differs from the declared executable"
             )
-        observation = {"name": name, "executable": executable, "verification": "unverified"}
+        observation = {"name": name, "executable": executable, "probe_status": "unsupported"}
         probe = _probe_for_name(name)
         if probe is not None:
             version = probe(executable)
@@ -57,7 +59,7 @@ def probe_runtime_components(
                     f"runtime probe for {name!r} returned an invalid version"
                 )
             observation["version"] = version
-            observation["verification"] = "verified"
+            observation["probe_status"] = "matched"
         observations.append(observation)
     return tuple(observations)
 

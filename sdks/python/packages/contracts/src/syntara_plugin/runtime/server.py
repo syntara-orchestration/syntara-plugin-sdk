@@ -603,7 +603,7 @@ def _registration_runtime_components(path: Path) -> tuple[dict[str, str], ...]:
     try:
         return probe_runtime_components(runtime["components"])
     except ValueError as error:
-        raise RuntimeServerError("a declared runtime component could not be verified") from error
+        raise RuntimeServerError("a declared runtime component probe failed") from error
 
 
 def _resolved_execution_bindings(config: RuntimeServerConfig) -> list[_ResolvedExecutionBinding]:

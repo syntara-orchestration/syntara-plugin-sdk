@@ -86,19 +86,19 @@ def observe_runtime_image(
         raise RuntimeProbeError(
             f"runtime language {metadata['language']!r} has no matching component declaration"
         )
-    verification = "unverified"
-    if supports_runtime_probe(metadata["language"]) and matching.get("verification") != "verified":
+    probe_status = "unsupported"
+    if supports_runtime_probe(metadata["language"]) and matching.get("probeStatus") != "matched":
         raise RuntimeProbeError(
-            f"supported runtime {metadata['language']!r} was not verified by its declared "
+            f"supported runtime {metadata['language']!r} did not report a matching "
             "executable; check runtime.components and the image"
         )
-    if matching.get("verification") == "verified" and supports_runtime_probe(metadata["language"]):
+    if matching.get("probeStatus") == "matched" and supports_runtime_probe(metadata["language"]):
         if matching.get("version") != metadata["version"]:
             raise RuntimeProbeError(
-                "runtime version annotation differs from the version reported by its executable"
+                "runtime version annotation differs from the version reported by the in-image probe"
             )
-        verification = "verified"
-    return metadata | {"verification": verification, "components": components}
+        probe_status = "matched"
+    return metadata | {"probeStatus": probe_status, "components": components}
 
 
 def _read_runtime_annotations(image: str) -> dict[str, str]:
@@ -161,7 +161,7 @@ def _runtime_component_observation(
     name = declaration["name"]
     executable = declaration["executable"]
     if not supports_runtime_probe(name):
-        return {"name": name, "executable": executable, "verification": "unverified"}
+        return {"name": name, "executable": executable, "probeStatus": "unsupported"}
     if observed is None:
         raise RuntimeProbeError(
             f"supported runtime component {name!r} was not reported by Health; check its "
@@ -171,13 +171,13 @@ def _runtime_component_observation(
         raise RuntimeProbeError(
             f"runtime component {name!r} reports a different executable than its RuntimeBinding"
         )
-    if observed.verification not in {"verified", "unverified"}:
+    if observed.probe_status not in {"matched", "unsupported"}:
         raise RuntimeProbeError(
-            f"runtime component {name!r} reports an invalid verification status"
+            f"runtime component {name!r} reports an invalid probe status"
         )
-    if observed.verification != "verified" or not observed.version:
+    if observed.probe_status != "matched" or not observed.version:
         raise RuntimeProbeError(
-            f"supported runtime component {name!r} was not verified by its executable probe"
+            f"supported runtime component {name!r} did not report a version from its executable probe"
         )
     if not is_valid_runtime_version(observed.version):
         raise RuntimeProbeError(f"runtime component {name!r} reports an invalid version")
@@ -185,7 +185,7 @@ def _runtime_component_observation(
         "name": name,
         "executable": executable,
         "version": observed.version,
-        "verification": "verified",
+        "probeStatus": "matched",
     }
 
 

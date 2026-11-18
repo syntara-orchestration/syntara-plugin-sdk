@@ -124,11 +124,12 @@ For image-only updates, the SDK uses the exact plugin OCI archive supplied to
 
 `policy.requirements` is an optional list of checks applied by `build` and
 `publish`. It defaults to an empty list. The current check is
-`verified-runtime`, which requires every RuntimeBinding image option's
-annotated language and version to match a supported runtime probe. A missing
-or unverified probe for a supported language already fails the build; this
-requirement also rejects languages for which the SDK has no probe. The special
-value `all` selects every check in the installed SDK:
+`runtime-metadata-match`, which requires every component of every RuntimeBinding
+image option to have a supported probe result and non-empty version that agrees
+with the annotated language and version. A missing component, missing version,
+or unsupported component fails this requirement. Missing or mismatched evidence
+for a supported language already fails the build. The special value `all`
+selects every check in the installed SDK:
 
 ```yaml
 policy:
@@ -138,13 +139,17 @@ policy:
 
 Commands can add requirements with repeatable `--require` options. CLI values
 are combined with settings and cannot turn a configured check off. For
-example, `syntara-plugin build --require verified-runtime` and
+example, `syntara-plugin build --require runtime-metadata-match` and
 `syntara-plugin publish dist/release.json --artifact-kind release --require all`
 use the same requirement evaluator. A release inventory records the checks
 selected at build time and their results; publish verifies the underlying
 image metadata again rather than accepting the recorded result alone. Pin the
 SDK in CI when using `all`, because upgrading the SDK can add checks to that
 set.
+
+Runtime probe status is reported by the image's Health implementation. It is
+compatibility evidence, not image-integrity or publisher verification. Use
+separate signature and publisher policies to establish trust.
 
 Registry passwords, signing keys, and secret values must not be stored in
 `syntara-plugin.yaml`. Use `--password-stdin` or a protected registry auth file

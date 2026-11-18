@@ -207,7 +207,7 @@ def _resolve_workload_option(
         raise RuntimeBindingArtifactBuildError(
             f"runtime metadata was not observed for workload image option {option['name']!r}"
         )
-    required_observation_fields = {"language", "version", "verification", "components"}
+    required_observation_fields = {"language", "version", "probeStatus", "components"}
     if not required_observation_fields <= set(runtime_observation):
         raise RuntimeBindingArtifactBuildError(
             f"runtime observation for image option {option['name']!r} is incomplete"
@@ -216,7 +216,7 @@ def _resolve_workload_option(
     runtime = {
         "language": runtime_observation["language"],
         "version": runtime_observation["version"],
-        "verification": runtime_observation["verification"],
+        "probeStatus": runtime_observation["probeStatus"],
         "components": runtime_observation["components"],
     }
     return metadata | {"image": image, "runtime": runtime}

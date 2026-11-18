@@ -149,7 +149,7 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["language", "version"],
-                "description": "Optional language and version values that the SDK writes as OCI image annotations. Supported runtime probes verify the values; when no probe supports the language, the binding records them as unverified.",
+                "description": "Optional language and version values that the SDK writes as OCI image annotations. A supported in-image probe may report a matching version; unsupported languages are recorded as unsupported. Probe results are compatibility data, not an integrity attestation.",
                 "properties": {
                   "language": {
                     "type": "string",
@@ -200,7 +200,7 @@
         "requirements": {
           "type": "array",
           "uniqueItems": true,
-          "description": "Checks applied during build and publish. Empty by default; all selects every check registered in this SDK version. Command-line --require values are additive. Persistent checks include verified-runtime.",
+          "description": "Checks applied during build and publish. Empty by default; all selects every check registered in this SDK version. Command-line --require values are additive. Persistent checks include runtime-metadata-match.",
           "items": {
             "type": "string",
             "minLength": 1,
