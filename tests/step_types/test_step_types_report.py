@@ -216,6 +216,8 @@ def write_leg(
     rule: str = "MC001",
     stage: str = "validate",
     facts: dict | None = None,
+    failures: list[dict] | None = None,
+    stages: list[dict] | None = None,
 ) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     document = {
@@ -226,6 +228,7 @@ def write_leg(
         "report_only": False,
         "sdk": {"commit": "2" * 40},
         "pin": {"sha": PIN, "date": "2026-11-12T10:00:00+00:00", "age_days": 1},
+        "stages": stages if stages is not None else [],
     }
     if result == "fail":
         document["failure"] = {
@@ -236,7 +239,9 @@ def write_leg(
             "confidence": "deterministic",
             "facts": BASE_FACTS if facts is None else facts,
             "frames": [],
+            "exception": None,
         }
+        document["failures"] = failures if failures is not None else [document["failure"]]
     (directory / f"{plugin}.json").write_text(json.dumps(document))
 
 
@@ -248,9 +253,66 @@ def test_inherited_failure_passes(tmp_path: Path, capsys: pytest.CaptureFixture[
     assert run(tmp_path, baseline=tmp_path / "baseline") == 0
     output = capsys.readouterr().out
     assert "already on devel at 222222222222" in output
-    assert "stages after 3 validate unchecked" in output
     assert "new in this pull request" not in output
     assert "every step type is compatible" not in output
+
+
+def test_inherited_failure_with_blocked_stages_is_not_verified(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stages = [
+        {"index": 2, "name": "environment", "status": "fail"},
+        {"index": 3, "name": "validate", "status": "skip", "note": "blocked by environment"},
+    ]
+    write_leg(tmp_path / "reports", "http-request", "fail", stage="environment", stages=stages)
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    write_leg(tmp_path / "baseline", "http-request", "fail", stage="environment")
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+    assert run(tmp_path, baseline=tmp_path / "baseline") == 0
+    output = capsys.readouterr().out
+    assert "not verified, already on devel at 222222222222" in output
+    assert "stages 3 validate not run (blocked by the inherited failure)" in output
+    assert "not verified, inherited" in output
+
+
+def test_a_new_failure_in_a_later_stage_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inherited_failure = {
+        "stage": "validate",
+        "index": 3,
+        "category": "misconfiguration",
+        "rule_id": "MC001",
+        "confidence": "deterministic",
+        "facts": BASE_FACTS,
+        "frames": [],
+        "exception": None,
+    }
+    new_failure = {
+        "stage": "run",
+        "index": 4,
+        "category": "implementation",
+        "rule_id": "IM003",
+        "confidence": "deterministic",
+        "facts": {"code": "X", "message": "m"},
+        "frames": [],
+        "exception": None,
+    }
+    write_leg(tmp_path / "reports", "http-request", "fail", failures=[inherited_failure, new_failure])
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    write_leg(tmp_path / "baseline", "http-request", "fail", failures=[inherited_failure])
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+    assert run(tmp_path, baseline=tmp_path / "baseline", compat="failure") == 1
+    output = capsys.readouterr().out
+    assert "http-request: incompatible, new in this pull request" in output
+
+
+def test_missing_run_compat_fails_closed(tmp_path: Path) -> None:
+    # Only an explicit "false" is a documentation-only skip; a missing verdict
+    # from the change detection job must not pass as one.
+    write_leg(tmp_path / "reports", "http-request", "pass")
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    assert run(tmp_path, **{"run-compat": ""}) == 1
 
 
 def test_inherited_and_new_fails_naming_only_the_new(

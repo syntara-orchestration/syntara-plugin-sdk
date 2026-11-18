@@ -16,6 +16,29 @@ OTHER_PIN = "1111111111111111111111111111111111111111"
 FACTS = {"label": "build", "keys": ["workload"]}
 
 
+def entry(
+    *,
+    stage: str = "validate",
+    index: int = 3,
+    rule: str = "MC001",
+    category: str = "misconfiguration",
+    facts: dict[str, Any] | None = None,
+    frames: list[dict[str, Any]] | None = None,
+    exception: str | None = None,
+    confidence: str = "deterministic",
+) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "index": index,
+        "category": category,
+        "rule_id": rule,
+        "confidence": confidence,
+        "facts": FACTS if facts is None else facts,
+        "frames": frames if frames is not None else [],
+        "exception": exception,
+    }
+
+
 def report(
     *,
     result: str = "fail",
@@ -28,23 +51,31 @@ def report(
     pin: str = PIN,
     schema: int = 1,
     confidence: str = "deterministic",
+    exception: str | None = None,
+    failures: list[dict[str, Any]] | None = None,
+    stages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    first = (
+        None
+        if result == "pass"
+        else entry(
+            stage=stage,
+            rule=rule,
+            category=category,
+            facts=facts,
+            frames=frames,
+            exception=exception,
+            confidence=confidence,
+        )
+    )
     return {
         "schema": schema,
         "plugin": "http-request",
         "result": result,
         "pin": {"sha": pin, "date": "2026-11-12T10:00:00+00:00", "age_days": 1},
-        "failure": None
-        if result == "pass"
-        else {
-            "stage": stage,
-            "index": 3,
-            "category": category,
-            "rule_id": rule,
-            "confidence": confidence,
-            "facts": FACTS if facts is None else facts,
-            "frames": frames if frames is not None else [],
-        },
+        "failure": first,
+        "failures": failures if failures is not None else ([first] if first else []),
+        "stages": stages if stages is not None else [],
         "adapter": adapter,
     }
 
@@ -170,9 +201,9 @@ def test_ct006_adapter_residual_matches_by_producer() -> None:
     def residual(facts: dict[str, Any]) -> dict[str, Any]:
         return {"stage": "run", "rule_id": "CT006", "facts": facts}
 
-    ours = report(rule="MC001", adapter={"outcome": "failed", "residual": residual({"code": "INVALID_INPUT", "message": "m"})})
-    same = report(rule="MC001", adapter={"outcome": "failed", "residual": residual({"code": "INVALID_INPUT", "message": "m"})})
-    other = report(rule="MC001", adapter={"outcome": "failed", "residual": residual({"kind": "InvalidInput", "message": "m"})})
+    ours = report(rule="MC001", adapter={"outcome": "failed", "residuals": [residual({"code": "INVALID_INPUT", "message": "m"})]})
+    same = report(rule="MC001", adapter={"outcome": "failed", "residuals": [residual({"code": "INVALID_INPUT", "message": "m"})]})
+    other = report(rule="MC001", adapter={"outcome": "failed", "residuals": [residual({"kind": "InvalidInput", "message": "m"})]})
     assert inherited(ours, same) is not None
     assert inherited(ours, other) is None
 
@@ -185,44 +216,99 @@ def test_facts_with_unexpected_types_never_match_and_never_raise() -> None:
 # Frames -----------------------------------------------------------------------
 
 
-def test_frame_rules_match_on_path_and_function() -> None:
-    ours = report(rule="IM002", facts={}, frames=[frame()])
-    theirs = report(rule="IM002", facts={}, frames=[frame()])
+def test_frame_rules_match_on_exception_path_and_function() -> None:
+    ours = report(rule="IM002", facts={}, frames=[frame()], exception="ValueError")
+    theirs = report(rule="IM002", facts={}, frames=[frame()], exception="ValueError")
     assert inherited(ours, theirs) is not None
 
 
 def test_frame_rules_ignore_the_line_number() -> None:
     shifted = frame()
     shifted["line"] = 999
-    assert inherited(report(rule="IM002", facts={}, frames=[frame()]), report(rule="IM002", facts={}, frames=[shifted])) is not None
+    assert inherited(
+        report(rule="IM002", facts={}, frames=[frame()], exception="ValueError"),
+        report(rule="IM002", facts={}, frames=[shifted], exception="ValueError"),
+    ) is not None
+
+
+def test_frame_rules_with_a_different_exception_are_new() -> None:
+    # A devel ValueError and a pull request TypeError at the same frame are
+    # different failures.
+    assert inherited(
+        report(rule="IM002", facts={}, frames=[frame()], exception="TypeError"),
+        report(rule="IM002", facts={}, frames=[frame()], exception="ValueError"),
+    ) is None
+
+
+def test_frame_rules_without_an_exception_class_are_new() -> None:
+    assert inherited(
+        report(rule="IM002", facts={}, frames=[frame()]),
+        report(rule="IM002", facts={}, frames=[frame()]),
+    ) is None
 
 
 def test_frame_rules_require_the_right_origin() -> None:
     sdk_frames = [frame(origin="sdk")]
-    assert inherited(report(rule="IM002", facts={}, frames=sdk_frames), report(rule="IM002", facts={}, frames=sdk_frames)) is None
-    assert inherited(report(rule="SR001", facts={}, frames=sdk_frames), report(rule="SR001", facts={}, frames=sdk_frames)) is not None
+    assert inherited(report(rule="IM002", facts={}, frames=sdk_frames, exception="E"), report(rule="IM002", facts={}, frames=sdk_frames, exception="E")) is None
+    assert inherited(report(rule="SR001", facts={}, frames=sdk_frames, exception="E"), report(rule="SR001", facts={}, frames=sdk_frames, exception="E")) is not None
 
 
 def test_frame_rules_without_frames_are_new() -> None:
-    assert inherited(report(rule="IM002", facts={}), report(rule="IM002", facts={})) is None
+    assert inherited(report(rule="IM002", facts={}, exception="E"), report(rule="IM002", facts={}, exception="E")) is None
 
 
 def test_frame_rules_with_malformed_frames_never_raise() -> None:
     broken = [{"path": 12}]
-    assert inherited(report(rule="IM002", facts={}, frames=broken), report(rule="IM002", facts={}, frames=broken)) is None
+    assert inherited(report(rule="IM002", facts={}, frames=broken, exception="E"), report(rule="IM002", facts={}, frames=broken, exception="E")) is None
+
+
+# Every failing stage -----------------------------------------------------------
+
+
+def test_every_failing_stage_must_be_inherited() -> None:
+    both = [entry(stage="validate"), entry(stage="run", index=4, rule="IM003", facts={"code": "X", "message": "m"}, category="implementation")]
+    assert inherited(report(failures=both), report(failures=both)) is not None
+
+
+def test_a_new_failure_in_a_later_stage_is_new() -> None:
+    # The validate failure is inherited, but the run stage also fails now.
+    base = [entry(stage="validate")]
+    pr = [entry(stage="validate"), entry(stage="run", index=4, rule="IM003", facts={"code": "X", "message": "m"}, category="implementation")]
+    assert inherited(report(failures=pr), report(failures=base)) is None
+
+
+def test_blocked_stages_are_reported_as_unchecked() -> None:
+    stages = [
+        {"index": 1, "name": "preflight", "status": "pass"},
+        {"index": 2, "name": "environment", "status": "fail"},
+        {"index": 3, "name": "validate", "status": "skip", "note": "blocked by environment"},
+    ]
+    decision = inherited(report(stages=stages, rule="MC001"), report(rule="MC001"))
+    assert decision is not None
+    assert decision.unchecked
+
+
+def test_a_fully_executed_report_is_not_unchecked() -> None:
+    stages = [
+        {"index": 1, "name": "preflight", "status": "pass"},
+        {"index": 3, "name": "validate", "status": "fail"},
+        {"index": 4, "name": "run", "status": "pass"},
+    ]
+    decision = inherited(report(stages=stages), report())
+    assert decision is not None and not decision.unchecked
 
 
 # The adapter ------------------------------------------------------------------
 
 
 def residual(rule: str = "MC001", facts: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"stage": "validate", "rule_id": rule, "facts": facts if facts is not None else FACTS}
+    return entry(rule=rule, facts=facts)
 
 
 def test_adapter_getting_worse_makes_the_failure_new() -> None:
     # The visible failure matches devel's, but the migrated re-run now fails.
     decision = inherited(
-        report(adapter={"outcome": "failed", "residual": residual(facts={"label": "publish", "keys": ["tag"]})}),
+        report(adapter={"outcome": "failed", "residuals": [residual(facts={"label": "publish", "keys": ["tag"]})]}),
         report(adapter={"outcome": "passed"}),
     )
     assert decision is None
@@ -230,16 +316,16 @@ def test_adapter_getting_worse_makes_the_failure_new() -> None:
 
 def test_adapter_same_residual_still_inherits() -> None:
     decision = inherited(
-        report(adapter={"outcome": "failed", "residual": residual()}),
-        report(adapter={"outcome": "failed", "residual": residual()}),
+        report(adapter={"outcome": "failed", "residuals": [residual()]}),
+        report(adapter={"outcome": "failed", "residuals": [residual()]}),
     )
     assert decision is not None
 
 
 def test_adapter_different_residual_is_new() -> None:
     decision = inherited(
-        report(adapter={"outcome": "failed", "residual": residual(facts={"label": "publish", "keys": ["tag"]})}),
-        report(adapter={"outcome": "failed", "residual": residual()}),
+        report(adapter={"outcome": "failed", "residuals": [residual(facts={"label": "publish", "keys": ["tag"]})]}),
+        report(adapter={"outcome": "failed", "residuals": [residual()]}),
     )
     assert decision is None
 
@@ -248,15 +334,26 @@ def test_adapter_residual_in_a_different_stage_is_new() -> None:
     other = residual()
     other["stage"] = "run"
     decision = inherited(
-        report(adapter={"outcome": "failed", "residual": other}),
-        report(adapter={"outcome": "failed", "residual": residual()}),
+        report(adapter={"outcome": "failed", "residuals": [other]}),
+        report(adapter={"outcome": "failed", "residuals": [residual()]}),
     )
     assert decision is None
 
 
-def test_passed_or_absent_adapter_never_blocks_inheritance() -> None:
+def test_lost_adapter_coverage_is_new() -> None:
+    # Devel's migration exercised the later stages; the pull request lost the
+    # only execution path that checked them.
+    for ours in (None, {"outcome": "not-applicable", "reason": "shape changed"}):
+        assert inherited(report(adapter=ours), report(adapter={"outcome": "passed"})) is None
+        assert inherited(report(adapter=ours), report(adapter={"outcome": "failed", "residuals": [residual()]})) is None
+
+
+def test_absent_adapter_on_both_sides_still_inherits() -> None:
+    assert inherited(report(), report()) is not None
+
+
+def test_pr_gained_adapter_coverage_is_not_worse() -> None:
     assert inherited(report(adapter={"outcome": "passed"}), report()) is not None
-    assert inherited(report(), report(adapter={"outcome": "passed"})) is not None
 
 
 # Loading and absence reasons ---------------------------------------------------

@@ -142,23 +142,29 @@ only the workflow's read-only token.
 - A pull request that breaks strictly less than `devel` (fewer broken fields)
   is inherited too, and the summary says so.
 
-Only the first failing stage is recorded per step type, so while a failure is
-inherited the stages after it are unchecked; the summary names them. For
-settings migrations, the adapter's re-run on the migrated copy is compared as
-well, so a second break hiding behind an inherited migration still fails the
-check.
+A failing validate or run stage does not stop the check: the later stages
+still run, every failing stage is recorded, and each one is compared against
+the baseline, so a new break hiding behind an inherited one still fails the
+check. A failure in preflight, environment, or the registry does block the
+stages after it (nothing downstream can test the candidate without them);
+when the blocking failure is inherited, the step type is reported as
+`not verified, inherited` with the stages that did not run, rather than as
+compatible. For settings migrations, the adapter's re-run on the migrated
+copy is compared as well.
 
 Not every failure can be inherited: `infra` and `unknown` failures never are
 (they stay red; re-run or classify them), and a few rules have no identity
 stable enough to compare. The policy lives in `tests/step_types/baseline.py`,
 and a test fails when the classifier gains a rule the policy does not know.
 
-The baseline needs the `devel` push run for the pull request's base commit to
-have finished. A pull request checked in the minutes after a merge fails with
+The baseline needs a completed `devel` run for the pull request's base
+commit. A pull request checked in the minutes after a merge fails with
 `no completed devel run ... yet`; re-running the failed jobs clears it once
 that run finishes. When only the gate failed (after a label change, for
 example), re-running the `compat-report` job alone is enough, and the legs
-are reused. Baseline reports are kept for 90 days.
+are reused. Baseline reports are kept for 90 days; if they expire (a quiet
+`devel`), running the workflow manually on `devel` once rebuilds the baseline
+for that same commit, and counts as one.
 
 ## The pinned revision
 
@@ -195,11 +201,14 @@ pushed to it).
 
 - The check surfaces compatibility regressions; it cannot guarantee that it
   detects every breaking change.
-- Only the first failure per step type is compared against `devel`; the stages
-  after it are unchecked while that failure is inherited (the adapter's
-  migrated re-run is compared too).
-- The baseline is the `devel` push run for the pull request's base commit;
-  until that run completes, inherited failures cannot be recognized.
+- Stages blocked by a failed preflight, environment, or registry stage remain
+  unchecked; those step types are reported as `not verified` rather than
+  compatible (the adapter's migrated re-run is compared too).
+- The baseline is the `devel` run for the pull request's base commit; until
+  that run completes, inherited failures cannot be recognized.
+- The legs capture raw command output in the uploaded artifacts. That is fine
+  for the public example step types; redact before pointing the check at
+  inputs that carry real credentials.
 - Workload images install `syntara-plugin-contracts` from published releases
   (step-types' lock file and Containerfiles), not from the pull request. Changes
   to the contracts package are exercised through the authoring and source-mode

@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from baseline import Inherited, absence_reason, inherited
+from baseline import Inherited, absence_reason, inherited, skipped_stages
 from baseline import load as load_baseline
 from classifier import outcome_word
 from render import CYAN, GREEN, RED, YELLOW, Renderer, append_summary, md_table
@@ -86,9 +86,15 @@ def verdict(
     """Return the exit code, the reasons, and the report-only/inherited notes."""
     if args.changes != "success":
         return Verdict(1, [f"the change detection job did not succeed ({args.changes})"])
-    if args.run_compat != "true":
+    if args.run_compat == "false":
         return Verdict(
             0, ["no change in this pull request affects the step types check (skipped by design)"]
+        )
+    if args.run_compat != "true":
+        # A missing verdict from the change detection job must not pass as a
+        # documentation-only change; only an explicit "false" skips.
+        return Verdict(
+            1, [f"the change detection job did not report whether the check applies ({args.run_compat!r})"]
         )
     label = args.label_report_only == "true"
     reasons: list[str] = []
@@ -114,17 +120,20 @@ def verdict(
                 source = "breaking-change label" if label else "manual run with report_only"
                 warnings.append(f"{plugin}: {_word(report)}, reported only ({source})")
             elif decisions.get(plugin) is not None:
+                decision = decisions[plugin]
                 base_report = (baseline or {}).get(plugin) or {}
                 base_sdk = str((base_report.get("sdk") or {}).get("commit", ""))[:12]
                 where = f"already on devel at {base_sdk}" if base_sdk else "already on devel"
-                note = f"{plugin}: {_word(report)}, {where}"
-                if decisions[plugin].improved:
-                    note += " (this pull request breaks less than devel)"
-                failure = report.get("failure") or {}
-                if failure.get("stage"):
-                    note += (
-                        f"; stages after {failure.get('index', '?')} {failure['stage']} unchecked"
+                skipped = skipped_stages(report)
+                if decision.unchecked and skipped:
+                    note = (
+                        f"{plugin}: not verified, {where}; stages {', '.join(skipped)} "
+                        "not run (blocked by the inherited failure)"
                     )
+                else:
+                    note = f"{plugin}: {_word(report)}, {where}"
+                if decision.improved:
+                    note += " (this pull request breaks less than devel)"
                 inherited_notes.append(note)
             else:
                 suffix = ", new in this pull request" if baseline is not None else ""
@@ -198,6 +207,8 @@ def row(
         result = "compatible"
     elif report_only(report, label):
         result = f"{_word(report)} (report-only)"
+    elif decision is not None and decision.unchecked:
+        result = "not verified, inherited"
     elif decision is not None:
         result = f"{_word(report)}, inherited"
     elif baseline_on:

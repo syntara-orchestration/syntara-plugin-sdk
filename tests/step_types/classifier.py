@@ -260,6 +260,18 @@ def _exception_line(text: str) -> str | None:
     return None
 
 
+def exception_class(failure: Failure) -> str | None:
+    """The traceback's exception class name: the stable identity of a crash.
+
+    The devel-baseline comparison pairs this with the traceback frame, so a
+    different exception raised at the same location counts as a new failure.
+    """
+    line = _exception_line(_searchable(failure))
+    if line is None:
+        return None
+    return line.split(":", 1)[0].strip() or None
+
+
 def _jq_false(failure: Failure) -> bool:
     """True when a jq ``-e`` expectation in a make target evaluated to false."""
     lines = [line.strip() for line in failure.stdout.splitlines() if line.strip()]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 import tomllib
 import zipfile
 from pathlib import Path
@@ -12,7 +13,10 @@ from pathlib import Path
 import pytest
 from discover import DiscoveryError, sdk_plugins
 from driver import (
+    STAGES,
+    Driver,
     StageFailed,
+    StageRecord,
     Wheels,
     candidate_problems,
     find_wheels,
@@ -247,3 +251,74 @@ def test_command_crash_closes_the_stop_commands_region(tmp_path: Path) -> None:
     token = next(line for line in lines if line.startswith("::stop-commands::")).split("::")[2]
     assert f"::{token}::" in lines
     assert lines[-1] == "::endgroup::"
+
+
+class _SilentOut:
+    def stage_start(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def stage_result(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
+def ladder(fail_at: set[str], budget: float = 3600.0) -> list[StageRecord]:
+    check = object.__new__(Driver)
+    check.out = _SilentOut()
+    check.started = time.monotonic()
+    check.deadline = check.started + budget
+
+    def execute(record: StageRecord, label: str) -> None:
+        record.status = "fail" if record.name in fail_at else "pass"
+
+    check._execute = execute  # type: ignore[method-assign]
+    return check.run_ladder(STAGES, adapted=False)
+
+
+def test_a_validate_failure_does_not_block_the_later_stages() -> None:
+    # Later stages still run and are compared against the baseline, so a new
+    # break behind an inherited one is caught.
+    records = ladder({"validate"})
+    assert [(r.name, r.status) for r in records] == [
+        ("preflight", "pass"),
+        ("environment", "pass"),
+        ("validate", "fail"),
+        ("run", "pass"),
+        ("registry", "pass"),
+        ("build-inspect", "pass"),
+    ]
+
+
+def test_a_run_failure_does_not_block_the_later_stages() -> None:
+    records = ladder({"run"})
+    assert [(r.name, r.status) for r in records] == [
+        ("preflight", "pass"),
+        ("environment", "pass"),
+        ("validate", "pass"),
+        ("run", "fail"),
+        ("registry", "pass"),
+        ("build-inspect", "pass"),
+    ]
+
+
+def test_an_environment_failure_blocks_the_rest() -> None:
+    records = ladder({"environment"})
+    blocked = [r for r in records if r.status == "skip"]
+    assert [r.name for r in blocked] == ["validate", "run", "registry", "build-inspect"]
+    assert all(r.note == "blocked by environment" for r in blocked)
+
+
+def test_a_registry_failure_blocks_only_build_inspect() -> None:
+    records = ladder({"registry"})
+    assert [(r.name, r.status) for r in records] == [
+        ("preflight", "pass"),
+        ("environment", "pass"),
+        ("validate", "pass"),
+        ("run", "pass"),
+        ("registry", "fail"),
+        ("build-inspect", "skip"),
+    ]
+
+
+def test_an_exhausted_budget_skips_the_remaining_stages() -> None:
+    records = ladder(set(), budget=-1.0)
+    assert all(r.status == "skip" and r.note == "budget exhausted" for r in records)

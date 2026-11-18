@@ -58,7 +58,14 @@ from pathlib import Path
 from typing import Any
 
 import adapter
-from classifier import Classification, Failure, classify, outcome_word, reproduce_hint
+from classifier import (
+    Classification,
+    Failure,
+    classify,
+    exception_class,
+    outcome_word,
+    reproduce_hint,
+)
 from render import (
     BLUE,
     BOLD,
@@ -167,6 +174,7 @@ class StageRecord:
     classification: Classification | None = None
     diagnostic: Any = None
     log: str = ""
+    exception: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -835,6 +843,14 @@ class Driver:
 
     # Ladder -----------------------------------------------------------------
 
+    # A failure in these stages blocks everything after it: without the layout
+    # or the injected candidate environment nothing downstream can test the
+    # change, and build-inspect needs the registry. A validate or run failure
+    # does not block the later stages: they still run, every failure is
+    # recorded, and the gate compares each one against the devel baseline, so
+    # a new break hiding behind an inherited one is still caught.
+    BLOCKING_STAGES = frozenset({"preflight", "environment", "registry"})
+
     def run_ladder(self, names: Sequence[str], *, adapted: bool) -> list[StageRecord]:
         records: list[StageRecord] = []
         blocked_by = ""
@@ -848,6 +864,11 @@ class Driver:
                 record.note = f"blocked by {blocked_by}"
                 self.out.stage_result(index, TOTAL, label, "skip", note=record.note)
                 continue
+            if self.remaining() <= 0:
+                record.status = "skip"
+                record.note = "budget exhausted"
+                self.out.stage_result(index, TOTAL, label, "skip", note=record.note)
+                continue
             self.out.stage_start(index, TOTAL, label, self._stage_hint(name))
             self._execute(record, label)
             self.out.stage_result(
@@ -859,7 +880,7 @@ class Driver:
                 elapsed=time.monotonic() - self.started,
                 note=self._result_note(record),
             )
-            if record.status == "fail":
+            if record.status == "fail" and name in self.BLOCKING_STAGES:
                 blocked_by = name
         return records
 
@@ -888,6 +909,7 @@ class Driver:
                     step_types_dir=self.step_types,
                 )
                 record.classification = classify(failure)
+                record.exception = exception_class(failure)
             record.duration = time.monotonic() - start
             classification = record.classification
             if (
@@ -972,10 +994,12 @@ class Driver:
         (self.report_dir / patch_name).write_text(diff, encoding="utf-8")
         info["patch"] = patch_name
         info["patch_text"] = diff
-        residual = next((r for r in self.adapted_records if r.status == "fail"), None)
-        info["outcome"] = "failed" if residual else "passed"
-        if residual is not None and residual.classification is not None:
-            info["residual"] = {"stage": residual.name, **residual.classification.to_dict()}
+        residuals = [
+            r for r in self.adapted_records if r.status == "fail" and r.classification is not None
+        ]
+        info["outcome"] = "failed" if residuals else "passed"
+        if residuals:
+            info["residuals"] = [self._failure_entry(record) for record in residuals]
 
     # Reporting --------------------------------------------------------------
 
@@ -1255,10 +1279,21 @@ class Driver:
             )
         return "".join(parts) + "\n"
 
+    def _failure_entry(self, record: StageRecord) -> dict[str, Any]:
+        classification = record.classification
+        assert classification is not None
+        return {
+            "stage": record.name,
+            "index": record.index,
+            "exception": record.exception,
+            **classification.to_dict(),
+        }
+
     def report(self, pin: dict[str, Any]) -> int:
         self.write_logs(self.records)
         self.write_logs(self.adapted_records, suffix="-adapted")
-        failed = next((r for r in self.records if r.status == "fail"), None)
+        failures = [r for r in self.records if r.status == "fail" and r.classification is not None]
+        failed = failures[0] if failures else None
         self.out.blank()
         self.out.rule("Result", CYAN)
         headers = ["Stage", "Name", "Result", "Duration", "Notes"]
@@ -1268,10 +1303,11 @@ class Driver:
             self.out.line(self.out.paint("Adapted re-run (migrated copy):", BOLD))
             rows, colors = self.stage_rows(self.adapted_records)
             self.out.table(headers, rows, aligns="lllrl", row_colors=colors)
-        if failed is not None:
+        for failure in failures:
             self.out.blank()
-            self.failure_panel(failed)
-            self.extra_logs(failed)
+            self.failure_panel(failure)
+            self.extra_logs(failure)
+        if failures:
             self.adapter_report()
         elapsed = format_duration(time.monotonic() - self.started)
         glyphs = self.out.glyphs
@@ -1291,16 +1327,20 @@ class Driver:
                 f"{self.plugin}: {outcome_word(c.category)} at [{failed.index}/{TOTAL}] "
                 f"{failed.name}, {c.category} ({c.rule_id} {c.rule_name})"
             )
+            more = f" (+{len(failures) - 1} more failing stage(s))" if len(failures) > 1 else ""
             if self.report_only:
-                text = f"{glyphs['warn']} {verdict}; report-only, not failing ({elapsed})"
+                text = f"{glyphs['warn']} {verdict}{more}; report-only, not failing ({elapsed})"
                 self.out.line(self.out.paint(text, BOLD, YELLOW))
             else:
-                self.out.line(self.out.paint(f"{glyphs['fail']} {verdict} ({elapsed})", BOLD, RED))
-            self.out.annotation(
-                "warning" if self.report_only else "error",
-                f"step-types compat {self.out.dot} {self.plugin} {self.out.dot} {failed.name}",
-                f"{c.category} ({c.rule_id} {c.rule_name}): {c.what}",
-            )
+                self.out.line(self.out.paint(f"{glyphs['fail']} {verdict}{more} ({elapsed})", BOLD, RED))
+            for failure in failures:
+                fc = failure.classification
+                assert fc is not None
+                self.out.annotation(
+                    "warning" if self.report_only else "error",
+                    f"step-types compat {self.out.dot} {self.plugin} {self.out.dot} {failure.name}",
+                    f"{fc.category} ({fc.rule_id} {fc.rule_name}): {fc.what}",
+                )
         document = {
             "schema": 1,
             "plugin": self.plugin,
@@ -1315,9 +1355,8 @@ class Driver:
             },
             "workload_tag": self.tag,
             "stages": [r.to_dict() for r in self.records],
-            "failure": None
-            if failed is None or failed.classification is None
-            else {"stage": failed.name, "index": failed.index, **failed.classification.to_dict()},
+            "failure": None if failed is None else self._failure_entry(failed),
+            "failures": [self._failure_entry(record) for record in failures],
             "adapter": None
             if not self.adapter_info
             else {k: v for k, v in self.adapter_info.items() if k != "patch_text"},
@@ -1358,9 +1397,18 @@ class Driver:
         self.header(pin)
         try:
             self.records = self.run_ladder(STAGES, adapted=False)
-            failed = next((r for r in self.records if r.status == "fail"), None)
-            if failed is not None:
-                self.try_adapter(failed)
+            migratable = next(
+                (
+                    record
+                    for record in self.records
+                    if record.status == "fail"
+                    and record.classification is not None
+                    and record.classification.facts.get("transform")
+                ),
+                None,
+            )
+            if migratable is not None:
+                self.try_adapter(migratable)
             return self.report(pin)
         finally:
             self.cleanup()

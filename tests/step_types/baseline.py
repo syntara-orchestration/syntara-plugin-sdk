@@ -88,6 +88,7 @@ class Inherited:
     """A failure devel already carries."""
 
     improved: bool  # the pull request breaks strictly less than devel
+    unchecked: bool  # stages were skipped, so compatibility is not fully verified
 
 
 def _pin_of(report: Any) -> str | None:
@@ -135,7 +136,16 @@ def _fact_equal(pr: Any, base: Any, name: str) -> bool:
     return _scalar(ours) and _scalar(theirs) and ours == theirs
 
 
-def _frame_identity(rule: str, failure: Any) -> tuple[str, str] | None:
+def _frame_identity(rule: str, failure: Any) -> tuple[str, str, str] | None:
+    """(exception class, path, function) of the frame a crash was located on.
+
+    The exception class is part of the identity: a different exception raised
+    at the same location is a different failure. A crash without an exception
+    class cannot be identified and is never inherited.
+    """
+    exception = failure.get("exception") if isinstance(failure, dict) else None
+    if not isinstance(exception, str) or not exception:
+        return None
     frames = failure.get("frames") if isinstance(failure, dict) else None
     if not isinstance(frames, list):
         return None
@@ -149,7 +159,7 @@ def _frame_identity(rule: str, failure: Any) -> tuple[str, str] | None:
         function = frame.get("function")
         if not isinstance(path, str) or not isinstance(function, str):
             return None
-        return path, function
+        return exception, path, function
     return None
 
 
@@ -174,46 +184,94 @@ def _same_rule(pr: Any, base: Any) -> tuple[bool, bool]:
     return False, False  # unlisted rules are never inherited
 
 
+def _failure_entries(report: Any) -> list[Any]:
+    """Every failing stage's entry: the ``failures`` list, or the legacy first."""
+    if not isinstance(report, dict):
+        return []
+    failures = report.get("failures")
+    if isinstance(failures, list) and failures:
+        return [entry for entry in failures if isinstance(entry, dict)]
+    failure = report.get("failure")
+    return [failure] if isinstance(failure, dict) else []
+
+
+def skipped_stages(report: Any) -> list[str]:
+    """The stages a failing report never executed, as "N name" strings."""
+    if not isinstance(report, dict):
+        return []
+    stages = report.get("stages")
+    if not isinstance(stages, list):
+        return []
+    return [
+        f"{stage.get('index', '?')} {stage.get('name', '?')}"
+        for stage in stages
+        if isinstance(stage, dict) and stage.get("status") == "skip"
+    ]
+
+
+def _adapter_ran(adapter: Any) -> bool:
+    return isinstance(adapter, dict) and adapter.get("outcome") in {"passed", "failed"}
+
+
 def _adapter_worse(pr_report: Any, base_report: Any) -> bool:
     """Whether the adapter's re-run on the migrated copy got worse."""
     ours = pr_report.get("adapter") if isinstance(pr_report, dict) else None
     theirs = base_report.get("adapter") if isinstance(base_report, dict) else None
-    if not isinstance(ours, dict) or ours.get("outcome") != "failed":
-        return False
-    if not isinstance(theirs, dict) or theirs.get("outcome") != "failed":
-        return True  # devel's migration passed (or never ran); this one fails
-    our_residual = ours.get("residual")
-    their_residual = theirs.get("residual")
-    if not isinstance(our_residual, dict) or not isinstance(their_residual, dict):
-        return True  # a failed re-run without a residual cannot be compared
-    if our_residual.get("stage") != their_residual.get("stage"):
+    if _adapter_ran(theirs) and not _adapter_ran(ours):
+        # Devel's migration exercised the later stages; this pull request lost
+        # the only execution path that checked them.
         return True
-    return not _same_rule(our_residual, their_residual)[0]
+    if not _adapter_ran(ours) or ours.get("outcome") != "failed":
+        return False
+    if not _adapter_ran(theirs) or theirs.get("outcome") != "failed":
+        return True  # devel's migration passed (or never ran); this one fails
+    base_residuals = [
+        entry for entry in (theirs.get("residuals") or []) if isinstance(entry, dict)
+    ]
+    for residual in ours.get("residuals") or []:
+        if not isinstance(residual, dict):
+            return True  # a failed re-run without a comparable residual
+        if not any(
+            residual.get("stage") == base.get("stage") and _same_rule(residual, base)[0]
+            for base in base_residuals
+        ):
+            return True
+    return False
 
 
 def inherited(pr_report: Any, base_report: Any) -> Inherited | None:
     """Whether the pull request's failing report is inherited from devel.
 
-    ``None`` means "not inherited" (new, or nothing to compare against);
-    the caller treats both the same way, and no path here raises.
+    Every failing stage must be a failure devel already carries at the same
+    stage with the same identity. ``None`` means "not inherited" (new, or
+    nothing to compare against); the caller treats both the same way, and no
+    path here raises.
     """
     if not isinstance(pr_report, dict) or not isinstance(base_report, dict):
-        return None
-    pr_failure = pr_report.get("failure")
-    base_failure = base_report.get("failure")
-    if not isinstance(pr_failure, dict) or not isinstance(base_failure, dict):
         return None
     pins = (_pin_of(pr_report), _pin_of(base_report))
     if pins[0] is None or pins[0] != pins[1]:
         return None
-    if pr_failure.get("stage") != base_failure.get("stage"):
+    pr_failures = _failure_entries(pr_report)
+    base_failures = _failure_entries(base_report)
+    if not pr_failures:
         return None
-    same, improved = _same_rule(pr_failure, base_failure)
-    if not same:
-        return None
+    improved = False
+    for entry in pr_failures:
+        matched = False
+        for base_entry in base_failures:
+            if entry.get("stage") != base_entry.get("stage"):
+                continue
+            same, better = _same_rule(entry, base_entry)
+            if same:
+                matched = True
+                improved = improved or better
+                break
+        if not matched:
+            return None
     if _adapter_worse(pr_report, base_report):
         return None
-    return Inherited(improved=improved)
+    return Inherited(improved=improved, unchecked=bool(skipped_stages(pr_report)))
 
 
 def load(directory: Path, plugins: Sequence[str]) -> tuple[dict[str, dict[str, Any] | None], dict[str, Any]]:
@@ -257,4 +315,8 @@ def absence_reason(meta: dict[str, Any]) -> str:
         base = meta.get("base_sha")
         where = f" for base commit {str(base)[:12]}" if isinstance(base, str) and base else ""
         return f"no completed devel run{where} yet; re-run this job once it finishes"
-    return f"the baseline run's artifacts could not be downloaded (run {run_id}, expired or deleted)"
+    return (
+        f"the baseline run's artifacts could not be downloaded (run {run_id}, expired or "
+        "deleted); run the workflow manually on devel once to rebuild the baseline for that "
+        "commit, then re-run this job"
+    )

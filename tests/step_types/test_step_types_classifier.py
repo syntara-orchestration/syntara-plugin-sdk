@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from classifier import Failure, classify, frame_origin, parse_frames
+from classifier import Failure, classify, exception_class, frame_origin, parse_frames
 
 MAKE_ERROR = "make[1]: *** [Makefile:71: sdk-plugin-validate] Error 4\n"
 
@@ -407,3 +407,18 @@ def test_rules_carry_baseline_identity_facts() -> None:
         failure(stderr="Makefile:42: *** Set PLUGIN to one of http-request script-bash. Stop.\n")
     )
     assert "Set PLUGIN to one of" in plugin_unknown.facts["line"]
+
+
+def test_exception_class_is_the_traceback_identity() -> None:
+    # The devel-baseline comparison pairs this with the traceback frame, so a
+    # different exception at the same location is a new failure.
+    crash = failure(
+        stage="run",
+        stderr=(
+            "Traceback (most recent call last):\n"
+            '  File "step.py", line 12, in main\n    run()\n'
+            "ValueError: bad value\n"
+        ),
+    )
+    assert exception_class(crash) == "ValueError"
+    assert exception_class(failure(stderr="no traceback here\n")) is None

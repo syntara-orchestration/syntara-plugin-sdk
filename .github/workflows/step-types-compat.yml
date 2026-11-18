@@ -76,7 +76,13 @@ jobs:
             || true)"
           if [ -n "$relevant" ]; then
             echo "run_compat=true" >> "$GITHUB_OUTPUT"
+            # The file list is pull-request-controlled: print it inside a
+            # stop-commands region, so a filename like "::add-mask::x" cannot
+            # be parsed as a workflow command.
+            token="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+            echo "::stop-commands::${token}"
             printf 'Relevant changes:\n%s\n' "$relevant"
+            echo "::${token}::"
           else
             echo "run_compat=false" >> "$GITHUB_OUTPUT"
             echo "Only documentation changed; the step types check is skipped by design."
@@ -203,8 +209,9 @@ jobs:
           name: step-types-compat-${{ matrix.plugin }}
           path: report/
           if-no-files-found: warn
-          # Devel push runs are the compat baseline, so they outlive pull request artifacts.
-          retention-days: ${{ github.event_name == 'push' && 90 || 14 }}
+          # Devel runs are the compat baseline (push, or a manual run used to
+          # refresh an expired one), so they outlive pull request artifacts.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
           overwrite: true
       - name: Remove the temporary registry
         if: always()
@@ -256,9 +263,11 @@ jobs:
         id: baseline-run
         # Pull request runs only: devel and manual runs are judged as they are,
         # so devel stays red while a break waits on step-types. The baseline is
-        # the devel push run for this pull request's base commit (HEAD^1 of the
+        # the devel run for this pull request's base commit (HEAD^1 of the
         # merge commit), exactly the devel this pull request is tested against.
-        # Cancelled runs are skipped; they produced no reports.
+        # Manual runs on devel count as well: they are how an expired baseline
+        # for a quiet devel commit gets rebuilt. Cancelled runs are skipped;
+        # they produced no reports.
         if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
         continue-on-error: true
         env:
@@ -269,8 +278,8 @@ jobs:
           mkdir -p baseline
           run_id=""
           if [ -n "$BASE_SHA" ]; then
-            run_id="$(gh api "repos/$REPOSITORY/actions/workflows/step-types-compat.yml/runs?head_sha=$BASE_SHA&event=push&status=completed&per_page=20" \
-              --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")][0].id // ""')"
+            run_id="$(gh api "repos/$REPOSITORY/actions/workflows/step-types-compat.yml/runs?head_sha=$BASE_SHA&status=completed&per_page=20" \
+              --jq '[.workflow_runs[] | select((.event == "push" or .event == "workflow_dispatch") and (.conclusion == "success" or .conclusion == "failure"))][0].id // ""')"
           fi
           printf '{"base_sha":"%s","run_id":"%s"}\n' "$BASE_SHA" "$run_id" > baseline/meta.json
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
@@ -304,7 +313,7 @@ jobs:
             --event "$EVENT_NAME" \
             --plugins "${PLUGINS:-[]}" \
             --changes "$CHANGES_RESULT" \
-            --run-compat "${RUN_COMPAT:-false}" \
+            --run-compat "$RUN_COMPAT" \
             --discover "$DISCOVER_RESULT" \
             --tooling "$TOOLING_RESULT" \
             --compat "$COMPAT_RESULT" \
