@@ -293,7 +293,12 @@ jobs:
           echo "available=$available" >> "$GITHUB_OUTPUT"
 
   baseline-recompute:
-    name: baseline-recompute (${{ matrix.plugin }})
+    # Static name on purpose: when this job is skipped (the common case, the
+    # devel baseline was available), GitHub lists it with the name template
+    # unexpanded, so "${{ matrix.plugin }}" would show literally in the checks
+    # list. Each leg is still identified by its plugin in the logs and in the
+    # devel-baseline-<plugin> artifact.
+    name: Recompute the baseline
     needs: [changes, discover, baseline]
     # The fallback that keeps pull requests self-sufficient: when the devel
     # run's reports are unavailable (the run has not finished yet, was
