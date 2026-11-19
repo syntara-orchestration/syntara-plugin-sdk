@@ -413,6 +413,9 @@ def test_runner_fails_when_the_sentinel_reaches_test_output(tmp_path, failure):
     result, ep, _ = _run_with_fake_secrets(tmp_path, failure=failure)
     assert result.returncode == 1, result.stderr
     assert "sentinel value appeared" in result.stderr
+    # The value must be redacted from the collected files before upload.
+    redacted = (tmp_path / "logs" / "results.xml").read_text(encoding="utf-8")
+    assert "REDACTED-CREDENTIAL-SENTINEL" in redacted
     assert not (ep / ".secrets").exists()
 
 

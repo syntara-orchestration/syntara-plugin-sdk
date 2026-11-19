@@ -59,11 +59,17 @@ cleanup() {
   [[ -z "$api_pid" ]] || kill "$api_pid" 2>/dev/null || true
   # Scan every collected log and result for the credential sentinel. This
   # runs on success and failure alike, after diagnostics collection, so a
-  # leak into the worker-pod or runtime logs cannot escape the run.
+  # leak into the worker-pod or runtime logs cannot escape the run. On a
+  # hit, redact the value from every affected file before the workflow
+  # uploads the log directory as an artifact; the sentinel is plain hex,
+  # so it is safe as a sed pattern.
   if [[ -n "${EP_COMPAT_CREDENTIAL_TOKEN:-}" ]] \
     && grep -R -F -q -- "$EP_COMPAT_CREDENTIAL_TOKEN" "$logs" 2>/dev/null; then
-    echo 'The credential sentinel value appeared in compatibility logs or test output' >&2
+    echo 'The credential sentinel value appeared in compatibility logs or test output and was redacted before upload' >&2
     status=1
+    grep -R -l -F -- "$EP_COMPAT_CREDENTIAL_TOKEN" "$logs" 2>/dev/null | while read -r affected; do
+      sed -i "s/$EP_COMPAT_CREDENTIAL_TOKEN/REDACTED-CREDENTIAL-SENTINEL/g" "$affected" || true
+    done
   fi
   rm -f "$test_file"
   if (( secrets_owned )); then

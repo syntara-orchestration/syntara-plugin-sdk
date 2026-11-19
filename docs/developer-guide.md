@@ -128,8 +128,9 @@ The credential value itself is a random sentinel generated per run, masked
 in CI, and never written to disk by the harness: the tests assert digests
 and fail with static messages that never echo the value, and the runner
 scans the JUnit results and every collected log file for the sentinel in
-its exit trap (after diagnostics collection, on success and failure alike)
-and fails the run if it appears anywhere.
+its exit trap (after diagnostics collection, on success and failure alike),
+fails the run if it appears anywhere, and redacts the value from the
+collected files before they are uploaded as artifacts.
 
 The fixture step implementations also run without a cluster:
 
