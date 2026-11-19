@@ -1,4 +1,4 @@
-"""Prepare an isolated image context from the checkout without running build hooks."""
+"""Prepare isolated image contexts from the checkout without running build hooks."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from syntara_plugin.sdk.authoring import BuildRequest, compile_workspace
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples/existing-step"
 CONTRACTS = ROOT / "sdks/python/packages/contracts"
+CREDENTIAL_WORKLOAD = ROOT / "tests/execution_plane/credential_workload"
 
 
 def write_project(
@@ -31,30 +32,51 @@ def write_project(
     )
 
 
-def _reject_symlinked_sources() -> None:
+def _workload_sources(workload: str) -> tuple[Path, str, str]:
+    """Return the checkout source, package, and workload ID for one image."""
+    if workload == "existing-step":
+        return EXAMPLE, "existing_step", "existing-step-workload"
+    if workload == "credential-steps":
+        return CREDENTIAL_WORKLOAD, "credential_steps", "credential-steps-workload"
+    raise ValueError(f"unknown workload {workload!r}")
+
+
+def _reject_symlinked_sources(workload: str) -> None:
     """Reject symlinks in every checkout path copied into the image context."""
+    source, package, _ = _workload_sources(workload)
     sources = [
         CONTRACTS / "src" / "syntara_plugin",
-        EXAMPLE / "src" / "existing_step",
+        source / "src" / package,
         *(ROOT / "contracts" / directory for directory in ("schemas", "fixtures", "proto")),
-        EXAMPLE / "runtime.json",
-        EXAMPLE / "Containerfile",
+        source / "runtime.json",
+        source / "Containerfile",
     ]
-    for source in sources:
-        for candidate in (source, *source.parents):
+    for source_path in sources:
+        for candidate in (source_path, *source_path.parents):
             if candidate.is_symlink():
                 raise ValueError(f"Staged source contains a symlink: {candidate}")
             if candidate == ROOT:
                 break
-        if source.is_dir():
-            for nested in source.rglob("*"):
+        if source_path.is_dir():
+            for nested in source_path.rglob("*"):
                 if nested.is_symlink():
                     raise ValueError(f"Staged source contains a symlink: {nested}")
 
 
 def prepare(context: Path) -> dict[str, object]:
+    """Stage the Existing Step example image context."""
+    return _prepare_workload(context, "existing-step")
+
+
+def prepare_credential_workload(context: Path) -> dict[str, object]:
+    """Stage the credential fixture workload image context."""
+    return _prepare_workload(context, "credential-steps")
+
+
+def _prepare_workload(context: Path, workload: str) -> dict[str, object]:
     """Stage source trees, generate the registration and build both wheels."""
-    _reject_symlinked_sources()
+    source, package, workload_id = _workload_sources(workload)
+    _reject_symlinked_sources(workload)
     context.mkdir(parents=True, exist_ok=False)
     wheels = context / "wheels"
     wheels.mkdir()
@@ -78,23 +100,25 @@ def prepare(context: Path) -> dict[str, object]:
         stdout=subprocess.DEVNULL,
         check=True,
     )
-    for source, package in ((CONTRACTS, "syntara_plugin"), (EXAMPLE, "existing_step")):
-        metadata = tomllib.loads((source / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-        project = projects / package
+    for project_source, project_package in ((CONTRACTS, "syntara_plugin"), (source, package)):
+        metadata = tomllib.loads((project_source / "pyproject.toml").read_text(encoding="utf-8"))[
+            "project"
+        ]
+        project = projects / project_package
         project.mkdir()
         shutil.copytree(
-            source / "src" / package,
-            project / "src" / package,
+            project_source / "src" / project_package,
+            project / "src" / project_package,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
-        if source == CONTRACTS:
+        if project_source == CONTRACTS:
             for directory in ("schemas", "fixtures", "proto"):
                 shutil.copytree(
                     ROOT / "contracts" / directory,
-                    project / "src" / package / "contracts" / directory,
+                    project / "src" / project_package / "contracts" / directory,
                 )
         write_project(
-            project, metadata["name"], metadata["version"], metadata["dependencies"], package
+            project, metadata["name"], metadata["version"], metadata["dependencies"], project_package
         )
         subprocess.run(
             [
@@ -111,8 +135,38 @@ def prepare(context: Path) -> dict[str, object]:
             check=True,
         )
 
-    # The compiler requires installed distribution metadata for provenance. Supply
-    # only checkout version metadata; do not install the local SDK or run its hooks.
+    manifest = registration_manifest(
+        _compile_descriptor(projects, source / "src" / package / "manifests" / "plugin.yaml"),
+        workload_id,
+    )
+    resolved = {
+        "bindings": [
+            {"stepRevisionId": revision, "runtimeKind": "custom-runner", **entry}
+            for revision, entry in manifest["steps"].items()
+        ]
+    }
+    (context / "registration.json").write_text(
+        json.dumps(manifest, sort_keys=True), encoding="utf-8"
+    )
+    (context / "resolved.json").write_text(json.dumps(resolved, sort_keys=True), encoding="utf-8")
+    shutil.copyfile(source / "runtime.json", context / "runtime.json")
+    certificates = context / "certificates"
+    certificates.mkdir()
+    _generate_tls_material(certificates)
+    shutil.copyfile(
+        ROOT / "tests/execution_plane/runtime_entrypoint.py", context / "runtime_entrypoint.py"
+    )
+    shutil.copyfile(ROOT / "tests/execution_plane/tls_bridge.py", context / "tls_bridge.py")
+    _write_compat_containerfile(context, source)
+    return manifest
+
+
+def _compile_descriptor(projects: Path, plugin_manifest: Path) -> dict[str, object]:
+    """Compile one workspace, supplying only checkout distribution metadata.
+
+    The compiler requires installed distribution metadata for provenance. Do
+    not install the local SDK or run its hooks.
+    """
     sdk_metadata = projects / "metadata"
     dist_info = sdk_metadata / "syntara_plugin_sdk-0.dist-info"
     dist_info.mkdir(parents=True)
@@ -125,35 +179,21 @@ def prepare(context: Path) -> dict[str, object]:
     )
     sys.path.insert(0, str(sdk_metadata))
     try:
-        descriptor = compile_workspace(
-            BuildRequest(
-                EXAMPLE / "src/existing_step/manifests/plugin.yaml", require_image_bindings=False
-            )
+        return compile_workspace(
+            BuildRequest(plugin_manifest, require_image_bindings=False)
         ).descriptor
     finally:
         sys.path.remove(str(sdk_metadata))
-    manifest = registration_manifest(descriptor, "existing-step-workload")
-    resolved = {
-        "bindings": [
-            {"stepRevisionId": revision, "runtimeKind": "custom-runner", **entry}
-            for revision, entry in manifest["steps"].items()
-        ]
-    }
-    (context / "registration.json").write_text(
-        json.dumps(manifest, sort_keys=True), encoding="utf-8"
-    )
-    (context / "resolved.json").write_text(json.dumps(resolved, sort_keys=True), encoding="utf-8")
-    shutil.copyfile(EXAMPLE / "runtime.json", context / "runtime.json")
-    certificates = context / "certificates"
-    certificates.mkdir()
-    _generate_tls_material(certificates)
-    shutil.copyfile(
-        ROOT / "tests/execution_plane/runtime_entrypoint.py", context / "runtime_entrypoint.py"
-    )
-    shutil.copyfile(ROOT / "tests/execution_plane/tls_bridge.py", context / "tls_bridge.py")
-    # EP's Kubernetes port-forward uses loopback and supplies no resolved file yet.
-    # These generated bindings are only a compatibility fixture, not a release image.
-    containerfile = (EXAMPLE / "Containerfile").read_text(encoding="utf-8")
+
+
+def _write_compat_containerfile(context: Path, source: Path) -> None:
+    """Rewrite the workload Containerfile for the compatibility image.
+
+    EP's Kubernetes port-forward uses loopback and supplies no resolved file
+    yet. These generated bindings are only a compatibility fixture, not a
+    release image.
+    """
+    containerfile = (source / "Containerfile").read_text(encoding="utf-8")
     original_install = (
         "RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl"
     )
@@ -172,16 +212,23 @@ def prepare(context: Path) -> dict[str, object]:
         containerfile.replace(original_install, locked_install)
         + "\nUSER 0\nCOPY registration.json /opt/syntara/registration-manifest.json\n"
         + "COPY resolved.json /opt/syntara/resolved.json\n"
-        + "COPY certificates /run/secrets\n"
+        # Stage the certificates under /opt/syntara and override the TLS env
+        # vars the base Containerfile points at /run/secrets: some build
+        # engines (buildah/podman build) reserve /run/secrets in build
+        # containers and silently drop anything copied there.
+        + "COPY certificates/ /opt/syntara/certificates/\n"
         + "COPY runtime_entrypoint.py tls_bridge.py /opt/syntara/\n"
-        + "RUN chown -R 1001:0 /run/secrets && chmod 0600 /run/secrets/*.key\n"
+        + "RUN chown -R 1001:0 /opt/syntara/certificates "
+        + "&& chmod 0600 /opt/syntara/certificates/*.key\n"
         + "ENV SYNTARA_RESOLVED_EXECUTION=/opt/syntara/resolved.json \\\n"
-        + "    SYNTARA_RUNTIME_GRPC_ADDRESS=127.0.0.1:50052\n"
+        + "    SYNTARA_RUNTIME_GRPC_ADDRESS=127.0.0.1:50052 \\\n"
+        + "    SYNTARA_RUNTIME_GRPC_TLS_CERT=/opt/syntara/certificates/server.crt \\\n"
+        + "    SYNTARA_RUNTIME_GRPC_TLS_KEY=/opt/syntara/certificates/server.key \\\n"
+        + "    SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=/opt/syntara/certificates/client-ca.crt\n"
         + "USER 1001\n"
         + 'ENTRYPOINT ["python3.12", "/opt/syntara/runtime_entrypoint.py"]\n',
         encoding="utf-8",
     )
-    return manifest
 
 
 def _generate_tls_material(directory: Path) -> None:
@@ -253,8 +300,19 @@ def _generate_tls_material(directory: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("context", type=Path)
+    parser.add_argument(
+        "workload",
+        nargs="?",
+        default="existing-step",
+        choices=("existing-step", "credential-steps"),
+        help="which checkout workload to stage",
+    )
     args = parser.parse_args()
-    prepare(args.context.resolve())
+    context = args.context.resolve()
+    if args.workload == "credential-steps":
+        prepare_credential_workload(context)
+    else:
+        prepare(context)
 
 
 if __name__ == "__main__":

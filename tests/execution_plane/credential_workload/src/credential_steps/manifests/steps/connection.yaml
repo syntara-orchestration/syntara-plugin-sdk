@@ -1,0 +1,21 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "IntegrationType",
+  "metadata": {
+    "name": "connection",
+    "displayName": "Compat credential connection",
+    "description": "Connection shape authorizing the compat bearer-token recipe."
+  },
+  "spec": {
+    "id": "compat.credentials.connection",
+    "endpointKinds": ["https"],
+    "credentialTypes": ["compat.credentials.bearer-token"],
+    "configuration": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "CredentialRecipe",
+  "metadata": {
+    "name": "bearer-token",
+    "displayName": "Compat bearer token",
+    "description": "Static bearer token delivered through the credential callback."
+  },
+  "spec": {
+    "id": "compat.credentials.bearer-token",
+    "integrationType": "compat.credentials.connection",
+    "credentialSchema": {
+      "kind": "inline",
+      "value": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["bearer_token"],
+        "properties": {
+          "auth_type": {"type": "string"},
+          "bearer_token": {"type": "string", "minLength": 16}
+        }
+      }
+    },
+    "secretFields": ["bearer_token"],
+    "issuance": {"kind": "static-bearer.v1"}
+  }
+}

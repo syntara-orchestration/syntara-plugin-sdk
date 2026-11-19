@@ -1,0 +1,24 @@
+ARG SYNTARA_RUNTIME_BASE_IMAGE=registry.access.redhat.com/ubi9/python-312@sha256:e6a10c3150624fbfd33dbd7721ef99ce7a1001b417d64427ad58515ab8044121
+
+FROM ${SYNTARA_RUNTIME_BASE_IMAGE}
+
+WORKDIR /app
+COPY wheels /wheels
+RUN python3.12 -m pip install --no-cache-dir --only-binary :all: /wheels/*.whl
+
+USER 0
+RUN mkdir -p /etc/syntara
+COPY runtime.json /etc/syntara/runtime.json
+RUN chmod 0644 /etc/syntara/runtime.json
+
+ENV SYNTARA_RUNTIME_CONFIG=/etc/syntara/runtime.json \
+    SYNTARA_RUNTIME_GRPC_ADDRESS=0.0.0.0:50051 \
+    SYNTARA_RUNTIME_GRPC_TLS_CERT=/run/secrets/server.crt \
+    SYNTARA_RUNTIME_GRPC_TLS_KEY=/run/secrets/server.key \
+    SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=/run/secrets/client-ca.crt \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+USER 1001
+EXPOSE 50051
+ENTRYPOINT ["python3.12", "-m", "syntara_plugin.runtime.server"]

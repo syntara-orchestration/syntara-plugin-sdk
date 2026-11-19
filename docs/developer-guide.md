@@ -90,6 +90,54 @@ registration and places it in the test image; this is not a publishing path.
 Update the pinned EP revision and harness together when its helpers or workload
 contract change.
 
+### Credential execution coverage
+
+The same job also covers **credential execution** for the HTTP
+Request, Script Bash, and Script Python step-type shapes. A second test-only
+workload, [`tests/execution_plane/credential_workload`](../tests/execution_plane/credential_workload),
+is built from this checkout on every run. It declares one integration
+(`compat.credentials.connection`) with a single bearer-token credential
+recipe (`compat.credentials.bearer-token`) and three custom-runner Action
+steps that mirror those step-type shapes. Each step is dispatched with a
+`credential_bindings` entry through the same Execution Plane worker and
+Kubernetes placement as the Existing step types image.
+
+The published step-type images declare no credential recipes yet, so
+credential execution is exercised where the platform supports it today:
+through the invocation-scoped SDK credential callback on workloads built
+from this checkout. That callback is also the only credential delivery path
+the Execution Plane implements; no credential file is written or mounted
+into a workload pod. In production, Automation Orchestrator seeds its plugin
+registry with Quay image references (for example
+`quay.io/aap/ansible-automation-platform/ao-python-rhel9`) and resolves
+`credential.resolve.workload` from its credential store; the harness runs no
+AO, so it dispatches digest-pinned image references from the disposable
+registry and answers credential requests with a resolver that returns one
+synthetic document and refuses every unexpected request.
+
+Each step proves it used the credential it was handed:
+
+- the script steps append `COMPAT_CREDENTIAL_SHA256=<hex>` (the sha256 of
+  the canonical JSON credential document) to stdout when their input sets
+  `environment.COMPAT_USE_CREDENTIAL=1`; the worker, not the submitted code,
+  reads the credential, so the token never enters the subprocess;
+- the HTTP step sends the token as an `Authorization` header to a loopback
+  server it starts itself, and the server only accepts that token.
+
+The credential value itself is a random sentinel generated per run, masked
+in CI, and never written to disk by the harness: the tests assert digests
+and fail with static messages that never echo the value, and the runner
+scans the JUnit results and every collected log file for the sentinel in
+its exit trap (after diagnostics collection, on success and failure alike),
+fails the run if it appears anywhere, and redacts the value from the
+collected files before they are uploaded as artifacts.
+
+The fixture step implementations also run without a cluster:
+
+```sh
+uv run --no-sync pytest tests/execution_plane/test_credential_workload.py -q
+```
+
 ## Repository map
 
 | Location | Responsibility |
