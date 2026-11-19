@@ -7,8 +7,9 @@ against those builds. A change that breaks a real step type shows up on the
 pull request, with the failing step type, the stage, and an analysis of the
 cause, before anything is released.
 
-The check is the **Step type compatibility** job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml);
-its tooling lives in [`tests/step_types`](../tests/step_types).
+The **Step type compatibility** job in [CI](../.github/workflows/ci.yml) calls
+[its reusable workflow](../.github/workflows/step-types-compat.yml); its tooling
+lives in [`tests/step_types`](../tests/step_types).
 
 ## What runs
 
@@ -35,9 +36,9 @@ its tooling lives in [`tests/step_types`](../tests/step_types).
    produced by the published SDK says nothing about the change.
 4. **compat-report**: the final step aggregates all reports into one verdict
    and compares failures against `devel` (the baseline, below). The enclosing
-   **Step type compatibility** job is the merge check; require it in branch
-   protection. On `devel` pushes and manual runs the same final step enforces
-   the results without a baseline.
+   **Step type compatibility** job feeds the **CI Required Checks** job; require
+   that final job in branch protection. On `devel` pushes and manual runs the
+   same final step enforces the results without a baseline.
 
 ## Reading a failure
 
@@ -180,7 +181,7 @@ anything by hand. Re-running the job repeats the tests and the final report.
 
 ## The pinned revision
 
-The step-types revision is one line in the workflow:
+The step-types revision is one line in the reusable workflow:
 
 ```yaml
 STEP_TYPES_REF: ${{ inputs.step_types_ref || '<commit SHA>' }}

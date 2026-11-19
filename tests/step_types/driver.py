@@ -1119,7 +1119,7 @@ class Driver:
                 "warning",
                 "step-types pin is stale",
                 f"The pinned syntara-step-types revision {pin['sha'][:12]} is {age} days old; "
-                "consider bumping STEP_TYPES_REF in .github/workflows/ci.yml. "
+                "consider bumping STEP_TYPES_REF in .github/workflows/step-types-compat.yml. "
                 "Compare: https://github.com/syntara-orchestration/syntara-step-types/compare/"
                 f"{pin['sha']}...devel",
             )

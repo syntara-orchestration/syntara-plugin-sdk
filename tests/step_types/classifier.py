@@ -374,7 +374,7 @@ def _fixture_layout(failure: Failure, frames: tuple[Frame, ...]) -> Classificati
         "written for.",
         actions=(
             "Update tests/step_types for the new step-types layout, or pin a compatible revision "
-            "(STEP_TYPES_REF in .github/workflows/ci.yml).",
+            "(STEP_TYPES_REF in .github/workflows/step-types-compat.yml).",
         ),
         # The identity of this failure for the devel-baseline comparison.
         facts={"note": failure.note},
