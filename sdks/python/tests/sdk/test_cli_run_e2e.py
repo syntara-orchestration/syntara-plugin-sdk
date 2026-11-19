@@ -623,7 +623,7 @@ def _serve_real_steps(
 
     from syntara_plugin.runtime import StepBindings
     from syntara_plugin.runtime.adapter import container_step_for_binding
-    from syntara_plugin.testing.bindings_factory import installed_binding
+    from syntara_plugin.testing.bindings_factory import StepBindingsFactory
 
     if str(workspace) not in sys.path:
         sys.path.insert(0, str(workspace))
@@ -631,7 +631,9 @@ def _serve_real_steps(
     bindings = StepBindings()
     for class_name, target_name in (("OkStep", "ok"), ("FailStep", "fail"), ("CrashStep", "crash")):
         step = getattr(module, class_name)()
-        binding = installed_binding(step, identity=f"run.{plugin_name}.{target_name}")
+        binding = StepBindingsFactory().bind_step(
+            step, workspace=workspace, identity=f"run.{plugin_name}.{target_name}"
+        )
         bindings.bind(binding.descriptor, binding.step)
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
     revisions = {str(t["identity"]): str(t["step_revision_id"]) for t in _compiled_targets(workspace)}
