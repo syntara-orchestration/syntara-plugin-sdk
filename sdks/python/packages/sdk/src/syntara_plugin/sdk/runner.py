@@ -53,13 +53,13 @@ from syntara_plugin.runtime.container import (
 from syntara_plugin.runtime.contract_validation import SchemaDriftError
 from syntara_plugin.runtime.credentials import CredentialAccessError
 from syntara_plugin.runtime.execution import StepExecutionError
+from syntara_plugin.runtime.outcome import bounded_message, error_result_schema
 from syntara_plugin.testing import (
     BoundedStepHandler,
     HarnessUsageError,
     NotPythonStepTypeError,
     StepBindingsFactory,
 )
-from syntara_plugin.runtime.outcome import bounded_message, error_result_schema
 
 from .authoring import CompilationResult
 from .input_template import is_declared_secret, is_sensitive
@@ -1436,6 +1436,11 @@ def _sensitive_input_scalars(inputs: Any, redacted: Any) -> tuple[Any, ...]:
     picked: list[Any] = []
     _collect_sensitive_input_scalars(inputs, redacted, picked)
     return tuple(picked)
+
+
+def _redacted_input_log_scalars(inputs: Any, redacted: Any, scalars: list[Any]) -> None:
+    """Append sensitive input scalars for local structured-log redaction."""
+    scalars.extend(_sensitive_input_scalars(inputs, redacted))
 
 
 def credential_secret_values(credentials: Sequence[LoadedCredential]) -> tuple[str, ...]:
