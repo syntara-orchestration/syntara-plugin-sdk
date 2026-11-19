@@ -155,7 +155,10 @@ child's terminal result to the parent's `spec.output`. Both agreements are
 authoring obligations that an author verifies with their own tests.
 
 See [`examples/subworkflow-composition`](../examples/subworkflow-composition)
-for a worked parent-and-child workspace.
+for a worked parent-and-child workspace. The ANSTRAT-2347 POC runbook
+([`examples/subworkflow-composition/POC.md`](../examples/subworkflow-composition/POC.md))
+adds an AO field matrix, an AO-shaped output wrap, and points at the isolated
+Syntara bridge under `backend/experiments/node_sdk_subworkflow_bridge/`.
 
 ## `kind: IntegrationType`
 

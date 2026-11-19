@@ -1,0 +1,12 @@
+{
+  "$comment": "AO subworkflow_trigger parameterSchema (ANSTRAT-2347). Source: syntara schemas/workflows/v2/triggers/subworkflow.schema.json.",
+  "type": "object",
+  "properties": {
+    "input_schema": {
+      "type": "object",
+      "description": "JSON Schema defining inputs passed when the workflow is invoked as a sub-workflow",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
