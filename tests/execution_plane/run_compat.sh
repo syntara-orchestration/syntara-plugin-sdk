@@ -21,7 +21,9 @@ checkout_status="$(git -C "$ep" status --porcelain=v1 --untracked-files=all --ig
 # Establish the cluster identity before enabling diagnostics or running checkout code.
 context="$(kubectl config current-context)"
 [[ "$context" == "kind-$cluster" ]] || { echo "kubectl context must be kind-$cluster (found $context)" >&2; exit 1; }
-kubectl() { command kubectl --context "kind-$cluster" "$@"; }
+# Every kubectl call gets a request timeout: a wedged API server during the
+# exit trap would otherwise hang the job until the CI timeout.
+kubectl() { command kubectl --context "kind-$cluster" --request-timeout=30s "$@"; }
 : "${EP_TEST_DATABASE_URL:?Set EP_TEST_DATABASE_URL to the disposable database}"
 export EP_DATABASE_URL="$EP_TEST_DATABASE_URL"
 export EP_CREDENTIAL_ENCRYPTION_KEY="${EP_CREDENTIAL_ENCRYPTION_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
@@ -51,7 +53,7 @@ cleanup() {
   # structured log stream reaches the scan through the JUnit results.
   if (( pods_dispatched )) \
     && [[ "$(command kubectl config current-context 2>/dev/null || true)" == "kind-$cluster" ]]; then
-    kubectl logs -n execution-plane --all-containers --prefix \
+    kubectl logs -n "$EP_DEFAULT_WORKLOAD_NAMESPACE" --all-containers --prefix \
       --tail=-1 -l execution-plane.syntara.io/work-item \
       > "$logs/worker-pod-logs.txt" 2>&1 || true
   fi
@@ -59,13 +61,16 @@ cleanup() {
     if [[ "$(command kubectl config current-context 2>/dev/null || true)" == "kind-$cluster" ]]; then
       kubectl get pods -A -o wide > "$logs/pods.txt" 2>&1 || true
       kubectl get events -A --sort-by=.lastTimestamp > "$logs/events.txt" 2>&1 || true
-      kubectl describe pods -n execution-plane > "$logs/pod-details.txt" 2>&1 || true
+      kubectl describe pods -n "$EP_DEFAULT_WORKLOAD_NAMESPACE" > "$logs/pod-details.txt" 2>&1 || true
     fi
     if (( registry_started )); then "$engine" logs "$registry" > "$logs/registry.log" 2>&1 || true; fi
     if (( runtime_started )); then "$engine" logs "$runtime_container" > "$logs/runtime-server.log" 2>&1 || true; fi
     echo "Compatibility test failed; diagnostics: $logs" >&2
   fi
-  [[ -z "$api_pid" ]] || kill "$api_pid" 2>/dev/null || true
+  if [[ -n "$api_pid" ]]; then
+    kill -- -"$api_pid" 2>/dev/null || true
+    wait "$api_pid" 2>/dev/null || true
+  fi
   # Scan every collected log and result for the credential sentinel, on
   # success and failure alike. On a hit, redact the value from every
   # affected file before the workflow uploads the log directory as an
@@ -184,18 +189,23 @@ check_runtime_container "$EP_COMPAT_IMAGE"
 check_runtime_container "$EP_COMPAT_CREDENTIAL_IMAGE"
 
 CONTAINER_ENGINE="$engine" EP_KIND_CLUSTER_NAME="$cluster" bash "$root/tests/execution_plane/restrict_egress.sh"
+# Monitor mode puts the API in its own process group so the exit trap can
+# stop the whole tree (the subshell, uv, and the server); a TERM to the
+# subshell alone orphans the server, which would keep writing api.log.
+set -m
 (cd "$ep" && UV_PROJECT_ENVIRONMENT="$tmp/ep-venv" uv run --no-sync python -c 'from execution_plane.api.main import main; main()') > "$logs/api.log" 2>&1 &
 api_pid=$!
-target_flags=(--cluster-name "$cluster" --credential-ref "$EP_KIND_CREDENTIAL_REF" --wait-for-api 60)
+set +m
+target_flags=(--cluster-name "$cluster" --namespace "$EP_DEFAULT_WORKLOAD_NAMESPACE" --credential-ref "$EP_KIND_CREDENTIAL_REF" --wait-for-api 60)
 if [[ "$engine" == *podman* ]]; then
   # A rootless kind network is not routable from the host; register the
   # kubeconfig's host endpoint instead of the node IP.
   target_flags+=(--host-worker)
 fi
 (cd "$ep" && UV_PROJECT_ENVIRONMENT="$tmp/ep-venv" uv run --no-sync python -m tools.deploy_kind_execution_target "${target_flags[@]}")
-kubectl patch serviceaccount default -n execution-plane --type=merge -p '{"automountServiceAccountToken":false}'
+kubectl patch serviceaccount default -n "$EP_DEFAULT_WORKLOAD_NAMESPACE" --type=merge -p '{"automountServiceAccountToken":false}'
 export EP_IT_K8S_ENDPOINT="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
-token="$(kubectl create token syntara-dispatcher -n execution-plane --duration=2h)"
+token="$(kubectl create token syntara-dispatcher -n "$EP_DEFAULT_WORKLOAD_NAMESPACE" --duration=2h)"
 if [[ "${GITHUB_ACTIONS:-}" == true ]]; then printf '::add-mask::%s\n' "$token"; fi
 export EP_IT_K8S_TOKEN="$token"
 unset token

@@ -131,10 +131,15 @@ scans the JUnit results and every collected log file for the sentinel in
 its exit trap, on success and failure alike (worker-pod output is
 collected regardless of status; the remaining diagnostics only on
 failure), fails the run if it appears anywhere, and redacts the value
-from the collected files before they are uploaded as artifacts. The
-Execution Plane normally deletes completed workload pods during
-dispatch, so exit-time pod collection is best effort; the runtime's
-structured log stream reaches the scan through the JUnit results.
+from the collected files before they are uploaded as artifacts. Two
+container-side surfaces are only partially covered, by platform
+behavior: the Execution Plane deletes completed workload pods during
+dispatch, so exit-time pod collection only sees pods that outlive the
+run, and the Execution Plane discards the runtime's structured log
+batches today (log export is not implemented there), so those records
+reach no scanned file either. Until the Execution Plane exports
+workload logs, the reliably scanned surfaces are the JUnit results, the
+persisted work-item results, and the Execution Plane API log.
 
 The fixture step implementations also run without a cluster:
 
