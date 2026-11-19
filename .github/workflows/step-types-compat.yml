@@ -218,29 +218,9 @@ jobs:
           EXIT_CODE: ${{ steps.check-step-type.outputs.exit_code }}
           PLUGIN: ${{ matrix.plugin }}
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          report_path = Path("report") / f"{os.environ['PLUGIN']}.json"
-          try:
-              report = json.loads(report_path.read_text(encoding="utf-8"))
-          except (OSError, ValueError):
-              # The aggregate gate treats a missing or invalid report as failure.
-              raise SystemExit(0)
-
-          if (
-              isinstance(report, dict)
-              and report.get("result") == "fail"
-              and report.get("report_only") is False
-              and os.environ.get("EXIT_CODE") == "1"
-          ):
-              raise SystemExit(0)
-          if isinstance(report, dict):
-              report["runner_failure"] = True
-              report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-          PY
+          python3 sdk/tests/step_types/record_runner_failure.py \
+            --report "report/${PLUGIN}.json" \
+            --exit-code "$EXIT_CODE"
       - name: Upload report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
