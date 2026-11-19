@@ -113,9 +113,10 @@ the patch does not cover.
 
 When the break is intended, add the `breaking-change` label to the pull request.
 CI re-runs and reports the same analysis as warnings without failing. Removing
-the label re-runs CI with failures enforced.
-The gate (`compat-report`) decides from the label as it reads it when it runs,
-so a stale result never outlives a label change. Coordinate the migration with
+the label re-runs CI with failures enforced. A new pull-request event cancels
+the preceding CI run, and the required check starts immediately to remain
+pending until the current run finishes. The compatibility report reads the
+label when it runs. Coordinate the migration with
 the step-types maintainers and share the report.
 
 Until step-types migrates a break that is already on `devel`, the check stays
@@ -177,7 +178,11 @@ checks out the base commit, builds its wheels, and reruns the same step types
 against the revision that commit pins (a pin
 bump stays strictly judged: the pull request's new pin never becomes its own
 baseline), so the pull request is self-sufficient and nobody refreshes
-anything by hand. Re-running the job repeats the tests and the final report.
+anything by hand. If recomputation fails, passing step types still pass; a
+failing step type is treated as new unless the breaking-change label applies.
+Partial baseline reports are discarded. Re-run all jobs to repeat the tests
+and final report. The required CI gate checks jobs from the current attempt;
+if a partial retry omits required jobs, it fails and asks for a full retry.
 
 ## The pinned revision
 
@@ -218,7 +223,7 @@ pushed to it).
   unchecked; those step types are reported as `not verified` rather than
   compatible (the adapter's migrated re-run is compared too).
 - If the `devel` baseline is unavailable, the job recomputes it before testing
-  the candidate. A missing or invalid baseline fails the check.
+  the candidate. A missing or invalid baseline cannot excuse a failing step type.
 - The tests capture raw command output in the uploaded artifacts. That is fine
   for the public example step types; redact before pointing the check at
   inputs that carry real credentials.

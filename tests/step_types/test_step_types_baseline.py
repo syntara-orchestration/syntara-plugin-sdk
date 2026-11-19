@@ -16,6 +16,10 @@ OTHER_PIN = "1111111111111111111111111111111111111111"
 FACTS = {"label": "build", "keys": ["workload"]}
 
 
+def test_baseline_not_attempted_has_an_accurate_explanation() -> None:
+    assert absence_reason({"source": "not-attempted"}) == "baseline lookup was not attempted"
+
+
 def entry(
     *,
     stage: str = "validate",
@@ -400,8 +404,8 @@ def test_absence_reasons() -> None:
     assert "could not be downloaded" in expired
     assert "42" in expired
     failed = absence_reason({"source": "failed"})
-    assert "recomputing them at the base commit failed" in failed
-    assert "baseline recomputation" in failed
+    assert "preparing the devel baseline failed" in failed
+    assert "baseline setup and recomputation" in failed
 
 
 def test_inherited_never_raises_on_garbage() -> None:

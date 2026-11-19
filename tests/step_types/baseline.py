@@ -308,10 +308,12 @@ def load(directory: Path, plugins: Sequence[str]) -> tuple[dict[str, dict[str, A
 
 def absence_reason(meta: dict[str, Any]) -> str:
     """Why there is no baseline, for the gate's summary line."""
+    if meta.get("source") == "not-attempted":
+        return "baseline lookup was not attempted"
     if meta.get("source") == "failed":
         return (
-            "the devel run's reports could not be downloaded and recomputing them at the base "
-            "commit failed; open the baseline recomputation step logs"
+            "preparing the devel baseline failed; open the baseline setup and recomputation "
+            "step logs"
         )
     if "run_id" not in meta:
         return "the baseline lookup did not complete"

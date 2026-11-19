@@ -25,6 +25,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   EP_REF: ${{ inputs['ep-ref'] || 'devel' }}
 
@@ -179,31 +183,20 @@ jobs:
   required-checks:
     name: CI Required Checks
     runs-on: ubuntu-latest
-    if: always()
-    needs:
-      - test
-      - pre-commit
-      - package
-      - runtime-integration
-      - execution-plane-integration
-      - step-types-compat
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+    env:
+      REQUIRED_JOBS: >-
+        ["Test (Python 3.12)", "Test (Python 3.13)", "Test (Python 3.14)",
+         "Pre-commit", "Build and install distributions", "Runtime image integration",
+         "Execution Plane Integration", "Step type compatibility / Step type compatibility"]
     steps:
-      - name: Check required jobs passed
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Wait for required jobs
         env:
-          NEEDS: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          import sys
-
-          jobs = json.loads(os.environ["NEEDS"])
-          failed = False
-          for name, job in jobs.items():
-              result = job["result"]
-              print(f"{name}: {result}")
-              if result != "success":
-                  print(f"::error::Required job '{name}' has result '{result}'")
-                  failed = True
-          sys.exit(1 if failed else 0)
-          PYTHON
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/required_checks.py

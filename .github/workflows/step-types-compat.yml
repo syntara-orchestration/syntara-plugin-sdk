@@ -83,12 +83,14 @@ jobs:
         if: steps.changes.outputs.run_compat == 'true'
         run: python3 sdk/tests/step_types/discover.py step-types
       - name: Build candidate SDK wheels
+        id: candidate-wheels
         if: steps.changes.outputs.run_compat == 'true'
         working-directory: sdk
         run: uv build --all-packages --out-dir "$RUNNER_TEMP/candidate-wheels"
       - name: Check tooling tests
         id: tooling
         if: steps.changes.outputs.run_compat == 'true'
+        continue-on-error: true
         working-directory: sdk
         run: |
           uv sync --locked --all-groups --no-build --no-install-workspace
@@ -120,6 +122,7 @@ jobs:
       - name: Check the devel baseline
         id: baseline-check
         if: github.event_name == 'pull_request' && steps.changes.outputs.run_compat == 'true'
+        continue-on-error: true
         env:
           PLUGINS: ${{ steps.discover.outputs.plugins }}
           DOWNLOADED: ${{ steps.baseline-download.outcome }}
@@ -131,7 +134,9 @@ jobs:
           fi
           echo "available=$available" >> "$GITHUB_OUTPUT"
       - name: Check out the base SDK
+        id: base-checkout
         if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true'
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ steps.changes.outputs.base_sha }}
@@ -139,7 +144,8 @@ jobs:
           persist-credentials: false
       - name: Resolve the base step-types pin
         id: base-pin
-        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true'
+        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true' && steps.base-checkout.outcome == 'success'
+        continue-on-error: true
         run: |
           workflow=baseline-sdk/.github/workflows/ci.yml
           if ! grep -q '^  STEP_TYPES_REF: ' "$workflow"; then
@@ -152,7 +158,9 @@ jobs:
           fi
           echo "pin=$pin" >> "$GITHUB_OUTPUT"
       - name: Check out the base step types
-        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true'
+        id: base-step-types
+        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true' && steps.base-pin.outcome == 'success'
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: syntara-orchestration/syntara-step-types
@@ -161,7 +169,8 @@ jobs:
           persist-credentials: false
       - name: Recompute the devel baseline
         id: baseline-recompute
-        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true'
+        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true' && steps.base-step-types.outcome == 'success'
+        continue-on-error: true
         env:
           PLUGINS: ${{ steps.discover.outputs.plugins }}
         run: |
@@ -175,7 +184,7 @@ jobs:
           python3 sdk/tests/step_types/run_grouped.py --check-baseline baseline --plugins "$PLUGINS"
       - name: Check the step types against the candidate SDK
         id: compat
-        if: steps.changes.outputs.run_compat == 'true'
+        if: ${{ !cancelled() && steps.changes.outputs.run_compat == 'true' && steps.discover.outcome == 'success' && steps.candidate-wheels.outcome == 'success' }}
         env:
           PLUGINS: ${{ steps.discover.outputs.plugins }}
           DISPATCH_REPORT_ONLY: ${{ inputs.report_only }}
@@ -224,17 +233,19 @@ jobs:
           LABEL_PRESENT: ${{ steps.label.outputs.present }}
           BASE_SHA: ${{ steps.changes.outputs.base_sha }}
           BASE_RUN_ID: ${{ steps.baseline-run.outputs.run_id }}
+          BASE_CHECK: ${{ steps.baseline-check.outcome }}
           BASE_AVAILABLE: ${{ steps.baseline-check.outputs.available }}
           BASE_RECOMPUTE: ${{ steps.baseline-recompute.outcome }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          source=absent
+          source=not-attempted
           if [ "$BASE_AVAILABLE" = true ]; then source=devel-run; fi
           if [ "$BASE_RECOMPUTE" = success ]; then source=recomputed; fi
+          if { [ "$BASE_AVAILABLE" = false ] || [ "$BASE_CHECK" = failure ]; } && [ "$BASE_RECOMPUTE" != success ]; then source=failed; fi
+          if [ "$source" = failed ] || [ "$source" = not-attempted ]; then rm -rf baseline; fi
           mkdir -p baseline
           BASE_SOURCE="$source" python3 -c 'import json, os; from pathlib import Path; Path("baseline/meta.json").write_text(json.dumps({"base_sha": os.environ["BASE_SHA"], "run_id": os.environ["BASE_RUN_ID"], "source": os.environ["BASE_SOURCE"]}))'
           if [ "$RUN_COMPAT" = true ] && { [ "$UPLOAD" != success ] || [ "$LABEL_OUTCOME" != success ]; }; then COMPAT=failure; fi
-          if [ "$EVENT_NAME" = pull_request ] && [ "$RUN_COMPAT" = true ] && [ "$source" = absent ]; then COMPAT=failure; fi
           python3 sdk/tests/step_types/report.py --reports-dir reports --baseline-dir baseline \
             --event "$EVENT_NAME" --plugins "${PLUGINS:-[]}" --changes "$CHANGES" \
             --run-compat "$RUN_COMPAT" --discover "$DISCOVER" --tooling "$TOOLING" \
