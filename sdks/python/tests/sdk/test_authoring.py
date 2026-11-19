@@ -1351,6 +1351,60 @@ def test_rejects_authored_schemas_without_a_dialect_declaration(tmp_path: Path) 
     assert "$schema" in error.value.diagnostics[0].message
 
 
+_DECLARED_ERROR_SCHEMA: dict[str, object] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["category", "code", "message", "retryable"],
+    "properties": {
+        "category": {"type": "string"},
+        "code": {"const": "TRACKER_DOWN"},
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"},
+    },
+}
+
+
+def test_rejects_a_declared_error_schema_that_cannot_carry_wrapper_errors(
+    tmp_path: Path,
+) -> None:
+    """spec.error must admit the SDK's own wrapper-error shapes."""
+
+    action = _action(
+        {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
+    )
+    action["spec"]["error"] = {"kind": "inline", "value": _DECLARED_ERROR_SCHEMA}
+    root = _workspace(tmp_path / "wrapper-error", action=action)
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+    codes = {item.code for item in error.value.diagnostics}
+    assert codes == {"ERROR_SCHEMA_REJECTS_WRAPPER_ERROR"}
+    assert "INVALID_INPUT" in error.value.diagnostics[0].message
+
+
+def test_accepts_a_declared_error_schema_that_admits_wrapper_errors(
+    tmp_path: Path,
+) -> None:
+    """A spec.error allowing the SDK wrapper codes compiles unchanged."""
+
+    schema: dict[str, object] = {
+        **_DECLARED_ERROR_SCHEMA,
+        "properties": {
+            **_DECLARED_ERROR_SCHEMA["properties"],
+            "code": {"enum": ["TRACKER_DOWN", "INVALID_INPUT", "STEP_FAILED"]},
+        },
+    }
+    action = _action(
+        {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
+    )
+    action["spec"]["error"] = {"kind": "inline", "value": schema}
+    root = _workspace(tmp_path / "wrapper-error-accepted", action=action)
+
+    result = _compile(root)
+
+    assert not result.diagnostics
+
+
 def test_rejects_yaml_anchors_and_aliases(tmp_path: Path) -> None:
     root = _workspace(tmp_path, action=_action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}))
     root.write_text(

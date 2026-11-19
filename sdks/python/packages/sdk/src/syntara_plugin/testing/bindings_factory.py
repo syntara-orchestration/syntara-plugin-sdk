@@ -91,7 +91,10 @@ def _synthetic_manifest(
         manifest["spec"]["invocation"] = {"kind": "orchestration"}
     elif kind is StepKind.TRIGGER:
         manifest["spec"]["driver"] = "webhook.v1"
-        manifest["spec"]["configuration"] = {"kind": "inline", "value": {"type": "object"}}
+        manifest["spec"]["configuration"] = {
+            "kind": "inline",
+            "value": _declared_dialect({"type": "object"}),
+        }
     return manifest
 
 

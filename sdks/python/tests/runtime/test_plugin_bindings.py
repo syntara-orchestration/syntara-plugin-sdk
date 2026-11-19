@@ -1152,7 +1152,11 @@ def test_packaged_recipe_asset_is_bound_to_its_credential(plugin_root: Path) -> 
         recipe["spec"]["credentialSchema"] = {"kind": "asset", "path": "schemas/credential.json"}
         return {
             "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
-            "schemas/credential.json": {"type": "object", "properties": {"token": {"type": "string"}}},
+            "schemas/credential.json": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {"token": {"type": "string"}},
+            },
             "steps/action.yaml": action, "steps/integration.yaml": _integration_document(),
             "recipes/recipe.yaml": recipe,
         }

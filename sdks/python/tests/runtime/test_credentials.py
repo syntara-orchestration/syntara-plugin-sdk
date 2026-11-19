@@ -237,6 +237,7 @@ def _binding(targets: list[dict[str, Any]] | None = None) -> StepBinding:
 def test_declared_credential_keys_can_appear_in_output_and_failure(tmp_path: Path) -> None:
     targets = _connection_targets()
     targets[1]["spec"]["credentialSchema"]["value"] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object", "properties": {"username": {"type": "string"},
                                           "password": {"type": "string"}},
     }
@@ -958,11 +959,26 @@ def test_missing_credential_assets_preserves_opaque_compatibility() -> None:
         "spec": {
             "runtime": {"kind": "custom-runner", "entryPoint": f"{__name__}:CredentialStep"},
             "integrationType": "acme.demo.integration",
-            "input": {"kind": "inline", "value": CredentialInput.model_json_schema()},
-            "output": {"kind": "inline", "value": CredentialOutput.model_json_schema()},
+            "input": {
+                "kind": "inline",
+                "value": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    **CredentialInput.model_json_schema(),
+                },
+            },
+            "output": {
+                "kind": "inline",
+                "value": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    **CredentialOutput.model_json_schema(),
+                },
+            },
         },
     }
-    asset = {"properties": {"username": {}}}
+    asset = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {"username": {}},
+    }
     # Step assets have a different namespace and cannot attest to recipe fields.
     for step_assets in ({}, {"schemas/credential.json": asset}):
         installed = InstalledStepManifest.from_manifest(

@@ -1054,7 +1054,9 @@ def test_container_result_and_container_failure_remain_distinct() -> None:
 def test_custom_error_schema_preserves_complete_result_through_grpc(asset: bool) -> None:
     schema = {
         "type": "object",
-        "required": ["provider"],
+        # provider stays optional so the schema still admits the SDK's
+        # wrapper errors, which carry only the base error fields.
+        "required": [],
         "properties": {
             "provider": {
                 "type": "object", "required": ["requestId", "attempts"],
@@ -1066,7 +1068,7 @@ def test_custom_error_schema_preserves_complete_result_through_grpc(asset: bool)
     # Installation snapshots its schema, including asset-backed documents.
     schema["required"].append("changed")
     trusted_schema = to_json_document(binding.descriptor.error_schema)
-    assert trusted_schema["required"] == ["provider"]
+    assert trusted_schema["required"] == []
     direct = invoke(binding, {"value": "x"}, _context(binding))
     assert direct.error_result is not None
     error_document = direct.error_result.model_dump(mode="json")
@@ -1134,7 +1136,11 @@ def test_error_result_subclass_fields_are_preserved_and_immutable() -> None:
 def test_author_error_that_violates_installed_schema_has_no_valid_outcome() -> None:
     binding = _binding(
         DetailedFailureStep(), "tests.invalid-error",
-        error_schema={"type": "object", "required": ["missing"]},
+        # Admits the SDK wrapper codes but rejects this step's REMOTE_REJECTED.
+        error_schema={
+            "type": "object",
+            "properties": {"code": {"enum": ["INVALID_INPUT", "STEP_FAILED"]}},
+        },
     )
     context = _context(binding)
     with pytest.raises(StepExecutionError, match="invalid response"):

@@ -502,7 +502,7 @@ _DECLARED_ERROR_SCHEMA = {
     "required": ["category", "code", "message", "retryable"],
     "properties": {
         "category": {"type": "string"},
-        "code": {"const": "TRACKER_DOWN"},
+        "code": {"enum": ["TRACKER_DOWN", "INVALID_INPUT", "STEP_FAILED"]},
         "message": {"type": "string"},
         "retryable": {"type": "boolean"},
     },
@@ -545,7 +545,7 @@ def test_failure_with_declared_error_schema_rejects_a_mismatched_result() -> Non
     """Declared error constraints fail the wrapper when the result does not match."""
 
     bindings = StepBindings()
-    step = DeclaredErrorStep(code="STEP_FAILED")
+    step = DeclaredErrorStep(code="TRACKER_UNAVAILABLE")
     manifest = _installed_step(
         _input_schema(),
         step_class=DeclaredErrorStep,
@@ -997,6 +997,7 @@ def test_trigger_executor_uses_its_registered_model_not_manifest_configuration()
             step_class=type(step),
             step_identity="acme.plugin.trigger",
             configuration_schema={
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
                 "required": ["event_type"],
                 "properties": {"event_type": {"const": "issue.opened"}},

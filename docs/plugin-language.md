@@ -233,6 +233,10 @@ Optional `spec.integrationType` declares the integration and its reachable
 credential recipes for a Trigger step type.
 The runtime also enforces the SDK base fields; without `spec.error`, the SDK
 base schema is used. Neither schema describes the runtime wrapper itself.
+A declared `spec.error` must still admit the SDK's wrapper errors — every
+wrapper error, `INVALID_INPUT` included, is validated against it — so the
+compiler rejects an `error` schema that cannot carry the wrapper codes
+(`INVALID_INPUT` and `STEP_FAILED`).
 The same category also represents a child-workflow entry in reference-mode
 composition; its declared public output is the result consumed by the parent
 `Control` step type, not the results of the child's internal step type.

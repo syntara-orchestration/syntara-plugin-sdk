@@ -260,6 +260,55 @@ def validate_authored_schema(document: object) -> None:
     Draft202012Validator.check_schema(document)
 
 
+# Representative ErrorResult documents the SDK itself emits inside wrapper
+# errors: the INVALID_INPUT wrapper produced before the step hook runs, and
+# the default StepFailure shape an author gets without an explicit code.
+# Messages are runtime-dependent, so these carry representative texts.
+_WRAPPER_ERROR_DOCUMENTS: tuple[dict[str, Any], ...] = (
+    {
+        "category": "validation",
+        "code": "INVALID_INPUT",
+        "message": "The step input is invalid.",
+        "retryable": False,
+    },
+    {
+        "category": "business",
+        "code": "STEP_FAILED",
+        "message": "The step failed.",
+        "retryable": False,
+    },
+)
+
+
+def validate_declared_error_schema(document: Mapping[str, Any]) -> None:
+    """Reject a declared ``spec.error`` that cannot carry an SDK wrapper error.
+
+    Every wrapper error — including the INVALID_INPUT wrapper emitted before
+    the step hook runs, and the default STEP_FAILED shape of ``StepFailure`` —
+    is validated against the declared ``spec.error`` at invocation time. A
+    schema that cannot carry those shapes would turn a routine invalid-input
+    report into an opaque execution error, so authoring rejects it up front.
+    Raises ``SchemaDocumentError`` with a stable code.
+    """
+
+    for wrapper in _WRAPPER_ERROR_DOCUMENTS:
+        try:
+            admits = build_validator(document).is_valid(wrapper)
+        except Exception:
+            # A schema that cannot even be evaluated (for example an
+            # unresolvable $ref) is not a wrapper-admission failure; callers
+            # report structural and reference errors through their own paths.
+            continue
+        if not admits:
+            codes = ", ".join(repr(item["code"]) for item in _WRAPPER_ERROR_DOCUMENTS)
+            raise SchemaDocumentError(
+                "ERROR_SCHEMA_REJECTS_WRAPPER_ERROR",
+                "declared spec.error cannot carry the SDK wrapper errors "
+                f"({codes}); it must admit them, for example by allowing those "
+                "codes alongside the step type's own.",
+            )
+
+
 @dataclass(frozen=True)
 class ContractBundle:
     """An immutable in-process view of the packaged contract documents."""

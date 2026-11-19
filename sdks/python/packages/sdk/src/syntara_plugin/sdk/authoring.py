@@ -26,6 +26,7 @@ from syntara_plugin.contracts import (
     schema_digests,
     step_revision_id,
     validate_authored_schema,
+    validate_declared_error_schema,
     validate_document,
 )
 from syntara_plugin.runtime.yaml_loader import UniqueKeyLoader
@@ -749,7 +750,9 @@ def _document_source(
         return source
     if source.get("kind") == "inline":
         canonical = _ordered(source.get("value"))
-        _validate_typed_document(canonical, target_path, diagnostics, bundle, document_kind)
+        _validate_typed_document(
+            canonical, target_path, diagnostics, bundle, document_kind, field_name
+        )
         return canonical
     if source.get("kind") != "asset" or not isinstance(source.get("path"), str):
         return source
@@ -821,7 +824,9 @@ def _document_source(
         )
         return None
     canonical = _ordered(value)
-    _validate_typed_document(canonical, target_path, diagnostics, bundle, document_kind)
+    _validate_typed_document(
+        canonical, target_path, diagnostics, bundle, document_kind, field_name
+    )
     asset = CompiledAsset(
         path=asset_path,
         media_type=_structured_media_type(Path(asset_path), document_kind),
@@ -1288,7 +1293,10 @@ def _declared_target_paths(document: Mapping[str, Any]) -> list[object] | None:
 
 
 def _validate_schema_document(
-    value: object, target_path: str, diagnostics: list[Diagnostic]
+    value: object,
+    target_path: str,
+    diagnostics: list[Diagnostic],
+    field_name: str,
 ) -> None:
     if not isinstance(value, Mapping):
         diagnostics.append(
@@ -1311,6 +1319,7 @@ def _validate_schema_document(
                 "Declare $schema as https://json-schema.org/draft/2020-12/schema.",
             )
         )
+        return
     except SchemaError as error:
         diagnostics.append(
             _diagnostic(
@@ -1318,6 +1327,21 @@ def _validate_schema_document(
                 f"Invalid JSON Schema: {error.message}",
                 target_path,
                 "Correct the JSON Schema before compiling.",
+            )
+        )
+        return
+    if field_name != "error":
+        return
+    try:
+        validate_declared_error_schema(value)
+    except SchemaDocumentError as error:
+        diagnostics.append(
+            _diagnostic(
+                error.code,
+                error.message,
+                target_path,
+                "Allow the SDK wrapper error codes (at minimum INVALID_INPUT "
+                "and STEP_FAILED) alongside the step type's own codes.",
             )
         )
 
@@ -1328,11 +1352,12 @@ def _validate_typed_document(
     diagnostics: list[Diagnostic],
     bundle: ContractBundle,
     document_kind: Literal["schema", "http_mapping", "ui_schema"],
+    field_name: str,
 ) -> None:
     """Validate an inert document source according to its declared contract."""
 
     if document_kind == "schema":
-        _validate_schema_document(value, target_path, diagnostics)
+        _validate_schema_document(value, target_path, diagnostics, field_name)
         return
     if document_kind == "ui_schema":
         if not isinstance(value, Mapping):

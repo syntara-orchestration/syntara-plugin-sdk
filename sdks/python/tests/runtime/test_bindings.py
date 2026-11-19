@@ -457,6 +457,52 @@ def test_installed_step_rejects_a_missing_dialect_declaration() -> None:
         _installed_step({"type": "object"})
 
 
+def test_installed_step_rejects_a_non_2020_12_trigger_configuration() -> None:
+    """The Trigger configuration is an authored schema on the install path too."""
+
+    manifest = _manifest({"$schema": _DIALECT, **EchoInput.model_json_schema()}, kind="Trigger")
+    manifest["spec"]["configuration"] = {
+        "kind": "inline",
+        "value": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "dependencies": {"a": ["b"]},
+        },
+    }
+
+    with pytest.raises(
+        StepBindingError,
+        match="resolved step type configuration schema is invalid: .*unsupported dialect",
+    ):
+        InstalledStepManifest.from_manifest("acme.plugin.echo", manifest, {})
+
+
+def test_installed_step_rejects_an_error_schema_that_cannot_carry_wrapper_errors() -> None:
+    """A declared spec.error must admit the SDK wrapper errors to install."""
+
+    manifest = _manifest({"$schema": _DIALECT, **EchoInput.model_json_schema()})
+    manifest["spec"]["error"] = {
+        "kind": "inline",
+        "value": {
+            "$schema": _DIALECT,
+            "type": "object",
+            "required": ["category", "code", "message", "retryable"],
+            "properties": {
+                "category": {"type": "string"},
+                "code": {"const": "TRACKER_DOWN"},
+                "message": {"type": "string"},
+                "retryable": {"type": "boolean"},
+            },
+        },
+    }
+
+    with pytest.raises(
+        StepBindingError,
+        match="resolved step type error schema is invalid: .*INVALID_INPUT",
+    ):
+        InstalledStepManifest.from_manifest("acme.plugin.echo", manifest, {})
+
+
 @pytest.mark.parametrize("kind", ["Control", "Trigger"])
 def test_installed_step_manifest_rejects_unknown_category_fields(kind: str) -> None:
     manifest = _manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}, kind=kind)

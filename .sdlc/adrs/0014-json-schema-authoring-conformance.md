@@ -16,8 +16,10 @@ for `spec.input`, `spec.output`, `spec.error`, and trigger
 compiler rejects a schema that declares any other dialect
 (`SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT`) and rejects a schema that omits the
 declaration (`SCHEMA_DOCUMENT_DIALECT_MISSING`) rather than defaulting it.
-Neither case is accepted, so the contract is unambiguous and authoring tools
-never need to guess a dialect.
+The installation boundary (`InstalledStepManifest.from_manifest`) resolves
+every one of those document sources — trigger `spec.configuration` included —
+through the same conformance check. Neither case is accepted, so the contract
+is unambiguous and authoring tools never need to guess a dialect.
 
 **A contract-defined asserted format set.** `common.schema.json` declares the
 set in `$defs.assertedFormats`: `date-time` (strict RFC 3339 subset) and
@@ -38,6 +40,21 @@ closed fallback (`runtime.schema.json#/$defs/errorResult`,
 `additionalProperties: false`), so undeclared step type-specific error fields
 are rejected. The recorded error-schema digest always covers the effective
 error schema that was validated.
+
+**Wrapper errors are validated against the declared `spec.error`.** Every
+wrapper error is validated against the declared schema, not only a deliberate
+failure's error result: the `INVALID_INPUT` wrapper emitted before `run()` is
+called and the default `STEP_FAILED` shape of `StepFailure` are SDK-defined
+error results a step type author does not choose per call. Because the
+receiver-side digest rule forbids recording a base-only digest, a declared
+`spec.error` that cannot carry those shapes would turn a routine
+invalid-input report into an opaque `StepExecutionError`. The compiler and
+the installation boundary (`InstalledStepManifest.from_manifest`) therefore
+reject such a schema up front (`ERROR_SCHEMA_REJECTS_WRAPPER_ERROR`); a
+declared `spec.error` must admit the SDK wrapper-error shapes alongside the
+step type's own codes. The check uses representative wrapper documents:
+codes, categories, and retryability are covered exactly, while `message` is
+sampled with representative texts, because runtime messages vary.
 
 ## Consequences
 
