@@ -78,6 +78,7 @@ _RFC3339_DATETIME = re.compile(
 _FORMAT_CHECKER = FormatChecker(formats=())
 _STEP_TARGET_KINDS = frozenset({"Action", "Control", "Trigger"})
 _UTC_OFFSET_SUFFIX = "+00:00"
+_SCHEMA_KEYWORD = "$schema"
 _CANONICAL_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
@@ -242,7 +243,7 @@ def _reject_embedded_dialect_declarations(value: object, path: str) -> None:
     """
 
     if isinstance(value, Mapping):
-        declared = value.get("$schema")
+        declared = value.get(_SCHEMA_KEYWORD)
         if isinstance(declared, str) and declared != _CANONICAL_SCHEMA_DIALECT:
             raise SchemaDocumentError(
                 "SCHEMA_EMBEDDED_DIALECT_UNSUPPORTED",
@@ -274,7 +275,7 @@ def validate_authored_schema(document: object) -> None:
             "SCHEMA_DOCUMENT_NOT_OBJECT",
             "authored schema document must be a JSON object.",
         )
-    declared = document.get("$schema")
+    declared = document.get(_SCHEMA_KEYWORD)
     if not isinstance(declared, str) or not declared:
         raise SchemaDocumentError(
             "SCHEMA_DOCUMENT_DIALECT_MISSING",
@@ -393,7 +394,7 @@ def load_bundle() -> ContractBundle:
     if set(_SCHEMA_FILES.values()) - set(documents):
         raise RuntimeError("contract bundle is missing a required manifest or runtime schema")
     for name, document in documents.items():
-        if document.get("$schema") != _CANONICAL_SCHEMA_DIALECT:
+        if document.get(_SCHEMA_KEYWORD) != _CANONICAL_SCHEMA_DIALECT:
             raise RuntimeError(
                 f"contract bundle document {name!r} must declare the "
                 f"{_CANONICAL_SCHEMA_DIALECT!r} dialect"

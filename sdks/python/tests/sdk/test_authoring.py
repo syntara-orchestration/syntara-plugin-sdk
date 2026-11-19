@@ -1129,7 +1129,7 @@ def test_sole_workload_is_selected_by_id_not_image() -> None:
     plugin["spec"]["workloads"] = {"python": {"image": "python-runtime"}}
     target = Target(
         "steps/create-issue/manifest.yaml",
-        _action({"kind": "inline", "value": {"type": "object"}}),
+        _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}),
     )
 
     result = compile_model(_typed_plugin(plugin), [target], image_bindings={"python-runtime": DIGEST})
