@@ -17,10 +17,7 @@ its tooling lives in [`tests/step_types`](../tests/step_types).
 2. **Discover step types**: checks out syntara-step-types at the pinned
    revision and reads the step types its own Makefile tests (`SDK_PLUGINS`).
    An empty list fails the check, so it can never pass while testing nothing.
-3. **Step type tests**: one job runs each discovered step type sequentially.
-   HTTP Request, Script Bash, and Script Python each have a named CI step.
-   Newly discovered types run in an **Additional step types** step until they
-   receive their own named step. Each type has six numbered stages:
+3. **Step type tests**: one job runs each discovered step type sequentially, each with six numbered stages:
 
    | Stage | What it does |
    | --- | --- |
@@ -149,9 +146,9 @@ only the workflow's read-only token.
 
 The runner records each compatibility command's result and continues to the
 next step type. The final `compat-report` step evaluates every report; setup,
-runner, and report-upload failures still fail the job. If the compatibility
-command exits unsuccessfully after writing a non-failing report, the gate marks
-that report as a runner error and fails. A new compatibility failure, tooling failure,
+runner, and report-upload failures still fail the job. If the compatibility command exits
+unsuccessfully after writing a non-failing report, the gate marks that report
+as a runner error and fails. A new compatibility failure, tooling failure,
 or discovery failure also fails the aggregate check. This lets a later pull
 request pass when its failure is already on `devel`, even if the pull request
 that introduced it was marked `breaking-change`. The label is needed only on
