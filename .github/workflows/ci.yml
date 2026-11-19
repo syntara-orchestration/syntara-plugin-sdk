@@ -227,17 +227,18 @@ jobs:
         id: discover
         if: steps.changes.outputs.run_compat == 'true'
         run: python3 sdk/tests/step_types/discover.py step-types
+      - name: Build candidate SDK wheels
+        if: steps.changes.outputs.run_compat == 'true'
+        working-directory: sdk
+        run: uv build --all-packages --out-dir "$RUNNER_TEMP/candidate-wheels"
       - name: Check tooling tests
         id: tooling
         if: steps.changes.outputs.run_compat == 'true'
         working-directory: sdk
         run: |
-          uv sync --locked --all-groups
+          uv sync --locked --all-groups --no-build --no-install-workspace
+          uv pip install --no-deps --no-build "$RUNNER_TEMP"/candidate-wheels/*.whl
           make test-step-types-helpers
-      - name: Build candidate SDK wheels
-        if: steps.changes.outputs.run_compat == 'true'
-        working-directory: sdk
-        run: uv build --all-packages --out-dir "$RUNNER_TEMP/candidate-wheels"
       - name: Resolve the devel baseline
         id: baseline-run
         if: github.event_name == 'pull_request' && steps.changes.outputs.run_compat == 'true'
@@ -317,19 +318,62 @@ jobs:
             --checkout baseline-step-types --wheels "$RUNNER_TEMP/baseline-wheels" \
             --reports baseline --mode enforcing
           python3 sdk/tests/step_types/run_grouped.py --check-baseline baseline --plugins "$PLUGINS"
-      - name: Check the step types against the candidate SDK
-        id: compat
+      - name: Plan step-type checks
+        id: compat-plan
         if: steps.changes.outputs.run_compat == 'true'
         env:
           PLUGINS: ${{ steps.discover.outputs.plugins }}
-          DISPATCH_REPORT_ONLY: ${{ inputs.report_only }}
         run: |
-          mode=enforcing
-          if [ "$DISPATCH_REPORT_ONLY" = true ]; then mode=report-only:dispatch; fi
-          python3 sdk/tests/step_types/run_grouped.py \
-            --plugins "$PLUGINS" --driver sdk/tests/step_types/driver.py \
-            --checkout step-types --wheels "$RUNNER_TEMP/candidate-wheels" \
-            --reports reports --mode "$mode"
+          python3 - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          names = json.loads(os.environ["PLUGINS"])
+          named = {"http-request", "script-bash", "script-python"}
+          other = [name for name in names if name not in named]
+          print("other=" + json.dumps(other, separators=(",", ":")))
+          PYCODE
+      - name: HTTP Request
+        id: compat-http
+        if: ${{ steps.changes.outputs.run_compat == 'true' && contains(fromJSON(steps.discover.outputs.plugins || '[]'), 'http-request') }}
+        continue-on-error: true
+        env:
+          MODE: ${{ inputs.report_only && 'report-only:dispatch' || 'enforcing' }}
+        run: >-
+          python3 sdk/tests/step_types/run_grouped.py --plugins '["http-request"]'
+          --driver sdk/tests/step_types/driver.py --checkout step-types
+          --wheels "$RUNNER_TEMP/candidate-wheels" --reports reports --mode "$MODE"
+      - name: Script Bash
+        id: compat-bash
+        if: ${{ steps.changes.outputs.run_compat == 'true' && contains(fromJSON(steps.discover.outputs.plugins || '[]'), 'script-bash') }}
+        continue-on-error: true
+        env:
+          MODE: ${{ inputs.report_only && 'report-only:dispatch' || 'enforcing' }}
+        run: >-
+          python3 sdk/tests/step_types/run_grouped.py --plugins '["script-bash"]'
+          --driver sdk/tests/step_types/driver.py --checkout step-types
+          --wheels "$RUNNER_TEMP/candidate-wheels" --reports reports --mode "$MODE"
+      - name: Script Python
+        id: compat-python
+        if: ${{ steps.changes.outputs.run_compat == 'true' && contains(fromJSON(steps.discover.outputs.plugins || '[]'), 'script-python') }}
+        continue-on-error: true
+        env:
+          MODE: ${{ inputs.report_only && 'report-only:dispatch' || 'enforcing' }}
+        run: >-
+          python3 sdk/tests/step_types/run_grouped.py --plugins '["script-python"]'
+          --driver sdk/tests/step_types/driver.py --checkout step-types
+          --wheels "$RUNNER_TEMP/candidate-wheels" --reports reports --mode "$MODE"
+      - name: Additional step types
+        id: compat-other
+        if: ${{ steps.changes.outputs.run_compat == 'true' && steps.compat-plan.outputs.other != '[]' }}
+        continue-on-error: true
+        env:
+          PLUGINS: ${{ steps.compat-plan.outputs.other }}
+          MODE: ${{ inputs.report_only && 'report-only:dispatch' || 'enforcing' }}
+        run: >-
+          python3 sdk/tests/step_types/run_grouped.py --plugins "$PLUGINS"
+          --driver sdk/tests/step_types/driver.py --checkout step-types
+          --wheels "$RUNNER_TEMP/candidate-wheels" --reports reports --mode "$MODE"
       - name: Upload step-type reports
         id: upload
         if: ${{ !cancelled() && steps.changes.outputs.run_compat == 'true' }}
@@ -362,7 +406,10 @@ jobs:
           RUN_COMPAT: ${{ steps.changes.outputs.run_compat }}
           DISCOVER: ${{ steps.discover.outcome }}
           TOOLING: ${{ steps.tooling.outcome }}
-          COMPAT: ${{ steps.compat.outcome }}
+          HTTP_OUTCOME: ${{ steps.compat-http.outcome }}
+          BASH_OUTCOME: ${{ steps.compat-bash.outcome }}
+          PYTHON_OUTCOME: ${{ steps.compat-python.outcome }}
+          OTHER_OUTCOME: ${{ steps.compat-other.outcome }}
           UPLOAD: ${{ steps.upload.outcome }}
           LABEL_OUTCOME: ${{ steps.label.outcome }}
           LABEL_PRESENT: ${{ steps.label.outputs.present }}
@@ -372,6 +419,10 @@ jobs:
           BASE_RECOMPUTE: ${{ steps.baseline-recompute.outcome }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
+          COMPAT=success
+          for outcome in "$HTTP_OUTCOME" "$BASH_OUTCOME" "$PYTHON_OUTCOME" "$OTHER_OUTCOME"; do
+            if [ "$outcome" = failure ]; then COMPAT=failure; fi
+          done
           source=absent
           if [ "$BASE_AVAILABLE" = true ]; then source=devel-run; fi
           if [ "$BASE_RECOMPUTE" = success ]; then source=recomputed; fi
