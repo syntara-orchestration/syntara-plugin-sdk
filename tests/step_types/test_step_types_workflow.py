@@ -33,7 +33,7 @@ def test_the_base_pin_resolver_reads_the_declaration_not_itself() -> None:
 def test_ci_calls_grouped_compatibility_workflow_with_a_final_gate() -> None:
     ci = yaml.safe_load(CI.read_text(encoding="utf-8"))
     call = ci["jobs"]["step-types-compat"]
-    assert call["uses"] == "./.github/workflows/step-types-compat.yml"
+    assert call["uses"] == "$/.github/workflows/step-types-compat.yml"
     assert call["with"]["step_types_ref"] == "${{ inputs.step_types_ref || '' }}"
     assert call["with"]["report_only"] == "${{ inputs.report_only || false }}"
     workflow = yaml.safe_load(COMPAT.read_text(encoding="utf-8"))

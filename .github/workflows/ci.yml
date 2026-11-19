@@ -167,7 +167,7 @@ jobs:
 
   step-types-compat:
     name: Step type compatibility
-    uses: ./.github/workflows/step-types-compat.yml
+    uses: $/.github/workflows/step-types-compat.yml
     permissions:
       contents: read
       actions: read
