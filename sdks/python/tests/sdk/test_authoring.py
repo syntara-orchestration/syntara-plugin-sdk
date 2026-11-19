@@ -246,7 +246,7 @@ def test_compile_workspace_carries_an_opaque_entry_point_verbatim(
     tmp_path: Path, entry_point: str
 ) -> None:
     """A non-Python handler identifier compiles and reaches the registration manifest."""
-    action = _action({"kind": "inline", "value": {"type": "object"}})
+    action = _action({"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}})
     action["spec"]["runtime"]["entryPoint"] = entry_point
     root = _workspace(tmp_path, action=action)
 
