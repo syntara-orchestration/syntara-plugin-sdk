@@ -1219,6 +1219,7 @@ def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
             "stepIdentity": "another.identity",
             "schemaDigests": _schema_digests(
                 {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
                     "type": "object",
                     "properties": {"message": {"type": "string", "minLength": 6}},
                     "required": ["message"],
@@ -1231,6 +1232,7 @@ def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
         "another.identity",
         EchoStep(),
         input_schema={
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
             "properties": {"message": {"type": "string", "minLength": 6}},
             "required": ["message"],

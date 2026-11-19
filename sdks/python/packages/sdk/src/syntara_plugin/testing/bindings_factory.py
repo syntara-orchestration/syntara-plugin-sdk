@@ -43,6 +43,12 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _declared_dialect(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Inject the Draft 2020-12 declaration Pydantic schemas omit."""
+
+    return {**schema, "$schema": "https://json-schema.org/draft/2020-12/schema"}
+
+
 def _synthetic_manifest(
     step: BaseStep[Any, Any],
     *,
@@ -115,10 +121,14 @@ def installed_binding(
         )
         raise HarnessUsageError(message)
     declared_input = (
-        input_schema if input_schema is not None else step.input_model().model_json_schema()
+        input_schema
+        if input_schema is not None
+        else _declared_dialect(step.input_model().model_json_schema())
     )
     declared_output = (
-        output_schema if output_schema is not None else step.output_model().model_json_schema()
+        output_schema
+        if output_schema is not None
+        else _declared_dialect(step.output_model().model_json_schema())
     )
     manifest = _synthetic_manifest(
         step, input_schema=declared_input, output_schema=declared_output

@@ -31,7 +31,10 @@ from syntara_plugin.testing import (
 )
 
 # Independent manifest schemas exercise drift checking against the typed models.
+DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
 INPUT_SCHEMA: dict[str, Any] = {
+    "$schema": DIALECT,
     "type": "object",
     "properties": {
         "title": {"type": "string"},
@@ -43,6 +46,7 @@ INPUT_SCHEMA: dict[str, Any] = {
     "required": ["title"],
 }
 OUTPUT_SCHEMA: dict[str, Any] = {
+    "$schema": DIALECT,
     "type": "object",
     "properties": {"summary": {"type": "string"}, "priority": {"type": "string"}},
     "required": ["summary", "priority"],

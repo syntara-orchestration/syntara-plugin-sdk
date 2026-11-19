@@ -189,8 +189,14 @@ class ConfiguredControlStep(ControlStep[ConfiguredControlInput, ControlExampleOu
         )
 
 
+def _declared(schema: dict[str, object]) -> dict[str, object]:
+    """Inject the Draft 2020-12 declaration authored test schemas need."""
+
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
+
+
 def _input_schema() -> dict[str, object]:
-    return {
+    return _declared({
         "type": "object",
         "required": ["message"],
         "properties": {
@@ -199,7 +205,7 @@ def _input_schema() -> dict[str, object]:
             "mode": {"enum": ["fast", "slow"], "default": "fast"},
         },
         "additionalProperties": False,
-    }
+    })
 
 
 def _installed_step(
@@ -231,7 +237,10 @@ def _installed_step(
                 "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
             },
             "input": {"kind": "inline", "value": input_schema},
-            "output": {"kind": "inline", "value": output_schema if output_schema is not None else {}},
+            "output": {
+                "kind": "inline",
+                "value": output_schema if output_schema is not None else _declared({}),
+            },
         },
     }
     if error_schema is not None:
@@ -276,7 +285,9 @@ def _bind_installed(
         step,
         _installed_step(
             input_schema if input_schema is not None else _input_schema(),
-            output_schema if output_schema is not None else step.output_model().model_json_schema(),
+            output_schema
+            if output_schema is not None
+            else _declared(step.output_model().model_json_schema()),
             step_class=type(step),
             step_identity=identity,
         ),
@@ -665,7 +676,7 @@ def test_supported_action_adapter_maps_the_invalid_input_wrapper_to_the_envelope
     assert container_result.status_code != 0
     assert container_result.error_result["code"] == direct_wrapper.error.code
     assert container_result.error_result["message"] == direct_wrapper.error.message
-    assert container_result.output_schema_digest == canonical_json_digest({})
+    assert container_result.output_schema_digest == canonical_json_digest(_declared({}))
     assert direct_wrapper.error.code == FailureCode.INVALID_INPUT.value
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0
@@ -760,7 +771,7 @@ def test_same_category_action_entry_point_mismatch_is_rejected_before_hooks(
     installed_implementation = installed_step_type()
     supplied_step = supplied_step_type()
     installed_step = _installed_step(
-        installed_implementation.input_model().model_json_schema(),
+        _declared(installed_implementation.input_model().model_json_schema()),
         step_class=installed_step_type,
     )
     descriptor = StepDescriptor.for_installed_step(
@@ -1070,7 +1081,7 @@ def test_supported_control_adapter_preserves_success_payload_and_digest() -> Non
     assert direct_wrapper.status == 0
     assert container_result.output == direct_wrapper.output
     assert container_result.output_schema_digest == canonical_json_digest(
-        ControlExampleOutput.model_json_schema()
+        _declared(ControlExampleOutput.model_json_schema())
     )
     assert direct_step.run_calls == 1
     assert container_step.run_calls == 1
@@ -1095,7 +1106,7 @@ def test_supported_trigger_adapter_preserves_success_payload_and_digest() -> Non
     assert direct_wrapper.status == 0
     assert container_result.output == direct_wrapper.output
     assert container_result.output_schema_digest == canonical_json_digest(
-        ControlExampleOutput.model_json_schema()
+        _declared(ControlExampleOutput.model_json_schema())
     )
     assert direct_step.run_calls == 1
     assert container_step.run_calls == 1
@@ -1111,7 +1122,7 @@ def test_supported_control_adapter_maps_the_invalid_input_wrapper_to_the_envelop
     )
 
     assert result.output_schema_digest == canonical_json_digest(
-        ControlExampleOutput.model_json_schema()
+        _declared(ControlExampleOutput.model_json_schema())
     )
     assert result.output is None
     assert result.status_code != 0
@@ -1129,7 +1140,7 @@ def test_supported_trigger_adapter_maps_invalid_input_to_the_envelope() -> None:
     )
 
     assert result.output_schema_digest == canonical_json_digest(
-        ControlExampleOutput.model_json_schema()
+        _declared(ControlExampleOutput.model_json_schema())
     )
     assert result.output is None
     assert result.status_code != 0
@@ -1176,7 +1187,7 @@ def test_supported_non_action_adapter_propagates_the_complete_context(
 
 def test_output_violating_the_manifest_schema_is_a_safe_execution_failure() -> None:
     step = ExampleStep()
-    executor = _executor(step, {"type": "object", "required": ["absent_field"]})
+    executor = _executor(step, _declared({"type": "object", "required": ["absent_field"]}))
     context = _context()
 
     with pytest.raises(StepExecutionError):
@@ -1189,7 +1200,9 @@ def test_output_validation_enforces_format_assertions() -> None:
     step = ExampleStep()
     executor = _executor(
         step,
-        {"type": "object", "properties": {"message": {"type": "string", "format": "date-time"}}},
+        _declared(
+            {"type": "object", "properties": {"message": {"type": "string", "format": "date-time"}}}
+        ),
     )
     context = _context()
 

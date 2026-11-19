@@ -17,7 +17,13 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
-from syntara_plugin.contracts import canonical_json_digest, load_bundle, validate_document
+from syntara_plugin.contracts import (
+    SchemaDocumentError,
+    canonical_json_digest,
+    load_bundle,
+    validate_authored_schema,
+    validate_document,
+)
 
 from .outcome import error_result_schema
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
@@ -394,6 +400,11 @@ def _resolve_document_source(
     if not isinstance(schema, Mapping):
         message = f"resolved step type {field_name} schema must be a JSON object"
         raise StepBindingError(message)
+    try:
+        validate_authored_schema(schema)
+    except (SchemaDocumentError, SchemaError) as error:
+        message = f"resolved step type {field_name} schema is invalid: {error}"
+        raise StepBindingError(message) from error
     return schema
 
 

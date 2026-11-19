@@ -69,6 +69,9 @@ def _make_step(base: type[BaseStep[Any, Any]]) -> BaseStep[EchoInput, EchoOutput
     return Step()
 
 
+_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+
 def _manifest(
     input_schema: dict[str, object],
     output_schema: dict[str, object] | None = None,
@@ -81,7 +84,9 @@ def _manifest(
         "input": {"kind": "inline", "value": input_schema},
         "output": {
             "kind": "inline",
-            "value": output_schema if output_schema is not None else {"type": "object"},
+            "value": output_schema
+            if output_schema is not None
+            else {"$schema": _DIALECT, "type": "object"},
         },
     }
     if kind == "Control":
@@ -169,6 +174,7 @@ def test_descriptor_for_step_derives_pydantic_schemas() -> None:
 def test_installed_step_descriptor_uses_the_manifest_schema() -> None:
     step = _make_step(ActionStep)
     manifest_schema = {
+        "$schema": _DIALECT,
         "type": "object",
         "required": ["message"],
         "properties": {"message": {"type": "string"}},
@@ -176,6 +182,7 @@ def test_installed_step_descriptor_uses_the_manifest_schema() -> None:
     }
 
     output_schema = {
+        "$schema": _DIALECT,
         "type": "object",
         "required": ["message"],
         "properties": {"message": {"type": "string"}},
@@ -430,6 +437,26 @@ def test_installed_step_rejects_each_missing_category_field(
         InstalledStepManifest.from_manifest("acme.plugin.echo", manifest, {})
 
 
+def test_installed_step_rejects_a_non_2020_12_dialect_declaration() -> None:
+    draft_seven_schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "dependencies": {"a": ["b"]},
+    }
+
+    with pytest.raises(
+        StepBindingError, match="resolved step type input schema is invalid: .*unsupported dialect"
+    ):
+        _installed_step(draft_seven_schema)
+
+
+def test_installed_step_rejects_a_missing_dialect_declaration() -> None:
+    with pytest.raises(
+        StepBindingError, match="resolved step type input schema is invalid: .*must declare"
+    ):
+        _installed_step({"type": "object"})
+
+
 @pytest.mark.parametrize("kind", ["Control", "Trigger"])
 def test_installed_step_manifest_rejects_unknown_category_fields(kind: str) -> None:
     manifest = _manifest({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}, kind=kind)
@@ -443,6 +470,7 @@ def test_installed_step_manifest_rejects_unknown_category_fields(kind: str) -> N
 
 def test_installed_step_manifest_resolves_an_asset_backed_schema() -> None:
     input_schema = {
+        "$schema": _DIALECT,
         "type": "object",
         "required": ["message"],
         "properties": {"message": {"type": "string"}},
@@ -490,11 +518,13 @@ def test_installed_step_documents_and_schemas_are_immutable(
     base: type[BaseStep[Any, Any]], kind: str, entry_point: str
 ) -> None:
     input_schema = {
+        "$schema": _DIALECT,
         "type": "object",
         "required": ["message"],
         "properties": {"message": {"type": "string"}},
     }
     output_schema = {
+        "$schema": _DIALECT,
         "type": "object",
         "required": ["message"],
         "properties": {"message": {"type": "string"}},
@@ -598,6 +628,7 @@ def test_descriptor_schema_freezes_mutable_values_nested_in_tuples() -> None:
         _make_step(ActionStep),
         _installed_step(
             {
+                "$schema": _DIALECT,
                 "type": "object",
                 "x-syntara-nested": ({"values": ["original"]},),
             }
@@ -679,28 +710,47 @@ def test_installed_step_descriptor_supports_non_action_custom_runners(
     [
         ("input_schema", {"type": "invalid"}),
         ("output_schema", {"type": "invalid"}),
-        (
-            "input_schema",
-            {"type": "object", "properties": {"message": {"$ref": "#/$defs/missing"}}},
-        ),
-        (
-            "output_schema",
-            {"type": "object", "properties": {"message": {"$ref": "#/$defs/missing"}}},
-        ),
     ],
-    ids=["invalid-input-schema", "invalid-output-schema", "input-reference", "output-reference"],
+    ids=["invalid-input-schema", "invalid-output-schema"],
 )
-def test_installed_step_descriptor_identifies_the_invalid_manifest_schema(
+def test_installed_step_rejects_structurally_invalid_manifest_schemas(
     schema_name: str, invalid_schema: dict[str, object]
 ) -> None:
+    with pytest.raises(
+        StepBindingError,
+        match=f"resolved step type {schema_name.removesuffix('_schema')} schema is invalid",
+    ):
+        _installed_step(
+            invalid_schema
+            if schema_name == "input_schema"
+            else {"$schema": _DIALECT, **EchoInput.model_json_schema()},
+            invalid_schema
+            if schema_name == "output_schema"
+            else {"$schema": _DIALECT, **EchoOutput.model_json_schema()},
+        )
+
+
+@pytest.mark.parametrize(
+    "schema_name",
+    ["input_schema", "output_schema"],
+)
+def test_installed_step_descriptor_identifies_the_invalid_manifest_schema(
+    schema_name: str,
+) -> None:
     step = _make_step(ActionStep)
-    input_schema = (
-        invalid_schema if schema_name == "input_schema" else {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}
+    invalid_schema = {
+        "$schema": _DIALECT,
+        "type": "object",
+        "properties": {"message": {"$ref": "#/$defs/missing"}},
+    }
+    installed_step = _installed_step(
+        invalid_schema
+        if schema_name == "input_schema"
+        else {"$schema": _DIALECT, **EchoInput.model_json_schema()},
+        invalid_schema
+        if schema_name == "output_schema"
+        else {"$schema": _DIALECT, **EchoOutput.model_json_schema()},
     )
-    output_schema = (
-        invalid_schema if schema_name == "output_schema" else {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}
-    )
-    installed_step = _installed_step(input_schema, output_schema)
 
     with pytest.raises(StepBindingError, match=f"manifest {schema_name}"):
         StepDescriptor.for_installed_step(step, installed_step)
@@ -709,6 +759,7 @@ def test_installed_step_descriptor_identifies_the_invalid_manifest_schema(
 def test_installed_step_descriptor_accepts_resolvable_schema_references() -> None:
     step = _make_step(ActionStep)
     input_schema = {
+        "$schema": _DIALECT,
         "type": "object",
         "properties": {"message": {"$ref": "#/$defs/message"}},
         "$defs": {"message": {"type": "string"}},
@@ -725,6 +776,7 @@ def test_installed_step_descriptor_accepts_resolvable_schema_references() -> Non
 def test_installed_step_descriptor_rejects_a_dangling_schema_reference() -> None:
     step = _make_step(ActionStep)
     input_schema = {
+        "$schema": _DIALECT,
         "type": "object",
         "properties": {"message": {"$ref": "#/$defs/missing"}},
     }
@@ -738,6 +790,7 @@ def test_installed_step_descriptor_rejects_a_dangling_schema_reference() -> None
 def test_installed_step_descriptor_rejects_nested_dangling_references() -> None:
     step = _make_step(ActionStep)
     input_schema = {
+        "$schema": _DIALECT,
         "type": "object",
         "properties": {"message": {"$ref": "#/$defs/message"}},
         "$defs": {

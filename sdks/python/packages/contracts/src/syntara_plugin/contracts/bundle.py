@@ -258,6 +258,12 @@ def load_bundle() -> ContractBundle:
             documents[entry.name] = json.loads(entry.read_text(encoding="utf-8"))
     if set(_SCHEMA_FILES.values()) - set(documents):
         raise RuntimeError("contract bundle is missing a required manifest or runtime schema")
+    for name, document in documents.items():
+        if document.get("$schema") != _CANONICAL_SCHEMA_DIALECT:
+            raise RuntimeError(
+                f"contract bundle document {name!r} must declare the "
+                f"{_CANONICAL_SCHEMA_DIALECT!r} dialect"
+            )
     asserted_formats = _asserted_formats(documents)
     registered_formats = frozenset(_FORMAT_CHECKER.checkers)
     if asserted_formats != registered_formats:

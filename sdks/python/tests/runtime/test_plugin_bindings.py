@@ -113,19 +113,24 @@ class ExplodingStep(ActionStep[SampleActionInput, SampleActionOutput]):
         return SampleActionOutput(ticket_id=inputs.title)
 '''
 
+_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
 _ACTION_INPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {"title": {"type": "string"}},
     "required": ["title"],
 }
 _CONTROL_INPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {"records": {"type": "array", "items": {"type": "string"}}},
     "required": ["records"],
 }
 _CONTROL_OUTPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {
@@ -135,12 +140,14 @@ _CONTROL_OUTPUT_SCHEMA = {
     "required": ["count", "normalized"],
 }
 _TRIGGER_INPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {"repository": {"type": "string"}},
     "required": ["repository"],
 }
 _TRIGGER_OUTPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {

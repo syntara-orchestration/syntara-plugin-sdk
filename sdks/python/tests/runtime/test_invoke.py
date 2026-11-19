@@ -254,6 +254,14 @@ _FAILURE_CASES: tuple[tuple[type[BaseStep[Any, Any]], str], ...] = (
 )
 
 
+def _declared(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inject the Draft 2020-12 declaration authored test schemas need."""
+
+    if "$schema" in schema:
+        return schema
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
+
+
 def _binding(
     step: BaseStep[Any, Any],
     identity: str,
@@ -280,11 +288,15 @@ def _binding(
         },
         "input": {
             "kind": "inline",
-            "value": input_schema or step.input_model().model_json_schema(),
+            "value": _declared(
+                input_schema if input_schema is not None else step.input_model().model_json_schema()
+            ),
         },
         "output": {
             "kind": "inline",
-            "value": output_schema or step.output_model().model_json_schema(),
+            "value": _declared(
+                output_schema if output_schema is not None else step.output_model().model_json_schema()
+            ),
         },
     }
     if kind == "Control":
@@ -295,7 +307,7 @@ def _binding(
                 "driver": "webhook.v1",
                 "configuration": {
                     "kind": "inline",
-                    "value": configuration_schema or {"type": "object"},
+                    "value": _declared(configuration_schema or {"type": "object"}),
                 },
             }
         )
@@ -304,9 +316,9 @@ def _binding(
     if error_schema is not None:
         if error_asset:
             specification["error"] = {"kind": "asset", "path": "schemas/error.json"}
-            assets = {"schemas/error.json": error_schema}
+            assets = {"schemas/error.json": _declared(error_schema)}
         else:
-            specification["error"] = {"kind": "inline", "value": error_schema}
+            specification["error"] = {"kind": "inline", "value": _declared(error_schema)}
 
     manifest = InstalledStepManifest.from_manifest(
         identity,
@@ -1143,10 +1155,16 @@ def test_reconstruction_checks_error_schema_even_with_matching_digest() -> None:
         standard_output_from_container_result(result, output_schema={"type": "object"}, error_schema=schema)
 
 
-@pytest.mark.parametrize("schema", [{"type": "not-a-type"}, {"$ref": "#/$defs/missing"}])
-def test_invalid_installed_error_schema_is_rejected(schema: dict[str, Any]) -> None:
+@pytest.mark.parametrize(
+    ("schema", "match"),
+    [
+        ({"type": "not-a-type"}, "resolved step type error schema is invalid"),
+        ({"$ref": "#/$defs/missing"}, "error_schema"),
+    ],
+)
+def test_invalid_installed_error_schema_is_rejected(schema: dict[str, Any], match: str) -> None:
     step = DetailedFailureStep()
-    with pytest.raises(StepBindingError, match="error_schema"):
+    with pytest.raises(StepBindingError, match=match):
         _binding(step, "tests.bad-error-schema", error_schema=schema)
 
 

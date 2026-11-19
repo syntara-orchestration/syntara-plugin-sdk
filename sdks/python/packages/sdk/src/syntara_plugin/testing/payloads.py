@@ -121,6 +121,7 @@ class FailingReferenceStep(ControlStep[ReferenceInput, ReferenceOutput]):
 
 
 _INVALID_OUTPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "summary": {"type": "string", "maxLength": 3},

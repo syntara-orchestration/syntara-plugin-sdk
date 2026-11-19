@@ -380,6 +380,7 @@ def test_bind_supports_task_workflow_and_trigger_classes() -> None:
 
 def test_bind_with_drifted_declared_schema_raises() -> None:
     drifted = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {"records": {"type": "string"}},
         "required": ["records"],

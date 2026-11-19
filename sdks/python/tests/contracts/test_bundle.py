@@ -92,6 +92,25 @@ def test_plugin_schema_accepts_only_nonempty_named_workloads() -> None:
     assert validate_document(bundle, "plugin", plugin)
 
 
+def test_load_bundle_rejects_a_non_2020_12_dialect_declaration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from syntara_plugin.contracts import bundle as bundle_module
+
+    tampered = tmp_path / "v1alpha1"
+    tampered.mkdir()
+    for source in bundle_module._schema_directory().iterdir():
+        if source.name.endswith(".schema.json"):
+            document = json.loads(source.read_text(encoding="utf-8"))
+            if source.name == "step.schema.json":
+                document["$schema"] = "http://json-schema.org/draft-07/schema#"
+            (tampered / source.name).write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(bundle_module, "_schema_directory", lambda: tampered)
+
+    with pytest.raises(RuntimeError, match="step.schema.json.*draft/2020-12"):
+        load_bundle()
+
+
 def test_asserted_format_set_is_declared_by_the_common_contract() -> None:
     bundle = load_bundle()
 
