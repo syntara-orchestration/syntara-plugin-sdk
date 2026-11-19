@@ -108,6 +108,7 @@ _RELEASE_PLUGIN_LABEL = "release plugin"
 _PLUGIN_ARCHIVE_LABEL = "plugin archive"
 _PLUGIN_DESCRIPTOR_LABEL = "plugin descriptor"
 _RUNTIME_BINDINGS_FILENAME = "runtime-bindings.yaml"
+_SCHEMA_KEYWORD = "$schema"
 _EXPECTED_BINDING_INDEX_DIGEST_ERROR = (
     "current runtime-binding index digest does not match the expected digest"
 )
@@ -1223,7 +1224,7 @@ def _validate_field_names(fields: list[str]) -> None:
 
 
 def _validate_fields_schema(document: dict[str, Any]) -> None:
-    declared = document.get("$schema")
+    declared = document.get(_SCHEMA_KEYWORD)
     if declared is not None and declared != "https://json-schema.org/draft/2020-12/schema":
         raise ValueError(
             f"fields JSON schema declares unsupported dialect {declared!r}; only the "
@@ -1308,7 +1309,7 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
             # The declaration is injected only when the author omitted it; a
             # non-2020-12 declaration was already rejected during validation.
             document = {**payload}
-            document.setdefault("$schema", "https://json-schema.org/draft/2020-12/schema")
+            document.setdefault(_SCHEMA_KEYWORD, "https://json-schema.org/draft/2020-12/schema")
             (directory / input_path).write_text(
                 yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
             )
@@ -4395,7 +4396,7 @@ def _input_template(field_names: Sequence[str]) -> str:
 def _input_schema(field_names: Sequence[str]) -> dict[str, Any]:
     """Construct the scaffold schema without interpreting field names as YAML scalars."""
     return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        _SCHEMA_KEYWORD: "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "description": "Inputs accepted by this action.",
         "additionalProperties": False,

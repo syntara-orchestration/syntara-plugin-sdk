@@ -1163,6 +1163,7 @@ def test_reconstruction_rejects_a_base_digest_when_a_trusted_schema_is_supplied(
             "properties": {"category": {"type": "string"}},
         }
     )
+    output_schema = _declared({"type": "object"})
     base_document = {
         "category": "business",
         "code": "FAILED",
@@ -1170,14 +1171,14 @@ def test_reconstruction_rejects_a_base_digest_when_a_trusted_schema_is_supplied(
         "retryable": False,
     }
     result = ContainerResult(
-        canonical_json_digest(_declared({"type": "object"})), status_code=1,
+        canonical_json_digest(output_schema), status_code=1,
         error_result=base_document,
         error_schema_digest=canonical_json_digest(error_result_base_schema()),
     )
 
     with pytest.raises(ContainerRemoteError):
         standard_output_from_container_result(
-            result, output_schema=_declared({"type": "object"}), error_schema=trusted_schema
+            result, output_schema=output_schema, error_schema=trusted_schema
         )
 
 
