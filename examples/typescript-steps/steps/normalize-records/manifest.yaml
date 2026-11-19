@@ -1,0 +1,38 @@
+apiVersion: syntara.io/v1alpha1
+kind: Action
+metadata:
+  name: normalize-records
+  displayName: Normalize records
+  description: Trims and lowercases every record name.
+spec:
+  runtime:
+    kind: custom-runner
+    workload: node
+    # An opaque handler identifier: whatever serves this plugin's workload
+    # image maps it to a function. Syntara never parses it.
+    entryPoint: handlers.ts#normalizeRecords
+  input:
+    kind: inline
+    value:
+      type: object
+      additionalProperties: false
+      properties:
+        records:
+          type: array
+          title: Records
+          items:
+            type: string
+      required: [records]
+  output:
+    kind: inline
+    value:
+      type: object
+      additionalProperties: false
+      properties:
+        normalized:
+          type: array
+          items:
+            type: string
+        count:
+          type: integer
+      required: [normalized, count]

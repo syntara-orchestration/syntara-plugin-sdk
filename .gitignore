@@ -61,6 +61,9 @@ examples/*/step-definition.json
 *.sqlite
 *.sqlite3
 
+# Node
+node_modules/
+
 # Logs
 *.log
 

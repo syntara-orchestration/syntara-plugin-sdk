@@ -241,7 +241,7 @@ def test_target_metadata_rejects_out_of_scope_tags() -> None:
     assert any("tags" in error for error in errors)
 
 
-def test_custom_runner_action_requires_a_stable_python_entry_point() -> None:
+def test_custom_runner_action_requires_an_entry_point() -> None:
     bundle = load_bundle()
     action = step_document(
         "Action",
@@ -386,24 +386,87 @@ def test_http_operation_requires_the_builtin_http_runner() -> None:
     assert validate_document(load_bundle(), "action", document)
 
 
-@pytest.mark.parametrize(
-    "entry_point",
-    ["steps..bad:Run", "steps.bad.:Run", "steps:Run.More", "steps:Run\n"],
-)
-def test_step_contract_rejects_malformed_entry_points(entry_point: str) -> None:
-    bundle = load_bundle()
-    action = step_document(
-        "Action",
-        target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
-        {
-            "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
-        },
+# The shared contract treats entryPoint as an opaque, language-SDK-defined
+# handler identifier: Python module:Class is only one adapter's convention.
+OPAQUE_ENTRY_POINTS = [
+    "steps:Run",
+    "greeter",
+    "cmd/server:Echo",
+    "github.com/acme/records/handlers.NormalizeRecords",
+    "./dist/handlers.js#normalizeRecords",
+    "@acme/records:normalize",
+    "steps..bad:Run",
+    "x" * 256,
+]
+
+MALFORMED_ENTRY_POINTS = [
+    "",
+    "steps:Run\n",
+    "has space",
+    " leading",
+    "tab\tseparated",
+    "nul\x00byte",
+    "caf\u00e9:Run",
+    "x" * 257,
+]
+
+
+def _custom_runner_step(kind: str, entry_point: str) -> dict[str, Any]:
+    source = {"kind": "inline", "value": {"type": "object"}}
+    spec: dict[str, Any] = {
+        "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
+        "input": source,
+        "output": source,
+    }
+    if kind == "Control":
+        spec["invocation"] = {"kind": "workflow-invocation", "workflow": "acme.release.deploy"}
+    if kind == "Trigger":
+        spec["driver"] = "webhook.v1"
+        spec["configuration"] = source
+    return step_document(
+        kind, target_metadata("normalize-records", "Normalize records", "Normalizes."), spec
     )
 
-    errors = validate_document(bundle, "action", action)
+
+@pytest.mark.parametrize("kind", ["Action", "Control", "Trigger"])
+@pytest.mark.parametrize("entry_point", OPAQUE_ENTRY_POINTS)
+def test_step_contracts_accept_opaque_entry_points(kind: str, entry_point: str) -> None:
+    document = _custom_runner_step(kind, entry_point)
+
+    assert validate_document(load_bundle(), kind.lower(), document) == []
+
+
+@pytest.mark.parametrize("kind", ["Action", "Control", "Trigger"])
+@pytest.mark.parametrize("entry_point", MALFORMED_ENTRY_POINTS)
+def test_step_contracts_reject_unbounded_or_unprintable_entry_points(
+    kind: str, entry_point: str
+) -> None:
+    document = _custom_runner_step(kind, entry_point)
+
+    errors = validate_document(load_bundle(), kind.lower(), document)
     assert any("entryPoint" in error for error in errors)
+
+
+def _resolved_execution(entry_point: str) -> dict[str, Any]:
+    return {
+        "bindings": [
+            {
+                "stepRevisionId": f"sha256:{'a' * 64}",
+                "stepIdentity": "acme.records.normalize-records",
+                "runtimeKind": "custom-runner",
+                "entryPoint": entry_point,
+                "abi": "syntara.container/v1alpha1",
+                "schemaDigests": {"input": f"sha256:{'b' * 64}", "output": f"sha256:{'c' * 64}"},
+            }
+        ]
+    }
+
+
+def test_resolved_execution_carries_an_opaque_entry_point() -> None:
+    bundle = load_bundle()
+
+    assert validate_document(bundle, "resolved_execution", _resolved_execution("cmd/x#run")) == []
+    assert validate_document(bundle, "resolved_execution", _resolved_execution("has space"))
 
 
 def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:

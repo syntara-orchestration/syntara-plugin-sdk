@@ -71,11 +71,12 @@ def test_validate_settings_semantics_error_is_rejected_workspace() -> None:
 def test_compiler_diagnostic_evidence_appends_the_document_path() -> None:
     # Captured from `syntara-plugin validate --json` on the pinned step-types
     # http-request plugin after breaking spec.runtime.entryPoint: locations
-    # deeper than the document root carry a JSON-pointer-style path.
+    # deeper than the document root carry a JSON-pointer-style path. The message
+    # was re-captured from a scaffolded custom-runner workspace when the shared
+    # contract made entryPoint an opaque printable-ASCII identifier.
     message = (
-        r"spec/runtime/entryPoint: '1nv4lid:Step!!' does not match "
-        r"'^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_]"
-        r"[A-Za-z0-9_]*$(?![\s\S])'"
+        r"spec/runtime/entryPoint: '1nv4lid Step!!' does not match "
+        r"'^[!-~]{1,256}$(?![\\s\\S])'"
     )
     document = {
         "diagnostics": [

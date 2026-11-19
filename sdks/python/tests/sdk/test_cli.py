@@ -626,21 +626,38 @@ def test_validate_reports_compiler_diagnostics_without_a_traceback(tmp_path: Pat
     assert payload["diagnostics"][0]["code"] == "DOCUMENT_UNREADABLE"
 
 
+def _custom_runner_workspace_with_entry_point(tmp_path: Path, capsys, entry_point: str) -> Path:
+    workspace = tmp_path / "custom-entry-point"
+    assert main(["init", str(workspace), "--runner", "custom-runner"]) == 0
+    capsys.readouterr()
+    manifest_path = workspace / "steps/request/manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["spec"]["runtime"]["kind"] == "custom-runner"
+    manifest["spec"]["runtime"]["entryPoint"] = entry_point
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    return workspace
+
+
 @pytest.mark.parametrize(
-    "entry_point", ["steps..bad:Run", "steps.bad.:Run", "steps:Run.More"]
+    "entry_point", ["cmd/request#handle", "github.com/acme/request.Handle", "request"]
 )
+def test_validate_accepts_an_opaque_custom_runner_entry_point(
+    tmp_path: Path, capsys, entry_point: str
+) -> None:
+    """entryPoint syntax belongs to the image's language SDK, not the shared contract."""
+    workspace = _custom_runner_workspace_with_entry_point(tmp_path, capsys, entry_point)
+
+    assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+
+
+@pytest.mark.parametrize("entry_point", ["has space", "steps:Run\n", "x" * 257])
 def test_validate_rejects_malformed_custom_runner_entry_points(
     tmp_path: Path, capsys, entry_point: str
 ) -> None:
-    """The CLI rejects malformed entry points before an artifact can be built."""
-    workspace = tmp_path / "malformed-entry-point"
-    assert main(["init", str(workspace)]) == 0
-    capsys.readouterr()
-
-    manifest_path = workspace / "steps/request/manifest.yaml"
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    manifest["spec"]["runtime"]["entryPoint"] = entry_point
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    """The CLI rejects unprintable or unbounded entry points before an artifact is built."""
+    workspace = _custom_runner_workspace_with_entry_point(tmp_path, capsys, entry_point)
 
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 1
     payload = json.loads(capsys.readouterr().out)

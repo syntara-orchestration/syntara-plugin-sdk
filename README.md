@@ -53,6 +53,11 @@ The generated runtime loads the packaged plugin manifests through the
 packaged-manifest binding helper. See [Getting started](docs/getting-started.md)
 for local tests and image preparation.
 
+Custom runners are not limited to Python: the entry point is an opaque,
+language-defined identifier, and any workload that serves the container ABI
+works with `validate`, `build`, and `run --mode image`. See the
+[Go](examples/go-steps) and [TypeScript](examples/typescript-steps) examples.
+
 `init` creates a small plugin workspace and a non-secret
 `syntara-plugin.yaml` settings file. The default build is deterministic and
 offline: it writes a portable OCI metadata archive but does not build an image,

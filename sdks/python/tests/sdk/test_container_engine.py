@@ -673,3 +673,37 @@ def test_managed_runtime_mounts_nothing_without_credentials(monkeypatch, tmp_pat
         pass
 
     assert not [value for value in seen[0] if "/var/run/syntara/secrets" in value]
+
+
+_CONFIG_HEX = "a" * 64
+
+
+@pytest.mark.parametrize("printed_id", [_CONFIG_HEX, f"sha256:{_CONFIG_HEX}"])
+def test_loaded_image_verification_accepts_both_image_id_forms(
+    monkeypatch, printed_id: str
+) -> None:
+    # Podman prints `{{.Id}}` as bare hex; the OCI config digest is prefixed.
+    def fake_run(command, **_):
+        assert command[:4] == ["podman", "image", "inspect", "--format"]
+        return SimpleNamespace(returncode=0, stdout=f"{printed_id}\n", stderr="")
+
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+
+    container_engine._verify_loaded_image("localhost/loaded:tag", f"sha256:{_CONFIG_HEX}")
+
+
+@pytest.mark.parametrize(
+    ("returncode", "printed_id"),
+    [(0, "b" * 64), (0, f"sha256:{'b' * 64}"), (0, ""), (125, _CONFIG_HEX)],
+)
+def test_loaded_image_verification_rejects_a_different_or_failed_inspect(
+    monkeypatch, returncode: int, printed_id: str
+) -> None:
+    monkeypatch.setattr(
+        container_engine.subprocess,
+        "run",
+        lambda *_, **__: SimpleNamespace(returncode=returncode, stdout=printed_id, stderr=""),
+    )
+
+    with pytest.raises(RunExecutionError, match="does not match the selected OCI archive"):
+        container_engine._verify_loaded_image("localhost/loaded:tag", f"sha256:{_CONFIG_HEX}")

@@ -6,11 +6,10 @@ import importlib
 import re
 from typing import Any
 
-from syntara_plugin.runtime import BaseStep
+from syntara_plugin.runtime import BaseStep, is_python_entry_point
 
-from .errors import HarnessUsageError
+from .errors import HarnessUsageError, NotPythonStepTypeError
 
-_ENTRY_POINT = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*):([A-Za-z_][A-Za-z0-9_]*)$")
 _IDENTITY_UNSAFE = re.compile(r"[^A-Za-z0-9._:-]")
 
 StepTarget = str | type[BaseStep[Any, Any]] | BaseStep[Any, Any]
@@ -32,14 +31,15 @@ def default_step_identity(step: BaseStep[Any, Any]) -> str:
 def parse_entry_point(entry_point: str) -> tuple[str, str]:
     """Split one ``module:Class`` entry point into its module and class names."""
 
-    match = _ENTRY_POINT.fullmatch(entry_point)
-    if match is None:
+    if not is_python_entry_point(entry_point):
         message = (
-            f"entry point {entry_point!r} must use the 'module:Class' form, for example "
-            "'my_plugin.steps.notify:NotifyStep'"
+            f"entry point {entry_point!r} is not a Python step type: the testing harness"
+            " loads the Python adapter's 'module:Class' form, for example"
+            " 'my_plugin.steps.notify:NotifyStep'"
         )
-        raise HarnessUsageError(message)
-    return match.group(1), match.group(2)
+        raise NotPythonStepTypeError(message)
+    module_name, _, class_name = entry_point.partition(":")
+    return module_name, class_name
 
 
 def entry_point_of(step_class: type[BaseStep[Any, Any]]) -> str:
@@ -55,6 +55,12 @@ def load_step_class(entry_point: str) -> type[BaseStep[Any, Any]]:
     try:
         module = importlib.import_module(module_name)
     except ImportError as error:
+        if _is_absent_entry_module(error, module_name):
+            message = (
+                f"entry point {entry_point!r} is not a Python step type in this"
+                f" workspace: {error}"
+            )
+            raise NotPythonStepTypeError(message) from error
         message = f"entry point {entry_point!r} could not import module {module_name!r}: {error}"
         raise HarnessUsageError(message) from error
     step_class = getattr(module, class_name, None)
@@ -65,6 +71,19 @@ def load_step_class(entry_point: str) -> type[BaseStep[Any, Any]]:
         message = f"entry point {entry_point!r} must name a BaseStep subclass"
         raise HarnessUsageError(message)
     return step_class
+
+
+def _is_absent_entry_module(error: ImportError, module_name: str) -> bool:
+    """Whether an import failed because the entry point's own module is absent.
+
+    A module that exists but fails to import (a missing dependency of its
+    own) is Python breakage and stays a usage error; only an absent
+    entry-point module means the Python harness cannot own this target.
+    """
+
+    return isinstance(error, ModuleNotFoundError) and (
+        error.name == module_name or module_name.startswith(f"{error.name}.")
+    )
 
 
 def resolve_step(target: StepTarget) -> BaseStep[Any, Any]:

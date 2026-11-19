@@ -50,7 +50,7 @@ flowchart LR
 | --- | --- | --- |
 | [Plan](#plan-your-step-type) | The step type category, the runner, and the step type boundaries | None |
 | [Declare](#declare-the-contract) | Manifests and JSON Schemas | `syntara-plugin init` |
-| [Implement](#implement-the-step) | A typed Python class (custom runner only) | None |
+| [Implement](#implement-the-step-type) | A typed Python class, or a workload in another language (custom runner only) | None |
 | [Verify](#verify-locally) | Evidence that the step type behaves as declared | `validate`, `run`, `pytest` |
 | [Package](#package-the-plugin) | A deterministic OCI archive | `syntara-plugin build` |
 | [Publish](#publish-the-release) | A discoverable catalog release | `syntara-plugin publish` |
@@ -87,7 +87,7 @@ If you have not created a plugin before, complete
 | Step type | One catalog capability, such as **Create issue**, declared by a manifest under `steps/`. |
 | Category | The role of a step type: `action`, `control`, or `trigger`. The manifest `kind` is `Action`, `Control`, or `Trigger`. |
 | Runner | What executes the step type: the Syntara `platform-runner` or your own `custom-runner`. |
-| Entry point | The `module:Class` handle of a custom-runner implementation, such as `python_steps.create_issue:CreateIssueStep`. |
+| Entry point | An opaque handler identifier for a custom-runner implementation; its syntax belongs to the language of the workload image. The Python adapter uses `module:Class`, such as `python_steps.create_issue:CreateIssueStep`. |
 | Workload image | A container image that holds custom-runner code. A plugin may declare multiple logical workloads and image options. |
 | Step identity | The stable name `namespace.plugin.step`, such as `example.python-steps.create-issue`. |
 
@@ -131,7 +131,7 @@ not as a general label for every capability.
 | Question | `platform-runner` | `custom-runner` |
 | --- | --- | --- |
 | Can one HTTP call to a provider do the job? | Yes: declare it with the `http.v1` driver. | Use a custom runner when it cannot. |
-| Do you write code? | No. The manifest is the whole step type. | Yes: a typed Python class. |
+| Do you write code? | No. The manifest is the whole step type. | Yes: a typed Python class, or a workload in [another language](#implement-in-another-language). |
 | Who owns the runtime image? | Syntara. | You do; the build pins its digest. |
 | Can you run it with `syntara-plugin run`? | No. Use `validate` and `inspect`. | Yes. |
 
@@ -153,7 +153,7 @@ decision shapes your contracts. For guidance, see
 
 ## Declare the contract
 
-**Stage 2 of 6: Declare.** Next: [Implement](#implement-the-step).
+**Stage 2 of 6: Declare.** Next: [Implement](#implement-the-step-type).
 
 ```mermaid
 flowchart LR
@@ -219,7 +219,8 @@ declares multiple workloads, each custom-runner Step must set
 ### Declare an Action
 
 The `steps/create-issue/manifest.yaml` file declares a custom-runner Action.
-The `entryPoint` names the Python class that implements it:
+The `entryPoint` names the implementation; this Python example uses the Python
+adapter's `module:Class` form:
 
 ```yaml
 apiVersion: syntara.io/v1alpha1
@@ -445,11 +446,13 @@ flowchart LR
     classDef todo fill:#f5f5f5,stroke:#8a8d90,color:#151515
 ```
 
-A custom-runner step type is a Python class that subclasses `ActionStep`,
-`ControlStep`, or `TriggerStep` from `syntara_plugin.runtime`. All three
-share one lifecycle: the SDK validates the raw input against the manifest
-schema, builds your Pydantic input model, calls your `run()` method once, and
-validates the returned object against the manifest output schema.
+With the Python adapter, a custom-runner step type is a Python class that
+subclasses `ActionStep`, `ControlStep`, or `TriggerStep` from
+`syntara_plugin.runtime`. All three share one lifecycle: the SDK validates the
+raw input against the manifest schema, builds your Pydantic input model, calls
+your `run()` method once, and validates the returned object against the
+manifest output schema. To write the step type in Go, TypeScript, or any
+other language, see [Implement in another language](#implement-in-another-language).
 
 ### Model the contract and write `run()`
 
@@ -627,6 +630,47 @@ reserve `ContainerInvocationError` for terminal invocation outcomes.
 For the typed API in depth, see
 [Typed Python step types](runtime-and-oci.md#typed-python-step-types).
 
+### Implement in another language
+
+The shared contract is language-neutral. `spec.runtime.entryPoint` is an
+opaque handler identifier: Syntara never parses it, and its syntax belongs to
+the language of the workload image. The Python adapter above uses
+`module:Class`; a Go or TypeScript workload chooses its own form.
+
+Each example declares a `normalize-records` Action that does what the Python
+[`NormalizeRecordsStep`](../examples/python-steps/python_steps/normalize_records.py)
+does, with the implementation and its unit tests written in the language
+itself:
+
+| Example | Entry point | Implementation |
+| --- | --- | --- |
+| [Go steps](../examples/go-steps) | `handlers.NormalizeRecords` | Go, tested with `go test` |
+| [TypeScript steps](../examples/typescript-steps) | `handlers.ts#normalizeRecords` | TypeScript, compiled with `tsc` |
+
+The examples are manifest-level demonstrations: they prove a non-Python
+entry point is a first-class step type through `validate`, and stop at the
+implementation. To package and run such a plugin, the workload image needs a
+server for the container ABI; see
+[Workload servers in other languages](runtime-and-oci.md#workload-servers-in-other-languages)
+for that contract.
+
+```sh
+cd examples/go-steps
+syntara-plugin validate plugin.yaml
+go test ./...
+```
+
+A plugin can mix languages: give each logical workload its own image, and in
+a Python image pass that workload's ID, such as
+`load_plugin_bindings(package, workload_id="python")`, so it binds only the
+step types assigned to its workload.
+
+`run --mode source` and `test-init` load Python step types in-process, so they
+apply to the Python adapter only; a target whose entry point the Python
+harness cannot resolve as a Python step type is reported with image-mode
+guidance by `run`, and `test-init` reports it and generates no module for it.
+Test the implementation with its own language's tooling.
+
 ## Verify locally
 
 **Stage 4 of 6: Verify.** Next: [Package](#package-the-plugin).
@@ -646,15 +690,16 @@ something that the previous one cannot:
 
 | Tool | Proves | Does not prove |
 | --- | --- | --- |
-| `syntara-plugin validate` | Manifests match the contracts and each other. | Anything about Python code. |
-| `syntara-plugin inspect` | The compiled descriptor is what you expect. | Anything about Python code. |
+| `syntara-plugin validate` | Manifests match the contracts and each other. | Anything about your implementation code. |
+| `syntara-plugin inspect` | The compiled descriptor is what you expect. | Anything about your implementation code. |
 | `syntara-plugin run` | One invocation works over the container ABI, and the models match the manifest. | Edge cases and regressions. |
 | `pytest` with the testing harness | Valid input reaches `run()` once, invalid input never does, both execution paths agree, and secrets do not leak. | End-to-end platform execution. |
 
-> **Important:** `validate` and `build` never import your Python code. A
+> **Important:** `validate` and `build` never load your implementation code. A
 > misspelled entry point or a model that drifts from the manifest passes both.
-> For custom-runner step types, run `syntara-plugin run` or `pytest` before you
-> package.
+> For Python custom-runner step types, run `syntara-plugin run` or `pytest`
+> before you package. For a workload in another language, run its own unit
+> tests and `syntara-plugin run --mode image` after `build`.
 
 ### Validate and inspect
 
@@ -1106,9 +1151,12 @@ build-generated revision IDs. For more information, see
 ### Entry point and artifact binding
 
 The `entryPoint` value names your implementation inside the workload image.
+Syntara never parses it: the image-level server dispatches by step revision
+ID and resolves the value itself, so its syntax belongs to the language of the
+image (`module:Class` for the Python adapter).
 The plugin contract names a logical workload ID. A RuntimeBinding maps that
 ID to one or more image options whose values are immutable
-`repository@sha256:<digest>` references, never mutable tags. Inside the
+`repository@sha256:<digest>` references, never mutable tags. Inside a Python
 image, a bindings factory delegates to `load_plugin_bindings`, which reads
 the packaged `plugin.yaml` and registers each custom-runner step type through
 its installed manifest, so that the manifest schema stays the execution

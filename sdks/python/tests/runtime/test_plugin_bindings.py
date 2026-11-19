@@ -675,9 +675,11 @@ def test_missing_asset_document(plugin_root: Path) -> None:
     ("entry_point", "message"),
     [
         ("wrapper_pkg_missing.steps:SampleActionStep", "could not import"),
-        ("NoColonHere", "entryPoint"),
-        ("module_only", "entryPoint"),
-        ("steps.SampleActionStep", "entryPoint"),
+        ("NoColonHere", "Python adapter requires a 'module:Class'"),
+        ("module_only", "Python adapter requires a 'module:Class'"),
+        ("steps.SampleActionStep", "Python adapter requires a 'module:Class'"),
+        ("cmd/create-ticket#run", "is not bindable"),
+        ("has space", "entryPoint"),
     ],
 )
 def test_unusable_entry_point(plugin_root: Path, entry_point: str, message: str) -> None:

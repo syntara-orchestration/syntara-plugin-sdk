@@ -25,6 +25,7 @@ from syntara_plugin.runtime import (
     StepExecutor,
     StepKind,
     TriggerStep,
+    is_python_entry_point,
     to_json_document,
 )
 
@@ -378,21 +379,31 @@ def test_installed_platform_runner_cannot_be_bound_to_python(
         InstalledStepManifest.from_manifest("acme.plugin.echo", manifest, {})
 
 
+@pytest.mark.parametrize("entry_point", ["", "steps:Echo\n", "has space"])
+def test_installed_step_rejects_entry_points_the_contract_rejects(entry_point: str) -> None:
+    schema = EchoInput.model_json_schema()
+    with pytest.raises(StepBindingError, match="manifest violates its contract"):
+        _installed_step(schema, entry_point=entry_point)
+
+
 @pytest.mark.parametrize(
     "entry_point",
     [
-        "",
         ":Echo",
         ".steps:Echo",
         "steps.:Echo",
         "steps..api:Echo",
         "steps:Echo.More",
-        "steps:Echo\n",
+        "cmd/echo#run",
+        "github.com/acme/echo.Run",
     ],
 )
-def test_installed_step_rejects_malformed_entry_points(entry_point: str) -> None:
-    with pytest.raises(StepBindingError, match="manifest violates its contract"):
-        _installed_step(EchoInput.model_json_schema(), entry_point=entry_point)
+def test_installed_step_requires_the_python_adapter_convention(entry_point: str) -> None:
+    # The shared contract accepts any opaque identifier; binding a Python class
+    # is the Python adapter's job, so only module:Class is bindable here.
+    schema = EchoInput.model_json_schema()
+    with pytest.raises(StepBindingError, match="Python adapter requires a 'module:Class'"):
+        _installed_step(schema, entry_point=entry_point)
 
 
 @pytest.mark.parametrize(
@@ -954,3 +965,23 @@ def test_resolve_unknown_identity_is_rejected() -> None:
 
     with pytest.raises(StepBindingError, match="not bound"):
         bindings.resolve("acme.plugin.missing")
+
+
+@pytest.mark.parametrize(
+    ("entry_point", "expected"),
+    [
+        ("pkg.steps:NotifyStep", True),
+        ("pkg:Step", True),
+        ("pkg..steps:Step", False),
+        ("pkg.steps:Step.Inner", False),
+        ("cmd/notify#run", False),
+        ("pkg:Step\n", False),
+        ("", False),
+        (None, False),
+        (42, False),
+    ],
+)
+def test_is_python_entry_point_recognizes_only_the_python_convention(
+    entry_point: object, expected: bool
+) -> None:
+    assert is_python_entry_point(entry_point) is expected

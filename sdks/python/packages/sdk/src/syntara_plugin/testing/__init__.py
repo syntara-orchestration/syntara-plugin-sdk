@@ -22,7 +22,7 @@ from .conformance import (
 )
 from .context_builder import build_execution_context
 from .equivalence import assert_outcomes_equivalent
-from .errors import HarnessUsageError
+from .errors import HarnessUsageError, NotPythonStepTypeError
 from .invocation import (
     BoundedStepHandler,
     LogCapture,
@@ -78,6 +78,7 @@ __all__ = [
     "FIXED_SECRET_SENTINEL",
     "FailingReferenceStep",
     "HarnessUsageError",
+    "NotPythonStepTypeError",
     "INVALID_INPUT_CASES",
     "INVALID_OUTPUT_CASES",
     "ManifestValidationError",

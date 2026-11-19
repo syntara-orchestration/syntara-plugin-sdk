@@ -262,14 +262,23 @@ returns the same diagnostics as a tuple when a test needs to assert on them.
 
 ## Generated tests
 
-`syntara-plugin test-init` scaffolds a test module per custom-runner step type
-target of every kind (Action, Control, and Trigger) from the compiled
+`syntara-plugin test-init` scaffolds a test module per Python custom-runner
+step type target of every kind (Action, Control, and Trigger) from the compiled
 manifest and its schemas: the entry point, one valid case, derived invalid
 cases, and the standard property tests. It also writes a shared
 `tests/conftest.py` import shim, only when absent, so generated tests can
 import the workspace and author-owned conftest content is never overwritten.
 Generated files refuse silent overwrite
-(`--force` to regenerate) and are deterministic.
+(`--force` to regenerate) and are deterministic. Generation never decides a
+target's language from the entry point's syntax: it attempts each load, and a
+target that resolves as a Python step type gets a module. The rest are reported
+on standard error with the exact reason and get no module, so a target
+implemented in [another language](authoring-guide.md#implement-in-another-language)
+never produces failing tests, and a missing Python implementation (a typo'd
+module or class) is reported at generation instead of silently skipped. Test a
+non-Python target with its own language's tooling and, after
+`syntara-plugin build`, with `syntara-plugin run --mode image --release
+dist/release.json --image-option <option>`.
 
 A generated suite never fails on first run: the derived invalid-input test
 runs immediately, while the valid-input and equivalence tests are skipped

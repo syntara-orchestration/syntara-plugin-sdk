@@ -20,8 +20,8 @@
         "size": 14
       }
     },
-    "contractBundleDigest": "sha256:c0d0fe7c19671f67c30f3e8c6e45bfb8da5c58e9275b9fde6c5759cc65d013b9",
-    "plugin_revision_id": "sha256:08d580d83183751c33c9e8fa53079b5c6a5d8c174b910f2c13e6b0d4926d9dad",
+    "contractBundleDigest": "sha256:d6a8b9d4d12feac4aa181e1655a4475aea98f908988e0e0780ee8a2454deb6ff",
+    "plugin_revision_id": "sha256:1705431b32ed67fb306270edcdd139bbe263f95cac0bef15f393d96bcade7e83",
     "sdkVersion": "0.1.0-alpha.1",
     "documentation": {
       "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
@@ -53,7 +53,7 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "steps/create-issue.yaml",
-        "step_revision_id": "sha256:9eb76263947ebcae5f7e6e5c33ef5cc995ffcfaf0cb0553acafd5a4b76cb2f5e",
+        "step_revision_id": "sha256:fd773ac9797517c635a0916d44048b1f4ee62b073dd5c37983cb25611ab43dc7",
         "version": "0.1.0"
       },
       {
@@ -76,7 +76,7 @@
         },
         "runtime": {
           "abi": "syntara.container/v1alpha1",
-          "entryPoint": "issue_tools.controls:Deploy",
+          "entryPoint": "cmd/issue-tools#deploy",
           "kind": "custom-runner",
           "workload": "plugin-workload"
         },
@@ -85,7 +85,7 @@
           "output": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0"
         },
         "sourcePath": "controls/invoke.yaml",
-        "step_revision_id": "sha256:5cdebb125c1482cbed75264fcfd17ad88688e15cab0e0d55ad0301c7973fb46c",
+        "step_revision_id": "sha256:33858a54547418668ea0516cba489935d570c10ef4168a53261c240fac51c73e",
         "version": "0.1.0"
       },
       {
@@ -131,7 +131,7 @@
           "output": "sha256:9165019f477995f6b0f38b7225ae22d3aee26feabba71afb8a2552918ebce43a"
         },
         "sourcePath": "triggers/issue-opened.yaml",
-        "step_revision_id": "sha256:35160218482213bc349bdf00ae06f9caa3b5b274dae8105b5e0cab07c9f84b6f",
+        "step_revision_id": "sha256:49ec511a0de9f61b78f1351520ec6510160a937458ecdb2c550a7e2df8513df3",
         "version": "0.1.0"
       }
     ],
