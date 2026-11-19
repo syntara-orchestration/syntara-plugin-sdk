@@ -20,6 +20,7 @@ from syntara_plugin.contracts import (
 from syntara_plugin.sdk.workload import (
     WorkloadBuildError,
     WorkloadBuildRequest,
+    _runtime_metadata_from_oci,
     build_and_push_workload,
     build_workload_archive,
     publish_workload_archive,
@@ -101,6 +102,42 @@ def test_build_workload_archive_is_local_only_and_uses_oci_manifest_digest(
     assert commands[2][2:5] == ["--format", "oci-archive", "--output"]
 
 
+def test_build_workload_archive_adds_runtime_metadata_to_both_image_builds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    context = tmp_path / "context"
+    context.mkdir()
+    containerfile = context / "Containerfile"
+    containerfile.write_text("FROM scratch\n", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "save":
+            _write_oci_archive(Path(command[command.index("--output") + 1]))
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
+    request = WorkloadBuildRequest(
+        engine="podman",
+        context=context,
+        containerfile=containerfile,
+        repository="registry.example.test/acme/custom",
+        tag="0.1.0",
+        platform="linux/amd64",
+        registration_descriptor=_descriptor(),
+        workload_id="plugin-workload",
+        runtime_metadata={"language": "python", "version": "3.12.8"},
+    )
+
+    build_workload_archive(request, tmp_path / "image.oci.tar")
+
+    for command in commands[:2]:
+        assert command[command.index("--annotation") + 1] == "io.syntara.runtime.language=python"
+        second_annotation = command.index("--annotation", command.index("--annotation") + 1)
+        assert command[second_annotation + 1] == "io.syntara.runtime.version=3.12.8"
+
+
 def test_workload_archive_digest_rejects_duplicate_tar_paths(tmp_path: Path) -> None:
     archive_path = tmp_path / "duplicate.oci.tar"
     with tarfile.open(archive_path, mode="w:") as archive:
@@ -111,6 +148,36 @@ def test_workload_archive_digest_rejects_duplicate_tar_paths(tmp_path: Path) -> 
 
     with pytest.raises(WorkloadBuildError, match="duplicate paths"):
         workload_archive_digest(archive_path)
+
+
+def test_runtime_metadata_is_read_from_oci_annotations() -> None:
+    metadata = _runtime_metadata_from_oci(
+        {},
+        {
+            "annotations": {
+                "io.syntara.runtime.language": "python",
+                "io.syntara.runtime.version": "3.12.8",
+            }
+        },
+    )
+
+    assert metadata == {"language": "python", "version": "3.12.8"}
+
+
+def test_runtime_metadata_rejects_partial_or_conflicting_oci_annotations() -> None:
+    with pytest.raises(WorkloadBuildError, match="both Syntara runtime"):
+        _runtime_metadata_from_oci({}, {"annotations": {"io.syntara.runtime.language": "python"}})
+
+    with pytest.raises(WorkloadBuildError, match="conflicting"):
+        _runtime_metadata_from_oci(
+            {"annotations": {"io.syntara.runtime.language": "python"}},
+            {
+                "annotations": {
+                    "io.syntara.runtime.language": "bash",
+                    "io.syntara.runtime.version": "5.2.26",
+                }
+            },
+        )
 
 
 def test_publish_workload_archive_requires_registry_digest_preservation(
@@ -241,7 +308,9 @@ def test_each_workload_build_pushes_its_own_registered_image(tmp_path: Path, mon
             Path(command[3]).write_text("sha256:" + "b" * 64, encoding="utf-8")
         return SimpleNamespace(returncode=0, stderr="")
 
-    monkeypatch.setattr("syntara_plugin.sdk.workload.uuid4", lambda: SimpleNamespace(hex=next(build_ids)))
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.workload.uuid4", lambda: SimpleNamespace(hex=next(build_ids))
+    )
     monkeypatch.setattr("syntara_plugin.sdk.workload.subprocess.run", run)
     request = WorkloadBuildRequest(
         engine="podman",
@@ -486,7 +555,5 @@ def test_loopback_workload_push_requires_explicit_opt_in_and_passes_tls_flag(
 
     assert image == "localhost:8443/syntara-admin/custom@sha256:" + "d" * 64
     assert commands[2][4] == "--tls-verify=false"
-    assert commands[2][5].startswith(
-        "localhost:8443/syntara-admin/custom:syntara-registered-"
-    )
+    assert commands[2][5].startswith("localhost:8443/syntara-admin/custom:syntara-registered-")
     assert commands[2][6] == "localhost:8443/syntara-admin/custom:0.1.0"

@@ -175,8 +175,22 @@ message ExecutionEvent {
 message CancelRequest { string invocation_id = 1; }
 message CancelResponse { bool accepted = 1; }
 message HealthRequest {}
+// Runtime metadata observed inside one immutable workload image.
+message RuntimeComponent {
+  // Runtime component identifier from RuntimeBinding, for example "python".
+  string name = 1;
+  // Absolute executable path inside the image.
+  string executable = 2;
+  // Version reported by the in-image probe; empty when it is unsupported.
+  string version = 3;
+  // "matched" or "unsupported". This is workload-reported consistency data,
+  // not evidence of image integrity or publisher identity.
+  string probe_status = 4;
+}
 message HealthResponse {
   bool ready = 1;
   string runtime_abi = 2;
   repeated string step_revision_ids = 3;
+  // Runtime metadata for image components declared by the SDK registration file.
+  repeated RuntimeComponent runtime_components = 4;
 }

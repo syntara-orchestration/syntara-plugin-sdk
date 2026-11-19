@@ -15,6 +15,7 @@
     "input": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "required": ["url"],
@@ -43,6 +44,7 @@
     "output": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "required": ["status_code", "body", "headers", "elapsed"],

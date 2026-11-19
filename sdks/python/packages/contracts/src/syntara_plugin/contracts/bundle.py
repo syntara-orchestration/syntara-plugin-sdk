@@ -491,7 +491,19 @@ def validate_runtime_binding(
         return tuple(sorted(diagnostics))
 
     spec = document["spec"]
-    workloads = spec["workloads"]
+    diagnostics.extend(_runtime_binding_workload_errors(spec["workloads"], resolved))
+
+    if plugin_descriptor is not None:
+        diagnostics.extend(
+            _runtime_binding_plugin_link_errors(document, plugin_descriptor, resolved)
+        )
+    return tuple(sorted(diagnostics))
+
+
+def _runtime_binding_workload_errors(
+    workloads: Mapping[str, Any], resolved: bool
+) -> list[RuntimeBindingDiagnostic]:
+    diagnostics: list[RuntimeBindingDiagnostic] = []
     for workload_id, workload in workloads.items():
         options = workload["options"]
         names = [option["name"] for option in options]
@@ -503,6 +515,8 @@ def validate_runtime_binding(
                     f"workload {workload_id!r} has duplicate option names.",
                 )
             )
+        for option in options:
+            diagnostics.extend(_runtime_binding_option_errors(workload_id, option, resolved))
         if workload["default"] not in names:
             diagnostics.append(
                 RuntimeBindingDiagnostic(
@@ -511,12 +525,72 @@ def validate_runtime_binding(
                     f"default option {workload['default']!r} is not declared for workload {workload_id!r}.",
                 )
             )
+    return diagnostics
 
-    if plugin_descriptor is not None:
-        diagnostics.extend(
-            _runtime_binding_plugin_link_errors(document, plugin_descriptor, resolved)
+
+def _runtime_binding_option_errors(
+    workload_id: str, option: Mapping[str, Any], resolved: bool
+) -> list[RuntimeBindingDiagnostic]:
+    components = option["runtime"]["components"]
+    component_names = [component["name"] for component in components]
+    if len(component_names) == len(set(component_names)):
+        return _runtime_observation_errors(workload_id, option) if resolved else []
+    diagnostics = [
+        RuntimeBindingDiagnostic(
+            "RUNTIME_BINDING_COMPONENT_DUPLICATE",
+            f"spec/workloads/{workload_id}/options/{option['name']}/runtime/components",
+            f"workload option {option['name']!r} has duplicate runtime component names.",
         )
-    return tuple(sorted(diagnostics))
+    ]
+    if resolved:
+        diagnostics.extend(_runtime_observation_errors(workload_id, option))
+    return diagnostics
+
+
+def _runtime_observation_errors(
+    workload_id: str, option: Mapping[str, Any]
+) -> list[RuntimeBindingDiagnostic]:
+    """Keep annotation claims consistent with matching executable probe evidence."""
+
+    runtime = option["runtime"]
+    language = runtime["language"]
+    version = runtime["version"]
+    probe_status = runtime["probeStatus"]
+    matching = [
+        component for component in runtime["components"] if component["name"].casefold() == language
+    ]
+    path = f"spec/workloads/{workload_id}/options/{option['name']}/runtime"
+    if not matching:
+        if probe_status == "matched":
+            return [
+                RuntimeBindingDiagnostic(
+                    "RUNTIME_BINDING_RUNTIME_PROBE_STATUS_MISMATCH",
+                    path,
+                    "runtime metadata cannot be matched without a matching declared component.",
+                )
+            ]
+        return []
+
+    component = matching[0]
+    component_matched = component["probeStatus"] == "matched"
+    component_version = component.get("version")
+    if component_matched and component_version != version:
+        return [
+            RuntimeBindingDiagnostic(
+                "RUNTIME_BINDING_RUNTIME_VERSION_MISMATCH",
+                path,
+                "runtime version annotation differs from the matching executable probe.",
+            )
+        ]
+    if component_matched != (probe_status == "matched"):
+        return [
+            RuntimeBindingDiagnostic(
+                "RUNTIME_BINDING_RUNTIME_PROBE_STATUS_MISMATCH",
+                path,
+                "runtime probe status must reflect the matching executable probe.",
+            )
+        ]
+    return []
 
 
 def _runtime_binding_plugin_link_errors(

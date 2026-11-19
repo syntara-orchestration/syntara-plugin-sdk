@@ -30,6 +30,9 @@ build:
       repository: quay.io/acme/report-tools-runtime
       tag: 1.0.0-python-base
       platform: linux/amd64
+      runtimeMetadata:
+        language: python
+        version: "3.12.8"
     python-pdf-image:
       engine: podman
       context: .
@@ -40,6 +43,8 @@ build:
 publish:
   channel: 1.0.0
   updateCatalog: true
+policy:
+  requirements: []
 catalog:
   sourceId: acme-plugins
   channel: stable
@@ -98,6 +103,7 @@ Each `build.workloads.<buildTarget>` entry accepts:
 | `repository` | Optional destination repository; defaults to `registry.workloadRepository`. |
 | `tag` | Local and temporary registry tag. The release identity is the resulting digest. |
 | `platform` | Target OS and architecture, such as `linux/amd64`. |
+| `runtimeMetadata` | Optional `language` and `version` to write as Syntara OCI image annotations. For an SDK-built image, provide these values unless the resulting image already carries both annotations. The SDK checks them against a supported runtime probe. For a prebuilt image reference, the annotations must already exist on that image. If the image and settings provide no complete pair, build fails. |
 
 For image-only updates, the SDK uses the exact plugin OCI archive supplied to
 `build --plugin-artifact-archive`. If the source binding manifest still names
@@ -113,6 +119,37 @@ For image-only updates, the SDK uses the exact plugin OCI archive supplied to
 | `catalog.sourceId` | Stable catalog-source identity configured in Syntara. |
 | `catalog.channel` | OCI tag for the catalog index, commonly `stable`. |
 | `catalog.expiresInHours` | Validity period for a new catalog or RuntimeBinding index. Expiry does not delete artifacts. |
+
+## `policy`
+
+`policy.requirements` is an optional list of checks applied by `build` and
+`publish`. It defaults to an empty list. The current check is
+`runtime-metadata-match`, which requires every component of every RuntimeBinding
+image option to have a supported probe result and non-empty version that agrees
+with the annotated language and version. A missing component, missing version,
+or unsupported component fails this requirement. Missing or mismatched evidence
+for a supported language already fails the build. The special value `all`
+selects every check in the installed SDK:
+
+```yaml
+policy:
+  requirements:
+    - all
+```
+
+Commands can add requirements with repeatable `--require` options. CLI values
+are combined with settings and cannot turn a configured check off. For
+example, `syntara-plugin build --require runtime-metadata-match` and
+`syntara-plugin publish dist/release.json --artifact-kind release --require all`
+use the same requirement evaluator. A release inventory records the checks
+selected at build time and their results; publish verifies the underlying
+image metadata again rather than accepting the recorded result alone. Pin the
+SDK in CI when using `all`, because upgrading the SDK can add checks to that
+set.
+
+Runtime probe status is reported by the image's Health implementation. It is
+compatibility evidence, not image-integrity or publisher verification. Use
+separate signature and publisher policies to establish trust.
 
 Registry passwords, signing keys, and secret values must not be stored in
 `syntara-plugin.yaml`. Use `--password-stdin` or a protected registry auth file

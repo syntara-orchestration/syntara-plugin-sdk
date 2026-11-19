@@ -36,6 +36,7 @@ class WorkloadBuildSettings:
     tag: str | None = None
     platform: str | None = None
     image_id: str | None = None
+    runtime_metadata: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,13 @@ class PublishSettings:
 
 
 @dataclass(frozen=True)
+class PolicySettings:
+    """Persistent build and publication checks."""
+
+    requirements: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CatalogSettings:
     """Catalog ownership and freshness defaults for one release channel."""
 
@@ -98,6 +106,7 @@ class PluginBuildSettings:
     registry: RegistrySettings = field(default_factory=RegistrySettings)
     build: BuildSettings = field(default_factory=BuildSettings)
     publish: PublishSettings = field(default_factory=PublishSettings)
+    policy: PolicySettings = field(default_factory=PolicySettings)
     catalog: CatalogSettings = field(default_factory=CatalogSettings)
 
 
@@ -153,6 +162,7 @@ def _parse_settings(source: Path) -> PluginBuildSettings:
             "registry",
             "build",
             "publish",
+            "policy",
             "catalog",
         },
         "settings document",
@@ -169,11 +179,14 @@ def _parse_settings(source: Path) -> PluginBuildSettings:
         registry=_parse_registry(document.get("registry"), source),
         build=_parse_build(document.get("build"), source),
         publish=_parse_publish(document.get("publish"), source),
+        policy=_parse_policy(document.get("policy")),
         catalog=_parse_catalog(document.get("catalog")),
     )
     schema_errors = validate_document(load_bundle(), "plugin_build_settings", document)
     if schema_errors:
-        raise SettingsError("settings document schema validation failed: " + "; ".join(schema_errors))
+        raise SettingsError(
+            "settings document schema validation failed: " + "; ".join(schema_errors)
+        )
     return parsed
 
 
@@ -205,9 +218,7 @@ def _parse_registry(value: object, source: Path) -> RegistrySettings:
         workload_repository=_string(
             document.get("workloadRepository"), "registry.workloadRepository"
         ),
-        catalog_repository=_string(
-            document.get("catalogRepository"), "registry.catalogRepository"
-        ),
+        catalog_repository=_string(document.get("catalogRepository"), "registry.catalogRepository"),
         username=_string(document.get("username"), "registry.username"),
         auth_file=_path(document.get("authFile"), source, "registry.authFile"),
         allow_insecure_loopback_http=allow_insecure,
@@ -256,9 +267,7 @@ def _parse_build(value: object, source: Path) -> BuildSettings:
         assert parsed is not None
         parsed_workloads[identifier] = parsed
     return BuildSettings(
-        artifact_output=_path(
-            document.get("artifactOutput"), source, "build.artifactOutput"
-        ),
+        artifact_output=_path(document.get("artifactOutput"), source, "build.artifactOutput"),
         runtime_binding_manifest=_path(
             document.get("runtimeBindings"), source, "build.runtimeBindings"
         ),
@@ -281,9 +290,32 @@ def _parse_workload(
     document = _mapping(value, path)
     _reject_unknown_keys(
         document,
-        {"engine", "context", "containerfile", "repository", "tag", "platform", "imageId"},
+        {
+            "engine",
+            "context",
+            "containerfile",
+            "repository",
+            "tag",
+            "platform",
+            "imageId",
+            "runtimeMetadata",
+        },
         path,
     )
+    raw_runtime_metadata = document.get("runtimeMetadata")
+    runtime_metadata: dict[str, str] = {}
+    if raw_runtime_metadata is not None:
+        runtime_document = _mapping(raw_runtime_metadata, f"{path}.runtimeMetadata")
+        _reject_unknown_keys(
+            runtime_document,
+            {"language", "version"},
+            f"{path}.runtimeMetadata",
+        )
+        language = _string(runtime_document.get("language"), f"{path}.runtimeMetadata.language")
+        version = _string(runtime_document.get("version"), f"{path}.runtimeMetadata.version")
+        if language is None or version is None:
+            raise SettingsError(f"{path}.runtimeMetadata requires language and version")
+        runtime_metadata = {"language": language, "version": version}
     return WorkloadBuildSettings(
         engine=_string(document.get("engine"), f"{path}.engine"),
         context=_path(document.get("context"), source, f"{path}.context"),
@@ -292,6 +324,7 @@ def _parse_workload(
         tag=_string(document.get("tag"), f"{path}.tag"),
         platform=_string(document.get("platform"), f"{path}.platform"),
         image_id=_string(document.get("imageId"), f"{path}.imageId"),
+        runtime_metadata=runtime_metadata,
     )
 
 
@@ -312,15 +345,29 @@ def _parse_publish(value: object, source: Path) -> PublishSettings:
     )
 
 
+def _parse_policy(value: object) -> PolicySettings:
+    if value is None:
+        return PolicySettings()
+    document = _mapping(value, "policy")
+    _reject_unknown_keys(document, {"requirements"}, "policy")
+    raw_requirements = document.get("requirements", [])
+    if not isinstance(raw_requirements, list) or not all(
+        isinstance(item, str) and item for item in raw_requirements
+    ):
+        raise SettingsError("policy.requirements must be a list of non-empty strings")
+    if len(raw_requirements) != len(set(raw_requirements)):
+        raise SettingsError("policy.requirements must not contain duplicate checks")
+    return PolicySettings(tuple(raw_requirements))
+
+
 def _parse_catalog(value: object) -> CatalogSettings:
     if value is None:
         return CatalogSettings()
     document = _mapping(value, "catalog")
     _reject_unknown_keys(document, {"sourceId", "channel", "expiresInHours"}, "catalog")
     expires_in_hours = document.get("expiresInHours")
-    if (
-        expires_in_hours is not None
-        and (not isinstance(expires_in_hours, int) or isinstance(expires_in_hours, bool))
+    if expires_in_hours is not None and (
+        not isinstance(expires_in_hours, int) or isinstance(expires_in_hours, bool)
     ):
         raise SettingsError("catalog.expiresInHours must be a positive integer")
     if expires_in_hours is not None and expires_in_hours <= 0:

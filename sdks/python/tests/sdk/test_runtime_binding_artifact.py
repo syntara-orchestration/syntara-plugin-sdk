@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,50 @@ def _plugin(tmp_path: Path) -> tuple[dict[str, object], Path]:
     return dict(compiled.descriptor), workspace
 
 
+def _runtime_observations() -> dict[tuple[str, str], dict[str, object]]:
+    return {
+        ("python", "python-base"): {
+            "language": "python",
+            "version": "3.12.8",
+            "probeStatus": "matched",
+            "components": [
+                {
+                    "name": "python",
+                    "executable": "/usr/bin/python3",
+                    "version": "3.12.8",
+                    "probeStatus": "matched",
+                }
+            ],
+        },
+        ("python", "python-aws"): {
+            "language": "python",
+            "version": "3.12.8",
+            "probeStatus": "matched",
+            "components": [
+                {
+                    "name": "python",
+                    "executable": "/usr/bin/python3",
+                    "version": "3.12.8",
+                    "probeStatus": "matched",
+                }
+            ],
+        },
+        ("bash", "bash-base"): {
+            "language": "bash",
+            "version": "5.2.26",
+            "probeStatus": "matched",
+            "components": [
+                {
+                    "name": "bash",
+                    "executable": "/usr/bin/bash",
+                    "version": "5.2.26",
+                    "probeStatus": "matched",
+                }
+            ],
+        },
+    }
+
+
 def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
     tmp_path: Path,
 ) -> None:
@@ -79,11 +124,17 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
                         {
                             "name": "python-base",
                             "displayName": "Python base",
+                            "runtime": {
+                                "components": [{"name": "python", "executable": "/usr/bin/python3"}]
+                            },
                             "image": {"buildTarget": "python-base"},
                         },
                         {
                             "name": "python-aws",
                             "displayName": "Python with AWS SDK",
+                            "runtime": {
+                                "components": [{"name": "python", "executable": "/usr/bin/python3"}]
+                            },
                             "image": {"buildTarget": "python-aws"},
                         },
                     ],
@@ -94,6 +145,9 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
                         {
                             "name": "bash-base",
                             "displayName": "Bash base",
+                            "runtime": {
+                                "components": [{"name": "bash", "executable": "/usr/bin/bash"}]
+                            },
                             "image": {"buildTarget": "bash-base"},
                         }
                     ],
@@ -111,6 +165,7 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
             "python-aws": "quay.io/acme/python-aws@sha256:" + "d" * 64,
             "bash-base": "quay.io/acme/bash-base@sha256:" + "e" * 64,
         },
+        runtime_observations=_runtime_observations(),
     )
     binding_artifact = build_runtime_binding_artifact(
         resolved, descriptor, plugin_artifact.manifest.descriptor
@@ -134,7 +189,10 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
     assert linked.digest == binding_artifact.digest
     assert linked_plugin.digest == plugin_artifact.digest
     assert linked_document["metadata"] == source["metadata"]
-    assert json.loads(reopened.binding_document.content)["spec"]["plugin"]["digest"] == plugin_artifact.digest
+    assert (
+        json.loads(reopened.binding_document.content)["spec"]["plugin"]["digest"]
+        == plugin_artifact.digest
+    )
     assert reopened.digest != plugin_artifact.digest
     assert resolved["spec"]["workloads"]["python"]["options"][1]["image"].endswith("d" * 64)
     changed_image = resolve_runtime_binding(
@@ -147,12 +205,56 @@ def test_runtime_binding_archive_keeps_plugin_and_image_options_independent(
             "python-aws": "quay.io/acme/python-aws@sha256:" + "1" * 64,
             "bash-base": "quay.io/acme/bash-base@sha256:" + "2" * 64,
         },
+        runtime_observations=_runtime_observations(),
     )
     changed_binding = build_runtime_binding_artifact(
         changed_image, descriptor, plugin_artifact.manifest.descriptor
     )
     assert changed_binding.digest != binding_artifact.digest
     assert changed_binding.config.content != binding_artifact.config.content
+    assert (
+        plugin_artifact.digest
+        == build_plugin_artifact(
+            compile_workspace(
+                BuildRequest(
+                    workspace / "plugin.yaml",
+                    require_image_bindings=False,
+                    bind_workload_images=False,
+                )
+            )
+        ).digest
+    )
+
+    changed_runtime_source = deepcopy(source)
+    changed_runtime_source["spec"]["workloads"]["python"]["options"][0]["runtime"][
+        "components"
+    ][0]["executable"] = "/usr/local/bin/python"
+    changed_runtime_observations = _runtime_observations()
+    changed_runtime_observations[("python", "python-base")]["components"][0][
+        "executable"
+    ] = "/usr/local/bin/python"
+    changed_runtime = resolve_runtime_binding(
+        changed_runtime_source,
+        descriptor,
+        plugin_repository="acme/python-steps",
+        plugin_digest=plugin_artifact.digest,
+        image_bindings={
+            "python-base": "quay.io/acme/python-base@sha256:" + "c" * 64,
+            "python-aws": "quay.io/acme/python-aws@sha256:" + "d" * 64,
+            "bash-base": "quay.io/acme/bash-base@sha256:" + "e" * 64,
+        },
+        runtime_observations=changed_runtime_observations,
+    )
+    changed_runtime_artifact = build_runtime_binding_artifact(
+        changed_runtime, descriptor, plugin_artifact.manifest.descriptor
+    )
+    assert changed_runtime_artifact.digest != binding_artifact.digest
+    assert changed_runtime["spec"]["contract"]["pluginRevisionId"] == resolved["spec"][
+        "contract"
+    ]["pluginRevisionId"]
+    assert changed_runtime["spec"]["contract"]["stepRevisionIds"] == resolved["spec"][
+        "contract"
+    ]["stepRevisionIds"]
     assert plugin_artifact.digest == build_plugin_artifact(
         compile_workspace(
             BuildRequest(

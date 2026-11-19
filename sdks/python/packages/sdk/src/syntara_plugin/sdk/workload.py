@@ -22,6 +22,13 @@ from syntara_plugin.contracts import (
 )
 
 from .oci import OCI_IMAGE_MANIFEST_MEDIA_TYPE
+from .runtime_metadata import (
+    RUNTIME_LANGUAGE_ANNOTATION,
+    RUNTIME_VERSION_ANNOTATION,
+    RuntimeMetadataError,
+    runtime_metadata_from_annotations,
+    validated_runtime_metadata,
+)
 
 _SHA256_DIGEST_PREFIX = "sha256:"
 REGISTRATION_MANIFEST_PATH = "/opt/syntara/registration-manifest.json"
@@ -49,6 +56,8 @@ class WorkloadBuildRequest:
     auth_file: Path | None = None
     registration_descriptor: Mapping[str, Any] | None = None
     workload_id: str | None = None
+    runtime_components: tuple[Mapping[str, str], ...] = ()
+    runtime_metadata: Mapping[str, str] | None = None
 
     @property
     def tagged_reference(self) -> str:
@@ -314,6 +323,10 @@ def inspect_workload_archive(archive_path: Path) -> dict[str, Any]:
             manifest = _json_mapping(manifest_blob, _OCI_IMAGE_MANIFEST_LABEL)
             if manifest.get("schemaVersion") != 2:
                 raise WorkloadBuildError("OCI image manifest has an unsupported schema version")
+            runtime_metadata = _runtime_metadata_from_oci(
+                manifest_descriptor,
+                manifest,
+            )
 
             config_descriptor = _mapping(manifest.get("config"), "OCI image config descriptor")
             config_blob = _read_archive_blob(
@@ -359,6 +372,7 @@ def inspect_workload_archive(archive_path: Path) -> dict[str, Any]:
                 ),
                 "manifestMediaType": manifest_descriptor.get("mediaType"),
                 "platform": platform,
+                "runtimeMetadata": runtime_metadata,
                 "registrationManifest": {
                     "inspected": False,
                     "reason": "registration data is stored in image layers",
@@ -421,6 +435,26 @@ def _json_mapping(content: bytes, label: str) -> dict[str, Any]:
     return dict(_mapping(value, label))
 
 
+def _runtime_metadata_from_oci(
+    descriptor: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> dict[str, str] | None:
+    """Return the bounded Syntara runtime annotations on one OCI image."""
+
+    descriptor_annotations = _oci_annotations(descriptor)
+    manifest_annotations = _oci_annotations(manifest)
+    try:
+        return runtime_metadata_from_annotations(descriptor_annotations, manifest_annotations)
+    except RuntimeMetadataError as error:
+        raise WorkloadBuildError(str(error)) from error
+
+
+def _oci_annotations(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    annotations = document.get("annotations", {})
+    if not isinstance(annotations, Mapping):
+        raise WorkloadBuildError("OCI image annotations must be objects")
+    return annotations
+
+
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise WorkloadBuildError(f"{label} must be an object")
@@ -434,6 +468,16 @@ def _archive_digest(value: object, label: str) -> str:
 
 
 def _validate_request(request: WorkloadBuildRequest) -> None:
+    _validate_workload_source(request)
+    _validate_workload_reference(request)
+    _validate_registration_descriptor(request)
+    _validate_runtime_metadata(request.runtime_metadata)
+    _validate_registration_reference(request)
+    _validate_workload_platform(request)
+    _validate_publication_policy(request)
+
+
+def _validate_workload_source(request: WorkloadBuildRequest) -> None:
     if request.engine != "podman":
         raise WorkloadBuildError("only the podman workload engine is supported")
     if not request.context.is_dir():
@@ -442,16 +486,47 @@ def _validate_request(request: WorkloadBuildRequest) -> None:
         raise WorkloadBuildError(
             f"workload containerfile is not a regular file: {request.containerfile}"
         )
+
+
+def _validate_workload_reference(request: WorkloadBuildRequest) -> None:
     if not request.repository or "@" in request.repository:
         raise WorkloadBuildError("workload repository must be a non-empty taggable repository")
     if not request.tag or any(character.isspace() for character in request.tag):
         raise WorkloadBuildError("workload tag must be a non-empty tag without whitespace")
+
+
+def _validate_runtime_metadata(metadata: Mapping[str, str] | None) -> None:
+    if metadata is None:
+        return
+    if set(metadata) != {"language", "version"}:
+        raise WorkloadBuildError("runtime metadata must contain only language and version")
+    try:
+        validated_runtime_metadata(
+            metadata.get("language"),
+            metadata.get("version"),
+            source_name="runtime metadata",
+            combined_error=True,
+        )
+    except RuntimeMetadataError as error:
+        raise WorkloadBuildError(str(error)) from error
+
+
+def _validate_registration_descriptor(request: WorkloadBuildRequest) -> None:
     if request.registration_descriptor is None or not request.workload_id:
         raise WorkloadBuildError("a compiled descriptor and workload ID are required")
+
+
+def _validate_registration_reference(request: WorkloadBuildRequest) -> None:
     if not re.fullmatch(r"[A-Za-z0-9._:/-]+", request.tagged_reference):
         raise WorkloadBuildError("invalid workload image reference for registration layer")
+
+
+def _validate_workload_platform(request: WorkloadBuildRequest) -> None:
     if not request.platform or "/" not in request.platform:
         raise WorkloadBuildError("workload platform must be explicit, for example linux/amd64")
+
+
+def _validate_publication_policy(request: WorkloadBuildRequest) -> None:
     if request.allow_insecure_loopback_http and not _is_loopback_repository(request.repository):
         raise WorkloadBuildError(
             "insecure workload publication is restricted to localhost or 127.0.0.1"
@@ -462,9 +537,16 @@ def _registration_manifest_bytes(request: WorkloadBuildRequest) -> bytes:
     assert request.registration_descriptor is not None
     assert request.workload_id is not None
     try:
-        manifest = registration_manifest(request.registration_descriptor, request.workload_id)
+        manifest = registration_manifest(
+            request.registration_descriptor,
+            request.workload_id,
+            request.runtime_components,
+        )
         validate_registration_manifest(
-            request.registration_descriptor, request.workload_id, manifest
+            request.registration_descriptor,
+            request.workload_id,
+            manifest,
+            request.runtime_components,
         )
         return canonical_json_bytes(manifest)
     except (ValueError, KeyError, TypeError, AttributeError) as error:
@@ -474,22 +556,21 @@ def _registration_manifest_bytes(request: WorkloadBuildRequest) -> bytes:
 def _build_staging_image(
     request: WorkloadBuildRequest, staging_reference: str, *, verbose: bool
 ) -> None:
-    _run(
-        [
-            request.engine,
-            "build",
-            "--format",
-            "oci",
-            "--platform",
-            request.platform,
-            "--file",
-            str(request.containerfile),
-            "--tag",
-            staging_reference,
-            str(request.context),
-        ],
-        verbose=verbose,
-    )
+    command = [
+        request.engine,
+        "build",
+        "--format",
+        "oci",
+        "--platform",
+        request.platform,
+        *_runtime_annotation_arguments(request.runtime_metadata),
+        "--file",
+        str(request.containerfile),
+        "--tag",
+        staging_reference,
+        str(request.context),
+    ]
+    _run(command, verbose=verbose)
 
 
 def _build_registration_layer(
@@ -516,6 +597,7 @@ def _build_registration_layer(
                 "oci",
                 "--platform",
                 request.platform,
+                *_runtime_annotation_arguments(request.runtime_metadata),
                 "--file",
                 str(containerfile),
                 "--tag",
@@ -524,6 +606,23 @@ def _build_registration_layer(
             ],
             verbose=verbose,
         )
+
+
+def _runtime_annotation_arguments(metadata: Mapping[str, str] | None) -> list[str]:
+    """Return Podman flags for runtime identity annotations supplied by the author.
+
+    These annotations describe the final image; they do not install or select
+    a runtime. The SDK compares them with the in-image Health probe result.
+    """
+
+    if metadata is None:
+        return []
+    return [
+        "--annotation",
+        f"{RUNTIME_LANGUAGE_ANNOTATION}={metadata['language']}",
+        "--annotation",
+        f"{RUNTIME_VERSION_ANNOTATION}={metadata['version']}",
+    ]
 
 
 def _push_image(request: WorkloadBuildRequest, source_reference: str, *, verbose: bool) -> str:

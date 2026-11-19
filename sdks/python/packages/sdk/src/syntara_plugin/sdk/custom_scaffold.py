@@ -109,6 +109,13 @@ def write_custom_workspace(
             "  runtimeBindings: runtime-bindings.yaml\n"
             "  workloads:\n"
             "    custom-runtime:\n"
+            "      # Example OCI metadata: io.syntara.runtime.language=python and\n"
+            "      # io.syntara.runtime.version=3.12.8. Match the version installed by\n"
+            "      # this Containerfile; these values do not install or select Python.\n"
+            "      # The SDK compares them with the in-image Health probe.\n"
+            "      # runtimeMetadata:\n"
+            "      #   language: python\n"
+            "      #   version: \"3.12.8\"\n"
             "      engine: podman\n"
             "      context: .\n"
             "      containerfile: Containerfile\n"
@@ -131,6 +138,10 @@ def write_custom_workspace(
             "      options:\n"
             "        - name: default\n"
             "          displayName: Default runtime\n"
+            "          runtime:\n"
+            "            components:\n"
+            "              - name: python\n"
+            "                executable: /usr/bin/python3.12\n"
             "          image:\n"
             "            buildTarget: custom-runtime\n"
         ),
@@ -495,6 +506,11 @@ def _readme(name: str, action: str) -> str:
 
 This workspace contains one custom-runner Action, `{action}`. Replace the example
 implementation and review its schemas and generated tests before publishing.
+
+Before building, add `runtimeMetadata` to the `custom-runtime` entry in
+`syntara-plugin.yaml`. Set its Python version to the version installed in the
+image. The SDK writes these values as OCI annotations and checks them against
+the runtime probe when one is supported.
 
 The generated input model supports string enums and bounds, Python-compatible
 patterns, numeric bounds, and array length bounds. Unsupported schema keywords,

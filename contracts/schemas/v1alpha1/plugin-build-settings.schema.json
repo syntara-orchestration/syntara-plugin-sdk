@@ -144,6 +144,26 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "Target operating system and architecture, such as linux/amd64."
+              },
+              "runtimeMetadata": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["language", "version"],
+                "description": "Optional language and version values that the SDK writes as OCI image annotations. A supported in-image probe may report a matching version; unsupported languages are recorded as unsupported. Probe results are compatibility data, not an integrity attestation.",
+                "properties": {
+                  "language": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-z][a-z0-9.+_-]*$"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                    "pattern": "^[0-9A-Za-z][0-9A-Za-z.+()_-]*$"
+                  }
+                }
               }
             }
           }
@@ -169,6 +189,24 @@
           "type": "boolean",
           "default": true,
           "description": "When true, publish also creates or advances the configured catalog index. Set false only for a staged release that must not yet be discoverable."
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Checks that build and publish commands must satisfy.",
+      "properties": {
+        "requirements": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Checks applied during build and publish. Empty by default; all selects every check registered in this SDK version. Command-line --require values are additive. Persistent checks include runtime-metadata-match.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9-]*$"
+          }
         }
       }
     },

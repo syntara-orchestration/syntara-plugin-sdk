@@ -21,9 +21,26 @@ from syntara_plugin.sdk.cli import (
     _runtime_binding_index_verifier,
     main,
 )
-from syntara_plugin.sdk.settings import SETTINGS_FILENAME, SettingsError
+from syntara_plugin.sdk.settings import SETTINGS_FILENAME, SettingsError, load_settings
 
 _WORKLOAD_DIGEST = "sha256:" + "a" * 64
+
+
+def _matched_runtime_observation(declarations, *, language="python", version="3.12.8"):
+    return {
+        "language": language,
+        "version": version,
+        "probeStatus": "matched",
+        "components": [
+            {
+                "name": item["name"],
+                "executable": item["executable"],
+                "version": version,
+                "probeStatus": "matched",
+            }
+            for item in declarations
+        ],
+    }
 
 
 def test_registry_auth_file_loads_only_the_selected_registry_credential(tmp_path: Path) -> None:
@@ -67,9 +84,7 @@ def test_runtime_binding_index_predecessor_requires_configured_trust(
         registry_origin="https://registry.example.test",
     )
 
-    untrusted_verifier = _runtime_binding_index_verifier(
-        arguments, "acme/plugins/issue-tracker"
-    )
+    untrusted_verifier = _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")
     with pytest.raises(SettingsError, match="requires --cosign-verify-key"):
         untrusted_verifier(digest)
 
@@ -78,13 +93,9 @@ def test_runtime_binding_index_predecessor_requires_configured_trust(
 
     arguments.allow_unverified_binding_index = False
     arguments.expected_binding_index_digest = digest
-    pinned_verifier = _runtime_binding_index_verifier(
-        arguments, "acme/plugins/issue-tracker"
-    )
+    pinned_verifier = _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")
     pinned_verifier(digest)
-    mismatched_verifier = _runtime_binding_index_verifier(
-        arguments, "acme/plugins/issue-tracker"
-    )
+    mismatched_verifier = _runtime_binding_index_verifier(arguments, "acme/plugins/issue-tracker")
     with pytest.raises(SettingsError, match="does not match the expected digest"):
         mismatched_verifier("sha256:" + "b" * 64)
 
@@ -145,9 +156,7 @@ def test_init_accepts_field_names_and_generates_a_valid_schema(
         == 0
     )
     capsys.readouterr()
-    schema = yaml.safe_load(
-        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
-    )
+    schema = yaml.safe_load((workspace / "schemas/request.input.yaml").read_text(encoding="utf-8"))
 
     assert schema["required"] == ["resource"]
     assert set(schema["properties"]) == {"resource", "title", "issue_count"}
@@ -206,9 +215,7 @@ def test_init_accepts_a_json_field_map_with_standard_schema_keys(
 
     assert main(["init", str(workspace), "--fields", json.dumps(field_map)]) == 0
     capsys.readouterr()
-    schema = yaml.safe_load(
-        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
-    )
+    schema = yaml.safe_load((workspace / "schemas/request.input.yaml").read_text(encoding="utf-8"))
 
     assert schema["required"] == ["resource"]
     assert schema["properties"]["url"] == {
@@ -234,9 +241,7 @@ def test_init_accepts_a_required_field_map_entry(tmp_path: Path, capsys) -> None
 
     assert main(["init", str(workspace), "--fields", json.dumps(field_map)]) == 0
     capsys.readouterr()
-    schema = yaml.safe_load(
-        (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
-    )
+    schema = yaml.safe_load((workspace / "schemas/request.input.yaml").read_text(encoding="utf-8"))
 
     assert schema["required"] == ["resource", "title"]
     assert schema["properties"]["title"] == {
@@ -273,9 +278,7 @@ def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys, monkeypatch) ->
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
 
 
-def test_init_accepts_an_at_prefixed_json_schema_file(
-    tmp_path: Path, capsys, monkeypatch
-) -> None:
+def test_init_accepts_an_at_prefixed_json_schema_file(tmp_path: Path, capsys, monkeypatch) -> None:
     """``@`` selects a JSON file. ``..`` inside one segment is not parent traversal."""
     workspace = tmp_path / "issue-tools"
     schema_path = tmp_path / "fields..json"
@@ -379,9 +382,7 @@ def test_init_accepts_a_fields_symlink_inside_the_working_directory(
     assert generated == {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
 
 
-def test_init_reads_a_fields_file_from_a_subdirectory(
-    tmp_path: Path, capsys, monkeypatch
-) -> None:
+def test_init_reads_a_fields_file_from_a_subdirectory(tmp_path: Path, capsys, monkeypatch) -> None:
     """Nested relative and absolute paths inside the working directory are readable."""
     schema = {
         "type": "object",
@@ -418,9 +419,7 @@ def test_init_rejects_a_missing_at_prefixed_fields_file(
     assert not workspace.exists()
 
 
-def test_init_rejects_a_json_schema_that_does_not_require_resource(
-    tmp_path: Path, capsys
-) -> None:
+def test_init_rejects_a_json_schema_that_does_not_require_resource(tmp_path: Path, capsys) -> None:
     """The scaffold route still requires the built-in resource input."""
     workspace = tmp_path / "invalid-schema"
     schema = {
@@ -434,9 +433,7 @@ def test_init_rejects_a_json_schema_that_does_not_require_resource(
     assert not workspace.exists()
 
 
-def test_init_rejects_a_required_property_that_is_not_defined(
-    tmp_path: Path, capsys
-) -> None:
+def test_init_rejects_a_required_property_that_is_not_defined(tmp_path: Path, capsys) -> None:
     """Every required input must have a matching property definition."""
     workspace = tmp_path / "invalid-schema"
     schema = {
@@ -554,7 +551,10 @@ def test_inspect_prints_the_canonical_descriptor_for_the_generated_workspace(
     assert main(["inspect", str(workspace / "plugin.yaml")]) == 0
     descriptor = json.loads(capsys.readouterr().out)
     assert descriptor["metadata"]["name"] == "status-tools"
-    assert descriptor["spec"]["targets"][0]["runtime"]["implementation"] == "syntara.http.request@1.0.0"
+    assert (
+        descriptor["spec"]["targets"][0]["runtime"]["implementation"]
+        == "syntara.http.request@1.0.0"
+    )
 
 
 def test_inspect_reads_the_verified_metadata_from_a_built_archive(tmp_path: Path, capsys) -> None:
@@ -667,9 +667,7 @@ def test_validate_rejects_malformed_custom_runner_entry_points(
     assert not (workspace / "dist").exists()
 
 
-def test_validate_defers_a_custom_runner_image_binding_until_build(
-    tmp_path: Path, capsys
-) -> None:
+def test_validate_defers_a_custom_runner_image_binding_until_build(tmp_path: Path, capsys) -> None:
     """Source validation does not need an image that has not been built yet."""
     workspace = tmp_path / "custom-runner"
     workspace.mkdir()
@@ -982,6 +980,34 @@ def test_build_reads_local_auth_and_output_preferences_from_settings(
     assert received["credentials"].password == "local-password"
 
 
+def test_settings_accept_runtime_metadata_for_a_workload_build(tmp_path: Path) -> None:
+    settings_path = tmp_path / SETTINGS_FILENAME
+    settings_path.write_text(
+        """apiVersion: syntara.io/v1alpha1
+kind: PluginBuildSettings
+build:
+  workloads:
+    python-runtime:
+      engine: podman
+      context: .
+      containerfile: Containerfile
+      tag: 1.0.0
+      platform: linux/amd64
+      runtimeMetadata:
+        language: python
+        version: "3.12.8"
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(explicit_path=settings_path, manifest=None)
+
+    assert settings.build.workloads["python-runtime"].runtime_metadata == {
+        "language": "python",
+        "version": "3.12.8",
+    }
+
+
 def test_publish_updates_the_configured_catalog_by_default(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
@@ -1184,15 +1210,39 @@ def test_settings_reject_build_target_names_that_are_not_safe_ids(tmp_path: Path
     assert "does not match" in capsys.readouterr().err
 
 
+def test_custom_workload_scaffold_pins_the_installed_contracts_version(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.package_version",
+        lambda distribution: "0.1.0a42"
+        if distribution == "syntara-plugin-contracts"
+        else pytest.fail(f"unexpected distribution lookup: {distribution}"),
+    )
+
+    workspace = tmp_path / "custom-workload"
+    assert main(["init", str(workspace), "--template", "custom-workload"]) == 0
+    capsys.readouterr()
+
+    generated = (workspace / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'dependencies = ["syntara-plugin-contracts==0.1.0a42"]' in generated
+    assert "syntara-plugin-contracts==0.1.0a3" not in generated
+
+
 def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
-    tmp_path: Path, capsys
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The build command resolves immutable image references without publishing anything."""
     workspace = tmp_path / "http-plugin"
-    assert main(["init", str(workspace), "--namespace", "acme", "--template", "custom-workload"]) == 0
+    assert (
+        main(["init", str(workspace), "--namespace", "acme", "--template", "custom-workload"]) == 0
+    )
     capsys.readouterr()
     binding_path = workspace / "runtime-bindings.yaml"
     binding = yaml.safe_load(binding_path.read_text(encoding="utf-8"))
+    assert binding["spec"]["workloads"]["python"]["options"][0]["runtime"]["components"] == [
+        {"name": "python", "executable": "/usr/bin/python3.12"}
+    ]
     binding["spec"]["workloads"]["python"]["options"][0]["image"] = {
         "reference": f"quay.io/acme/python-runtime@{_WORKLOAD_DIGEST}"
     }
@@ -1207,6 +1257,11 @@ def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
         }
     )
     settings.write_text(yaml.safe_dump(settings_document, sort_keys=False), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.observe_runtime_image",
+        lambda _image, declarations, **_kwargs: _matched_runtime_observation(declarations),
+    )
 
     assert main(["build", "--settings", str(settings), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -1226,9 +1281,7 @@ def test_build_creates_local_plugin_and_binding_release_from_source_manifest(
     assert not Path(release["plugin"]["archive"]).is_absolute()
     assert not Path(release["runtimeBinding"]["archive"]).is_absolute()
     resolved = yaml.safe_load(Path(payload["bindingDocument"]).read_text(encoding="utf-8"))
-    assert resolved["spec"]["workloads"]["python"]["options"][0]["image"].endswith(
-        _WORKLOAD_DIGEST
-    )
+    assert resolved["spec"]["workloads"]["python"]["options"][0]["image"].endswith(_WORKLOAD_DIGEST)
     assert main(["inspect", payload["bindingDocument"], "--json"]) == 0
     inspected_binding = json.loads(capsys.readouterr().out)
     assert inspected_binding["kind"] == "RuntimeBinding"
@@ -1260,9 +1313,9 @@ def test_image_only_release_keeps_plugin_and_catalog_unchanged(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
     workspace = tmp_path / "image-only-plugin"
-    assert main(
-        ["init", str(workspace), "--namespace", "acme", "--template", "custom-workload"]
-    ) == 0
+    assert (
+        main(["init", str(workspace), "--namespace", "acme", "--template", "custom-workload"]) == 0
+    )
     capsys.readouterr()
     settings_path = workspace / SETTINGS_FILENAME
     settings = yaml.safe_load(settings_path.read_text(encoding="utf-8"))
@@ -1298,6 +1351,10 @@ def test_image_only_release_keeps_plugin_and_catalog_unchanged(
         ]
 
     monkeypatch.setattr("syntara_plugin.sdk.cli._build_runtime_binding_images", build_images)
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.observe_runtime_image",
+        lambda _image, declarations, **_kwargs: _matched_runtime_observation(declarations),
+    )
     assert main(["build", "--settings", str(settings_path), "--json"]) == 0
     first_build = json.loads(capsys.readouterr().out)
     plugin_archive = Path(first_build["pluginArchive"])
@@ -1335,21 +1392,42 @@ def test_image_only_release_keeps_plugin_and_catalog_unchanged(
             )
 
     class _IndexPublisher(_BindingPublisher):
-        def __init__(self, target, *, credentials=None, verify_current_index=None, allow_unverified_current=False):
+        def __init__(
+            self,
+            target,
+            *,
+            credentials=None,
+            verify_current_index=None,
+            allow_unverified_current=False,
+        ):
             super().__init__(target, credentials=credentials)
 
         def read_current(self):
             return None
 
-    monkeypatch.setattr("syntara_plugin.sdk.cli._publication_credentials", lambda *a, **k: RegistryCredentials("publisher", "pw"))
-    monkeypatch.setattr("syntara_plugin.sdk.cli._temporary_skopeo_auth_file", lambda *a, **k: nullcontext(None))
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli._publication_credentials",
+        lambda *a, **k: RegistryCredentials("publisher", "pw"),
+    )
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli._temporary_skopeo_auth_file", lambda *a, **k: nullcontext(None)
+    )
     monkeypatch.setattr("syntara_plugin.sdk.cli.RuntimeBindingArtifactPublisher", _BindingPublisher)
     monkeypatch.setattr("syntara_plugin.sdk.cli.RuntimeBindingIndexPublisher", _IndexPublisher)
     monkeypatch.setattr("syntara_plugin.sdk.cli.workload_archive_digest", lambda path: image_digest)
-    monkeypatch.setattr("syntara_plugin.sdk.cli.publish_workload_archive", lambda archive, destination, **kwargs: image_reference)
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli.publish_workload_archive",
+        lambda archive, destination, **kwargs: image_reference,
+    )
     monkeypatch.setattr("syntara_plugin.sdk.cli._sign_reference", lambda *a, **k: False)
-    monkeypatch.setattr("syntara_plugin.sdk.cli._publish_archive", lambda *a, **k: pytest.fail("image-only update must not republish P"))
-    monkeypatch.setattr("syntara_plugin.sdk.cli._run_catalog_update", lambda *a, **k: pytest.fail("image-only update must not update the plugin catalog"))
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli._publish_archive",
+        lambda *a, **k: pytest.fail("image-only update must not republish P"),
+    )
+    monkeypatch.setattr(
+        "syntara_plugin.sdk.cli._run_catalog_update",
+        lambda *a, **k: pytest.fail("image-only update must not update the plugin catalog"),
+    )
     arguments = SimpleNamespace(
         registry_origin="https://registry.example.test",
         username="publisher",
@@ -1363,6 +1441,7 @@ def test_image_only_release_keeps_plugin_and_catalog_unchanged(
         allow_unverified_binding_index=False,
         cosign_key=None,
         verbose=False,
+        requirements=(),
     )
 
     result = _publish_release(arguments, inventory_path)
@@ -1383,7 +1462,15 @@ def test_runtime_binding_image_archives_are_content_addressed_and_reusable(
         "spec": {
             "workloads": {
                 "plugin-workload": {
-                    "options": [{"name": "default", "image": {"buildTarget": "python-runtime"}}]
+                    "options": [
+                        {
+                            "name": "default",
+                            "runtime": {
+                                "components": [{"name": "python", "executable": "/usr/bin/python3"}]
+                            },
+                            "image": {"buildTarget": "python-runtime"},
+                        }
+                    ]
                 }
             }
         }
@@ -1419,8 +1506,12 @@ def test_runtime_binding_image_archives_are_content_addressed_and_reusable(
         "syntara_plugin.sdk.cli.workload_archive_digest", lambda _path: expected_digest
     )
 
-    first = _build_runtime_binding_images(source, descriptor, arguments, dist_directory=tmp_path / "dist")
-    second = _build_runtime_binding_images(source, descriptor, arguments, dist_directory=tmp_path / "dist")
+    first = _build_runtime_binding_images(
+        source, descriptor, arguments, dist_directory=tmp_path / "dist"
+    )
+    second = _build_runtime_binding_images(
+        source, descriptor, arguments, dist_directory=tmp_path / "dist"
+    )
 
     assert len(built_paths) == 2
     assert built_paths[0] != built_paths[1]
@@ -1471,7 +1562,9 @@ def test_build_validates_plugin_before_building_workload_images(
 ) -> None:
     """Invalid plugin source fails before the local container engine is called."""
     workspace = tmp_path / "custom-runner"
-    assert main(["init", str(workspace), "--namespace", "acme", "--template", "custom-workload"]) == 0
+    assert (
+        main(["init", str(workspace), "--namespace", "acme", "--template", "custom-workload"]) == 0
+    )
     capsys.readouterr()
     action_path = workspace / "steps/request/manifest.yaml"
     action = yaml.safe_load(action_path.read_text(encoding="utf-8"))

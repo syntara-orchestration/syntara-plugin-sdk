@@ -120,6 +120,7 @@ def resolve_runtime_binding(
     plugin_repository: str,
     plugin_digest: str,
     image_bindings: Mapping[str, str],
+    runtime_observations: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve source build targets to immutable image references for one plugin."""
 
@@ -139,7 +140,9 @@ def resolve_runtime_binding(
     if not isinstance(binding_metadata, Mapping):
         raise RuntimeBindingArtifactBuildError("RuntimeBinding metadata is required")
 
-    workloads = _resolve_workload_options(source["spec"]["workloads"], image_bindings)
+    workloads = _resolve_workload_options(
+        source["spec"]["workloads"], image_bindings, runtime_observations or {}
+    )
     step_revisions = _custom_runner_step_revisions(plugin_spec["targets"])
     resolved = {
         "apiVersion": _API_VERSION,
@@ -166,21 +169,30 @@ def resolve_runtime_binding(
 
 
 def _resolve_workload_options(
-    source_workloads: Mapping[str, Any], image_bindings: Mapping[str, str]
+    source_workloads: Mapping[str, Any],
+    image_bindings: Mapping[str, str],
+    runtime_observations: Mapping[tuple[str, str], Mapping[str, Any]],
 ) -> dict[str, Any]:
     resolved: dict[str, Any] = {}
     for workload_id, workload in source_workloads.items():
         resolved[workload_id] = {
             "default": workload["default"],
             "options": [
-                _resolve_workload_option(option, image_bindings) for option in workload["options"]
+                _resolve_workload_option(
+                    option,
+                    image_bindings,
+                    runtime_observations.get((workload_id, option["name"])),
+                )
+                for option in workload["options"]
             ],
         }
     return resolved
 
 
 def _resolve_workload_option(
-    option: Mapping[str, Any], image_bindings: Mapping[str, str]
+    option: Mapping[str, Any],
+    image_bindings: Mapping[str, str],
+    runtime_observation: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     image_source = option["image"]
     if "buildTarget" in image_source:
@@ -191,8 +203,23 @@ def _resolve_workload_option(
             )
     else:
         image = image_source["reference"]
+    if runtime_observation is None:
+        raise RuntimeBindingArtifactBuildError(
+            f"runtime metadata was not observed for workload image option {option['name']!r}"
+        )
+    required_observation_fields = {"language", "version", "probeStatus", "components"}
+    if not required_observation_fields <= set(runtime_observation):
+        raise RuntimeBindingArtifactBuildError(
+            f"runtime observation for image option {option['name']!r} is incomplete"
+        )
     metadata = {key: option[key] for key in ("name", "displayName", "description") if key in option}
-    return metadata | {"image": image}
+    runtime = {
+        "language": runtime_observation["language"],
+        "version": runtime_observation["version"],
+        "probeStatus": runtime_observation["probeStatus"],
+        "components": runtime_observation["components"],
+    }
+    return metadata | {"image": image, "runtime": runtime}
 
 
 def _custom_runner_step_revisions(targets: list[Mapping[str, Any]]) -> list[str]:

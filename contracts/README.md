@@ -17,6 +17,15 @@ reject authored schemas that declare another draft or omit the declaration.
 `format` name is an annotation only, per Draft 2020-12 vocabulary semantics,
 and never rejects a value.
 
+RuntimeBinding `probeStatus` and Health `RuntimeComponent.probe_status` are
+compatibility observations reported by the workload image. `matched` means
+that the in-image probe reported a version matching the image annotation;
+because the image supplies Health, this status is not proof of image integrity
+or publisher identity. Consumers must apply their own digest, signature, and
+publisher trust policy. This is a pre-release `v1alpha1` contract change: the
+old `verification` field and `verified`/`unverified` values are removed, and
+consumers must update together with the SDK.
+
 The `http-operation.schema.json` contract defines the deliberately small,
 data-only HTTP operation format for a `platform-runner` action: a method,
 an origin-less relative path template, and bounded request/response maps whose

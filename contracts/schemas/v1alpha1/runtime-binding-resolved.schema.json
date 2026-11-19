@@ -45,13 +45,66 @@
     "optionResolved": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "displayName", "image"],
+      "required": ["name", "displayName", "image", "runtime"],
       "properties": {
         "name": {"$ref": "common.schema.json#/$defs/identifier"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
         "description": {"type": "string", "maxLength": 2000},
-        "image": {"$ref": "common.schema.json#/$defs/digestImageReference"}
+        "image": {"$ref": "common.schema.json#/$defs/digestImageReference"},
+        "runtime": {"$ref": "#/$defs/runtimeObservation"}
       }
+    },
+    "runtimeObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "version", "probeStatus", "components"],
+      "description": "Language and version annotations read from the digest-pinned image, with compatibility probe status reported by the image's Health implementation. This is not image-integrity or publisher verification.",
+      "properties": {
+        "language": {"$ref": "#/$defs/runtimeLanguage"},
+        "version": {"$ref": "#/$defs/runtimeVersion"},
+        "probeStatus": {
+          "enum": ["matched", "unsupported"],
+          "description": "Whether the workload-reported supported probe version matches the image annotation. This status is supplied by the image and is not an integrity attestation."
+        },
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/runtimeComponentObservation"}
+        }
+      }
+    },
+    "runtimeComponentObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "executable", "probeStatus"],
+      "properties": {
+        "name": {"$ref": "common.schema.json#/$defs/identifier"},
+        "executable": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Version reported by a supported in-image runtime probe; omitted when unsupported."},
+        "probeStatus": {"enum": ["matched", "unsupported"], "description": "Whether the workload-reported probe matched the declared executable and image annotation; this is compatibility data, not proof of trust."}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"probeStatus": {"const": "matched"}}, "required": ["probeStatus"]},
+          "then": {"required": ["version"]},
+          "else": {"not": {"required": ["version"]}}
+        }
+      ]
+    },
+    "runtimeLanguage": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9.+_-]*$",
+      "description": "Language or runtime family reported by the OCI image annotation."
+    },
+    "runtimeVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+()_-]*$",
+      "description": "Version reported by the OCI image annotation."
     },
     "workloadResolved": {
       "type": "object",

@@ -118,16 +118,17 @@ printf 'server = "http://localhost:%s"\n[host."http://%s:5000"]\n  capabilities 
 push_image() {
   local context="$1" name="$2" export_name="$3"
   local image push_output digest
-  local push_flags=()
+  image="localhost:$port/$name:compat"
+  # Keep the argument array nonempty for Bash 3.2 with nounset enabled.
+  local push_args=("$image")
   # Podman does not treat a localhost registry as insecure by default (docker
   # does and rejects the flag), and prints no digest line to parse
   # (--digestfile writes it instead).
   if [[ "$engine" == *podman* ]]; then
-    push_flags=(--tls-verify=false --digestfile "$tmp/$name.push-digest")
+    push_args=(--tls-verify=false --digestfile "$tmp/$name.push-digest" "$image")
   fi
-  image="localhost:$port/$name:compat"
   "$engine" build -f "$context/Containerfile" -t "$image" "$context"
-  push_output="$("$engine" push "${push_flags[@]}" "$image")"
+  push_output="$("$engine" push "${push_args[@]}")"
   printf '%s\n' "$push_output"
   if [[ "$engine" == *podman* ]]; then
     digest="$(<"$tmp/$name.push-digest")"

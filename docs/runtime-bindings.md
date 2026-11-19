@@ -80,14 +80,180 @@ spec:
         - name: python-base
           displayName: Python base
           description: General-purpose report runtime.
+          runtime:
+            components:
+              - name: python
+                executable: /usr/bin/python3.12
           image:
             buildTarget: python-base-image
         - name: python-pdf
           displayName: Python with PDF tools
           description: Includes libraries for creating and processing PDFs.
+          runtime:
+            components:
+              - name: python
+                executable: /usr/bin/python3.12
           image:
             buildTarget: python-pdf-image
 ```
+
+Each image option declares the runtime components and absolute executable
+paths that the SDK can probe. These fields identify probe targets; they do not
+duplicate the language or version. The image carries those two values as OCI
+annotations named `io.syntara.runtime.language` and
+`io.syntara.runtime.version`. The SDK reads them from the exact digest-pinned
+image and copies them into the resolved RuntimeBinding. For an image built by
+the SDK, provide the values in the corresponding `build.workloads.<target>`
+settings entry; Podman writes them onto the final image. A prebuilt `reference`
+image must already carry both annotations. If an image is missing either value,
+the build fails with guidance to add them.
+
+The annotated language must also match a declared runtime component name. If it
+does not, the build fails; the SDK does not treat a missing declaration as an
+unsupported runtime.
+
+The SDK starts every exact image option in a local probe with an egress-restricted
+internal network and asks its gRPC `Health` endpoint for runtime evidence. The
+image supplies that endpoint and its probe helper, so the response is not an
+independent trust signal. For Python and GNU Bash, the SDK compares the
+workload-reported executable and version with the image annotation. A matching
+report is recorded as `probeStatus: matched`. Missing or unsupported evidence,
+a different executable, or a version mismatch fails the build for these
+supported languages. For a language without a built-in SDK probe, the SDK
+records `probeStatus: unsupported`; the default build warns and continues,
+while `--require runtime-metadata-match` rejects it. A Health or transport
+failure also fails the build.
+
+The SDK probes every image option in the RuntimeBinding, including non-default
+options and prebuilt `reference` images. A referenced image may need to be
+pulled using the configured registry credentials. `--require` does not enable
+probing; it only decides whether unsupported probe evidence is allowed. Publish
+repeats the probes for all options before publishing. This costs one image
+startup per option at build and again at publish, and ensures that the binding
+contains metadata for each selectable image.
+
+`matched` only means the image's Health response reported a supported probe
+version that matched its OCI annotation. A publisher-controlled image can
+change or falsify its own Health response, so this result is compatibility
+metadata, not proof of image integrity, publisher identity, or safety. EP and
+other consumers must enforce trust using separate digest, signature, and
+publisher policies.
+
+### Alpha migration for SDK and Execution Plane consumers
+
+This is a forward-only change to the pre-release `v1alpha1` contracts. Before
+consuming the updated package or artifacts:
+
+- Plugin authors must add a `runtime` declaration, including at least one
+  `runtime.components` entry with `name` and absolute `executable`, to each
+  RuntimeBinding image option. Rebuild and republish resolved binding artifacts
+  with the updated SDK.
+- The `init --template custom-workload` scaffold pins the exact
+  `syntara-plugin-contracts` version installed with the SDK that created it.
+  Publish the matching contracts release before building the generated image,
+  and keep the SDK and contracts versions paired when updating the scaffold.
+- RuntimeBinding consumers must replace `runtime.verification` and component
+  `verification` with `probeStatus`; values `verified` and `unverified` become
+  `matched` and `unsupported`.
+- Authors must rename the `verified-runtime` policy requirement in
+  `syntara-plugin.yaml` and on the CLI to `runtime-metadata-match`.
+- Workload and host implementers must update the Health `RuntimeComponent`
+  protobuf accessor from `verification` to `probe_status` (field number 4 is
+  unchanged) and use the new status values.
+- The Execution Plane must consume the updated shared contracts package,
+  regenerate its protobuf bindings, update any parsing or policy code, and must
+  not use `probeStatus` as an image-trust decision. Digest/signature and
+  publisher authorization checks remain separate.
+
+The SDK and Execution Plane must agree on the same contracts package version
+before they exchange these records. Older `v1alpha1` producers and consumers
+are not wire or artifact compatible with this alpha change.
+
+| Image and probe result | Build behavior |
+| --- | --- |
+| Supported language, matching component, and matching version | Pass; record `probeStatus: matched`. |
+| Supported language, but matching component is missing or unsupported | Fail; correct the executable declaration or image. |
+| Supported language, but probe version differs from the image annotation | Fail; correct the image or its metadata. |
+| No SDK probe for the annotated language, with a matching declared component | Warn and record `probeStatus: unsupported`; `--require runtime-metadata-match` fails. |
+| Annotated language has no matching declared component | Fail; declare the correct runtime component. |
+| Missing image annotations or failed Health/transport probe | Fail. |
+
+On macOS with Podman, the SDK uses a temporary OpenSSH tunnel through the
+Podman machine to query the workload on its internal network; the workload
+remains disconnected from external networks.
+
+The image annotation remains the declared version, and the Health response
+supplies a second value for the SDK to compare. Because the image controls that
+response, the comparison does not independently confirm the executable's
+identity or protect against a modified image. Neither plugin tags nor project
+dependency constraints are used to infer the runtime version.
+
+For example, the source declaration identifies an executable to probe, not a
+second version value:
+
+```yaml
+runtime:
+  components:
+    - name: python
+      executable: /usr/bin/python3.12
+```
+
+For an SDK-built image, set the image metadata alongside its build target:
+
+```yaml
+build:
+  workloads:
+    python-base-image:
+      engine: podman
+      context: .
+      containerfile: runtime/python-base/Containerfile
+      repository: quay.io/acme/report-tools-runtime
+      tag: 1.0.0-python-base
+      platform: linux/amd64
+      # These values label the final image; use what its Containerfile installs.
+      # The SDK compares the Health-reported probe version with this annotation.
+      runtimeMetadata:
+        language: python
+        version: "3.12.8"
+```
+
+The version above is an example. Set it to the version actually present in the
+image; a supported probe checks that claim during `build` and again during
+`publish`.
+
+The resolved RuntimeBinding records what the image reports:
+
+```yaml
+runtime:
+  language: python
+  version: "3.12.8"
+  probeStatus: matched
+  components:
+    - name: python
+      executable: /usr/bin/python3.12
+      version: "3.12.8"
+      probeStatus: matched
+```
+
+`--require runtime-metadata-match` makes `build` and `publish` fail unless
+every declared component of every image option has a supported matching probe
+and non-empty version. An image option with no components, a missing component
+version, or any unsupported component fails this requirement. `--require all`
+expands to every check registered by the installed SDK. Requirements can also be set persistently in
+`syntara-plugin.yaml`:
+
+```yaml
+policy:
+  requirements:
+    - runtime-metadata-match
+```
+
+The default is an empty requirement list. CLI requirements add to the
+settings list and cannot remove a configured check. `build` records the
+expanded checks and results in `dist/release.json`. `publish` probes the
+digest-pinned images again and validates that evidence instead of trusting a
+stored pass flag. Pin the SDK version in CI when using `all`, because a later
+SDK release can register additional checks.
 
 Keep non-secret container build settings in `syntara-plugin.yaml`:
 
@@ -146,7 +312,8 @@ container gRPC runtime:
 ```sh
 syntara-plugin build plugin.yaml \
   --runtime-bindings runtime-bindings.yaml \
-  --output dist/report-tools.oci.tar
+  --output dist/report-tools.oci.tar \
+  --require runtime-metadata-match
 syntara-plugin inspect dist/release.json
 syntara-plugin inspect dist/report-tools.oci.tar
 syntara-plugin inspect dist/runtime-bindings.yaml
@@ -168,7 +335,7 @@ digests, publishes in dependency order, and prints the immutable references:
 
 ```sh
 printf '%s' "$REGISTRY_PASSWORD" | syntara-plugin publish dist/release.json \
-  --artifact-kind release --password-stdin --cosign-key cosign.key \
+  --artifact-kind release --require all --password-stdin --cosign-key cosign.key \
   --cosign-verify-key cosign.pub
 ```
 
