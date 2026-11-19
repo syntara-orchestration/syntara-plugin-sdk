@@ -10,11 +10,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator, FormatChecker
 from pydantic import BaseModel
+from syntara_plugin.contracts import build_validator
 
 from .testgen import generate_step_tests
 
+_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+_SCHEMA_KEYWORD = "$schema"
 DEFAULT_RUNTIME_BASE_IMAGE = (
     "registry.access.redhat.com/ubi9/python-312@sha256:"
     "e6a10c3150624fbfd33dbd7721ef99ce7a1001b417d64427ad58515ab8044121"
@@ -30,6 +32,15 @@ def write_custom_workspace(
     schema: dict[str, Any],
 ) -> None:
     """Write a self-contained workspace for one manifest-backed Action."""
+    declared = schema.get(_SCHEMA_KEYWORD)
+    if declared is not None and declared != _DIALECT:
+        raise ValueError(
+            f"fields JSON schema declares unsupported dialect {declared!r}; only the "
+            "Draft 2020-12 dialect is accepted"
+        )
+    # The declaration is injected only when the author omitted it.
+    schema = {**schema}
+    schema.setdefault(_SCHEMA_KEYWORD, _DIALECT)
     _validate_model_schema(schema)
     # Avoid shadowing the SDK's syntara_plugin namespace when name is "plugin".
     package = "syntara_step_" + name.replace("-", "_")
@@ -71,6 +82,7 @@ def write_custom_workspace(
             "output": {
                 "kind": "inline",
                 "value": {
+                    _SCHEMA_KEYWORD: _DIALECT,
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {"resource": {"type": "string"}},
@@ -219,7 +231,7 @@ def _schema_kind(node: dict[str, Any], path: str) -> str:
 
 
 def _validate_supported_keywords(node: dict[str, Any], kind: str, path: str) -> None:
-    unsupported = sorted(set(node) - _ANNOTATIONS - _KEYWORDS[kind] - {"type"})
+    unsupported = sorted(set(node) - _ANNOTATIONS - _KEYWORDS[kind] - {"type", _SCHEMA_KEYWORD})
     if unsupported:
         raise ValueError(f"fields schema {path}: unsupported keyword {unsupported[0]!r}")
 
@@ -228,7 +240,7 @@ def _validate_default(node: dict[str, Any], path: str) -> None:
     if "default" not in node:
         return
     errors = list(
-        Draft202012Validator(node, format_checker=FormatChecker()).iter_errors(node["default"])
+        build_validator(node).iter_errors(node["default"])
     )
     if errors:
         raise ValueError(f"fields schema {path}: invalid default: {errors[0].message}")

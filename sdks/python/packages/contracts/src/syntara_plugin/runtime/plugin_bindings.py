@@ -278,10 +278,16 @@ def _declared_assets(
     specification = document.get("spec")
     if not isinstance(specification, Mapping):
         return assets
-    fields = (
-        ("credentialSchema",)
-        if document.get("kind") == "CredentialRecipe" else _SCHEMA_SOURCE_FIELDS
-    )
+    kind = document.get("kind")
+    fields: tuple[str, ...]
+    if kind == "CredentialRecipe":
+        fields = ("credentialSchema",)
+    elif kind == "Trigger":
+        # ADR 0014 makes the Trigger configuration an authored schema, so
+        # asset-backed configuration must reach the install boundary too.
+        fields = (*_SCHEMA_SOURCE_FIELDS, "configuration")
+    else:
+        fields = _SCHEMA_SOURCE_FIELDS
     for field_name in fields:
         source = specification.get(field_name)
         if not isinstance(source, Mapping) or source.get("kind") != "asset":

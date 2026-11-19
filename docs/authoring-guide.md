@@ -236,6 +236,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         title:
@@ -252,6 +253,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         issue_url:
@@ -260,6 +262,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 ```
 
@@ -333,6 +336,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: Record names to normalize.
       properties:
@@ -345,6 +349,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: Normalized record names.
       properties:
@@ -371,6 +376,10 @@ Every `input`, `output`, and optional `error` source is a JSON Schema 2020-12
 document, either `inline` in the manifest or an `asset` file. Follow these
 practices:
 
+- Declare `$schema: https://json-schema.org/draft/2020-12/schema` at the root
+  of every schema document. The compiler rejects schemas that declare another
+  draft or omit the declaration; validation, compilation, and invocation all
+  share this one contract.
 - Add a `description` to the root object and to every user-facing property.
   Descriptions become form help and output documentation.
 - Use `asset` for schemas that are long or shared between step types.
@@ -380,6 +389,20 @@ practices:
 - Declare the output precisely. The output schema is all that downstream
   step types can rely on.
 - Mark secret input fields with `writeOnly: true` or `format: password`.
+
+Only the formats declared in the common contract are asserted when a schema
+uses `format`: `date-time` (strict RFC 3339) and `uri` (absolute URI with a
+scheme). Any other format name, such as `email`, is an annotation only; it
+never rejects a value. An optional `error` schema is validated on top of the
+SDK's base error composition, and when a step type declares no `error`
+schema, failures must fit the closed fallback `ErrorResult` shape (category,
+code, message, retryable — nothing else). A declared `error` schema must also
+admit the SDK's own wrapper errors — the `INVALID_INPUT` wrapper reported
+before `run()` is called and the default `STEP_FAILED` shape of
+`StepFailure` — because every wrapper error is validated against it. The
+compiler rejects an `error` schema that cannot carry those shapes, for
+example one that pins `code` to a single domain value. Installation rejects
+such a schema too, so a hand-authored manifest cannot reintroduce the bug.
 
 > **Important:** Marking a field as secret controls local redaction in
 > `syntara-plugin run`, which also masks fields with credential-like names
@@ -1059,7 +1082,10 @@ step type:
 - Split workflow step types at retry boundaries, as in Option B.
 
 A manifest `error` schema is optional. It documents a domain error shape and
-does not replace the SDK-owned failure envelope.
+does not replace the SDK-owned failure envelope. Every wrapper error,
+including the `INVALID_INPUT` wrapper for invalid input, is validated
+against it, so it must admit the SDK wrapper codes (`INVALID_INPUT` and
+`STEP_FAILED`) alongside the step type's own codes.
 
 ### Keep the workflow readable
 
@@ -1197,6 +1223,10 @@ The two paths report outcomes differently:
 | Terminal failure (`ContainerInvocationError`) | The exception is raised with its code, message, retryability, and outcome | Terminal failure with the code, message, retryability, outcome, and provider code |
 | Unexpected exception | `StepExecutionError` is raised with a safe message; the original traceback is kept as `detail` | Terminal failure `OUTCOME_UNKNOWN`; the exception text does not leave the container |
 | Output that violates the output schema | `StepExecutionError` is raised | Terminal failure `ABI_VIOLATION` |
+
+Every wrapper error, `INVALID_INPUT` included, is validated against the
+step type's declared `error` schema when one exists; that is why the compiler
+rejects a declared `error` schema which cannot carry the SDK wrapper codes.
 
 In tests, a deliberate failure produces a nonzero-status wrapper on both
 paths: `outcome.error` carries the structured error and `outcome.raised` is

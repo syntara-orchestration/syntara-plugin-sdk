@@ -19,6 +19,8 @@ from syntara_plugin.runtime import (
     ContainerInvocation,
     ContainerInvocationError,
     ControlStep,
+    ErrorCategory,
+    ErrorResult,
     ExecutionContext,
     FailureCode,
     InstalledStepManifest,
@@ -29,6 +31,7 @@ from syntara_plugin.runtime import (
     StepDescriptor,
     StepExecutionError,
     StepExecutor,
+    StepFailure,
     StepKind,
     TriggerStep,
     container_step_for_binding,
@@ -186,8 +189,14 @@ class ConfiguredControlStep(ControlStep[ConfiguredControlInput, ControlExampleOu
         )
 
 
+def _declared(schema: dict[str, object]) -> dict[str, object]:
+    """Inject the Draft 2020-12 declaration authored test schemas need."""
+
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
+
+
 def _input_schema() -> dict[str, object]:
-    return {
+    return _declared({
         "type": "object",
         "required": ["message"],
         "properties": {
@@ -196,7 +205,7 @@ def _input_schema() -> dict[str, object]:
             "mode": {"enum": ["fast", "slow"], "default": "fast"},
         },
         "additionalProperties": False,
-    }
+    })
 
 
 def _installed_step(
@@ -205,6 +214,7 @@ def _installed_step(
     step_class: type[BaseStep[Any, Any]] = ExampleStep,
     step_identity: str = "acme.plugin.example",
     configuration_schema: dict[str, object] | None = None,
+    error_schema: dict[str, object] | None = None,
 ) -> InstalledStepManifest:
     kind = (
         StepKind.ACTION
@@ -227,16 +237,21 @@ def _installed_step(
                 "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
             },
             "input": {"kind": "inline", "value": input_schema},
-            "output": {"kind": "inline", "value": output_schema if output_schema is not None else {}},
+            "output": {
+                "kind": "inline",
+                "value": output_schema if output_schema is not None else _declared({}),
+            },
         },
     }
+    if error_schema is not None:
+        manifest["spec"]["error"] = {"kind": "inline", "value": error_schema}
     if kind is StepKind.CONTROL:
         manifest["spec"]["invocation"] = {"kind": "orchestration"}
     elif kind is StepKind.TRIGGER:
         manifest["spec"].update(
             {
                 "driver": "webhook.v1",
-                "configuration": {"kind": "inline", "value": {"type": "object"}},
+                "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             }
         )
     if configuration_schema is not None:
@@ -270,7 +285,9 @@ def _bind_installed(
         step,
         _installed_step(
             input_schema if input_schema is not None else _input_schema(),
-            output_schema if output_schema is not None else step.output_model().model_json_schema(),
+            output_schema
+            if output_schema is not None
+            else _declared(step.output_model().model_json_schema()),
             step_class=type(step),
             step_identity=identity,
         ),
@@ -373,7 +390,7 @@ def test_manifest_validation_uses_strict_json_mode_for_json_representations() ->
     bindings = StepBindings()
     descriptor = StepDescriptor.for_installed_step(
         step,
-        _installed_step(DateTimeInput.model_json_schema(), step_class=DateTimeActionStep),
+        _installed_step({"$schema": "https://json-schema.org/draft/2020-12/schema", **DateTimeInput.model_json_schema()}, step_class=DateTimeActionStep),
     )
     bindings.bind(descriptor, step)
 
@@ -389,6 +406,26 @@ def test_manifest_validation_uses_strict_json_mode_for_json_representations() ->
 def test_action_format_constraints_are_enforced_before_the_hook() -> None:
     step = ExampleStep()
     schema = _input_schema()
+    schema["properties"]["message"]["format"] = "date-time"  # type: ignore[index]
+    bindings = StepBindings()
+    descriptor = StepDescriptor.for_installed_step(step, _installed_step(schema))
+    bindings.bind(descriptor, step)
+
+    wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
+        {"message": "not-a-timestamp"}, _context()
+    )
+
+    assert wrapper.status != 0
+    assert wrapper.error is not None
+    assert "format" in wrapper.error.message
+    assert step.run_calls == 0
+
+
+def test_action_unasserted_formats_are_annotations_only() -> None:
+    """Format names outside the contract's asserted set never block a run."""
+
+    step = ExampleStep()
+    schema = _input_schema()
     schema["properties"]["message"]["format"] = "email"  # type: ignore[index]
     bindings = StepBindings()
     descriptor = StepDescriptor.for_installed_step(step, _installed_step(schema))
@@ -398,10 +435,8 @@ def test_action_format_constraints_are_enforced_before_the_hook() -> None:
         {"message": "not-an-email"}, _context()
     )
 
-    assert wrapper.status != 0
-    assert wrapper.error is not None
-    assert "format" in wrapper.error.message
-    assert step.run_calls == 0
+    assert wrapper.status == 0
+    assert step.run_calls == 1
 
 
 def test_model_construction_error_is_a_safe_invalid_input() -> None:
@@ -425,6 +460,104 @@ def test_model_construction_error_is_a_safe_invalid_input() -> None:
     assert "mode" in wrapper.error.message
     assert "instant" not in wrapper.error.message
     assert step.run_calls == 0
+
+
+class ExtraFieldErrorStep(ExampleStep):
+    def run(self, inputs: ExampleInput, context: ExecutionContext) -> ExampleOutput:
+        raise StepFailure(
+            1,
+            "deliberate",
+            error_result=ErrorResult(
+                category=ErrorCategory.BUSINESS,
+                code="STEP_FAILED",
+                message="deliberate",
+                retryable=False,
+                provider="unexpected-extra",
+            ),
+        )
+
+
+class DeclaredErrorStep(ExampleStep):
+    def __init__(self, code: str = "TRACKER_DOWN") -> None:
+        super().__init__()
+        self._failure_code = code
+
+    def run(self, inputs: ExampleInput, context: ExecutionContext) -> ExampleOutput:
+        raise StepFailure(
+            1,
+            "deliberate",
+            error_result=ErrorResult(
+                category=ErrorCategory.BUSINESS,
+                code=self._failure_code,
+                message="deliberate",
+                retryable=False,
+            ),
+        )
+
+
+_DECLARED_ERROR_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["category", "code", "message", "retryable"],
+    "properties": {
+        "category": {"type": "string"},
+        "code": {"enum": ["TRACKER_DOWN", "INVALID_INPUT", "STEP_FAILED"]},
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"},
+    },
+}
+
+
+def test_failure_without_declared_error_schema_rejects_extra_fields() -> None:
+    """The closed fallback ErrorResult applies when no spec.error is declared."""
+
+    executor = _executor(ExtraFieldErrorStep())
+    context = _context()
+
+    with pytest.raises(StepExecutionError):
+        executor.execute({"message": "hello"}, context)
+
+
+def test_failure_with_declared_error_schema_accepts_a_matching_result() -> None:
+    """A declared spec.error is validated on top of the base composition."""
+
+    bindings = StepBindings()
+    step = DeclaredErrorStep()
+    manifest = _installed_step(
+        _input_schema(),
+        step_class=DeclaredErrorStep,
+        error_schema=_DECLARED_ERROR_SCHEMA,
+    )
+    descriptor = StepDescriptor.for_installed_step(step, manifest)
+    bindings.bind(descriptor, step)
+
+    wrapper = StepExecutor(bindings.binding("acme.plugin.example")).execute(
+        {"message": "hello"}, _context()
+    )
+
+    assert wrapper.status != 0
+    assert wrapper.error is not None
+    assert wrapper.error.code == "TRACKER_DOWN"
+
+
+def test_failure_with_declared_error_schema_rejects_a_mismatched_result() -> None:
+    """Declared error constraints fail the wrapper when the result does not match."""
+
+    bindings = StepBindings()
+    step = DeclaredErrorStep(code="TRACKER_UNAVAILABLE")
+    manifest = _installed_step(
+        _input_schema(),
+        step_class=DeclaredErrorStep,
+        error_schema=_DECLARED_ERROR_SCHEMA,
+    )
+    descriptor = StepDescriptor.for_installed_step(step, manifest)
+    bindings.bind(descriptor, step)
+    executor = StepExecutor(bindings.binding("acme.plugin.example"))
+    context = _context()
+
+    with pytest.raises(StepExecutionError):
+        executor.execute({"message": "hello"}, context)
 
 
 def test_unexpected_model_construction_failure_is_a_safe_invalid_input(
@@ -471,7 +604,7 @@ def test_manifest_validation_reports_control_characters_safely() -> None:
         bindings,
         "acme.plugin.control",
         step,
-        input_schema=ConfiguredControlInput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **ConfiguredControlInput.model_json_schema()},
     )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.control")).execute(
@@ -543,7 +676,7 @@ def test_supported_action_adapter_maps_the_invalid_input_wrapper_to_the_envelope
     assert container_result.status_code != 0
     assert container_result.error_result["code"] == direct_wrapper.error.code
     assert container_result.error_result["message"] == direct_wrapper.error.message
-    assert container_result.output_schema_digest == canonical_json_digest({})
+    assert container_result.output_schema_digest == canonical_json_digest(_declared({}))
     assert direct_wrapper.error.code == FailureCode.INVALID_INPUT.value
     assert direct_step.run_calls == 0
     assert container_step.run_calls == 0
@@ -552,7 +685,7 @@ def test_supported_action_adapter_maps_the_invalid_input_wrapper_to_the_envelope
 def test_supported_action_adapter_preserves_success_payload_and_digest() -> None:
     direct_step = ExampleStep()
     container_step = ExampleStep()
-    output_schema = ExampleOutput.model_json_schema()
+    output_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **ExampleOutput.model_json_schema()}
     valid_input = {"message": "hello", "count": 3, "mode": "slow"}
 
     direct_wrapper = _executor(direct_step, output_schema).execute(valid_input, _context())
@@ -638,7 +771,7 @@ def test_same_category_action_entry_point_mismatch_is_rejected_before_hooks(
     installed_implementation = installed_step_type()
     supplied_step = supplied_step_type()
     installed_step = _installed_step(
-        installed_implementation.input_model().model_json_schema(),
+        _declared(installed_implementation.input_model().model_json_schema()),
         step_class=installed_step_type,
     )
     descriptor = StepDescriptor.for_installed_step(
@@ -816,7 +949,7 @@ def test_control_execution_uses_registered_pydantic_model_failures(
         bindings,
         "acme.plugin.configured",
         step,
-        input_schema=ConfiguredControlInput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **ConfiguredControlInput.model_json_schema()},
     )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.configured")).execute(
@@ -837,7 +970,7 @@ def test_control_execution_preserves_its_pydantic_model_configuration() -> None:
         bindings,
         "acme.plugin.configured",
         step,
-        input_schema=ConfiguredControlInput.model_json_schema(),
+        input_schema={"$schema": "https://json-schema.org/draft/2020-12/schema", **ConfiguredControlInput.model_json_schema()},
     )
 
     wrapper = StepExecutor(bindings.binding("acme.plugin.configured")).execute(
@@ -864,6 +997,7 @@ def test_trigger_executor_uses_its_registered_model_not_manifest_configuration()
             step_class=type(step),
             step_identity="acme.plugin.trigger",
             configuration_schema={
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
                 "required": ["event_type"],
                 "properties": {"event_type": {"const": "issue.opened"}},
@@ -948,7 +1082,7 @@ def test_supported_control_adapter_preserves_success_payload_and_digest() -> Non
     assert direct_wrapper.status == 0
     assert container_result.output == direct_wrapper.output
     assert container_result.output_schema_digest == canonical_json_digest(
-        ControlExampleOutput.model_json_schema()
+        _declared(ControlExampleOutput.model_json_schema())
     )
     assert direct_step.run_calls == 1
     assert container_step.run_calls == 1
@@ -973,7 +1107,7 @@ def test_supported_trigger_adapter_preserves_success_payload_and_digest() -> Non
     assert direct_wrapper.status == 0
     assert container_result.output == direct_wrapper.output
     assert container_result.output_schema_digest == canonical_json_digest(
-        ControlExampleOutput.model_json_schema()
+        _declared(ControlExampleOutput.model_json_schema())
     )
     assert direct_step.run_calls == 1
     assert container_step.run_calls == 1
@@ -989,7 +1123,7 @@ def test_supported_control_adapter_maps_the_invalid_input_wrapper_to_the_envelop
     )
 
     assert result.output_schema_digest == canonical_json_digest(
-        ControlExampleOutput.model_json_schema()
+        _declared(ControlExampleOutput.model_json_schema())
     )
     assert result.output is None
     assert result.status_code != 0
@@ -1007,7 +1141,7 @@ def test_supported_trigger_adapter_maps_invalid_input_to_the_envelope() -> None:
     )
 
     assert result.output_schema_digest == canonical_json_digest(
-        ControlExampleOutput.model_json_schema()
+        _declared(ControlExampleOutput.model_json_schema())
     )
     assert result.output is None
     assert result.status_code != 0
@@ -1054,7 +1188,7 @@ def test_supported_non_action_adapter_propagates_the_complete_context(
 
 def test_output_violating_the_manifest_schema_is_a_safe_execution_failure() -> None:
     step = ExampleStep()
-    executor = _executor(step, {"type": "object", "required": ["absent_field"]})
+    executor = _executor(step, _declared({"type": "object", "required": ["absent_field"]}))
     context = _context()
 
     with pytest.raises(StepExecutionError):
@@ -1067,7 +1201,9 @@ def test_output_validation_enforces_format_assertions() -> None:
     step = ExampleStep()
     executor = _executor(
         step,
-        {"type": "object", "properties": {"message": {"type": "string", "format": "ipv4"}}},
+        _declared(
+            {"type": "object", "properties": {"message": {"type": "string", "format": "date-time"}}}
+        ),
     )
     context = _context()
 

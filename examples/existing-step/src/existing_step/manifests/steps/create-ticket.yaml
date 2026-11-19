@@ -14,6 +14,7 @@
     "input": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -21,12 +22,15 @@
             "type": "string"
           }
         },
-        "required": ["title"]
+        "required": [
+          "title"
+        ]
       }
     },
     "output": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -34,7 +38,9 @@
             "type": "string"
           }
         },
-        "required": ["ticket_id"]
+        "required": [
+          "ticket_id"
+        ]
       }
     }
   }

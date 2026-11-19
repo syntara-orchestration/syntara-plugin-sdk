@@ -258,6 +258,7 @@ def test_custom_schema_file_and_drift_detection(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": False,
         "required": ["resource", "count"],
@@ -279,6 +280,62 @@ def test_custom_schema_file_and_drift_detection(
     (workspace / "schemas/request.input.yaml").write_text(json.dumps(schema), encoding="utf-8")
     with pytest.raises(SchemaDriftError):
         bindings_factory.bind_step(entry_point, workspace=workspace)
+
+
+def test_custom_scaffold_rejects_an_unsupported_schema_dialect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A fields document that declares another draft is rejected, not rewritten."""
+
+    monkeypatch.chdir(tmp_path)
+    schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["resource"],
+        "properties": {"resource": {"type": "string", "minLength": 1}},
+    }
+    (tmp_path / "fields.json").write_text(json.dumps(schema), encoding="utf-8")
+    workspace = tmp_path / "rejected-dialect"
+    assert (
+        main(["init", str(workspace), "--runner", "custom-runner", "--fields", "@fields.json"]) == 2
+    )
+    assert "unsupported dialect" in capsys.readouterr().err
+    assert not workspace.exists()
+
+
+def test_custom_scaffold_preserves_the_canonical_dialect_and_injects_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared 2020-12 dialect is kept; an omitted one is injected."""
+
+    monkeypatch.chdir(tmp_path)
+    canonical = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["resource"],
+        "properties": {"resource": {"type": "string", "minLength": 1}},
+    }
+    (tmp_path / "fields.json").write_text(json.dumps(canonical), encoding="utf-8")
+    workspace = tmp_path / "canonical-dialect"
+    assert (
+        main(["init", str(workspace), "--runner", "custom-runner", "--fields", "@fields.json"]) == 0
+    )
+    written = yaml.safe_load((workspace / "schemas/request.input.yaml").read_text())
+    assert written["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+
+    undeclared = {
+        key: value for key, value in canonical.items() if key != "$schema"
+    }
+    (tmp_path / "undeclared.json").write_text(json.dumps(undeclared), encoding="utf-8")
+    injected = tmp_path / "injected-dialect"
+    assert (
+        main(["init", str(injected), "--runner", "custom-runner", "--fields", "@undeclared.json"])
+        == 0
+    )
+    written = yaml.safe_load((injected / "schemas/request.input.yaml").read_text())
+    assert written["$schema"] == "https://json-schema.org/draft/2020-12/schema"
 
 
 def test_custom_field_names_that_look_like_yaml_values(tmp_path: Path) -> None:

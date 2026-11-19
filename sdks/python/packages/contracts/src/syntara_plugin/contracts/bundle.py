@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import urllib.parse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 
 ContractKind = Literal[
@@ -70,21 +72,273 @@ _SCHEMA_FILES: dict[ContractKind, str] = {
 _RFC3339_DATETIME = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
-_FORMAT_CHECKER = FormatChecker()
+# Start from an empty registry so only the contract-asserted format names are
+# checked; jsonschema's built-in checks (email, date, ...) would otherwise be
+# asserted too, which the authoring conformance contract does not allow.
+_FORMAT_CHECKER = FormatChecker(formats=())
 _STEP_TARGET_KINDS = frozenset({"Action", "Control", "Trigger"})
 _UTC_OFFSET_SUFFIX = "+00:00"
+_SCHEMA_KEYWORD = "$schema"
+_CANONICAL_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+
+def _asserted_formats(documents: Mapping[str, Mapping[str, Any]]) -> frozenset[str]:
+    """Read the asserted format names declared by the common contract."""
+
+    try:
+        enum = documents["common.schema.json"]["$defs"]["assertedFormats"]["enum"]
+    except (KeyError, TypeError) as error:
+        raise RuntimeError(
+            "common.schema.json is missing the $defs/assertedFormats/enum declaration"
+        ) from error
+    if not isinstance(enum, list) or not all(isinstance(name, str) for name in enum):
+        raise RuntimeError("assertedFormats enum must be a list of format names")
+    return frozenset(enum)
 
 
 @_FORMAT_CHECKER.checks("date-time", raises=ValueError)
 def _is_rfc3339_datetime(value: object) -> bool:
-    """Accept the RFC 3339 subset used by Syntara runtime envelopes."""
+    """Accept the RFC 3339 subset used by Syntara runtime envelopes.
 
-    if not isinstance(value, str) or not _RFC3339_DATETIME.fullmatch(value):
+    Per the Draft 2020-12 format-assertion vocabulary, a format only applies
+    to string instances; non-strings succeed.
+    """
+
+    if not isinstance(value, str):
+        return True
+    if not _RFC3339_DATETIME.fullmatch(value):
         return False
     datetime.fromisoformat(
         value.removesuffix("Z") + _UTC_OFFSET_SUFFIX if value.endswith("Z") else value
     )
     return True
+
+
+# RFC 3986: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+_URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*")
+# Characters RFC 3986 does not allow anywhere in a URI: ASCII controls,
+# space, and the delimiters excluded from every component grammar.
+_URI_FORBIDDEN = re.compile(r"[\x00-\x20\x7f<>\"{}|\\^`]")
+# A "%" must introduce a valid percent-encoded octet.
+_MALFORMED_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+# RFC 3986 component grammars. "[]" is legal only inside an IPv6 host
+# literal, so it is absent from every other component's character class.
+_PCT_ENCODED = r"%[0-9A-Fa-f]{2}"
+_UNRESERVED = r"A-Za-z0-9\-._~"
+_SUB_DELIMS = r"!$&'()*+,;="
+# pchar = unreserved / pct-encoded / sub-delims / ":" / "@"; a path adds "/".
+_URI_PATH = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:@/]|{_PCT_ENCODED})*")
+# query and fragment add "/" and "?" to pchar.
+_URI_QUERY_OR_FRAGMENT = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:@/?]|{_PCT_ENCODED})*")
+# userinfo = *( unreserved / pct-encoded / sub-delims / ":" ).
+_URI_USERINFO = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:]|{_PCT_ENCODED})*")
+# reg-name = *( unreserved / pct-encoded / sub-delims ).
+_URI_REG_NAME = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}]|{_PCT_ENCODED})*")
+# IP-literal brackets are only valid around an IPv6 address or an IPvFuture
+# literal (RFC 3986 section 3.2.2: "v" 1*HEXDIG "." 1*(unreserved /
+# sub-delims / ":")).
+_URI_IPV6_LITERAL = re.compile(r"\[[0-9A-Fa-f:.]+\]")
+_URI_IPVFUTURE = re.compile(rf"v[0-9A-Fa-f]+\.[{_UNRESERVED}{_SUB_DELIMS}:]+")
+
+
+@_FORMAT_CHECKER.checks("uri", raises=ValueError)
+def _is_absolute_uri(value: object) -> bool:
+    """Accept absolute RFC 3986 URIs: a valid scheme plus a valid remainder.
+
+    Every component is checked against its RFC 3986 grammar, including the
+    authority (userinfo, host, port) and the path, query, and fragment
+    character sets. Non-strings succeed, per the Draft 2020-12
+    format-assertion vocabulary.
+    """
+
+    if not isinstance(value, str):
+        return True
+    # urlsplit raises ValueError for inputs it cannot parse (for example a
+    # malformed IPv6 host); the registered ``raises`` turns that into a failed
+    # format check instead of an escaping exception. The port grammar itself
+    # is checked by _valid_uri_authority: urlsplit's .port accessor applies a
+    # numeric range limit that RFC 3986 section 3.2.3 does not, so it is not
+    # consulted here.
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return False
+    if not parsed.scheme or not _URI_SCHEME.fullmatch(parsed.scheme):
+        return False
+    if not value.isascii() or _URI_FORBIDDEN.search(value) or _MALFORMED_PERCENT.search(value):
+        return False
+    if parsed.netloc and not _valid_uri_authority(parsed.netloc):
+        return False
+    if not _URI_PATH.fullmatch(parsed.path):
+        return False
+    if not _URI_QUERY_OR_FRAGMENT.fullmatch(parsed.query):
+        return False
+    if not _URI_QUERY_OR_FRAGMENT.fullmatch(parsed.fragment):
+        return False
+    return True
+
+
+def _valid_uri_authority(netloc: str) -> bool:
+    """Validate one RFC 3986 authority: optional userinfo, host, and port."""
+
+    userinfo, _, hostport = netloc.rpartition("@")
+    if not _URI_USERINFO.fullmatch(userinfo):
+        return False
+    if hostport.startswith("["):
+        closing = hostport.find("]")
+        if closing == -1:
+            return False
+        literal, port = hostport[: closing + 1], hostport[closing + 1 :]
+        if not (
+            _URI_IPV6_LITERAL.fullmatch(literal) or _URI_IPVFUTURE.fullmatch(literal[1:-1])
+        ) or not (port in ("", ":") or port[1:].isdigit()):
+            return False
+        return True
+    host, separator, port = hostport.rpartition(":")
+    if not separator:
+        host, port = hostport, ""
+    if not _URI_REG_NAME.fullmatch(host):
+        return False
+    return port == "" or port.isdigit()
+
+
+def format_checker() -> FormatChecker:
+    """Return the shared format checker asserting the contract format set.
+
+    Only the names declared in ``common.schema.json#/$defs/assertedFormats``
+    are registered; every other format name is an annotation only, per JSON
+    Schema Draft 2020-12 vocabulary semantics. The checker is a process-wide
+    singleton: callers must treat it as read-only and never register
+    additional checks on it.
+    """
+
+    return _FORMAT_CHECKER
+
+
+def build_validator(schema: object, *, registry: Registry | None = None) -> Draft202012Validator:
+    """Build a Draft 2020-12 validator with the shared asserted format checker."""
+
+    return Draft202012Validator(
+        schema,
+        registry=registry if registry is not None else Registry(),
+        format_checker=_FORMAT_CHECKER,
+    )
+
+
+class SchemaDocumentError(ValueError):
+    """An authored schema document violates the authoring conformance contract."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _reject_embedded_dialect_declarations(value: object, path: str) -> None:
+    """Reject nested ``$schema`` declarations that switch the dialect.
+
+    An embedded resource (for example a ``$defs`` entry with its own ``$id``)
+    that declares another ``$schema`` would be evaluated with that dialect's
+    semantics when referenced, silently bypassing the root-only draft check.
+    """
+
+    if isinstance(value, Mapping):
+        declared = value.get(_SCHEMA_KEYWORD)
+        if isinstance(declared, str) and declared != _CANONICAL_SCHEMA_DIALECT:
+            raise SchemaDocumentError(
+                "SCHEMA_EMBEDDED_DIALECT_UNSUPPORTED",
+                f"embedded schema resource at {path!r} declares unsupported "
+                f"dialect {declared!r}; every schema resource must use "
+                f"{_CANONICAL_SCHEMA_DIALECT!r}.",
+            )
+        for key, item in value.items():
+            _reject_embedded_dialect_declarations(item, f"{path}/{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_embedded_dialect_declarations(item, f"{path}/{index}")
+
+
+def validate_authored_schema(document: object) -> None:
+    """Validate an authored (inline or asset-backed) schema document.
+
+    Requires an explicit Draft 2020-12 ``$schema`` declaration and a document
+    that satisfies the Draft 2020-12 meta-schema. The declaration is enforced
+    on the root and on every embedded resource: a nested ``$schema`` pointing
+    at another draft would make referenced subresources evaluate under that
+    dialect's semantics. Raises ``SchemaDocumentError`` with a stable code for
+    draft violations and jsonschema ``SchemaError`` for structural meta-schema
+    failures.
+    """
+
+    if not isinstance(document, Mapping):
+        raise SchemaDocumentError(
+            "SCHEMA_DOCUMENT_NOT_OBJECT",
+            "authored schema document must be a JSON object.",
+        )
+    declared = document.get(_SCHEMA_KEYWORD)
+    if not isinstance(declared, str) or not declared:
+        raise SchemaDocumentError(
+            "SCHEMA_DOCUMENT_DIALECT_MISSING",
+            "authored schema must declare $schema as the Draft 2020-12 dialect "
+            f"{_CANONICAL_SCHEMA_DIALECT!r}.",
+        )
+    if declared != _CANONICAL_SCHEMA_DIALECT:
+        raise SchemaDocumentError(
+            "SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT",
+            f"authored schema declares unsupported dialect {declared!r}; only "
+            f"{_CANONICAL_SCHEMA_DIALECT!r} is accepted.",
+        )
+    _reject_embedded_dialect_declarations(document, "<root>")
+    Draft202012Validator.check_schema(document)
+
+
+# Representative ErrorResult documents the SDK itself emits inside wrapper
+# errors: the INVALID_INPUT wrapper produced before the step hook runs, and
+# the default StepFailure shape an author gets without an explicit code.
+# Messages are runtime-dependent, so these carry representative texts.
+_WRAPPER_ERROR_DOCUMENTS: tuple[dict[str, Any], ...] = (
+    {
+        "category": "validation",
+        "code": "INVALID_INPUT",
+        "message": "The step input is invalid.",
+        "retryable": False,
+    },
+    {
+        "category": "business",
+        "code": "STEP_FAILED",
+        "message": "The step failed.",
+        "retryable": False,
+    },
+)
+
+
+def validate_declared_error_schema(document: Mapping[str, Any]) -> None:
+    """Reject a declared ``spec.error`` that cannot carry an SDK wrapper error.
+
+    Every wrapper error — including the INVALID_INPUT wrapper emitted before
+    the step hook runs, and the default STEP_FAILED shape of ``StepFailure`` —
+    is validated against the declared ``spec.error`` at invocation time. A
+    schema that cannot carry those shapes would turn a routine invalid-input
+    report into an opaque execution error, so authoring rejects it up front.
+    Raises ``SchemaDocumentError`` with a stable code.
+    """
+
+    for wrapper in _WRAPPER_ERROR_DOCUMENTS:
+        try:
+            admits = build_validator(document).is_valid(wrapper)
+        except Exception:
+            # A schema that cannot even be evaluated (for example an
+            # unresolvable $ref) is not a wrapper-admission failure; callers
+            # report structural and reference errors through their own paths.
+            continue
+        if not admits:
+            codes = ", ".join(repr(item["code"]) for item in _WRAPPER_ERROR_DOCUMENTS)
+            raise SchemaDocumentError(
+                "ERROR_SCHEMA_REJECTS_WRAPPER_ERROR",
+                "declared spec.error cannot carry the SDK wrapper errors "
+                f"({codes}); it must admit them, for example by allowing those "
+                "codes alongside the step type's own.",
+            )
 
 
 @dataclass(frozen=True)
@@ -94,6 +348,7 @@ class ContractBundle:
     version: str
     digest: str
     documents: dict[str, dict[str, Any]]
+    asserted_formats: frozenset[str] = frozenset()
 
     def validator(self, kind: ContractKind) -> Draft202012Validator:
         """Return a validator with every local schema in this bundle registered."""
@@ -102,11 +357,7 @@ class ContractBundle:
             (document["$id"], Resource.from_contents(document))
             for document in self.documents.values()
         )
-        return Draft202012Validator(
-            target,
-            registry=registry,
-            format_checker=_FORMAT_CHECKER,
-        )
+        return build_validator(target, registry=registry)
 
 
 def _schema_directory() -> Any:
@@ -142,10 +393,34 @@ def load_bundle() -> ContractBundle:
             documents[entry.name] = json.loads(entry.read_text(encoding="utf-8"))
     if set(_SCHEMA_FILES.values()) - set(documents):
         raise RuntimeError("contract bundle is missing a required manifest or runtime schema")
+    for name, document in documents.items():
+        if document.get(_SCHEMA_KEYWORD) != _CANONICAL_SCHEMA_DIALECT:
+            raise RuntimeError(
+                f"contract bundle document {name!r} must declare the "
+                f"{_CANONICAL_SCHEMA_DIALECT!r} dialect"
+            )
+        try:
+            Draft202012Validator.check_schema(document)
+        except SchemaError as error:
+            raise RuntimeError(
+                f"contract bundle document {name!r} is not a valid "
+                f"Draft 2020-12 schema: {error}"
+            ) from error
+    asserted_formats = _asserted_formats(documents)
+    registered_formats = frozenset(_FORMAT_CHECKER.checkers)
+    if asserted_formats != registered_formats:
+        undeclared = sorted(registered_formats - asserted_formats)
+        unregistered = sorted(asserted_formats - registered_formats)
+        raise RuntimeError(
+            "asserted format set and registered format checks disagree: "
+            f"declared without a check: {undeclared or 'none'}; "
+            f"registered without a declaration: {unregistered or 'none'}"
+        )
     return ContractBundle(
         version="syntara.io/v1alpha1",
         digest=bundle_digest(documents),
         documents=documents,
+        asserted_formats=asserted_formats,
     )
 
 

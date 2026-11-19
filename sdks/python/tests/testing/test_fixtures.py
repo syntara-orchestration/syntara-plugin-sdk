@@ -49,9 +49,9 @@ def test_manifest_validator_fixture_validates_documents(
                 "kind": "custom-runner",
                 "entryPoint": "fixture_plugin.actions:FixtureAction",
             },
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
-            "error": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "error": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     }
     manifest_validator(valid)
@@ -115,8 +115,8 @@ def test_compile_manifest_fixture_compiles_a_workspace(
                             },
                         },
                     },
-                    "input": {"kind": "inline", "value": {"type": "object"}},
-                    "output": {"kind": "inline", "value": {"type": "object"}},
+                    "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+                    "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
                 },
             }
         ),

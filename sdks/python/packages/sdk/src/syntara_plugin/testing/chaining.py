@@ -6,8 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from jsonschema import Draft202012Validator
-from syntara_plugin.contracts import canonical_json_digest
+from syntara_plugin.contracts import build_validator, canonical_json_digest
 from syntara_plugin.runtime import DriftReport, StepBinding, compare_model_to_schema
 from syntara_plugin.runtime.bindings import to_json_document
 
@@ -66,7 +65,7 @@ def _seam_issues(seam_output: Mapping[str, Any], target: StepBinding) -> tuple[s
     """
 
     errors = sorted(
-        Draft202012Validator(target.descriptor.input_schema).iter_errors(seam_output),
+        build_validator(target.descriptor.input_schema).iter_errors(seam_output),
         key=lambda error: list(error.path),
     )
     return tuple(

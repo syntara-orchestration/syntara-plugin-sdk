@@ -126,8 +126,14 @@ class RecordingObjectStore:
         return self.reference
 
 
+def _declared(schema: dict[str, object]) -> dict[str, object]:
+    """Inject the Draft 2020-12 declaration authored test schemas need."""
+
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
+
+
 def _permissive_output_schema() -> dict[str, object]:
-    return {"type": "object"}
+    return _declared({"type": "object"})
 
 
 def _expected_digest(output_schema: dict[str, object] | None = None) -> str:
@@ -135,21 +141,21 @@ def _expected_digest(output_schema: dict[str, object] | None = None) -> str:
 
 
 def _echo_input_schema() -> dict[str, object]:
-    return {
+    return _declared({
         "type": "object",
         "required": ["message"],
         "properties": {"message": {"type": "string"}},
         "additionalProperties": False,
-    }
+    })
 
 
 def _bulk_input_schema() -> dict[str, object]:
-    return {
+    return _declared({
         "type": "object",
         "required": ["items"],
         "properties": {"items": {"type": "array", "items": {"type": "integer"}}},
         "additionalProperties": False,
-    }
+    })
 
 
 def _installed_step(
@@ -186,7 +192,7 @@ def _installed_step(
         specification.update(
             {
                 "driver": "webhook.v1",
-                "configuration": {"kind": "inline", "value": {"type": "object"}},
+                "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             }
         )
     return InstalledStepManifest.from_manifest(
@@ -378,7 +384,7 @@ def test_output_violating_the_manifest_schema_is_an_abi_violation(
         installed_step=_installed_step(
             "acme.plugin.echo",
             _echo_input_schema(),
-            output_schema={"type": "object", "required": ["absent_field"]},
+            output_schema=_declared({"type": "object", "required": ["absent_field"]}),
             output_schema_source=output_schema_source,
         ),
     )
@@ -427,10 +433,12 @@ def test_output_violating_a_format_assertion_is_an_abi_violation() -> None:
         installed_step=_installed_step(
             "acme.plugin.echo",
             _echo_input_schema(),
-            output_schema={
-                "type": "object",
-                "properties": {"message": {"type": "string", "format": "ipv4"}},
-            },
+            output_schema=_declared(
+                {
+                    "type": "object",
+                    "properties": {"message": {"type": "string", "format": "date-time"}},
+                }
+            ),
         ),
     )
     invocation = _invocation()

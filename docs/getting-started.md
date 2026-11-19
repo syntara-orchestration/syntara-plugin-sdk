@@ -25,7 +25,9 @@ enums, patterns, and requiredness. Add `"required": true` to a field-map entry
 when the action needs that input in addition to the built-in `resource` field.
 A full JSON schema must define `resource` as a string with `"minLength": 1`;
 the generated action interpolates it into its HTTP request path, where the
-runner requires a non-empty string.
+runner requires a non-empty string. A schema that declares a `$schema` other
+than Draft 2020-12 is rejected; when the declaration is omitted, the scaffold
+injects the canonical one.
 
 For example:
 

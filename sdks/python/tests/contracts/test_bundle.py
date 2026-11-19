@@ -9,10 +9,14 @@ import pytest
 from syntara_plugin.contracts import (
     CatalogCheckpoint,
     RuntimeBindingCheckpoint,
+    SchemaDocumentError,
+    build_validator,
     bundle_digest,
     fixture_content_digest,
+    format_checker,
     load_bundle,
     load_fixture_bundle,
+    validate_authored_schema,
     validate_catalog_index,
     validate_document,
     validate_runtime_binding,
@@ -86,6 +90,166 @@ def test_plugin_schema_accepts_only_nonempty_named_workloads() -> None:
     del plugin["spec"]["workload"]
     plugin["spec"]["workloads"] = {}
     assert validate_document(bundle, "plugin", plugin)
+
+
+def test_load_bundle_rejects_a_non_2020_12_dialect_declaration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from syntara_plugin.contracts import bundle as bundle_module
+
+    tampered = tmp_path / "v1alpha1"
+    tampered.mkdir()
+    for source in bundle_module._schema_directory().iterdir():
+        if source.name.endswith(".schema.json"):
+            document = json.loads(source.read_text(encoding="utf-8"))
+            if source.name == "step.schema.json":
+                document["$schema"] = "http://json-schema.org/draft-07/schema#"
+            (tampered / source.name).write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(bundle_module, "_schema_directory", lambda: tampered)
+
+    with pytest.raises(RuntimeError, match="step.schema.json.*draft/2020-12"):
+        load_bundle()
+
+
+def test_load_bundle_rejects_a_structurally_invalid_document(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from syntara_plugin.contracts import bundle as bundle_module
+
+    tampered = tmp_path / "v1alpha1"
+    tampered.mkdir()
+    for source in bundle_module._schema_directory().iterdir():
+        if source.name.endswith(".schema.json"):
+            document = json.loads(source.read_text(encoding="utf-8"))
+            if source.name == "step.schema.json":
+                document["type"] = "invalid"
+            (tampered / source.name).write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(bundle_module, "_schema_directory", lambda: tampered)
+
+    with pytest.raises(RuntimeError, match="step.schema.json.*not a valid Draft 2020-12 schema"):
+        load_bundle()
+
+
+def test_asserted_format_set_is_declared_by_the_common_contract() -> None:
+    bundle = load_bundle()
+
+    assert bundle.asserted_formats == frozenset({"date-time", "uri"})
+    assert bundle.asserted_formats <= frozenset(format_checker().checkers)
+
+
+def test_format_checker_asserts_only_the_contract_format_set() -> None:
+    checker = format_checker()
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "when": {"type": "string", "format": "date-time"},
+            "where": {"type": "string", "format": "uri"},
+            "who": {"type": "string", "format": "email"},
+        },
+    }
+    validator = build_validator(schema)
+
+    assert not validator.is_valid(
+        {"when": "not-a-timestamp", "where": "https://example.test", "who": "user@example.test"}
+    )
+    assert not validator.is_valid(
+        {"when": "2026-01-01T12:00:00Z", "where": "not-a-uri", "who": "not-an-email"}
+    )
+    # Format names outside the asserted set are annotations only.
+    assert validator.is_valid(
+        {"when": "2026-01-01T12:00:00Z", "where": "https://example.test", "who": "not-an-email"}
+    )
+    # Absolute URIs with a scheme are accepted, including fragments and
+    # scheme-specific forms such as mailto; values urlsplit cannot parse fail
+    # the check instead of raising.
+    for uri in (
+        "https://example.test/a#section",
+        "mailto:user@example.test",
+        "https://user:pass@example.test:8080/a/b?x=1&y=2#frag",
+        "http://[2001:db8::1]:9090/path",
+        # RFC 3986 permits any digit-only port syntactically (section 3.2.3)
+        # and IPvFuture host literals (section 3.2.2); neither carries a
+        # numeric range or address-family restriction at the syntax level.
+        "http://example.test:99999/",
+        "http://[v1.aabb]/index",
+        "urn:uuid:6fa459ea-ee8a-3ca4-894e-db77e160355e",
+    ):
+        assert validator.is_valid(
+            {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}
+        )
+    for uri in (
+        "//example.test/path",  # scheme-relative reference, not an absolute URI
+        "not a uri",  # space is not allowed in a URI
+        "http://[::1",  # unparseable IPv6 authority
+        "https://example.test/a b",  # space inside the path
+        "https://exämple.test",  # non-ASCII (IRIs are a different format)
+        "https://example.test/a%zz",  # malformed percent-encoding
+        "https://example.test/a[b]",  # brackets are only valid in IPv6 hosts
+        "https://example.test:bad",  # authority port must be numeric
+        "https://user{name}@example.test",  # brace is not valid in userinfo
+        "http://[v.aabb]/index",  # IPvFuture needs at least one hex digit
+        "http://[v1.]/index",  # IPvFuture needs at least one char after "."
+    ):
+        assert not validator.is_valid(
+            {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}
+        )
+    # Formats apply to string instances only; non-strings succeed per the
+    # Draft 2020-12 format-assertion vocabulary.
+    format_only = build_validator(
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", "properties": {"where": {"format": "uri"}}}
+    )
+    assert format_only.is_valid({"where": 42})
+    assert build_validator(
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", "properties": {"when": {"format": "date-time"}}}
+    ).is_valid({"when": 42})
+    assert checker is format_checker()
+
+
+def test_validate_authored_schema_requires_the_2020_12_dialect() -> None:
+    dialect = "https://json-schema.org/draft/2020-12/schema"
+    validate_authored_schema({"$schema": dialect, "type": "object"})
+
+    for document, code in (
+        ({"type": "object"}, "SCHEMA_DOCUMENT_DIALECT_MISSING"),
+        (
+            {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
+            "SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT",
+        ),
+        ([], "SCHEMA_DOCUMENT_NOT_OBJECT"),
+    ):
+        with pytest.raises(SchemaDocumentError) as error:
+            validate_authored_schema(document)
+        assert error.value.code == code
+
+
+def test_validate_authored_schema_rejects_embedded_dialect_switches() -> None:
+    # An embedded resource with its own $id and $schema would evaluate under
+    # the declared dialect when referenced (draft-07 "dependencies" below),
+    # silently bypassing the root-only draft check.
+    document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://example.test/root.json",
+        "type": "object",
+        "properties": {"value": {"$ref": "https://example.test/legacy.json"}},
+        "$defs": {
+            "legacy": {
+                "$id": "https://example.test/legacy.json",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "dependencies": {"a": ["b"]},
+            }
+        },
+    }
+    with pytest.raises(SchemaDocumentError) as error:
+        validate_authored_schema(document)
+    assert error.value.code == "SCHEMA_EMBEDDED_DIALECT_UNSUPPORTED"
+    assert "$defs/legacy" in error.value.message
+
+    # The same embedded resource without a $schema declaration is fine: it
+    # inherits the root's Draft 2020-12 semantics.
+    del document["$defs"]["legacy"]["$schema"]
+    validate_authored_schema(document)
 
 
 def test_resolved_execution_schema_is_strict() -> None:
@@ -173,7 +337,7 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
                 },
             },
             "input": {"kind": "asset", "path": "schemas/create-issue.input.json"},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
     trigger = step_document(
@@ -182,8 +346,8 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
         {
             "driver": "webhook.v1",
             "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
-            "configuration": {"kind": "inline", "value": {"type": "object"}},
-            "input": {"kind": "inline", "value": {"type": "object"}},
+            "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             "output": {"kind": "asset", "path": "schemas/pull-request.output.json"},
         },
     )
@@ -226,8 +390,8 @@ def test_target_metadata_rejects_out_of_scope_tags() -> None:
                 "implementation": "syntara.http.request@1.0.0",
                 "operation": {"method": "POST", "path": "/issues"},
             },
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
     assert validate_document(bundle, "action", action) == []
@@ -248,8 +412,8 @@ def test_custom_runner_action_requires_an_entry_point() -> None:
         target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
         {
             "runtime": {"kind": "custom-runner"},
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
 
@@ -270,8 +434,8 @@ def test_platform_runner_action_rejects_a_custom_runner_entry_point() -> None:
                 "operation": {"method": "POST", "path": "/repos/{input.owner}/issues"},
                 "entryPoint": "github.actions:CreateIssue",
             },
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
 
@@ -292,7 +456,7 @@ def test_platform_runner_action_rejects_a_custom_runner_entry_point() -> None:
     ],
 )
 def test_platform_runner_accepts_registered_step_references(kind: str, implementation: str) -> None:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     spec: dict[str, Any] = {
         "runtime": {"kind": "platform-runner", "implementation": implementation},
         "input": source,
@@ -317,7 +481,7 @@ def test_platform_runner_accepts_registered_step_references(kind: str, implement
     ],
 )
 def test_platform_runner_rejects_malformed_implementation_references(implementation: str) -> None:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     document = step_document(
         "Action", target_metadata("step", "Step", "A step."),
         {"runtime": {"kind": "platform-runner", "implementation": implementation},
@@ -351,7 +515,7 @@ def test_compiled_descriptor_validates_implementation_semver(
 
 
 def test_platform_runner_rejects_legacy_driver_and_custom_runner_rejects_implementation() -> None:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     document = step_document(
         "Action", target_metadata("step", "Step", "A step."),
         {"runtime": {"kind": "platform-runner", "driver": "http.v1"},
@@ -361,7 +525,7 @@ def test_platform_runner_rejects_legacy_driver_and_custom_runner_rejects_impleme
 
 
 def test_http_operation_requires_the_builtin_http_runner() -> None:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     document = step_document(
         "Action",
         target_metadata("step", "Step", "A step."),
@@ -412,7 +576,13 @@ MALFORMED_ENTRY_POINTS = [
 
 
 def _custom_runner_step(kind: str, entry_point: str) -> dict[str, Any]:
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {
+        "kind": "inline",
+        "value": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+        },
+    }
     spec: dict[str, Any] = {
         "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
         "input": source,
@@ -471,7 +641,7 @@ def test_resolved_execution_carries_an_opaque_entry_point() -> None:
 
 def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
     bundle = load_bundle()
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     action = step_document(
         "Action",
         target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
@@ -514,7 +684,7 @@ def test_concrete_step_types_accept_an_optional_runtime_error_schema() -> None:
 
 def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantics() -> None:
     bundle = load_bundle()
-    source = {"kind": "inline", "value": {"type": "object"}}
+    source = {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     metadata = {
         "name": "example",
         "displayName": "Example",
@@ -538,15 +708,15 @@ def test_step_category_contracts_are_strict_and_preserve_their_distinct_semantic
             "runtime": {"kind": "platform-runner", "implementation": "syntara.webhook.event@1.0.0"},
             "configuration": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"secret": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"secret": {"type": "string"}}},
             },
             "input": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"event": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"event": {"type": "string"}}},
             },
             "output": {
                 "kind": "inline",
-                "value": {"type": "object", "properties": {"runId": {"type": "string"}}},
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {"runId": {"type": "string"}}},
             },
         },
     )

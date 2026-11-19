@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import Any
 
 import grpc
-from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
+from jsonschema import Draft202012Validator, ValidationError, validators
+from syntara_plugin.contracts import build_validator
 from syntara_plugin.runtime.abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from syntara_plugin.runtime.adapter import container_step_for_binding
 from syntara_plugin.runtime.bindings import StepBinding
@@ -807,7 +808,7 @@ def _sorted_schema_errors(
     """Return the schema's errors in a stable order."""
 
     try:
-        validator = Draft202012Validator(input_schema, format_checker=FormatChecker())
+        validator = build_validator(input_schema)
         # Sorting by the rendered pointer avoids comparing mixed-type path
         # elements (string keys against array indices) across errors.
         return sorted(
@@ -1144,7 +1145,7 @@ def _credential_validation_lines(
     """
 
     try:
-        validator = Draft202012Validator(recipe.schema, format_checker=FormatChecker())
+        validator = build_validator(recipe.schema)
         errors = sorted(
             validator.iter_errors(document),
             key=lambda error: (_pointer(error.path), str(error.validator)),

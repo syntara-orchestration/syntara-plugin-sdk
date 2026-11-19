@@ -233,6 +233,10 @@ Optional `spec.integrationType` declares the integration and its reachable
 credential recipes for a Trigger step type.
 The runtime also enforces the SDK base fields; without `spec.error`, the SDK
 base schema is used. Neither schema describes the runtime wrapper itself.
+A declared `spec.error` must still admit the SDK's wrapper errors — every
+wrapper error, `INVALID_INPUT` included, is validated against it — so the
+compiler rejects an `error` schema that cannot carry the wrapper codes
+(`INVALID_INPUT` and `STEP_FAILED`).
 The same category also represents a child-workflow entry in reference-mode
 composition; its declared public output is the result consumed by the parent
 `Control` step type, not the results of the child's internal step type.
@@ -319,6 +323,12 @@ and must be distinguished by their pinned image digests.
 | `kind: asset` with `path` | The JSON Schema or mapping is a contained file bundled in the OCI artifact. |
 
 Use `asset` for reusable or substantial schemas. Both forms are immutable parts of the compiled plugin artifact.
+
+Every schema document — inline or asset — must declare
+`$schema: https://json-schema.org/draft/2020-12/schema`; other drafts and
+missing declarations are rejected. Only the `date-time` and `uri` formats are
+asserted; every other `format` name is an annotation that never rejects a
+value.
 
 ### Input presentation
 

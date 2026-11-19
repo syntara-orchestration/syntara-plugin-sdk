@@ -113,19 +113,24 @@ class ExplodingStep(ActionStep[SampleActionInput, SampleActionOutput]):
         return SampleActionOutput(ticket_id=inputs.title)
 '''
 
+_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
 _ACTION_INPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {"title": {"type": "string"}},
     "required": ["title"],
 }
 _CONTROL_INPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {"records": {"type": "array", "items": {"type": "string"}}},
     "required": ["records"],
 }
 _CONTROL_OUTPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {
@@ -135,12 +140,14 @@ _CONTROL_OUTPUT_SCHEMA = {
     "required": ["count", "normalized"],
 }
 _TRIGGER_INPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {"repository": {"type": "string"}},
     "required": ["repository"],
 }
 _TRIGGER_OUTPUT_SCHEMA = {
+    "$schema": _DIALECT,
     "type": "object",
     "additionalProperties": False,
     "properties": {
@@ -199,7 +206,7 @@ def _action_document(
             or {"kind": "asset", "path": "schemas/action-input.json"},
             "output": {
                 "kind": "inline",
-                "value": {
+                "value": {"$schema": "https://json-schema.org/draft/2020-12/schema",
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {"ticket_id": {"type": "string"}},
@@ -228,7 +235,12 @@ def _control_document(entry_point: str, *, name: str = "normalize-records") -> d
     }
 
 
-def _trigger_document(entry_point: str, *, name: str = "record-opened") -> dict[str, Any]:
+def _trigger_document(
+    entry_point: str,
+    *,
+    name: str = "record-opened",
+    configuration_source: Any = None,
+) -> dict[str, Any]:
     return {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Trigger",
@@ -240,7 +252,8 @@ def _trigger_document(entry_point: str, *, name: str = "record-opened") -> dict[
         "spec": {
             "driver": "webhook.v1",
             "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
-            "configuration": {"kind": "inline", "value": {"type": "object"}},
+            "configuration": configuration_source
+            or {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             "input": {"kind": "inline", "value": _TRIGGER_INPUT_SCHEMA},
             "output": {"kind": "inline", "value": _TRIGGER_OUTPUT_SCHEMA},
         },
@@ -261,8 +274,8 @@ def _platform_action_document() -> dict[str, Any]:
                 "kind": "platform-runner",
                 "implementation": "syntara.http.request@1.0.0",
             },
-            "input": {"kind": "inline", "value": {"type": "object"}},
-            "output": {"kind": "inline", "value": {"type": "object"}},
+            "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     }
 
@@ -280,7 +293,7 @@ def _integration_document() -> dict[str, Any]:
             "id": "sample.demo.tracker",
             "endpointKinds": ["webhook"],
             "credentialTypes": ["sample.demo.token"],
-            "configuration": {"kind": "inline", "value": {"type": "object"}},
+            "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     }
 
@@ -297,7 +310,7 @@ def _credential_recipe_document() -> dict[str, Any]:
         "spec": {
             "id": "sample.demo.token",
             "integrationType": "sample.demo.tracker",
-            "credentialSchema": {"kind": "inline", "value": {"type": "object"}},
+            "credentialSchema": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             "secretFields": ["token"],
             "issuance": {
                 "kind": "oauth2-authorization-code.v1",
@@ -655,6 +668,34 @@ def test_missing_target_manifest(plugin_root: Path) -> None:
         load_plugin_bindings(package)
 
 
+def test_binds_trigger_with_asset_backed_configuration(plugin_root: Path) -> None:
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/record-opened.yaml"]),
+        manifests=lambda package_name: {
+            "docs/README.md": "# Demo plugin\n",
+            "schemas/trigger-configuration.json": {
+                "$schema": _DIALECT,
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"secret_name": {"type": "string"}},
+                "required": ["secret_name"],
+            },
+            "steps/record-opened.yaml": _trigger_document(
+                f"{package_name}.steps:SampleTriggerStep",
+                configuration_source={
+                    "kind": "asset",
+                    "path": "schemas/trigger-configuration.json",
+                },
+            ),
+        },
+    )
+
+    bindings = load_plugin_bindings(package)
+
+    assert bindings.step_identities == ("sample.demo.record-opened",)
+
+
 def test_missing_asset_document(plugin_root: Path) -> None:
     package = _write_plugin(
         plugin_root,
@@ -858,7 +899,7 @@ def test_integration_type_with_custom_runner_runtime_is_rejected(plugin_root: Pa
                     "id": "sample.demo.tracker",
                     "endpointKinds": ["webhook"],
                     "credentialTypes": ["sample.demo.token"],
-                    "configuration": {"kind": "inline", "value": {"type": "object"}},
+                    "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
                     "runtime": {
                         "kind": "custom-runner",
                         "entryPoint": f"{package_name}.steps:SampleActionStep",
@@ -896,8 +937,8 @@ def test_integration_type_with_custom_runner_runtime_is_rejected(plugin_root: Pa
             },
             "spec": {
                 "runtime": {"kind": "platform-runner"},
-                "input": {"kind": "inline", "value": {"type": "object"}},
-                "output": {"kind": "inline", "value": {"type": "object"}},
+                "input": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+                "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             },
         },
         # An IntegrationType missing its required spec fields.
@@ -1145,7 +1186,11 @@ def test_packaged_recipe_asset_is_bound_to_its_credential(plugin_root: Path) -> 
         recipe["spec"]["credentialSchema"] = {"kind": "asset", "path": "schemas/credential.json"}
         return {
             "schemas/action-input.json": _ACTION_INPUT_SCHEMA,
-            "schemas/credential.json": {"type": "object", "properties": {"token": {"type": "string"}}},
+            "schemas/credential.json": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {"token": {"type": "string"}},
+            },
             "steps/action.yaml": action, "steps/integration.yaml": _integration_document(),
             "recipes/recipe.yaml": recipe,
         }

@@ -184,7 +184,7 @@ def test_init_accepts_an_inline_json_schema_with_required_fields(
         (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
     )
 
-    assert generated == schema
+    assert generated == {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
 
@@ -268,7 +268,7 @@ def test_init_accepts_a_json_schema_file(tmp_path: Path, capsys, monkeypatch) ->
         (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
     )
 
-    assert generated == schema
+    assert generated == {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
     assert main(["validate", str(workspace / "plugin.yaml"), "--json"]) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1])["ok"] is True
 
@@ -296,7 +296,7 @@ def test_init_accepts_an_at_prefixed_json_schema_file(
         (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
     )
 
-    assert generated == schema
+    assert generated == {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
 
 
 def test_init_rejects_fields_file_path_traversal(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -376,7 +376,7 @@ def test_init_accepts_a_fields_symlink_inside_the_working_directory(
         (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
     )
 
-    assert generated == schema
+    assert generated == {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
 
 
 def test_init_reads_a_fields_file_from_a_subdirectory(
@@ -403,7 +403,7 @@ def test_init_reads_a_fields_file_from_a_subdirectory(
         generated = yaml.safe_load(
             (workspace / "schemas/request.input.yaml").read_text(encoding="utf-8")
         )
-        assert generated == schema
+        assert generated == {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
 
 
 def test_init_rejects_a_missing_at_prefixed_fields_file(
@@ -711,14 +711,17 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -1781,14 +1784,17 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",

@@ -17,6 +17,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: Successful greeting returned by the platform runner.
       additionalProperties: false
@@ -29,6 +30,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       description: Error response returned when the greeting request cannot complete.
       additionalProperties: false

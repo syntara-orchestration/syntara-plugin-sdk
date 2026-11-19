@@ -541,11 +541,13 @@ class CrashStep(ActionStep[StepInput, StepOutput]):
 '''
 
 _E2E_INPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {"title": {"type": "string"}},
     "required": ["title"],
 }
 _E2E_OUTPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {"slug": {"type": "string"}},
     "required": ["slug"],
@@ -583,6 +585,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
             encoding="utf-8",
@@ -797,6 +800,7 @@ def test_health_precedes_execute_and_the_invocation_contract_holds(
 
 
 _PROGRESS_WS_INPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "title": {"type": "string"},
@@ -852,6 +856,7 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         slug:
@@ -860,6 +865,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -1001,6 +1007,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -1019,7 +1026,7 @@ spec:
   credentialTypes: [{_CREDENTIAL_NAME}]
   configuration:
     kind: inline
-    value: {{type: object}}
+    value: {{$schema: https://json-schema.org/draft/2020-12/schema, type: object}}
 """,
         encoding="utf-8",
     )
@@ -1037,6 +1044,7 @@ spec:
   credentialSchema:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       additionalProperties: false
       required: [token]

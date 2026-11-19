@@ -15,12 +15,14 @@
     "configuration": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object"
       }
     },
     "input": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -28,12 +30,15 @@
             "type": "string"
           }
         },
-        "required": ["repository"]
+        "required": [
+          "repository"
+        ]
       }
     },
     "output": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -44,7 +49,10 @@
             "type": "string"
           }
         },
-        "required": ["event_id", "repository"]
+        "required": [
+          "event_id",
+          "repository"
+        ]
       }
     }
   }

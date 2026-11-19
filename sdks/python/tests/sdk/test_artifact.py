@@ -67,14 +67,16 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """
     )
-    raw_schema = b'{\n  "type": "object",\n  "properties": {"title": {"type": "string"}}\n}\n'
+    raw_schema = b'{\n  "$schema": "https://json-schema.org/draft/2020-12/schema",\n  "type": "object",\n  "properties": {"title": {"type": "string"}}\n}\n'
     schema.write_bytes(raw_schema)
     documentation = tmp_path / "docs/README.md"
     documentation.parent.mkdir()

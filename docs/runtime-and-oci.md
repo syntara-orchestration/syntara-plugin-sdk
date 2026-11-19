@@ -572,7 +572,10 @@ and binds every custom-runner step type with the identity
 
 For an installed custom-runner step type, first resolve its manifest with
 `InstalledStepManifest.from_manifest()`. Inline and asset-backed `spec.input`
-and `spec.output` document sources are supported, and the manifest and resolved
+and `spec.output` document sources are supported; every resolved schema
+document must declare the Draft 2020-12 `$schema` dialect and satisfy its
+meta-schema, and installation fails with a `StepBindingError` otherwise. The
+manifest and resolved
 schemas are stored recursively as immutable JSON documents. Pass that object to
 `StepDescriptor.for_installed_step()`; both the descriptor's input and output
 schemas are manifest-sourced and cannot be replaced by a caller-supplied schema.

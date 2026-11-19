@@ -18,6 +18,7 @@
     "input": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -28,12 +29,15 @@
             }
           }
         },
-        "required": ["records"]
+        "required": [
+          "records"
+        ]
       }
     },
     "output": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -47,7 +51,10 @@
             }
           }
         },
-        "required": ["count", "normalized"]
+        "required": [
+          "count",
+          "normalized"
+        ]
       }
     }
   }

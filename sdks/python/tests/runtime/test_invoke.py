@@ -254,6 +254,14 @@ _FAILURE_CASES: tuple[tuple[type[BaseStep[Any, Any]], str], ...] = (
 )
 
 
+def _declared(schema: dict[str, Any]) -> dict[str, Any]:
+    """Inject the Draft 2020-12 declaration authored test schemas need."""
+
+    if "$schema" in schema:
+        return schema
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", **schema}
+
+
 def _binding(
     step: BaseStep[Any, Any],
     identity: str,
@@ -280,11 +288,15 @@ def _binding(
         },
         "input": {
             "kind": "inline",
-            "value": input_schema or step.input_model().model_json_schema(),
+            "value": _declared(
+                input_schema if input_schema is not None else step.input_model().model_json_schema()
+            ),
         },
         "output": {
             "kind": "inline",
-            "value": output_schema or step.output_model().model_json_schema(),
+            "value": _declared(
+                output_schema if output_schema is not None else step.output_model().model_json_schema()
+            ),
         },
     }
     if kind == "Control":
@@ -295,7 +307,7 @@ def _binding(
                 "driver": "webhook.v1",
                 "configuration": {
                     "kind": "inline",
-                    "value": configuration_schema or {"type": "object"},
+                    "value": _declared(configuration_schema or {"type": "object"}),
                 },
             }
         )
@@ -304,9 +316,9 @@ def _binding(
     if error_schema is not None:
         if error_asset:
             specification["error"] = {"kind": "asset", "path": "schemas/error.json"}
-            assets = {"schemas/error.json": error_schema}
+            assets = {"schemas/error.json": _declared(error_schema)}
         else:
-            specification["error"] = {"kind": "inline", "value": error_schema}
+            specification["error"] = {"kind": "inline", "value": _declared(error_schema)}
 
     manifest = InstalledStepManifest.from_manifest(
         identity,
@@ -604,7 +616,7 @@ def test_wrapper_result_is_recursively_immutable_and_detached_from_step_output()
 def test_invalid_input_failure_is_safe_and_does_not_echo_rejected_values() -> None:
     step = ActionEchoStep()
     secret = "secret-sentinel-input-value"
-    input_schema = copy.deepcopy(InvocationInput.model_json_schema())
+    input_schema = copy.deepcopy({"$schema": "https://json-schema.org/draft/2020-12/schema", **InvocationInput.model_json_schema()})
     input_schema["properties"]["value"]["minLength"] = 100
     input_schema["additionalProperties"] = False
 
@@ -620,7 +632,7 @@ def test_invalid_input_failure_is_safe_and_does_not_echo_rejected_values() -> No
 
 def test_invalid_input_uses_the_sdk_error_schema_with_a_strict_declared_schema() -> None:
     step = ExecuteCountingStep()
-    input_schema = copy.deepcopy(InvocationInput.model_json_schema())
+    input_schema = copy.deepcopy({"$schema": "https://json-schema.org/draft/2020-12/schema", **InvocationInput.model_json_schema()})
     input_schema["properties"]["value"]["minLength"] = 10
     error_schema = {
         "type": "object",
@@ -645,13 +657,13 @@ def test_invalid_input_uses_the_sdk_error_schema_with_a_strict_declared_schema()
     assert event.WhichOneof("event") == "result"
     assert event.result.status_code == 1
     assert json.loads(event.result.error_result_json)["code"] == FailureCode.INVALID_INPUT.value
-    assert event.result.error_schema_digest == canonical_json_digest(error_result_base_schema())
+    assert event.result.error_schema_digest == canonical_json_digest(_declared(error_schema))
 
     container_result = container_step_for_binding(binding)(_invocation(binding, {"value": "short"}))
     wrapper = standard_output_from_container_result(
         container_result,
         output_schema=to_json_document(binding.descriptor.output_schema),
-        error_schema=error_schema,
+        error_schema=_declared(error_schema),
     )
 
     assert wrapper.error.code == FailureCode.INVALID_INPUT.value
@@ -788,10 +800,10 @@ def test_input_model_preparation_exception_is_not_started(monkeypatch: pytest.Mo
             SchemaMismatchStep(),
             "tests.runtime.invoke.schema-mismatch",
             {
-                **copy.deepcopy(InvocationOutput.model_json_schema()),
+                **copy.deepcopy({"$schema": "https://json-schema.org/draft/2020-12/schema", **InvocationOutput.model_json_schema()}),
                 "properties": {
-                    **copy.deepcopy(InvocationOutput.model_json_schema()["properties"]),
-                    "value": {"type": "string", "maxLength": 2},
+                    **copy.deepcopy({"$schema": "https://json-schema.org/draft/2020-12/schema", **InvocationOutput.model_json_schema()}["properties"]),
+                    "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "string", "maxLength": 2},
                 },
             },
         ),
@@ -1042,7 +1054,9 @@ def test_container_result_and_container_failure_remain_distinct() -> None:
 def test_custom_error_schema_preserves_complete_result_through_grpc(asset: bool) -> None:
     schema = {
         "type": "object",
-        "required": ["provider"],
+        # provider stays optional so the schema still admits the SDK's
+        # wrapper errors, which carry only the base error fields.
+        "required": [],
         "properties": {
             "provider": {
                 "type": "object", "required": ["requestId", "attempts"],
@@ -1054,7 +1068,7 @@ def test_custom_error_schema_preserves_complete_result_through_grpc(asset: bool)
     # Installation snapshots its schema, including asset-backed documents.
     schema["required"].append("changed")
     trusted_schema = to_json_document(binding.descriptor.error_schema)
-    assert trusted_schema["required"] == ["provider"]
+    assert trusted_schema["required"] == []
     direct = invoke(binding, {"value": "x"}, _context(binding))
     assert direct.error_result is not None
     error_document = direct.error_result.model_dump(mode="json")
@@ -1122,7 +1136,11 @@ def test_error_result_subclass_fields_are_preserved_and_immutable() -> None:
 def test_author_error_that_violates_installed_schema_has_no_valid_outcome() -> None:
     binding = _binding(
         DetailedFailureStep(), "tests.invalid-error",
-        error_schema={"type": "object", "required": ["missing"]},
+        # Admits the SDK wrapper codes but rejects this step's REMOTE_REJECTED.
+        error_schema={
+            "type": "object",
+            "properties": {"code": {"enum": ["INVALID_INPUT", "STEP_FAILED"]}},
+        },
     )
     context = _context(binding)
     with pytest.raises(StepExecutionError, match="invalid response"):
@@ -1143,10 +1161,43 @@ def test_reconstruction_checks_error_schema_even_with_matching_digest() -> None:
         standard_output_from_container_result(result, output_schema={"type": "object"}, error_schema=schema)
 
 
-@pytest.mark.parametrize("schema", [{"type": "not-a-type"}, {"$ref": "#/$defs/missing"}])
-def test_invalid_installed_error_schema_is_rejected(schema: dict[str, Any]) -> None:
+def test_reconstruction_rejects_a_base_digest_when_a_trusted_schema_is_supplied() -> None:
+    trusted_schema = _declared(
+        {
+            "type": "object",
+            "required": ["category", "code", "message", "retryable"],
+            "properties": {"category": {"type": "string"}},
+        }
+    )
+    output_schema = _declared({"type": "object"})
+    base_document = {
+        "category": "business",
+        "code": "FAILED",
+        "message": "Failed",
+        "retryable": False,
+    }
+    result = ContainerResult(
+        canonical_json_digest(output_schema), status_code=1,
+        error_result=base_document,
+        error_schema_digest=canonical_json_digest(error_result_base_schema()),
+    )
+
+    with pytest.raises(ContainerRemoteError):
+        standard_output_from_container_result(
+            result, output_schema=output_schema, error_schema=trusted_schema
+        )
+
+
+@pytest.mark.parametrize(
+    ("schema", "match"),
+    [
+        ({"type": "not-a-type"}, "resolved step type error schema is invalid"),
+        ({"$ref": "#/$defs/missing"}, "error_schema"),
+    ],
+)
+def test_invalid_installed_error_schema_is_rejected(schema: dict[str, Any], match: str) -> None:
     step = DetailedFailureStep()
-    with pytest.raises(StepBindingError, match="error_schema"):
+    with pytest.raises(StepBindingError, match=match):
         _binding(step, "tests.bad-error-schema", error_schema=schema)
 
 

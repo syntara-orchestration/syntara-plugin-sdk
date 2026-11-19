@@ -17,7 +17,14 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
-from syntara_plugin.contracts import canonical_json_digest, load_bundle, validate_document
+from syntara_plugin.contracts import (
+    SchemaDocumentError,
+    canonical_json_digest,
+    load_bundle,
+    validate_authored_schema,
+    validate_declared_error_schema,
+    validate_document,
+)
 
 from .outcome import error_result_schema
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
@@ -394,6 +401,11 @@ def _resolve_document_source(
     if not isinstance(schema, Mapping):
         message = f"resolved step type {field_name} schema must be a JSON object"
         raise StepBindingError(message)
+    try:
+        validate_authored_schema(schema)
+    except (SchemaDocumentError, SchemaError) as error:
+        message = f"resolved step type {field_name} schema is invalid: {error}"
+        raise StepBindingError(message) from error
     return schema
 
 
@@ -523,10 +535,25 @@ class InstalledStepManifest:
             raise StepBindingError(message)
         input_schema = _resolve_document_source(specification, "input", assets)
         output_schema = _resolve_document_source(specification, "output", assets)
+        if kind is StepKind.TRIGGER:
+            # ADR 0014 names the Trigger configuration an authored schema, so
+            # the install boundary resolves it through the same conformance
+            # check as the other document sources (dialect included).
+            _resolve_document_source(specification, "configuration", assets)
         error_schema = (
             _resolve_document_source(specification, "error", assets)
             if "error" in specification else error_result_schema()
         )
+        if "error" in specification:
+            # Every wrapper error, INVALID_INPUT included, is validated against
+            # the declared schema at invocation time; a schema that cannot
+            # carry the SDK wrapper shapes would turn routine invalid-input
+            # reports into opaque execution errors, so installation rejects it.
+            try:
+                validate_declared_error_schema(error_schema)
+            except SchemaDocumentError as error:
+                message = f"resolved step type error schema is invalid: {error}"
+                raise StepBindingError(message) from error
         credential_names, credential_schemas = _credential_contracts(
             specification, credential_targets, credential_assets,
         )

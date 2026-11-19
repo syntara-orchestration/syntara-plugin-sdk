@@ -36,6 +36,7 @@ class CreateStep(ActionStep[CreateInput, CreateOutput]):
 '''
 
 INPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "title": {"type": "string"},
@@ -44,6 +45,7 @@ INPUT_SCHEMA = {
     "required": ["title"],
 }
 OUTPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {"slug": {"type": "string"}},
     "required": ["slug"],
@@ -76,6 +78,7 @@ spec:
 """,
         encoding="utf-8",
     )
+    effective_input_schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", **(input_schema or INPUT_SCHEMA)}
     (root / "steps/create/manifest.yaml").write_text(
         f"""apiVersion: syntara.io/v1alpha1
 kind: Action
@@ -89,13 +92,14 @@ spec:
     entryPoint: gen_pkg.steps:CreateStep
   input:
     kind: inline
-    value: {input_schema or INPUT_SCHEMA}
+    value: {effective_input_schema}
   output:
     kind: inline
     value: {OUTPUT_SCHEMA}
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -125,6 +129,7 @@ def _write_workspace_for_kind(root: Path, kind: str) -> Path:
             "  configuration:\n"
             "    kind: inline\n"
             "    value:\n"
+            "      $schema: https://json-schema.org/draft/2020-12/schema\n"
             "      type: object\n"
             "  runtime:",
         )
@@ -201,10 +206,12 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -576,6 +583,7 @@ spec:
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",
@@ -665,6 +673,7 @@ spec:
   input:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       properties:
         count:
@@ -673,10 +682,12 @@ spec:
   output:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
   error:
     kind: inline
     value:
+      $schema: https://json-schema.org/draft/2020-12/schema
       type: object
 """,
         encoding="utf-8",

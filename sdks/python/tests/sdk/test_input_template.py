@@ -143,7 +143,7 @@ def test_template_is_deterministic_for_the_same_schema() -> None:
 def test_template_terminates_on_self_referential_schemas() -> None:
     node: dict[str, Any] = {
         "type": "object",
-        "properties": {"value": {"type": "string"}},
+        "properties": {"value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "string"}},
         "required": ["value"],
     }
     node["properties"]["child"] = node

@@ -22,8 +22,12 @@ from time import monotonic
 from typing import Any, Literal, NoReturn
 
 import grpc
-from jsonschema import Draft202012Validator, FormatChecker
-from syntara_plugin.contracts import canonical_json_bytes, canonical_json_digest
+from jsonschema import Draft202012Validator
+from syntara_plugin.contracts import (
+    build_validator,
+    canonical_json_bytes,
+    canonical_json_digest,
+)
 
 from .abi import _PROVIDER_CODE, CONTAINER_ABI, ContainerInvocationError, FailureCode
 from .credential_callback import CallbackCredentialProvider, _invalid_constant, _unique_members
@@ -246,7 +250,7 @@ class ContainerResult:
             raise ValueError("a failed result requires an error result and schema digest")
         validate_json_object(self.error_result)
         document = _thaw_json_document(self.error_result)
-        if not Draft202012Validator(error_result_base_schema()).is_valid(document):
+        if not build_validator(error_result_base_schema()).is_valid(document):
             raise ValueError("error result must satisfy the SDK base schema")
         object.__setattr__(self, "error_result", freeze_json(document))
 
@@ -292,7 +296,7 @@ def _validate_container_output(
         return
     try:
         validate_json_object(output)
-        validator = Draft202012Validator(schema_document, format_checker=FormatChecker())
+        validator = build_validator(schema_document)
         is_valid = validator.is_valid(_thaw_json_document(output))
     except Exception:
         raise _protocol_error() from None
@@ -304,7 +308,14 @@ def _error_from_container_result(
     result: ContainerResult,
     error_schema: Mapping[str, Any] | None,
 ) -> ErrorResult | None:
-    """Validate and reconstruct deliberate step type-failure metadata."""
+    """Validate and reconstruct deliberate step type-failure metadata.
+
+    A trusted ``spec.error`` schema is the only accepted digest source: the
+    sender validates every wrapper error, SDK-generated ones included, against
+    the effective schema, so a base-only digest is never a legitimate match
+    when the trusted schema is known. Without a trusted schema the closed
+    ``errorResult`` fallback applies.
+    """
 
     try:
         if result.status_code == 0:
@@ -313,16 +324,14 @@ def _error_from_container_result(
         candidate_schemas = []
         if error_schema is not None:
             candidate_schemas.append(error_schema)
-        candidate_schemas.append(error_result_schema())
-        candidate_schemas.append(error_result_base_schema())
+        else:
+            candidate_schemas.append(error_result_schema())
         for candidate in candidate_schemas:
             schema = _thaw_json_document(candidate)
             Draft202012Validator.check_schema(schema)
             if result.error_schema_digest != canonical_json_digest(schema):
                 continue
-            if not Draft202012Validator(schema, format_checker=FormatChecker()).is_valid(
-                error_document
-            ):
+            if not build_validator(schema).is_valid(error_document):
                 raise ValueError("invalid error result")
             return ErrorResult.model_validate(error_document)
         raise ValueError("error schema digest mismatch")
@@ -342,7 +351,8 @@ def standard_output_from_container_result(
     ``output_schema`` is the caller's trusted schema from the invocation
     contract. Its canonical digest must match the result, and the business
     output is validated against it before a wrapper is created. ``error_schema``
-    is the trusted declared schema, or the SDK base schema when omitted. Its
+    is the trusted declared schema, or the closed ``errorResult`` fallback when
+    omitted. Its
     digest and the error itself are checked on nonzero results. The resolver
     retrieves and decodes any stored result as a JSON object; storage and
     addressing policy belong to the host. Resolver failures use safe messages.
