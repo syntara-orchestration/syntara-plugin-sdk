@@ -21,8 +21,8 @@
         "properties": {
           "url": {
             "type": "string",
-            "pattern": "^http://127\\.0\\.0\\.1(:[0-9]{1,5})?(/.*)?$",
-            "description": "Loopback URL to request; the fixture workload never leaves the pod."
+            "pattern": "^http://127\\.0\\.0\\.1:18080(/.*)?$",
+            "description": "Loopback URL on the step's fixed verification port; the fixture workload never leaves the pod."
           },
           "method": {
             "type": "string",

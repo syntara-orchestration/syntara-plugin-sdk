@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict
@@ -267,6 +267,16 @@ class HttpRequestStep(ActionStep[HttpRequestInput, HttpRequestOutput]):
                 status_code = error.code
                 raw_body = error.read().decode("utf-8", errors="replace")
                 headers = {key: value for key, value in error.headers.items()}
+            except URLError:
+                # The schema pins the URL to the port this step binds, so an
+                # unreachable server is an internal failure; report it as a
+                # structured step failure rather than an unhandled exception.
+                raise StepFailure(
+                    1,
+                    "The verification server did not answer the request.",
+                    "The verification server did not answer the request.",
+                    code="COMPAT_REQUEST_FAILED",
+                ) from None
         finally:
             server.shutdown()
             server.server_close()

@@ -127,8 +127,9 @@ Each step proves it used the credential it was handed:
 The credential value itself is a random sentinel generated per run, masked
 in CI, and never written to disk by the harness: the tests assert digests
 and fail with static messages that never echo the value, and the runner
-scans the JUnit results and every collected log file for the sentinel
-afterwards and fails the run if it appears anywhere.
+scans the JUnit results and every collected log file for the sentinel in
+its exit trap (after diagnostics collection, on success and failure alike)
+and fails the run if it appears anywhere.
 
 The fixture step implementations also run without a cluster:
 

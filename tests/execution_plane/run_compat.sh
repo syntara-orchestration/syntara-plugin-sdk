@@ -57,6 +57,14 @@ cleanup() {
     echo "Compatibility test failed; diagnostics: $logs" >&2
   fi
   [[ -z "$api_pid" ]] || kill "$api_pid" 2>/dev/null || true
+  # Scan every collected log and result for the credential sentinel. This
+  # runs on success and failure alike, after diagnostics collection, so a
+  # leak into the worker-pod or runtime logs cannot escape the run.
+  if [[ -n "${EP_COMPAT_CREDENTIAL_TOKEN:-}" ]] \
+    && grep -R -F -q -- "$EP_COMPAT_CREDENTIAL_TOKEN" "$logs" 2>/dev/null; then
+    echo 'The credential sentinel value appeared in compatibility logs or test output' >&2
+    status=1
+  fi
   rm -f "$test_file"
   if (( secrets_owned )); then
     rm -rf -- "$secrets_dir" || status=1
@@ -190,8 +198,5 @@ if ! (cd "$ep" && UV_PROJECT_ENVIRONMENT="$tmp/ep-venv" uv run --no-sync pytest 
   compat_status=1
 fi
 (cd "$ep" && UV_PROJECT_ENVIRONMENT="$tmp/ep-venv" uv run --no-sync python "$root/tests/execution_plane/check_results.py" "$logs/results.xml")
-if grep -R -F -q -- "$EP_COMPAT_CREDENTIAL_TOKEN" "$logs" 2>/dev/null; then
-  echo 'The credential sentinel value appeared in compatibility logs or test output' >&2
-  compat_status=1
-fi
+# The sentinel scan lives in the exit trap, after diagnostics collection.
 exit "$compat_status"

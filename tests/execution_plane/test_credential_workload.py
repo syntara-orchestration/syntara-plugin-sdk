@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -191,6 +191,44 @@ def test_http_request_step_rejects_documents_without_a_token(
     assert outcome.status == 1
     assert outcome.error is not None
     assert outcome.error.code == "COMPAT_INVALID_CREDENTIAL"
+    assert outcome.raised is None
+
+
+def test_http_request_step_rejects_urls_off_the_verification_port(
+    http_binding: StepBinding,
+) -> None:
+    """The schema pins the URL to the port the step's server binds."""
+    context = build_execution_context(invocation_id="compat-unit-port")
+    outcome = invoke_step(
+        http_binding, {"url": "http://127.0.0.1:9999/verify"}, context=context
+    )
+    assert not outcome.ok
+    assert outcome.status == 1
+    assert outcome.error is not None
+    assert outcome.error.code == "INVALID_INPUT"
+    assert outcome.raised is None
+
+
+def test_http_request_step_fails_closed_when_the_server_is_unreachable(
+    http_binding: StepBinding,
+    credential_context: Callable[[dict[str, str]], ExecutionContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable server is a structured failure, not a crash."""
+
+    def unreachable(*args: object, **kwargs: object) -> object:
+        raise URLError("connection refused")
+
+    monkeypatch.setattr("credential_steps.runtime.urlopen", unreachable)
+    outcome = invoke_step(
+        http_binding,
+        {"url": "http://127.0.0.1:18080/verify"},
+        context=credential_context(_document()),
+    )
+    assert not outcome.ok
+    assert outcome.status == 1
+    assert outcome.error is not None
+    assert outcome.error.code == "COMPAT_REQUEST_FAILED"
     assert outcome.raised is None
 
 

@@ -408,8 +408,9 @@ def test_runner_removes_generated_secrets_on_exit(tmp_path, failure):
     assert not (ep / ".secrets").exists()
 
 
-def test_runner_fails_when_the_sentinel_reaches_test_output(tmp_path):
-    result, ep, _ = _run_with_fake_secrets(tmp_path, failure="leak")
+@pytest.mark.parametrize("failure", ["leak", "gate-leak"])
+def test_runner_fails_when_the_sentinel_reaches_test_output(tmp_path, failure):
+    result, ep, _ = _run_with_fake_secrets(tmp_path, failure=failure)
     assert result.returncode == 1, result.stderr
     assert "sentinel value appeared" in result.stderr
     assert not (ep / ".secrets").exists()
@@ -449,8 +450,10 @@ def _run_with_fake_secrets(tmp_path, *, failure, preexisting=False):
         "uv": (
             'if [[ "$*" == *pytest* ]]; then\n'
             "  echo '<testsuite/>' > \"$EP_COMPAT_LOG_DIR/results.xml\"\n"
-            '  [[ "$FAILURE" != leak ]] || echo -n "$EP_COMPAT_CREDENTIAL_TOKEN" >> "$EP_COMPAT_LOG_DIR/results.xml"\n'
+            '  [[ "$FAILURE" != leak && "$FAILURE" != gate-leak ]]'
+            ' || echo -n "$EP_COMPAT_CREDENTIAL_TOKEN" >> "$EP_COMPAT_LOG_DIR/results.xml"\n'
             "fi\n"
+            'if [[ "$FAILURE" == gate-leak && "$*" == *check_results* ]]; then exit 1; fi\n'
             "exit 0"
         ),
         "make": (
