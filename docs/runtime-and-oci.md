@@ -787,6 +787,31 @@ binding alone does not prove that its image contains a matching manifest.
 See the [plugin language reference](plugin-language.md) for the manifest
 fields.
 
+### Compiled descriptor provenance
+
+Every compiled descriptor field has one declared source. The compiler never
+invents author-facing content:
+
+| Descriptor field | Provenance |
+| --- | --- |
+| `metadata` (including `tags`) | Copied verbatim from the author's plugin and target manifests. Tags are discovery labels, not execution inputs. |
+| `spec.targets[].input` / `output` / `error` / `configuration` | The canonical parsed document from the author's inline value or workspace asset; source formatting does not survive. |
+| `spec.assets[].digest` and `size` | The exact source bytes read from the author workspace. |
+| `spec.assets[].canonicalDigest` | The RFC 8785 canonical form of the parsed asset document. For Markdown documentation, which has no structured value, it equals the source-byte digest. |
+| `spec.targets[].schemaDigests` | SHA-256 over the RFC 8785 canonical form of each materialized schema. |
+| `spec.targets[].step_revision_id` | Compiler-derived from the target's canonical contract projection; stable across formatting-only edits to the source schemas. |
+| `spec.plugin_revision_id` | Compiler-derived from the full compiled spec, including the exact source-byte asset inventory. Reformatting a source file changes it because the artifact's bytes change. |
+| `spec.sdkVersion`, `spec.contractBundleDigest` | The compiling SDK release and the contract bundle the descriptor was checked against. |
+| `spec.workloads[].image` | The immutable digest reference supplied by the build, never a mutable tag. |
+
+All canonical digests and revision IDs serialize their input with
+[RFC 8785 (JSON Canonicalization Scheme)](https://www.rfc-editor.org/rfc/rfc8785):
+UTF-16 code-unit key ordering, ECMAScript number serialization, and minimal
+string escaping. Formatting-only edits to a structured schema — reindentation,
+key reordering, or `1` written as `1.0` — leave every canonical digest and the
+step revision IDs unchanged, while the exact-source-byte digest changes with
+the bytes.
+
 ## Automation Orchestrator integration contract
 
 The SDK ships the runtime pieces an installation needs; the platform around

@@ -1510,3 +1510,156 @@ def test_deeply_nested_json_asset_reports_a_bounded_diagnostic(tmp_path: Path) -
         _compile(root)
     assert "ASSET_INVALID" in {item.code for item in error.value.diagnostics}
     assert any("nested too deeply to parse" in item.message for item in error.value.diagnostics)
+
+
+def test_compile_preserves_plugin_and_target_metadata_tags(tmp_path: Path) -> None:
+    """Author discovery tags survive compilation into the descriptor (AAP-102213)."""
+    plugin = _plugin()
+    plugin["metadata"]["tags"] = ["issues", "github/api"]
+    action = _action(
+        {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
+    )
+    action["metadata"]["tags"] = ["automation"]
+    root = _workspace(tmp_path, action=action)
+    (tmp_path / "plugin.yaml").write_text(_yaml(plugin))
+
+    result = _compile(root)
+
+    assert result.descriptor["metadata"]["tags"] == ["issues", "github/api"]
+    (target,) = result.descriptor["spec"]["targets"]
+    assert target["metadata"]["tags"] == ["automation"]
+    assert validate_plugin_descriptor_semantics(result.descriptor) == ()
+
+
+_SCHEMA_COMPACT = (
+    '{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+    '"type":"object","properties":{"maximum":{"type":"number","maximum":1}}}'
+)
+_SCHEMA_FORMATTED = """{
+  "properties": {
+    "maximum": {
+      "maximum": 1.0,
+      "type": "number"
+    }
+  },
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
+"""
+
+
+def test_formatting_only_schema_edits_keep_canonical_digests_and_revision_ids(
+    tmp_path: Path,
+) -> None:
+    """Reformatting a structured asset changes its bytes but not its identity."""
+    action = _action({"kind": "asset", "path": "schemas/input.json"})
+    first_root = _workspace(tmp_path / "first", action=action)
+    first_asset = tmp_path / "first" / "schemas/input.json"
+    first_asset.parent.mkdir(parents=True)
+    first_asset.write_text(_SCHEMA_COMPACT, encoding="utf-8")
+    first = _compile(first_root)
+
+    second_root = _workspace(tmp_path / "second", action=action)
+    second_asset = tmp_path / "second" / "schemas/input.json"
+    second_asset.parent.mkdir(parents=True)
+    second_asset.write_text(_SCHEMA_FORMATTED, encoding="utf-8")
+    second = _compile(second_root)
+
+    first_entry = first.asset_index["schemas/input.json"]
+    second_entry = second.asset_index["schemas/input.json"]
+    assert first_entry["digest"] != second_entry["digest"]
+    assert first_entry["size"] != second_entry["size"]
+    assert first_entry["canonicalDigest"] == second_entry["canonicalDigest"]
+
+    (first_target,) = first.descriptor["spec"]["targets"]
+    (second_target,) = second.descriptor["spec"]["targets"]
+    assert first_target["schemaDigests"] == second_target["schemaDigests"]
+    assert first_target["step_revision_id"] == second_target["step_revision_id"]
+    # The plugin revision commits the exact source inventory (asset bytes and
+    # sizes), so a formatting-only edit changes it: the contract identity above
+    # is format-insensitive, while the artifact it ships in is byte-exact.
+    assert (
+        first.descriptor["spec"]["plugin_revision_id"]
+        != second.descriptor["spec"]["plugin_revision_id"]
+    )
+    assert first.digest != second.digest
+
+
+def test_structured_assets_carry_distinct_source_and_canonical_digests(
+    tmp_path: Path,
+) -> None:
+    """The exact-source-byte digest and the canonical digest are reported separately."""
+    action = _action({"kind": "asset", "path": "schemas/input.json"})
+    root = _workspace(tmp_path, action=action)
+    asset = tmp_path / "schemas/input.json"
+    asset.parent.mkdir(parents=True)
+    asset.write_text(_SCHEMA_FORMATTED, encoding="utf-8")
+
+    result = _compile(root)
+
+    entry = result.asset_index["schemas/input.json"]
+    assert entry["digest"] == f"sha256:{sha256(_SCHEMA_FORMATTED.encode()).hexdigest()}"
+    assert entry["canonicalDigest"] != entry["digest"]
+    compiled_asset = result.assets["schemas/input.json"]
+    assert compiled_asset.content == _SCHEMA_FORMATTED.encode()
+
+
+def test_documentation_assets_pin_the_exact_source_bytes(tmp_path: Path) -> None:
+    """Markdown is not structured, so its canonical digest is its source-byte digest."""
+    root = _workspace(tmp_path, action=_action(
+        {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
+    ))
+
+    result = _compile(root)
+
+    entry = result.asset_index["docs/README.md"]
+    assert entry["digest"] == entry["canonicalDigest"]
+    assert result.descriptor["spec"]["documentation"]["digest"] == entry["digest"]
+
+
+def test_compile_reports_a_structured_diagnostic_for_unrepresentable_inline_numbers(
+    tmp_path: Path,
+) -> None:
+    """A schema integer beyond the double range fails with a located diagnostic."""
+    action = _action(
+        {
+            "kind": "inline",
+            "value": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {"id": {"type": "integer", "maximum": 9223372036854775807}},
+            },
+        }
+    )
+    root = _workspace(tmp_path, action=action)
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+
+    assert "SCHEMA_NUMBER_UNREPRESENTABLE" in {item.code for item in error.value.diagnostics}
+    assert any(
+        "9223372036854775807" in item.message for item in error.value.diagnostics
+    )
+
+
+def test_compile_reports_a_structured_diagnostic_for_unrepresentable_asset_numbers(
+    tmp_path: Path,
+) -> None:
+    """An asset integer beyond the double range fails with a located diagnostic."""
+    action = _action({"kind": "asset", "path": "schemas/input.json"})
+    root = _workspace(tmp_path, action=action)
+    asset = tmp_path / "schemas/input.json"
+    asset.parent.mkdir(parents=True)
+    asset.write_text(
+        '{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+        '"type":"object","maximum":9007199254740993}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+
+    assert "ASSET_NUMBER_UNREPRESENTABLE" in {item.code for item in error.value.diagnostics}
+    assert any(
+        "9007199254740993" in item.message for item in error.value.diagnostics
+    )

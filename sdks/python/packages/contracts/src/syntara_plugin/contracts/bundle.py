@@ -17,6 +17,8 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 
+from .canonical import canonical_json_bytes
+
 ContractKind = Literal[
     "plugin",
     "plugin_build_settings",
@@ -374,9 +376,7 @@ def _schema_directory() -> Any:
 
 def _canonical_bytes(documents: dict[str, dict[str, Any]]) -> bytes:
     payload = {path: documents[path] for path in sorted(documents)}
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
-        "utf-8"
-    )
+    return canonical_json_bytes(payload)
 
 
 def bundle_digest(documents: dict[str, dict[str, Any]]) -> str:

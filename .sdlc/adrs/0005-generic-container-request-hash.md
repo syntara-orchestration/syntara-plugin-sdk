@@ -37,3 +37,16 @@ conformance cases before composing or verifying a generic request.
   Syntara backend, or Execution Plane so those components cannot drift.
 - Any semantic change to the preimage or canonical JSON representation requires
   a new versioned runtime contract and cross-language conformance coverage.
+
+## Amendment: RFC 8785 canonicalization (AAP-102213)
+
+The shared canonical JSON form was tightened from "UTF-8 JSON with sorted
+object keys and compact separators" to strict
+[RFC 8785 (JSON Canonicalization Scheme)](https://www.rfc-editor.org/rfc/rfc8785):
+UTF-16 code-unit key ordering, ECMAScript `Number::toString` serialization, and
+minimal string escaping. This makes the form normative by reference instead of
+by description, so non-Python SDKs can prove byte compatibility against the
+RFC's published test vectors. The preimage rule (remove only the two mirrored
+`requestHash` fields) is unchanged. As the SDK is pre-release, the resulting
+digest values changed forward-only; every consumer recomputes them from the
+same contracts package rather than pinning them.

@@ -54,11 +54,13 @@ legacy file-lease field.
 
 The generic `ContainerWorkloadRequest` has two mirrored `requestHash` fields:
 one on the work item and one on its policy snapshot. They are the SHA-256
-digest of the complete request after removing only those two fields, using
-UTF-8 JSON with sorted object keys, compact separators, and no non-finite
-numbers. The Python contracts package provides the reference implementation;
-future language SDKs must implement the same form before they compose or verify
-container requests. The hash is not a credential or signature. It detects a
+digest of the complete request after removing only those two fields, serialized
+with [RFC 8785 (JSON Canonicalization Scheme)](https://www.rfc-editor.org/rfc/rfc8785):
+UTF-16 code-unit key ordering, ECMAScript number serialization, minimal string
+escaping, and no non-finite numbers. The Python contracts package provides the
+reference implementation; future language SDKs must implement the same form
+before they compose or verify container requests. The hash is not a credential
+or signature. It detects a
 request changed after trusted control-plane composition; identity and transport
 authentication remain separate concerns.
 

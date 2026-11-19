@@ -360,7 +360,7 @@ def test_valid_plugin_action_and_trigger_documents() -> None:
     assert validate_document(bundle, "action", action)
 
 
-def test_plugin_metadata_rejects_out_of_scope_tags() -> None:
+def test_plugin_metadata_preserves_discovery_tags() -> None:
     bundle = load_bundle()
     plugin: dict[str, object] = {
         "apiVersion": "syntara.io/v1alpha1",
@@ -373,17 +373,44 @@ def test_plugin_metadata_rejects_out_of_scope_tags() -> None:
     }
     assert validate_document(bundle, "plugin", plugin) == []
 
-    plugin["metadata"] = {**_metadata(), "tags": ["automation"]}
+    plugin["metadata"] = {**_metadata(), "tags": ["automation", "issues/github"]}
+
+    assert validate_document(bundle, "plugin", plugin) == []
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        ["automation", "automation"],
+        [""],
+        ["Automation"],
+        ["a" * 65],
+        ["tag"] * 33,
+        [" automation"],
+    ],
+)
+def test_plugin_metadata_rejects_malformed_tags(tags: list[str]) -> None:
+    bundle = load_bundle()
+    plugin: dict[str, object] = {
+        "apiVersion": "syntara.io/v1alpha1",
+        "kind": "Plugin",
+        "metadata": {**_metadata(), "tags": tags},
+        "spec": {
+            "documentation": {"path": "docs/README.md"},
+            "targets": ["actions/create-issue.yaml"],
+        },
+    }
 
     errors = validate_document(bundle, "plugin", plugin)
+
     assert any("tags" in error for error in errors)
 
 
-def test_target_metadata_rejects_out_of_scope_tags() -> None:
+def test_target_metadata_preserves_discovery_tags() -> None:
     bundle = load_bundle()
     action = step_document(
         "Action",
-        target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
+        {**target_metadata("create-issue", "Create issue", "Creates GitHub issues."), "tags": ["automation"]},
         {
             "runtime": {
                 "kind": "platform-runner",
@@ -394,15 +421,8 @@ def test_target_metadata_rejects_out_of_scope_tags() -> None:
             "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
         },
     )
+
     assert validate_document(bundle, "action", action) == []
-
-    action["metadata"] = {
-        **target_metadata("create-issue", "Create issue", "Creates GitHub issues."),
-        "tags": ["automation"],
-    }
-
-    errors = validate_document(bundle, "action", action)
-    assert any("tags" in error for error in errors)
 
 
 def test_custom_runner_action_requires_an_entry_point() -> None:

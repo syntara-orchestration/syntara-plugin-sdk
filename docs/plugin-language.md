@@ -16,6 +16,7 @@ Every plugin inventory and target document starts with this envelope.
 | `metadata.version` | Semantic plugin release version. Plugin only. |
 | `metadata.displayName` | Short UI label. |
 | `metadata.description` | User-facing explanation of the plugin or target. |
+| `metadata.tags` | Optional discovery labels: up to 32 unique strings of 1–64 lowercase characters, digits, `.`, `_`, `-`, or `/`, each starting with a lowercase character or digit. Compilation preserves them verbatim in the compiled descriptor. |
 
 ## Terms and execution model
 
@@ -329,6 +330,14 @@ Every schema document — inline or asset — must declare
 missing declarations are rejected. Only the `date-time` and `uri` formats are
 asserted; every other `format` name is an annotation that never rejects a
 value.
+
+Compiled digests and revision IDs serialize documents with
+[RFC 8785](https://www.rfc-editor.org/rfc/rfc8785), whose I-JSON input model
+requires numbers an IEEE 754 double carries exactly. A document source
+containing an integer outside ±2**53 that the double format cannot represent
+exactly (for example a full int64 bound like `9223372036854775807`) is
+rejected at compilation with a remediation diagnostic; use a bound within
+±2**53 or express the limit as a string.
 
 ### Input presentation
 

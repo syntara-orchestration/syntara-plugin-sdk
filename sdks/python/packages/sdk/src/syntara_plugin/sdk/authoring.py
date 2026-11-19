@@ -18,8 +18,11 @@ import yaml
 from jsonschema import SchemaError
 from syntara_plugin.contracts import (
     STEP_KINDS,
+    CanonicalJsonError,
     ContractBundle,
     SchemaDocumentError,
+    canonical_json_bytes,
+    canonical_json_digest,
     load_bundle,
     plugin_revision_id,
     revision_errors,
@@ -45,6 +48,10 @@ _MAX_DOCUMENT_BYTES = 1024 * 1024
 _MAX_DOCUMENT_DEPTH = 100
 _MAX_DOCUMENT_NODES = 10_000
 _RECURSIVE_ALIAS_REMEDIATION = "Replace the recursive alias with finite data."
+_NUMBER_REMEDIATION = (
+    "Use numbers an IEEE 754 double carries exactly: integers within ±2**53"
+    " and finite values, per the RFC 8785 canonicalization used for digests."
+)
 _PYTHON_SDK_PRE_RELEASE = re.compile(
     r"^(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)"
     r"(?:(?P<phase>a|b|rc)(?P<serial>0|[1-9][0-9]*))?$"
@@ -367,10 +374,20 @@ def _compile(
         "metadata": _ordered(plugin.document["metadata"]),
         "spec": descriptor_spec,
     }
-    for target in canonical_targets:
-        if target.get("kind") in STEP_KINDS:
-            target["step_revision_id"] = step_revision_id(descriptor, target)
-    descriptor_spec["plugin_revision_id"] = plugin_revision_id(descriptor)
+    try:
+        for target in canonical_targets:
+            if target.get("kind") in STEP_KINDS:
+                target["step_revision_id"] = step_revision_id(descriptor, target)
+        descriptor_spec["plugin_revision_id"] = plugin_revision_id(descriptor)
+    except CanonicalJsonError as error:
+        diagnostics.append(
+            _diagnostic(
+                "DESCRIPTOR_NUMBER_UNREPRESENTABLE",
+                f"Cannot hash the compiled contract: {error}",
+                PLUGIN_MANIFEST_FILENAME,
+                _NUMBER_REMEDIATION,
+            )
+        )
     for message in revision_errors(descriptor):
         diagnostics.append(
             _diagnostic(
@@ -513,7 +530,7 @@ def _normalize_target(
         _normalize_integration_type(target, spec, context)
     else:
         _normalize_credential_recipe(target, spec, context)
-    _record_schema_digests(target)
+    _record_schema_digests(target, path, diagnostics)
     return cast(dict[str, Any], _ordered(target))
 
 
@@ -683,10 +700,23 @@ def _normalize_credential_recipe(
         target["output"] = _target_document_source(output, "output", context)
 
 
-def _record_schema_digests(target: dict[str, Any]) -> None:
+def _record_schema_digests(
+    target: dict[str, Any], path: str, diagnostics: list[Diagnostic]
+) -> None:
     """Attach canonical digests for every materialized schema in a target."""
 
-    digests = schema_digests(target)
+    try:
+        digests = schema_digests(target)
+    except CanonicalJsonError as error:
+        diagnostics.append(
+            _diagnostic(
+                "SCHEMA_NUMBER_UNREPRESENTABLE",
+                f"Cannot hash the schemas of {path!r}: {error}",
+                path,
+                _NUMBER_REMEDIATION,
+            )
+        )
+        return
     if digests:
         target["schemaDigests"] = digests
 
@@ -827,12 +857,24 @@ def _document_source(
     _validate_typed_document(
         canonical, target_path, diagnostics, bundle, document_kind, field_name
     )
+    try:
+        canonical_digest = _canonical_digest(canonical)
+    except CanonicalJsonError as error:
+        diagnostics.append(
+            _diagnostic(
+                "ASSET_NUMBER_UNREPRESENTABLE",
+                f"Asset {asset_path!r} cannot be canonically hashed: {error}",
+                target_path,
+                _NUMBER_REMEDIATION,
+            )
+        )
+        return None
     asset = CompiledAsset(
         path=asset_path,
         media_type=_structured_media_type(Path(asset_path), document_kind),
         content=raw,
         source_digest=f"sha256:{sha256(raw).hexdigest()}",
-        canonical_digest=_canonical_digest(canonical),
+        canonical_digest=canonical_digest,
         references=(f"{target_path}#/spec/{field_name}",),
     )
     existing = assets.get(asset_path)
@@ -1776,13 +1818,15 @@ def _ordered(value: object) -> object:
 
 
 def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(
-        _ordered(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    """Return the RFC 8785 canonical bytes shared with the contracts package."""
+
+    return canonical_json_bytes(value)
 
 
 def _canonical_digest(value: object) -> str:
-    return f"sha256:{sha256(_canonical_bytes(value)).hexdigest()}"
+    """Return the RFC 8785 canonical SHA-256 digest of one descriptor value."""
+
+    return canonical_json_digest(value)
 
 
 def _diagnostic(
