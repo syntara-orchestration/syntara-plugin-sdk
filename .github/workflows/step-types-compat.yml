@@ -191,17 +191,56 @@ jobs:
         working-directory: sdk
         run: uv build --all-packages --out-dir "$RUNNER_TEMP/wheels"
       - name: Check the step type against the candidate SDK
+        id: check-step-type
+        # Pull requests are gated by compat-report, which evaluates this
+        # report against the live label and devel baseline. Keep direct runs
+        # enforcing on devel pushes and manual dispatches.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         env:
           PLUGIN: ${{ matrix.plugin }}
           MODE: ${{ needs.changes.outputs.mode }}
         run: |
           podman --version
+          set +e
           uv run --no-project --python 3.12 python sdk/tests/step_types/driver.py \
             --plugin "$PLUGIN" \
             --step-types-dir step-types \
             --wheels-dir "$RUNNER_TEMP/wheels" \
             --report-dir report \
             --mode "$MODE"
+          driver_status=$?
+          set -e
+          echo "exit_code=$driver_status" >> "$GITHUB_OUTPUT"
+          exit "$driver_status"
+      - name: Record an unexplained compatibility runner failure
+        if: ${{ !cancelled() && steps.check-step-type.outcome == 'failure' }}
+        env:
+          EXIT_CODE: ${{ steps.check-step-type.outputs.exit_code }}
+          PLUGIN: ${{ matrix.plugin }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_path = Path("report") / f"{os.environ['PLUGIN']}.json"
+          try:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+          except (OSError, ValueError):
+              # The aggregate gate treats a missing or invalid report as failure.
+              raise SystemExit(0)
+
+          if (
+              isinstance(report, dict)
+              and report.get("result") == "fail"
+              and report.get("report_only") is False
+              and os.environ.get("EXIT_CODE") == "1"
+          ):
+              raise SystemExit(0)
+          if isinstance(report, dict):
+              report["runner_failure"] = True
+              report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          PY
       - name: Upload report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -35,7 +35,10 @@ its tooling lives in [`tests/step_types`](../tests/step_types).
    stage fails unless all of them used this pull request's wheels: a result
    produced by the published SDK says nothing about the change.
 4. **compat-report**: aggregates every job into one verdict and one summary
-   table, and compares failures against `devel` (the baseline, below).
+   table, and compares failures against `devel` (the baseline, below). On pull
+   requests, this is the enforcement check: individual step-type reports are
+   evaluated here against the current label and `devel` baseline. On `devel`
+   pushes and manual runs, individual step-type jobs remain enforcing.
 
 ## Reading a failure
 
@@ -141,6 +144,17 @@ only the workflow's read-only token.
   **fails the check** as usual.
 - A pull request that breaks strictly less than `devel` (fewer broken fields)
   is inherited too, and the summary says so.
+
+On pull requests, a step type's compatibility command can fail without
+failing its matrix job directly; `compat-report` evaluates the resulting
+report. Failures elsewhere in a matrix job, such as setup or report upload,
+still fail the aggregate check. If the compatibility command exits
+unsuccessfully after writing a non-failing report, the gate marks that report
+as a runner error and fails. A new compatibility failure, tooling failure,
+or discovery failure also fails the aggregate check. This lets a later pull
+request pass when its failure is already on `devel`, even if the pull request
+that introduced it was marked `breaking-change`. The label is needed only on
+the pull request that introduces an intentional break.
 
 A failing validate or run stage does not stop the check: the later stages
 still run, every failing stage is recorded, and each one is compared against

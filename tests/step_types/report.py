@@ -16,7 +16,9 @@ policy in one place:
   rule, and identity; see ``baseline.py``): pass, reported as inherited. The
   baseline is the devel push run for this pull request's base commit, and only
   ``pull_request`` events consult it;
-- a leg that did not succeed without leaving a failing report: fail;
+- a runner exited unsuccessfully after writing a non-failing report: fail;
+- a matrix job did not complete successfully: fail, even if another job left
+  an inherited compatibility-failure report;
 - otherwise: pass.
 
 Skipped jobs count as success for required checks, so this job judges its
@@ -110,14 +112,17 @@ def verdict(
         reasons.append("discovery reported no step types")
     if args.tooling != "success":
         reasons.append(f"the check's tooling tests did not succeed ({args.tooling})")
-    explained = True
     for plugin, report in reports.items():
         if report is None:
-            explained = False
             reasons.append(
                 f"{plugin}: the leg left no report (it failed before the driver finished, for "
                 "example while building the candidate wheels, or the tooling crashed); open "
                 "that leg's log"
+            )
+        elif report.get("runner_failure") is True:
+            reasons.append(
+                f"{plugin}: the compatibility runner exited unsuccessfully after writing a "
+                "non-failing report; open that leg's log"
             )
         elif report.get("result") == "fail":
             if report_only(report, label):
@@ -143,11 +148,10 @@ def verdict(
                 suffix = ", new in this pull request" if baseline is not None else ""
                 reasons.append(f"{plugin}: {_word(report)}{suffix}")
     if args.discover == "success" and args.compat != "success":
-        # Failed legs must be explained by failing reports (handled above); a leg that
-        # failed while every report passed, or without reports, still fails the gate.
-        failing = [r for r in reports.values() if r is not None and r.get("result") == "fail"]
-        if not (explained and failing):
-            reasons.append(f"at least one step-type leg did not succeed ({args.compat})")
+        # On pull requests, the driver's compatibility command is the only
+        # continued step. Any failed matrix job is an unrelated runner/setup
+        # failure and cannot be excused by an inherited compatibility report.
+        reasons.append(f"at least one step-type job did not complete successfully ({args.compat})")
     if reasons:
         return Verdict(1, reasons, warnings, inherited_notes)
     if warnings:
@@ -209,7 +213,9 @@ def row(
         return [plugin, "no report", "-", "-", "-", "-"]
     failure = report.get("failure") or {}
     adapter = report.get("adapter") or {}
-    if report.get("result") == "pass":
+    if report.get("runner_failure") is True:
+        result = "runner error"
+    elif report.get("result") == "pass":
         result = "compatible"
     elif report_only(report, label):
         result = f"{_word(report)} (report-only)"

@@ -113,7 +113,9 @@ def test_label_read_at_report_time_downgrades_failed_legs(tmp_path: Path) -> Non
     # "Re-run failed jobs" keeps the legs enforcing; the gate re-reads the label.
     write(tmp_path / "reports", "http-request", "fail")
     write(tmp_path / "reports", "script-bash", "pass")
-    assert run(tmp_path, compat="failure", **{"label-report-only": "true"}) == 0
+    # The per-step compatibility command is continued for pull requests; the
+    # aggregate applies the live label to its report.
+    assert run(tmp_path, compat="success", **{"label-report-only": "true"}) == 0
 
 
 def test_label_does_not_excuse_a_missing_report(tmp_path: Path) -> None:
@@ -125,6 +127,18 @@ def test_failed_leg_with_only_passing_reports_fails(tmp_path: Path) -> None:
     write(tmp_path / "reports", "http-request", "pass")
     write(tmp_path / "reports", "script-bash", "pass")
     assert run(tmp_path, compat="failure", **{"label-report-only": "true"}) == 1
+
+
+def test_runner_failure_after_passing_report_fails_even_with_label(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    write(reports, "http-request", "pass")
+    write(reports, "script-bash", "pass")
+    path = reports / "http-request.json"
+    report = json.loads(path.read_text())
+    report["runner_failure"] = True
+    path.write_text(json.dumps(report))
+
+    assert run(tmp_path, **{"label-report-only": "true"}) == 1
 
 
 def test_report_only_summary_does_not_claim_compatibility(
@@ -405,6 +419,18 @@ def test_recomputed_baseline_summary_line(tmp_path: Path, capsys: pytest.Capture
     (baseline / "meta.json").write_text(json.dumps({"base_sha": "e" * 40, "source": "recomputed"}))
     assert run(tmp_path, baseline=baseline) == 0
     assert "devel baseline: eeeeeeeeeeee (recomputed at the base commit)" in capsys.readouterr().out
+
+
+def test_unrelated_compat_job_failure_is_not_excused_by_inherited_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_leg(tmp_path / "reports", "http-request", "fail")
+    write_leg(tmp_path / "reports", "script-bash", "pass")
+    write_leg(tmp_path / "baseline", "http-request", "fail")
+    write_leg(tmp_path / "baseline", "script-bash", "pass")
+
+    assert run(tmp_path, baseline=tmp_path / "baseline", compat="failure") == 1
+    assert "at least one step-type job did not complete successfully" in capsys.readouterr().out
 
 
 def test_inherited_summary_wording(
