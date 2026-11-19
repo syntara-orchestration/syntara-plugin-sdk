@@ -52,6 +52,12 @@ the fixture; the runtime is not.
 uv run --no-sync pytest examples/subworkflow-composition -q
 ```
 
+Or the Phase 2 POC script (pytest + `syntara-plugin run`):
+
+```sh
+bash examples/subworkflow-composition/scripts/run_poc.sh
+```
+
 The tests validate all three manifests against the canonical contract bundle,
 execute each type on the direct and container paths, prove the trigger's event
 payload satisfies the terminal step's declared input, and chain the child's
@@ -62,3 +68,16 @@ harness, which compares two declared schemas field by field (ignoring
 `description`s, which differ by perspective) and names every diverging field
 on failure — the contracts do not enforce these agreements, so the tests
 carry them as authoring obligations.
+
+## ANSTRAT-2347 POC extras
+
+| Artifact | Purpose |
+| --- | --- |
+| [`docs/ao-contract-mapping.md`](docs/ao-contract-mapping.md) | AO ↔ SDK field matrix and gaps |
+| [`fixtures/ao/`](fixtures/ao/) | Snapshotted AO parameter/output schemas |
+| [`tests/test_ao_contract_mapping.py`](tests/test_ao_contract_mapping.py) | Pins what maps vs what the bridge must inject |
+| [`subworkflow_composition/ao_envelope.py`](subworkflow_composition/ao_envelope.py) | Wraps a business result into an AO-shaped Result |
+
+Cross-repo bridge (Control/Trigger → AO `SubWorkflowExecutorParameters`) lives in
+the Syntara tree under `backend/experiments/node_sdk_subworkflow_bridge/`.
+See [`POC.md`](POC.md) for the full runbook and go/no-go verdict.

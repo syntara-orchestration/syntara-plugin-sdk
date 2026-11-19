@@ -1,0 +1,33 @@
+{
+  "$comment": "AO SubWorkflowOutput Result envelope (ANSTRAT-2347). Source: syntara sub_workflow.schema.json $defs.SubWorkflowOutputResult.",
+  "type": ["object", "null"],
+  "description": "Child execution metadata for Sub-workflow steps.",
+  "properties": {
+    "child_execution_id": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "child_workflow_id": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "child_workflow_name": {
+      "type": ["string", "null"],
+      "maxLength": 255
+    },
+    "child_workflow_version": {
+      "type": ["integer", "null"]
+    },
+    "child_status": {
+      "type": ["string", "null"],
+      "enum": ["completed", "completed_with_errors", "failed", "cancelled", null]
+    },
+    "outputs": {
+      "type": ["object", "null"],
+      "description": "Child workflow terminal step outputs keyed by child step ID.",
+      "maxProperties": 1000,
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
