@@ -1,6 +1,6 @@
-"""Aggregate the per-step-type reports into one verdict (the compat-report job).
+"""Aggregate the per-step-type reports into one verdict (the final compat-report step).
 
-This job is the single gate for the whole check, and its exit code encodes the
+This step is the single gate for the whole check, and its exit code encodes the
 policy in one place:
 
 - the change detection job did not succeed: fail (an empty answer is not a skip);
@@ -16,11 +16,12 @@ policy in one place:
   rule, and identity; see ``baseline.py``): pass, reported as inherited. The
   baseline is the devel push run for this pull request's base commit, and only
   ``pull_request`` events consult it;
-- a leg that did not succeed without leaving a failing report: fail;
+- a runner exited unsuccessfully after writing a non-failing report: fail;
+- the grouped runner or report upload did not complete successfully: fail;
 - otherwise: pass.
 
-Skipped jobs count as success for required checks, so this job judges its
-needs' results itself instead of inheriting them. The label is read only here,
+The final step judges the preceding step results rather than trusting a
+missing report or a skipped setup step. The label is read only here,
 at gate time: the mode a leg recorded from the label may be stale (the label
 can be removed after the legs ran, and "Re-run failed jobs" reuses outputs of
 jobs that already succeeded), so it is never trusted.
@@ -110,14 +111,17 @@ def verdict(
         reasons.append("discovery reported no step types")
     if args.tooling != "success":
         reasons.append(f"the check's tooling tests did not succeed ({args.tooling})")
-    explained = True
     for plugin, report in reports.items():
         if report is None:
-            explained = False
             reasons.append(
                 f"{plugin}: the leg left no report (it failed before the driver finished, for "
                 "example while building the candidate wheels, or the tooling crashed); open "
                 "that leg's log"
+            )
+        elif report.get("runner_failure") is True:
+            reasons.append(
+                f"{plugin}: the compatibility runner exited unsuccessfully after writing a "
+                "non-failing report; open that leg's log"
             )
         elif report.get("result") == "fail":
             if report_only(report, label):
@@ -143,11 +147,9 @@ def verdict(
                 suffix = ", new in this pull request" if baseline is not None else ""
                 reasons.append(f"{plugin}: {_word(report)}{suffix}")
     if args.discover == "success" and args.compat != "success":
-        # Failed legs must be explained by failing reports (handled above); a leg that
-        # failed while every report passed, or without reports, still fails the gate.
-        failing = [r for r in reports.values() if r is not None and r.get("result") == "fail"]
-        if not (explained and failing):
-            reasons.append(f"at least one step-type leg did not succeed ({args.compat})")
+        # An unsuccessful grouped runner or report upload is a tooling failure
+        # and cannot be excused by an inherited compatibility report.
+        reasons.append(f"the grouped step-type run did not complete successfully ({args.compat})")
     if reasons:
         return Verdict(1, reasons, warnings, inherited_notes)
     if warnings:
@@ -209,7 +211,9 @@ def row(
         return [plugin, "no report", "-", "-", "-", "-"]
     failure = report.get("failure") or {}
     adapter = report.get("adapter") or {}
-    if report.get("result") == "pass":
+    if report.get("runner_failure") is True:
+        result = "runner error"
+    elif report.get("result") == "pass":
         result = "compatible"
     elif report_only(report, label):
         result = f"{_word(report)} (report-only)"

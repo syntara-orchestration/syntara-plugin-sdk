@@ -43,7 +43,7 @@ echo "Building candidate wheels from the working tree (HEAD $(git -C "$root" rev
 
 tooling=success
 echo "Running the tooling tests..."
-if ! (cd "$root" && uv run --no-project --no-build --python 3.12 --with 'pytest>=8' \
+if ! (cd "$root" && uv run --no-project --no-build --python 3.12 --with 'pytest>=8' --with 'pyyaml>=6' \
     python -m pytest -q -p no:cacheprovider tests/step_types); then
   tooling=failure
 fi
