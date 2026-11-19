@@ -16,6 +16,11 @@ for `spec.input`, `spec.output`, `spec.error`, and trigger
 compiler rejects a schema that declares any other dialect
 (`SCHEMA_DOCUMENT_UNSUPPORTED_DRAFT`) and rejects a schema that omits the
 declaration (`SCHEMA_DOCUMENT_DIALECT_MISSING`) rather than defaulting it.
+The declaration is enforced on every embedded resource too: a nested schema
+(for example a `$defs` entry with its own `$id`) that declares another
+`$schema` would evaluate under that dialect's semantics when referenced,
+bypassing the root check, so the compiler rejects it
+(`SCHEMA_EMBEDDED_DIALECT_UNSUPPORTED`).
 The installation boundary (`InstalledStepManifest.from_manifest`) resolves
 every one of those document sources — trigger `spec.configuration` included —
 through the same conformance check. Neither case is accepted, so the contract

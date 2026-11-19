@@ -168,6 +168,11 @@ def test_format_checker_asserts_only_the_contract_format_set() -> None:
         "mailto:user@example.test",
         "https://user:pass@example.test:8080/a/b?x=1&y=2#frag",
         "http://[2001:db8::1]:9090/path",
+        # RFC 3986 permits any digit-only port syntactically (section 3.2.3)
+        # and IPvFuture host literals (section 3.2.2); neither carries a
+        # numeric range or address-family restriction at the syntax level.
+        "http://example.test:99999/",
+        "http://[v1.aabb]/index",
         "urn:uuid:6fa459ea-ee8a-3ca4-894e-db77e160355e",
     ):
         assert validator.is_valid(
@@ -183,6 +188,8 @@ def test_format_checker_asserts_only_the_contract_format_set() -> None:
         "https://example.test/a[b]",  # brackets are only valid in IPv6 hosts
         "https://example.test:bad",  # authority port must be numeric
         "https://user{name}@example.test",  # brace is not valid in userinfo
+        "http://[v.aabb]/index",  # IPvFuture needs at least one hex digit
+        "http://[v1.]/index",  # IPvFuture needs at least one char after "."
     ):
         assert not validator.is_valid(
             {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}
@@ -214,6 +221,35 @@ def test_validate_authored_schema_requires_the_2020_12_dialect() -> None:
         with pytest.raises(SchemaDocumentError) as error:
             validate_authored_schema(document)
         assert error.value.code == code
+
+
+def test_validate_authored_schema_rejects_embedded_dialect_switches() -> None:
+    # An embedded resource with its own $id and $schema would evaluate under
+    # the declared dialect when referenced (draft-07 "dependencies" below),
+    # silently bypassing the root-only draft check.
+    document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://example.test/root.json",
+        "type": "object",
+        "properties": {"value": {"$ref": "https://example.test/legacy.json"}},
+        "$defs": {
+            "legacy": {
+                "$id": "https://example.test/legacy.json",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "dependencies": {"a": ["b"]},
+            }
+        },
+    }
+    with pytest.raises(SchemaDocumentError) as error:
+        validate_authored_schema(document)
+    assert error.value.code == "SCHEMA_EMBEDDED_DIALECT_UNSUPPORTED"
+    assert "$defs/legacy" in error.value.message
+
+    # The same embedded resource without a $schema declaration is fine: it
+    # inherits the root's Draft 2020-12 semantics.
+    del document["$defs"]["legacy"]["$schema"]
+    validate_authored_schema(document)
 
 
 def test_resolved_execution_schema_is_strict() -> None:

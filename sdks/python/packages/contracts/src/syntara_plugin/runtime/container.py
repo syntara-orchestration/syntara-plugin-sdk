@@ -351,7 +351,8 @@ def standard_output_from_container_result(
     ``output_schema`` is the caller's trusted schema from the invocation
     contract. Its canonical digest must match the result, and the business
     output is validated against it before a wrapper is created. ``error_schema``
-    is the trusted declared schema, or the SDK base schema when omitted. Its
+    is the trusted declared schema, or the closed ``errorResult`` fallback when
+    omitted. Its
     digest and the error itself are checked on nonzero results. The resolver
     retrieves and decodes any stored result as a JSON object; storage and
     addressing policy belong to the host. Resolver failures use safe messages.

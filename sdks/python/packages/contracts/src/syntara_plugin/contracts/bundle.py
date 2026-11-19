@@ -133,8 +133,11 @@ _URI_QUERY_OR_FRAGMENT = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:@/?]|{_PCT
 _URI_USERINFO = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:]|{_PCT_ENCODED})*")
 # reg-name = *( unreserved / pct-encoded / sub-delims ).
 _URI_REG_NAME = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}]|{_PCT_ENCODED})*")
-# IP-literal brackets are only valid around an IPv6 address.
+# IP-literal brackets are only valid around an IPv6 address or an IPvFuture
+# literal (RFC 3986 section 3.2.2: "v" 1*HEXDIG "." 1*(unreserved /
+# sub-delims / ":")).
 _URI_IPV6_LITERAL = re.compile(r"\[[0-9A-Fa-f:.]+\]")
+_URI_IPVFUTURE = re.compile(rf"v[0-9A-Fa-f]+\.[{_UNRESERVED}{_SUB_DELIMS}:]+")
 
 
 @_FORMAT_CHECKER.checks("uri", raises=ValueError)
@@ -151,12 +154,12 @@ def _is_absolute_uri(value: object) -> bool:
         return True
     # urlsplit raises ValueError for inputs it cannot parse (for example a
     # malformed IPv6 host); the registered ``raises`` turns that into a failed
-    # format check instead of an escaping exception.
+    # format check instead of an escaping exception. The port grammar itself
+    # is checked by _valid_uri_authority: urlsplit's .port accessor applies a
+    # numeric range limit that RFC 3986 section 3.2.3 does not, so it is not
+    # consulted here.
     try:
         parsed = urllib.parse.urlsplit(value)
-        # Accessing .port validates its syntax: a non-numeric authority
-        # suffix such as "host:bad" raises ValueError.
-        _ = parsed.port
     except ValueError:
         return False
     if not parsed.scheme or not _URI_SCHEME.fullmatch(parsed.scheme):
@@ -185,9 +188,9 @@ def _valid_uri_authority(netloc: str) -> bool:
         if closing == -1:
             return False
         literal, port = hostport[: closing + 1], hostport[closing + 1 :]
-        if not _URI_IPV6_LITERAL.fullmatch(literal) or not (
-            port in ("", ":") or port[1:].isdigit()
-        ):
+        if not (
+            _URI_IPV6_LITERAL.fullmatch(literal) or _URI_IPVFUTURE.fullmatch(literal[1:-1])
+        ) or not (port in ("", ":") or port[1:].isdigit()):
             return False
         return True
     host, separator, port = hostport.rpartition(":")
@@ -230,13 +233,40 @@ class SchemaDocumentError(ValueError):
         self.message = message
 
 
+def _reject_embedded_dialect_declarations(value: object, path: str) -> None:
+    """Reject nested ``$schema`` declarations that switch the dialect.
+
+    An embedded resource (for example a ``$defs`` entry with its own ``$id``)
+    that declares another ``$schema`` would be evaluated with that dialect's
+    semantics when referenced, silently bypassing the root-only draft check.
+    """
+
+    if isinstance(value, Mapping):
+        declared = value.get("$schema")
+        if isinstance(declared, str) and declared != _CANONICAL_SCHEMA_DIALECT:
+            raise SchemaDocumentError(
+                "SCHEMA_EMBEDDED_DIALECT_UNSUPPORTED",
+                f"embedded schema resource at {path!r} declares unsupported "
+                f"dialect {declared!r}; every schema resource must use "
+                f"{_CANONICAL_SCHEMA_DIALECT!r}.",
+            )
+        for key, item in value.items():
+            _reject_embedded_dialect_declarations(item, f"{path}/{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_embedded_dialect_declarations(item, f"{path}/{index}")
+
+
 def validate_authored_schema(document: object) -> None:
     """Validate an authored (inline or asset-backed) schema document.
 
     Requires an explicit Draft 2020-12 ``$schema`` declaration and a document
-    that satisfies the Draft 2020-12 meta-schema. Raises ``SchemaDocumentError``
-    with a stable code for draft violations and jsonschema ``SchemaError`` for
-    structural meta-schema failures.
+    that satisfies the Draft 2020-12 meta-schema. The declaration is enforced
+    on the root and on every embedded resource: a nested ``$schema`` pointing
+    at another draft would make referenced subresources evaluate under that
+    dialect's semantics. Raises ``SchemaDocumentError`` with a stable code for
+    draft violations and jsonschema ``SchemaError`` for structural meta-schema
+    failures.
     """
 
     if not isinstance(document, Mapping):
@@ -257,6 +287,7 @@ def validate_authored_schema(document: object) -> None:
             f"authored schema declares unsupported dialect {declared!r}; only "
             f"{_CANONICAL_SCHEMA_DIALECT!r} is accepted.",
         )
+    _reject_embedded_dialect_declarations(document, "<root>")
     Draft202012Validator.check_schema(document)
 
 
