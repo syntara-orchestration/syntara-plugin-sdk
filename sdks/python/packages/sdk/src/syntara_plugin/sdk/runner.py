@@ -598,17 +598,21 @@ def _pattern_property_schemas(
 def _property_schemas(
     nodes: Sequence[tuple[Mapping[str, Any], Any]], key: Any
 ) -> tuple[bool, list[tuple[Any, Any, bool]]]:
-    declared = False
+    explicitly_declared = False
     children: list[tuple[Any, Any, bool]] = []
     for node, resolver in nodes:
         property_declared, property_children = _explicit_property_schema(node, resolver, key)
         pattern_children = _pattern_property_schemas(node, resolver, key)
-        declared = declared or property_declared or bool(pattern_children)
+        # A pattern only declares the *shape* of a key. Its concrete text is
+        # supplied by the workload, so it must be redacted like any other
+        # workload-controlled key. ``properties`` is the only declaration
+        # whose key text is fixed by the schema author.
+        explicitly_declared = explicitly_declared or property_declared
         children.extend(property_children)
         children.extend(pattern_children)
         if not property_declared and not pattern_children:
             children.append((node.get("additionalProperties"), resolver, False))
-    return declared, children
+    return explicitly_declared, children
 
 
 def _scrub_error_mapping(

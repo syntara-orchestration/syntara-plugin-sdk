@@ -4657,6 +4657,20 @@ def test_error_extension_key_in_format_invalid_branch_is_scrubbed():
     }
 
 
+def test_pattern_property_extension_key_is_scrubbed_but_uses_its_value_schema():
+    """Pattern-matched names are workload-controlled and may contain a secret."""
+    from syntara_plugin.sdk.runner import _scrub_error_extensions
+
+    schema = {
+        "type": "object",
+        "patternProperties": {"^x-[a-z0-9]+$": {"type": "string", "writeOnly": True}},
+    }
+
+    assert _scrub_error_extensions(
+        {"x-hunter2": "hunter2"}, [schema], schema, ("hunter2",), ()
+    ) == {"x-***": "***"}
+
+
 def test_undeclared_error_extension_keys_are_scrubbed(monkeypatch):
     from syntara_plugin.contracts import canonical_json_digest
     from syntara_plugin.runtime import ContainerResult, error_result_base_schema
