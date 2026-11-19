@@ -419,6 +419,16 @@ def test_runner_fails_when_the_sentinel_reaches_test_output(tmp_path, failure):
     assert not (ep / ".secrets").exists()
 
 
+def test_runner_removes_files_it_cannot_redact(tmp_path):
+    result, ep, _ = _run_with_fake_secrets(tmp_path, failure="redact-fail")
+    assert result.returncode == 1, result.stderr
+    assert "sentinel value appeared" in result.stderr
+    assert "unredactable" in result.stderr
+    # A file whose redaction failed must not survive into the upload.
+    assert not (tmp_path / "logs" / "results.xml").exists()
+    assert not (ep / ".secrets").exists()
+
+
 def test_runner_preserves_preexisting_secrets(tmp_path):
     result, ep, _ = _run_with_fake_secrets(tmp_path, failure="none", preexisting=True)
     assert result.returncode != 0
@@ -453,11 +463,15 @@ def _run_with_fake_secrets(tmp_path, *, failure, preexisting=False):
         "uv": (
             'if [[ "$*" == *pytest* ]]; then\n'
             "  echo '<testsuite/>' > \"$EP_COMPAT_LOG_DIR/results.xml\"\n"
-            '  [[ "$FAILURE" != leak && "$FAILURE" != gate-leak ]]'
+            '  [[ "$FAILURE" != leak && "$FAILURE" != gate-leak && "$FAILURE" != redact-fail ]]'
             ' || echo -n "$EP_COMPAT_CREDENTIAL_TOKEN" >> "$EP_COMPAT_LOG_DIR/results.xml"\n'
             "fi\n"
             'if [[ "$FAILURE" == gate-leak && "$*" == *check_results* ]]; then exit 1; fi\n'
             "exit 0"
+        ),
+        "sed": (
+            'if [[ "$FAILURE" == redact-fail && "$*" == *REDACTED-CREDENTIAL-SENTINEL* ]]; then exit 1; fi\n'
+            'exec /usr/bin/sed "$@"'
         ),
         "make": (
             'printf %s "$EP_AO_JWT_PUBLIC_KEY_PATH" > "$KEY_PATH"\n'

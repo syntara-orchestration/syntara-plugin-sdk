@@ -68,7 +68,15 @@ cleanup() {
     echo 'The credential sentinel value appeared in compatibility logs or test output and was redacted before upload' >&2
     status=1
     grep -R -l -F -- "$EP_COMPAT_CREDENTIAL_TOKEN" "$logs" 2>/dev/null | while read -r affected; do
-      sed -i "s/$EP_COMPAT_CREDENTIAL_TOKEN/REDACTED-CREDENTIAL-SENTINEL/g" "$affected" || true
+      # Rewrite through a temporary file: BSD sed cannot do portable
+      # in-place edits, and a failed redaction must never upload an
+      # unsanitized log, so drop the file when the rewrite fails.
+      if sed "s/$EP_COMPAT_CREDENTIAL_TOKEN/REDACTED-CREDENTIAL-SENTINEL/g" "$affected" > "$affected.redacted" 2>/dev/null \
+        && mv -f "$affected.redacted" "$affected"; then
+        continue
+      fi
+      rm -f -- "$affected" "$affected.redacted"
+      echo "Removed an unredactable file from the diagnostics: $affected" >&2
     done
   fi
   rm -f "$test_file"

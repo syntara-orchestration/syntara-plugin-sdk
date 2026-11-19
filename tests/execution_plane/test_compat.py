@@ -236,6 +236,11 @@ async def test_checkout_credential_plugin_dispatch(
                 dispatched.assigned, work, target_store, settings, client_id=client_id
             )
     assert item is not None
+    # Fail with a static message before any assertion whose failure message
+    # renders the result: a leak must never echo the token into the JUnit
+    # report, the uploaded diagnostics, or local output.
+    if token in json.dumps(item.result):
+        pytest.fail("The credential token appeared in the persisted work-item result")
     assert item.status is WorkItemStatus.COMPLETED, (
         f"{identity}: {item.status}; result={item.result}"
     )
@@ -252,10 +257,6 @@ async def test_checkout_credential_plugin_dispatch(
             "authenticated": True,
             "token_sha256": expected_digest,
         }
-    # Fail with a static message: an `assert ... not in ...` would print the
-    # token itself into the JUnit report and the uploaded diagnostics.
-    if token in json.dumps(item.result):
-        pytest.fail("The credential token appeared in the persisted work-item result")
 
 
 @pytest.mark.asyncio
