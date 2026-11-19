@@ -15,6 +15,7 @@
     "input": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "required": ["code"],
@@ -42,6 +43,7 @@
     "output": {
       "kind": "inline",
       "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
         "required": ["return_code", "stdout", "stderr"],
@@ -57,7 +59,11 @@
     },
     "error": {
       "kind": "inline",
-      "value": {"type": "object", "additionalProperties": true}
+      "value": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": true
+      }
     }
   }
 }
