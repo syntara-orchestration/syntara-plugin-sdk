@@ -235,7 +235,12 @@ def _control_document(entry_point: str, *, name: str = "normalize-records") -> d
     }
 
 
-def _trigger_document(entry_point: str, *, name: str = "record-opened") -> dict[str, Any]:
+def _trigger_document(
+    entry_point: str,
+    *,
+    name: str = "record-opened",
+    configuration_source: Any = None,
+) -> dict[str, Any]:
     return {
         "apiVersion": "syntara.io/v1alpha1",
         "kind": "Trigger",
@@ -247,7 +252,8 @@ def _trigger_document(entry_point: str, *, name: str = "record-opened") -> dict[
         "spec": {
             "driver": "webhook.v1",
             "runtime": {"kind": "custom-runner", "entryPoint": entry_point},
-            "configuration": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
+            "configuration": configuration_source
+            or {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}},
             "input": {"kind": "inline", "value": _TRIGGER_INPUT_SCHEMA},
             "output": {"kind": "inline", "value": _TRIGGER_OUTPUT_SCHEMA},
         },
@@ -660,6 +666,34 @@ def test_missing_target_manifest(plugin_root: Path) -> None:
 
     with pytest.raises(StepBindingError, match="steps/missing.yaml"):
         load_plugin_bindings(package)
+
+
+def test_binds_trigger_with_asset_backed_configuration(plugin_root: Path) -> None:
+    package = _write_plugin(
+        plugin_root,
+        plugin=_plugin_document(["steps/record-opened.yaml"]),
+        manifests=lambda package_name: {
+            "docs/README.md": "# Demo plugin\n",
+            "schemas/trigger-configuration.json": {
+                "$schema": _DIALECT,
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"secret_name": {"type": "string"}},
+                "required": ["secret_name"],
+            },
+            "steps/record-opened.yaml": _trigger_document(
+                f"{package_name}.steps:SampleTriggerStep",
+                configuration_source={
+                    "kind": "asset",
+                    "path": "schemas/trigger-configuration.json",
+                },
+            ),
+        },
+    )
+
+    bindings = load_plugin_bindings(package)
+
+    assert bindings.step_identities == ("sample.demo.record-opened",)
 
 
 def test_missing_asset_document(plugin_root: Path) -> None:
