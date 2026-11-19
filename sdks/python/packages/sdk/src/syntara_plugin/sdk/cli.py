@@ -205,8 +205,6 @@ def _normalize_manifest_directory(arguments: argparse.Namespace) -> None:
 
 def _dispatch_command(arguments: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if arguments.command == "validate":
-        if Path.cwd().name == "http-request":
-            raise RuntimeError("Temporary intentional compatibility break for CI verification")
         return _compile_workspace(arguments)
     if arguments.command == "inspect":
         return _inspect(arguments)
