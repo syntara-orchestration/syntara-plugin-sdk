@@ -308,7 +308,14 @@ def _error_from_container_result(
     result: ContainerResult,
     error_schema: Mapping[str, Any] | None,
 ) -> ErrorResult | None:
-    """Validate and reconstruct deliberate step type-failure metadata."""
+    """Validate and reconstruct deliberate step type-failure metadata.
+
+    A trusted ``spec.error`` schema is the only accepted digest source: the
+    sender validates every wrapper error, SDK-generated ones included, against
+    the effective schema, so a base-only digest is never a legitimate match
+    when the trusted schema is known. Without a trusted schema the closed
+    ``errorResult`` fallback applies.
+    """
 
     try:
         if result.status_code == 0:
@@ -317,8 +324,8 @@ def _error_from_container_result(
         candidate_schemas = []
         if error_schema is not None:
             candidate_schemas.append(error_schema)
-        candidate_schemas.append(error_result_schema())
-        candidate_schemas.append(error_result_base_schema())
+        else:
+            candidate_schemas.append(error_result_schema())
         for candidate in candidate_schemas:
             schema = _thaw_json_document(candidate)
             Draft202012Validator.check_schema(schema)

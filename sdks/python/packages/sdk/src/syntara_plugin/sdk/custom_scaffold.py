@@ -32,7 +32,15 @@ def write_custom_workspace(
     schema: dict[str, Any],
 ) -> None:
     """Write a self-contained workspace for one manifest-backed Action."""
-    schema = {**schema, _SCHEMA_KEYWORD: _DIALECT}
+    declared = schema.get(_SCHEMA_KEYWORD)
+    if declared is not None and declared != _DIALECT:
+        raise ValueError(
+            f"fields JSON schema declares unsupported dialect {declared!r}; only the "
+            "Draft 2020-12 dialect is accepted"
+        )
+    # The declaration is injected only when the author omitted it.
+    schema = {**schema}
+    schema.setdefault(_SCHEMA_KEYWORD, _DIALECT)
     _validate_model_schema(schema)
     # Avoid shadowing the SDK's syntara_plugin namespace when name is "plugin".
     package = "syntara_step_" + name.replace("-", "_")

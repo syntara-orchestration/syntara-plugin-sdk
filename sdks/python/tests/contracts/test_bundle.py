@@ -111,6 +111,25 @@ def test_load_bundle_rejects_a_non_2020_12_dialect_declaration(
         load_bundle()
 
 
+def test_load_bundle_rejects_a_structurally_invalid_document(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from syntara_plugin.contracts import bundle as bundle_module
+
+    tampered = tmp_path / "v1alpha1"
+    tampered.mkdir()
+    for source in bundle_module._schema_directory().iterdir():
+        if source.name.endswith(".schema.json"):
+            document = json.loads(source.read_text(encoding="utf-8"))
+            if source.name == "step.schema.json":
+                document["type"] = "invalid"
+            (tampered / source.name).write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(bundle_module, "_schema_directory", lambda: tampered)
+
+    with pytest.raises(RuntimeError, match="step.schema.json.*not a valid Draft 2020-12 schema"):
+        load_bundle()
+
+
 def test_asserted_format_set_is_declared_by_the_common_contract() -> None:
     bundle = load_bundle()
 
@@ -144,7 +163,13 @@ def test_format_checker_asserts_only_the_contract_format_set() -> None:
     # Absolute URIs with a scheme are accepted, including fragments and
     # scheme-specific forms such as mailto; values urlsplit cannot parse fail
     # the check instead of raising.
-    for uri in ("https://example.test/a#section", "mailto:user@example.test"):
+    for uri in (
+        "https://example.test/a#section",
+        "mailto:user@example.test",
+        "https://user:pass@example.test:8080/a/b?x=1&y=2#frag",
+        "http://[2001:db8::1]:9090/path",
+        "urn:uuid:6fa459ea-ee8a-3ca4-894e-db77e160355e",
+    ):
         assert validator.is_valid(
             {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}
         )
@@ -155,6 +180,9 @@ def test_format_checker_asserts_only_the_contract_format_set() -> None:
         "https://example.test/a b",  # space inside the path
         "https://exämple.test",  # non-ASCII (IRIs are a different format)
         "https://example.test/a%zz",  # malformed percent-encoding
+        "https://example.test/a[b]",  # brackets are only valid in IPv6 hosts
+        "https://example.test:bad",  # authority port must be numeric
+        "https://user{name}@example.test",  # brace is not valid in userinfo
     ):
         assert not validator.is_valid(
             {"when": "2026-01-01T12:00:00Z", "where": uri, "who": "user@example.test"}

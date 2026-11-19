@@ -657,13 +657,13 @@ def test_invalid_input_uses_the_sdk_error_schema_with_a_strict_declared_schema()
     assert event.WhichOneof("event") == "result"
     assert event.result.status_code == 1
     assert json.loads(event.result.error_result_json)["code"] == FailureCode.INVALID_INPUT.value
-    assert event.result.error_schema_digest == canonical_json_digest(error_result_base_schema())
+    assert event.result.error_schema_digest == canonical_json_digest(_declared(error_schema))
 
     container_result = container_step_for_binding(binding)(_invocation(binding, {"value": "short"}))
     wrapper = standard_output_from_container_result(
         container_result,
         output_schema=to_json_document(binding.descriptor.output_schema),
-        error_schema=error_schema,
+        error_schema=_declared(error_schema),
     )
 
     assert wrapper.error.code == FailureCode.INVALID_INPUT.value
@@ -1153,6 +1153,32 @@ def test_reconstruction_checks_error_schema_even_with_matching_digest() -> None:
     )
     with pytest.raises(ContainerRemoteError):
         standard_output_from_container_result(result, output_schema={"type": "object"}, error_schema=schema)
+
+
+def test_reconstruction_rejects_a_base_digest_when_a_trusted_schema_is_supplied() -> None:
+    trusted_schema = _declared(
+        {
+            "type": "object",
+            "required": ["category", "code", "message", "retryable"],
+            "properties": {"category": {"type": "string"}},
+        }
+    )
+    base_document = {
+        "category": "business",
+        "code": "FAILED",
+        "message": "Failed",
+        "retryable": False,
+    }
+    result = ContainerResult(
+        canonical_json_digest(_declared({"type": "object"})), status_code=1,
+        error_result=base_document,
+        error_schema_digest=canonical_json_digest(error_result_base_schema()),
+    )
+
+    with pytest.raises(ContainerRemoteError):
+        standard_output_from_container_result(
+            result, output_schema=_declared({"type": "object"}), error_schema=trusted_schema
+        )
 
 
 @pytest.mark.parametrize(

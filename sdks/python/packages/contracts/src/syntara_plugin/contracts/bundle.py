@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 
 ContractKind = Literal[
@@ -119,13 +120,31 @@ _URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*")
 _URI_FORBIDDEN = re.compile(r"[\x00-\x20\x7f<>\"{}|\\^`]")
 # A "%" must introduce a valid percent-encoded octet.
 _MALFORMED_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+# RFC 3986 component grammars. "[]" is legal only inside an IPv6 host
+# literal, so it is absent from every other component's character class.
+_PCT_ENCODED = r"%[0-9A-Fa-f]{2}"
+_UNRESERVED = r"A-Za-z0-9\-._~"
+_SUB_DELIMS = r"!$&'()*+,;="
+# pchar = unreserved / pct-encoded / sub-delims / ":" / "@"; a path adds "/".
+_URI_PATH = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:@/]|{_PCT_ENCODED})*")
+# query and fragment add "/" and "?" to pchar.
+_URI_QUERY_OR_FRAGMENT = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:@/?]|{_PCT_ENCODED})*")
+# userinfo = *( unreserved / pct-encoded / sub-delims / ":" ).
+_URI_USERINFO = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}:]|{_PCT_ENCODED})*")
+# reg-name = *( unreserved / pct-encoded / sub-delims ).
+_URI_REG_NAME = re.compile(rf"(?:[{_UNRESERVED}{_SUB_DELIMS}]|{_PCT_ENCODED})*")
+# IP-literal brackets are only valid around an IPv6 address.
+_URI_IPV6_LITERAL = re.compile(r"\[[0-9A-Fa-f:.]+\]")
 
 
 @_FORMAT_CHECKER.checks("uri", raises=ValueError)
 def _is_absolute_uri(value: object) -> bool:
     """Accept absolute RFC 3986 URIs: a valid scheme plus a valid remainder.
 
-    Non-strings succeed, per the Draft 2020-12 format-assertion vocabulary.
+    Every component is checked against its RFC 3986 grammar, including the
+    authority (userinfo, host, port) and the path, query, and fragment
+    character sets. Non-strings succeed, per the Draft 2020-12
+    format-assertion vocabulary.
     """
 
     if not isinstance(value, str):
@@ -134,14 +153,49 @@ def _is_absolute_uri(value: object) -> bool:
     # malformed IPv6 host); the registered ``raises`` turns that into a failed
     # format check instead of an escaping exception.
     try:
-        scheme = urllib.parse.urlsplit(value).scheme
+        parsed = urllib.parse.urlsplit(value)
+        # Accessing .port validates its syntax: a non-numeric authority
+        # suffix such as "host:bad" raises ValueError.
+        _ = parsed.port
     except ValueError:
         return False
-    if not scheme or not _URI_SCHEME.fullmatch(scheme):
+    if not parsed.scheme or not _URI_SCHEME.fullmatch(parsed.scheme):
         return False
     if not value.isascii() or _URI_FORBIDDEN.search(value) or _MALFORMED_PERCENT.search(value):
         return False
+    if parsed.netloc and not _valid_uri_authority(parsed.netloc):
+        return False
+    if not _URI_PATH.fullmatch(parsed.path):
+        return False
+    if not _URI_QUERY_OR_FRAGMENT.fullmatch(parsed.query):
+        return False
+    if not _URI_QUERY_OR_FRAGMENT.fullmatch(parsed.fragment):
+        return False
     return True
+
+
+def _valid_uri_authority(netloc: str) -> bool:
+    """Validate one RFC 3986 authority: optional userinfo, host, and port."""
+
+    userinfo, _, hostport = netloc.rpartition("@")
+    if not _URI_USERINFO.fullmatch(userinfo):
+        return False
+    if hostport.startswith("["):
+        closing = hostport.find("]")
+        if closing == -1:
+            return False
+        literal, port = hostport[: closing + 1], hostport[closing + 1 :]
+        if not _URI_IPV6_LITERAL.fullmatch(literal) or not (
+            port in ("", ":") or port[1:].isdigit()
+        ):
+            return False
+        return True
+    host, separator, port = hostport.rpartition(":")
+    if not separator:
+        host, port = hostport, ""
+    if not _URI_REG_NAME.fullmatch(host):
+        return False
+    return port == "" or port.isdigit()
 
 
 def format_checker() -> FormatChecker:
@@ -264,6 +318,13 @@ def load_bundle() -> ContractBundle:
                 f"contract bundle document {name!r} must declare the "
                 f"{_CANONICAL_SCHEMA_DIALECT!r} dialect"
             )
+        try:
+            Draft202012Validator.check_schema(document)
+        except SchemaError as error:
+            raise RuntimeError(
+                f"contract bundle document {name!r} is not a valid "
+                f"Draft 2020-12 schema: {error}"
+            ) from error
     asserted_formats = _asserted_formats(documents)
     registered_formats = frozenset(_FORMAT_CHECKER.checkers)
     if asserted_formats != registered_formats:

@@ -198,7 +198,6 @@ class StepExecutor:
                     message=error.safe_message,
                 ),
                 outcome="not_started",
-                validate_declared_error_schema=False,
             )
         except Exception as error:
             raise StepExecutionError(
@@ -254,34 +253,26 @@ class StepExecutor:
         status_code: int = 1,
         status_message: str | None = None,
         outcome: Literal["not_started", "unknown"] = "unknown",
-        validate_declared_error_schema: bool = True,
     ) -> StandardOutputWrapper[Mapping[str, Any]]:
-        """Validate an error against the SDK base and, when applicable, its schema.
+        """Validate an error against the SDK base and the effective schema.
 
-        With ``validate_declared_error_schema`` (the default), the error is
-        validated against the base ``errorResultBase`` composition followed by
-        the step's declared ``spec.error`` schema. Without it, the error is
-        validated against the base alone; ``descriptor.error_schema`` is the
+        Every wrapper error, including input-validation errors, is validated
+        against the base ``errorResultBase`` composition followed by the
+        effective error schema: the step's declared ``spec.error``, or the
         closed ``errorResult`` fallback whenever the step declares no
         ``spec.error`` (see ``runtime.bindings``). The recorded digest always
-        covers the effective error schema that was validated.
+        covers that effective error schema, so no wrapper ever records a
+        base-only digest.
         """
 
         try:
             document = error.model_dump(mode="json")
             canonical_json_bytes(document)
-            schemas = [error_result_base_schema()]
-            if validate_declared_error_schema:
-                schemas.append(self._binding.descriptor.error_schema)
-            effective_schema = (
-                self._binding.descriptor.error_schema
-                if validate_declared_error_schema
-                else error_result_base_schema()
-            )
+            effective_schema = self._binding.descriptor.error_schema
             self._last_error_schema_digest = canonical_json_digest(
                 _thaw_json_document(effective_schema)
             )
-            for schema in schemas:
+            for schema in (error_result_base_schema(), effective_schema):
                 validator = build_validator(_thaw_json_document(schema))
                 if not validator.is_valid(document):
                     raise ValueError("invalid error result")

@@ -1223,6 +1223,12 @@ def _validate_field_names(fields: list[str]) -> None:
 
 
 def _validate_fields_schema(document: dict[str, Any]) -> None:
+    declared = document.get("$schema")
+    if declared is not None and declared != "https://json-schema.org/draft/2020-12/schema":
+        raise ValueError(
+            f"fields JSON schema declares unsupported dialect {declared!r}; only the "
+            "Draft 2020-12 dialect is accepted"
+        )
     if document.get("type") != "object":
         raise ValueError("fields JSON schema must have type: object")
     required = document.get("required", [])
@@ -1299,7 +1305,10 @@ def _write_workspace(directory: Path, arguments: argparse.Namespace, name: str) 
     if not custom_workload:
         payload = _fields_payload(arguments.fields) if arguments.fields is not None else []
         if isinstance(payload, dict):
-            document = {**payload, "$schema": "https://json-schema.org/draft/2020-12/schema"}
+            # The declaration is injected only when the author omitted it; a
+            # non-2020-12 declaration was already rejected during validation.
+            document = {**payload}
+            document.setdefault("$schema", "https://json-schema.org/draft/2020-12/schema")
             (directory / input_path).write_text(
                 yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
             )
