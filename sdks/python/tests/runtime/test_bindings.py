@@ -716,18 +716,22 @@ def test_installed_step_descriptor_supports_non_action_custom_runners(
 def test_installed_step_rejects_structurally_invalid_manifest_schemas(
     schema_name: str, invalid_schema: dict[str, object]
 ) -> None:
+    input_schema = (
+        invalid_schema
+        if schema_name == "input_schema"
+        else {"$schema": _DIALECT, **EchoInput.model_json_schema()}
+    )
+    output_schema = (
+        invalid_schema
+        if schema_name == "output_schema"
+        else {"$schema": _DIALECT, **EchoOutput.model_json_schema()}
+    )
+
     with pytest.raises(
         StepBindingError,
         match=f"resolved step type {schema_name.removesuffix('_schema')} schema is invalid",
     ):
-        _installed_step(
-            invalid_schema
-            if schema_name == "input_schema"
-            else {"$schema": _DIALECT, **EchoInput.model_json_schema()},
-            invalid_schema
-            if schema_name == "output_schema"
-            else {"$schema": _DIALECT, **EchoOutput.model_json_schema()},
-        )
+        _installed_step(input_schema, output_schema)
 
 
 @pytest.mark.parametrize(
