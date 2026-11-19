@@ -58,7 +58,8 @@ def fetch_jobs(repository: str, run_id: str) -> list[dict[str, Any]]:
     return jobs
 
 
-def main() -> int:
+def required_jobs() -> set[str]:
+    """Read and validate the job names the gate must check."""
     names = json.loads(os.environ["REQUIRED_JOBS"])
     if (
         not isinstance(names, list)
@@ -68,12 +69,17 @@ def main() -> int:
         raise ValueError("REQUIRED_JOBS must be a nonempty list of job names")
     if len(set(names)) != len(names):
         raise ValueError("REQUIRED_JOBS contains duplicates")
-    required = set(names)
-    repository = os.environ["GITHUB_REPOSITORY"]
-    run_id = os.environ["GITHUB_RUN_ID"]
-    attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
-    if attempt < 1:
-        raise ValueError("Invalid workflow run attempt")
+    return set(names)
+
+
+def missing_from_retry(jobs: Sequence[dict[str, Any]], required: set[str], attempt: int) -> bool:
+    """Check whether a retry omitted any required job from its own attempt."""
+    present = {job.get("name") for job in jobs if job.get("run_attempt") == attempt}
+    return bool(required - present)
+
+
+def wait_for_jobs(repository: str, run_id: str, attempt: int, required: set[str]) -> int:
+    """Wait for the current attempt's required jobs and report their verdict."""
     deadline = time.monotonic() + 355 * 60
     missing_retry_deadline = time.monotonic() + 10 * 60
     previous: list[str] | None = None
@@ -87,20 +93,31 @@ def main() -> int:
             for detail in details:
                 print(f"::error::Required CI job did not succeed: {detail}", flush=True)
             return 1
-        if attempt > 1 and time.monotonic() >= missing_retry_deadline:
-            present = {job.get("name") for job in jobs if job.get("run_attempt") == attempt}
-            if required - present:
-                print(
-                    "::error::Required jobs are missing from this retry; re-run all jobs.",
-                    flush=True,
-                )
-                return 1
+        if (
+            attempt > 1
+            and time.monotonic() >= missing_retry_deadline
+            and missing_from_retry(jobs, required, attempt)
+        ):
+            print(
+                "::error::Required jobs are missing from this retry; re-run all jobs.", flush=True
+            )
+            return 1
         if details != previous:
             print("Waiting for: " + ", ".join(details), flush=True)
             previous = details
         time.sleep(30)
     print("::error::Timed out waiting for required CI jobs.", flush=True)
     return 1
+
+
+def main() -> int:
+    required = required_jobs()
+    repository = os.environ["GITHUB_REPOSITORY"]
+    run_id = os.environ["GITHUB_RUN_ID"]
+    attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+    if attempt < 1:
+        raise ValueError("Invalid workflow run attempt")
+    return wait_for_jobs(repository, run_id, attempt, required)
 
 
 if __name__ == "__main__":

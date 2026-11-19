@@ -79,7 +79,8 @@ def test_partial_retry_fails_with_a_full_retry_instruction(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     spec = importlib.util.spec_from_file_location("required_checks_test", GATE)
-    assert spec and spec.loader
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setenv("REQUIRED_JOBS", '["tests", "compat"]')
