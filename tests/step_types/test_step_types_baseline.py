@@ -401,7 +401,7 @@ def test_absence_reasons() -> None:
     assert "42" in expired
     failed = absence_reason({"source": "failed"})
     assert "recomputing them at the base commit failed" in failed
-    assert "baseline-recompute" in failed
+    assert "baseline recomputation" in failed
 
 
 def test_inherited_never_raises_on_garbage() -> None:

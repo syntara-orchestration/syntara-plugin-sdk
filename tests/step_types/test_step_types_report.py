@@ -430,7 +430,7 @@ def test_unrelated_compat_job_failure_is_not_excused_by_inherited_report(
     write_leg(tmp_path / "baseline", "script-bash", "pass")
 
     assert run(tmp_path, baseline=tmp_path / "baseline", compat="failure") == 1
-    assert "at least one step-type job did not complete successfully" in capsys.readouterr().out
+    assert "the grouped step-type run did not complete successfully" in capsys.readouterr().out
 
 
 def test_inherited_summary_wording(

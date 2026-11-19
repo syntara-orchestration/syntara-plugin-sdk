@@ -7,8 +7,7 @@ against those builds. A change that breaks a real step type shows up on the
 pull request, with the failing step type, the stage, and an analysis of the
 cause, before anything is released.
 
-The check is the workflow
-[`.github/workflows/step-types-compat.yml`](../.github/workflows/step-types-compat.yml);
+The check is the **Step type compatibility** job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml);
 its tooling lives in [`tests/step_types`](../tests/step_types).
 
 ## What runs
@@ -18,7 +17,7 @@ its tooling lives in [`tests/step_types`](../tests/step_types).
 2. **Discover step types**: checks out syntara-step-types at the pinned
    revision and reads the step types its own Makefile tests (`SDK_PLUGINS`).
    An empty list fails the check, so it can never pass while testing nothing.
-3. **One job per step type**, each with six numbered stages:
+3. **Step type tests**: one job runs each discovered step type sequentially, each with six numbered stages:
 
    | Stage | What it does |
    | --- | --- |
@@ -34,15 +33,15 @@ its tooling lives in [`tests/step_types`](../tests/step_types).
    While they run, every Python process records which SDK it imported, and a
    stage fails unless all of them used this pull request's wheels: a result
    produced by the published SDK says nothing about the change.
-4. **compat-report**: aggregates every job into one verdict and one summary
-   table, and compares failures against `devel` (the baseline, below). On pull
-   requests, this is the enforcement check: individual step-type reports are
-   evaluated here against the current label and `devel` baseline. On `devel`
-   pushes and manual runs, individual step-type jobs remain enforcing.
+4. **compat-report**: the final step aggregates all reports into one verdict
+   and compares failures against `devel` (the baseline, below). The enclosing
+   **Step type compatibility** job is the merge check; require it in branch
+   protection. On `devel` pushes and manual runs the same final step enforces
+   the results without a baseline.
 
 ## Reading a failure
 
-Each job prints a stage table and, when a stage fails, a failure panel:
+Each step type prints a stage table and, when a stage fails, a failure panel:
 
 - **Category**: where the failure comes from:
 
@@ -76,9 +75,8 @@ Each job prints a stage table and, when a stage fails, a failure panel:
 Collapsible groups below the panel hold the failed command's full output, the
 traceback frames labeled by side (SDK, step-types, third-party), and the
 environment details (candidate wheel hashes and installed versions). The job
-summary repeats the analysis, and each job uploads a
-`step-types-compat-<step type>` artifact with a JSON report and every stage's
-log.
+summary repeats the analysis, and the job uploads a
+`step-types-compat-grouped` artifact with every JSON report and stage log.
 
 ### When a failure reports unknown
 
@@ -86,7 +84,7 @@ An `unknown` failure still fails the check; it means no rule recognized the
 signature, so the analysis says what it knows and stops. To turn it into a
 rule:
 
-1. Open the leg's `step-types-compat-<step type>` artifact and read
+1. Open the `step-types-compat-grouped` artifact and read
    `<step type>.json` and the failing stage's log.
 2. Find the stable signature: an error code, an exact message line, or a
    traceback location.
@@ -113,8 +111,8 @@ the patch does not cover.
 ## Intentional breaking changes
 
 When the break is intended, add the `breaking-change` label to the pull request.
-The check re-runs by itself and then reports the same analysis as warnings
-without failing. Removing the label re-runs it again with failures enforced.
+CI re-runs and reports the same analysis as warnings without failing. Removing
+the label re-runs CI with failures enforced.
 The gate (`compat-report`) decides from the label as it reads it when it runs,
 so a stale result never outlives a label change. Coordinate the migration with
 the step-types maintainers and share the report.
@@ -128,8 +126,9 @@ needed on the pull request that introduces a break.
 
 ## Failures already on devel
 
-Every merge to `devel` runs this same workflow and uploads one report per step
-type. Those reports are the *baseline*: when a pull request leg fails, the gate
+Every merge to `devel` runs this same job and uploads one report per step
+type in its grouped artifact. Those reports are the *baseline*: when a pull
+request test fails, the gate
 reads the baseline for exactly the `devel` commit the pull request is tested
 against (the merge commit's base) and compares the failures. Reading it needs
 only the workflow's read-only token.
@@ -145,10 +144,9 @@ only the workflow's read-only token.
 - A pull request that breaks strictly less than `devel` (fewer broken fields)
   is inherited too, and the summary says so.
 
-On pull requests, a step type's compatibility command can fail without
-failing its matrix job directly; `compat-report` evaluates the resulting
-report. Failures elsewhere in a matrix job, such as setup or report upload,
-still fail the aggregate check. If the compatibility command exits
+The runner records each compatibility command's result and continues to the
+next step type. The final `compat-report` step evaluates every report; setup,
+runner, and report-upload failures still fail the job. If the compatibility command exits
 unsuccessfully after writing a non-failing report, the gate marks that report
 as a runner error and fails. A new compatibility failure, tooling failure,
 or discovery failure also fails the aggregate check. This lets a later pull
@@ -171,17 +169,14 @@ Not every failure can be inherited: `infra` and `unknown` failures never are
 stable enough to compare. The policy lives in `tests/step_types/baseline.py`,
 and a test fails when the classifier gains a rule the policy does not know.
 
-The baseline is a completed `devel` run for the pull request's base commit,
-downloaded when a leg fails. When that run's reports are unavailable (the
-merge happened minutes ago and it is still running, it was cancelled, or its
-artifacts expired after 90 days), the workflow recomputes them itself: a
-`baseline-recompute` job checks out the base commit, builds its wheels, and
-runs the same legs against the step-types revision that commit pins (a pin
+The baseline is a completed `devel` push run for the pull request's base
+commit, not a manually overridden run. When its reports are unavailable
+(the push is still running, was cancelled, or its artifacts expired), the job
+checks out the base commit, builds its wheels, and reruns the same step types
+against the revision that commit pins (a pin
 bump stays strictly judged: the pull request's new pin never becomes its own
 baseline), so the pull request is self-sufficient and nobody refreshes
-anything by hand. When only the gate failed (after a label change, for
-example), re-running the `compat-report` job alone is enough, and the legs
-are reused.
+anything by hand. Re-running the job repeats the tests and the final report.
 
 ## The pinned revision
 
@@ -192,12 +187,12 @@ STEP_TYPES_REF: ${{ inputs.step_types_ref || '<commit SHA>' }}
 ```
 
 To move the pin, open a pull request that changes that SHA; the check runs
-against the new revision before the change merges. Every job shows the pin's
+against the new revision before the change merges. The job shows the pin's
 age and warns when it is more than 14 days old.
 
 To try another revision without changing the pin, run the workflow manually
-from the Actions tab and set `step_types_ref` to a commit, branch, or tag. The
-manual run also has a `report_only` option.
+from the CI workflow in the Actions tab and set `step_types_ref` to a commit,
+branch, or tag. The manual run also has a `report_only` option.
 
 ## Running it locally
 
@@ -221,9 +216,9 @@ pushed to it).
 - Stages blocked by a failed preflight, environment, or registry stage remain
   unchecked; those step types are reported as `not verified` rather than
   compatible (the adapter's migrated re-run is compared too).
-- The baseline is the `devel` run for the pull request's base commit; until
-  that run completes, inherited failures cannot be recognized.
-- The legs capture raw command output in the uploaded artifacts. That is fine
+- If the `devel` baseline is unavailable, the job recomputes it before testing
+  the candidate. A missing or invalid baseline fails the check.
+- The tests capture raw command output in the uploaded artifacts. That is fine
   for the public example step types; redact before pointing the check at
   inputs that carry real credentials.
 - Workload images install `syntara-plugin-contracts` from published releases

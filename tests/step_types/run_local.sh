@@ -10,7 +10,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-workflow="$root/.github/workflows/step-types-compat.yml"
+workflow="$root/.github/workflows/ci.yml"
 cache="$root/.cache/step-types-compat"
 checkout="$cache/step-types"
 wheels="$cache/wheels"

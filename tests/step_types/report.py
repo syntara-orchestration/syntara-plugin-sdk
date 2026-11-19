@@ -1,6 +1,6 @@
-"""Aggregate the per-step-type reports into one verdict (the compat-report job).
+"""Aggregate the per-step-type reports into one verdict (the final compat-report step).
 
-This job is the single gate for the whole check, and its exit code encodes the
+This step is the single gate for the whole check, and its exit code encodes the
 policy in one place:
 
 - the change detection job did not succeed: fail (an empty answer is not a skip);
@@ -17,12 +17,11 @@ policy in one place:
   baseline is the devel push run for this pull request's base commit, and only
   ``pull_request`` events consult it;
 - a runner exited unsuccessfully after writing a non-failing report: fail;
-- a matrix job did not complete successfully: fail, even if another job left
-  an inherited compatibility-failure report;
+- the grouped runner or report upload did not complete successfully: fail;
 - otherwise: pass.
 
-Skipped jobs count as success for required checks, so this job judges its
-needs' results itself instead of inheriting them. The label is read only here,
+The final step judges the preceding step results rather than trusting a
+missing report or a skipped setup step. The label is read only here,
 at gate time: the mode a leg recorded from the label may be stale (the label
 can be removed after the legs ran, and "Re-run failed jobs" reuses outputs of
 jobs that already succeeded), so it is never trusted.
@@ -148,10 +147,9 @@ def verdict(
                 suffix = ", new in this pull request" if baseline is not None else ""
                 reasons.append(f"{plugin}: {_word(report)}{suffix}")
     if args.discover == "success" and args.compat != "success":
-        # On pull requests, the driver's compatibility command is the only
-        # continued step. Any failed matrix job is an unrelated runner/setup
-        # failure and cannot be excused by an inherited compatibility report.
-        reasons.append(f"at least one step-type job did not complete successfully ({args.compat})")
+        # An unsuccessful grouped runner or report upload is a tooling failure
+        # and cannot be excused by an inherited compatibility report.
+        reasons.append(f"the grouped step-type run did not complete successfully ({args.compat})")
     if reasons:
         return Verdict(1, reasons, warnings, inherited_notes)
     if warnings:

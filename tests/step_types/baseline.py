@@ -311,7 +311,7 @@ def absence_reason(meta: dict[str, Any]) -> str:
     if meta.get("source") == "failed":
         return (
             "the devel run's reports could not be downloaded and recomputing them at the base "
-            "commit failed; open the baseline-recompute job logs"
+            "commit failed; open the baseline recomputation step logs"
         )
     if "run_id" not in meta:
         return "the baseline lookup did not complete"
