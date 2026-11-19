@@ -202,8 +202,8 @@ spec:
   documentation:
     path: docs/README.md
   workloads:
-    python:
-      image: python-runtime
+    python-steps-workload:
+      image: python-steps-workload
   targets:
     - steps/create-issue/manifest.yaml
     - steps/record-opened/manifest.yaml
@@ -212,6 +212,9 @@ spec:
 The `namespace`, the plugin `name`, and each step type `name` form the step type's
 identity. Renaming any of them creates a different step type, so choose
 stable, lowercase names. Increase the semantic `version` for every release.
+Custom-runner Steps use the sole declared workload automatically. If the plugin
+declares multiple workloads, each custom-runner Step must set
+`spec.runtime.workload` to a declared workload ID.
 
 ### Declare an Action
 

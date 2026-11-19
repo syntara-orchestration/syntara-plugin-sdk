@@ -1771,7 +1771,7 @@ def _run_image_mode(
         raise RunExecutionError(
             "this workspace declares no workload image to run",
             next_steps=(
-                "add spec.workload.image to plugin.yaml",
+                "declare a workload under spec.workloads in plugin.yaml",
                 "or start the runtime yourself and pass --address HOST:PORT",
             ),
         )

@@ -529,8 +529,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: {image_tag}
+  workloads:
+    {image_tag}:
+      image: {image_tag}
   targets:
     - steps/v1/manifest.yaml
 """,
@@ -637,8 +638,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: {image_tag}
+  workloads:
+    {image_tag}:
+      image: {image_tag}
   targets:
     - steps/v1/manifest.yaml
     - steps/connection/manifest.yaml

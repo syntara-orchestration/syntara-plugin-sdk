@@ -202,6 +202,7 @@ class CompilationResult:
 
     descriptor: Mapping[str, Any]
     assets: Mapping[str, CompiledAsset]
+    workload_images: Mapping[str, str] = field(default_factory=dict)
     diagnostics: tuple[Diagnostic, ...] = ()
     deferred_image_bindings: tuple[str, ...] = ()
 
@@ -390,6 +391,7 @@ def _compile(
     return CompilationResult(
         descriptor=cast(Mapping[str, Any], _ordered(descriptor)),
         assets={key: assets[key] for key in sorted(assets)},
+        workload_images=_source_workload_images(plugin.document),
         deferred_image_bindings=tuple(
             sorted(
                 identifier
@@ -646,13 +648,10 @@ def _normalize_runner_runtime(raw_runtime: object, plugin: Mapping[str, Any]) ->
 
 def _normalized_runner_workload(runtime: Mapping[str, Any], plugin_spec: Mapping[str, Any]) -> Any:
     workloads = plugin_spec.get("workloads")
-    if isinstance(workloads, Mapping) and workloads:
-        selected = runtime.get("workload")
-        if selected is None and len(workloads) == 1:
-            return next(iter(workloads))
-        return selected
-    legacy_workload = plugin_spec.get("workload")
-    return legacy_workload.get("image") if isinstance(legacy_workload, Mapping) else None
+    selected = runtime.get("workload")
+    if selected is None and isinstance(workloads, Mapping) and len(workloads) == 1:
+        return next(iter(workloads))
+    return selected
 
 
 def _normalize_integration_type(
@@ -973,10 +972,6 @@ def _canonical_workloads(
                 bindings,
                 bind_workload_images,
             )
-    workload = specification.get("workload")
-    if isinstance(workload, Mapping):
-        identifier = str(workload.get("image"))
-        _add_workload_binding(result, identifier, identifier, bindings, bind_workload_images)
     _add_provider_bindings(result, specification, bindings)
     return {key: result[key] for key in sorted(result)}
 
@@ -1033,7 +1028,6 @@ def _validate_custom_workload_assignments(
     targets: Sequence[Mapping[str, Any]],
     diagnostics: list[Diagnostic],
 ) -> None:
-    workload_image = _root_workload_image(plugin)
     workloads = _root_workloads(plugin)
     custom_targets = [
         target
@@ -1041,28 +1035,39 @@ def _validate_custom_workload_assignments(
         if isinstance(target.get("runtime"), Mapping)
         and target["runtime"].get("kind") == "custom-runner"
     ]
-    if workload_image is None and not workloads and custom_targets:
+    if not workloads and custom_targets:
         diagnostics.append(
             _diagnostic(
                 "WORKLOAD_MISSING",
-                "A custom-runner Step type must reference workload metadata in spec.workload.image or spec.workloads.",
+                "A custom-runner Step type requires a non-empty spec.workloads map.",
                 PLUGIN_MANIFEST_FILENAME,
-                "Declare spec.workload for one runtime or spec.workloads for named runtimes.",
+                "Declare at least one workload in plugin.yaml under spec.workloads.",
             )
         )
+        return
     declared_workload_ids = set(workloads)
-    if not declared_workload_ids and workload_image is not None:
-        declared_workload_ids = {workload_image}
     for target in custom_targets:
         runtime = target["runtime"]
         workload_id = runtime.get("workload")
-        if workload_id not in declared_workload_ids:
+        source_path = str(target.get("sourcePath") or PLUGIN_MANIFEST_FILENAME)
+        if workload_id is None and len(declared_workload_ids) > 1:
+            diagnostics.append(
+                _diagnostic(
+                    "WORKLOAD_STEP_ASSIGNMENT_MISSING",
+                    f"Custom-runner target {target.get('identity', '<unknown>')!r} must select a workload when multiple workloads are declared.",
+                    source_path,
+                    "Set spec.runtime.workload to a workload declared in plugin.yaml.",
+                )
+            )
+        elif workload_id is not None and (
+            not isinstance(workload_id, str) or workload_id not in declared_workload_ids
+        ):
             diagnostics.append(
                 _diagnostic(
                     "WORKLOAD_STEP_ASSIGNMENT_INVALID",
-                    f"Custom-runner target {target.get('identity', '<unknown>')!r} references an undeclared workload.",
-                    PLUGIN_MANIFEST_FILENAME,
-                    "Set runtime.workload to a workload declared in plugin.yaml.",
+                    f"Custom-runner target {target.get('identity', '<unknown>')!r} references undeclared workload {workload_id!r}.",
+                    source_path,
+                    "Set spec.runtime.workload to a workload declared in plugin.yaml.",
                 )
             )
 
@@ -1070,6 +1075,16 @@ def _validate_custom_workload_assignments(
 def _validate_unique_workload_images(
     plugin: Mapping[str, Any], diagnostics: list[Diagnostic]
 ) -> None:
+    id_collisions = set(_root_workloads(plugin)) & _provider_image_ids(plugin)
+    for workload_id in sorted(id_collisions):
+        diagnostics.append(
+            _diagnostic(
+                "WORKLOAD_PROVIDER_ID_CONFLICT",
+                f"Workload ID {workload_id!r} is also used as a provider image ID.",
+                PLUGIN_MANIFEST_FILENAME,
+                "Use distinct IDs for named workloads and provider images.",
+            )
+        )
     collisions = _workload_image_ids(plugin) & _provider_image_ids(plugin)
     for image_id in sorted(collisions):
         diagnostics.append(
@@ -1117,31 +1132,30 @@ def _required_image_bindings(plugin: Mapping[str, Any]) -> set[str]:
     return required
 
 
-def _root_workload_image(plugin: Mapping[str, Any]) -> str | None:
-    workload = plugin.get("spec", {}).get("workload")
-    if not isinstance(workload, Mapping):
-        return None
-    return str(workload.get("image"))
-
-
 def _root_workloads(plugin: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Return named root workloads; legacy single-workload input stays separate."""
+    """Return named root workloads."""
     specification = plugin.get("spec", {})
     workloads = specification.get("workloads") if isinstance(specification, Mapping) else None
     return workloads if isinstance(workloads, Mapping) else {}
 
 
+def _source_workload_images(plugin: Mapping[str, Any]) -> dict[str, str]:
+    """Return source image IDs keyed by their logical workload IDs."""
+
+    return {
+        str(workload_id): str(workload["image"])
+        for workload_id, workload in _root_workloads(plugin).items()
+        if isinstance(workload, Mapping) and isinstance(workload.get("image"), str)
+    }
+
+
 def _workload_image_ids(plugin: Mapping[str, Any]) -> set[str]:
-    """Return declared image build IDs for both authoring forms."""
-    workloads = _root_workloads(plugin)
-    if workloads:
-        return {
-            str(workload["image"])
-            for workload in workloads.values()
-            if isinstance(workload, Mapping) and isinstance(workload.get("image"), str)
-        }
-    workload_image = _root_workload_image(plugin)
-    return {workload_image} if workload_image is not None else set()
+    """Return declared image build IDs."""
+    return {
+        str(workload["image"])
+        for workload in _root_workloads(plugin).values()
+        if isinstance(workload, Mapping) and isinstance(workload.get("image"), str)
+    }
 
 
 def _provider_image_ids(plugin: Mapping[str, Any]) -> set[str]:

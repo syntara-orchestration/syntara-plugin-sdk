@@ -9,8 +9,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: subworkflow-composition-workload
+  workloads:
+    subworkflow-composition-workload:
+      image: subworkflow-composition-workload
   targets:
     - steps/call-publish-artifact/manifest.yaml
     - steps/publish-artifact-requested/manifest.yaml

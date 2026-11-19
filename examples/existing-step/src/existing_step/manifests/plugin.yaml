@@ -12,8 +12,10 @@
     "documentation": {
       "path": "docs/README.md"
     },
-    "workload": {
-      "image": "existing-step-workload"
+    "workloads": {
+      "existing-step-workload": {
+        "image": "existing-step-workload"
+      }
     },
     "targets": [
       "steps/create-ticket.yaml",

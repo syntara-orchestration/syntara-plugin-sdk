@@ -13,12 +13,6 @@
             "additionalProperties": false,
             "required": ["documentation", "targets"],
             "properties": {
-                "workload": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["image"],
-                    "properties": {"image": {"$ref": "common.schema.json#/$defs/identifier"}}
-                },
                 "workloads": {
                     "type": "object",
                     "minProperties": 1,
@@ -63,8 +57,7 @@
                         "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+\\.ya?ml$"
                     }
                 }
-            },
-            "not": {"required": ["workload", "workloads"]}
+            }
         }
     }
 }

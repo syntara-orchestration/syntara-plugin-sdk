@@ -98,7 +98,7 @@ def _workspace(tmp_path: Path) -> Path:
                 },
                 "spec": {
                     "documentation": {"path": "docs/README.md"},
-                    "workload": {"image": "compile-workload"},
+                    "workloads": {"compile-workload": {"image": "compile-workload"}},
                     "targets": ["steps/greet/manifest.yaml"],
                 },
             }
@@ -148,7 +148,7 @@ def test_compile_manifest_accepts_an_in_memory_plugin() -> None:
         },
         "spec": {
             "documentation": {"path": "docs/README.md"},
-            "workload": {"image": "memory-workload"},
+            "workloads": {"memory-workload": {"image": "memory-workload"}},
             "targets": ["steps/greet/manifest.yaml"],
         },
     }

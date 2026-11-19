@@ -139,7 +139,7 @@ def _workspace(tmp_path: Path, manifest: Mapping[str, Any]) -> Path:
                 },
                 "spec": {
                     "documentation": {"path": "docs/README.md"},
-                    "workload": {"image": "greet-workload"},
+                    "workloads": {"greet-workload": {"image": "greet-workload"}},
                     "targets": ["steps/greet/manifest.yaml"],
                 },
             }
@@ -179,7 +179,7 @@ def _two_action_workspace(tmp_path: Path) -> Path:
                 },
                 "spec": {
                     "documentation": {"path": "docs/README.md"},
-                    "workload": {"image": "two-actions-workload"},
+                    "workloads": {"two-actions-workload": {"image": "two-actions-workload"}},
                     "targets": ["steps/greet/manifest.yaml", "steps/wave/manifest.yaml"],
                 },
             }

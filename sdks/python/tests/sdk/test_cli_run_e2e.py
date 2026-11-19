@@ -600,8 +600,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: e2e-workload
+  workloads:
+    e2e-workload:
+      image: e2e-workload
   targets:
 {targets}""",
         encoding="utf-8",
@@ -826,8 +827,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: progress-workload
+  workloads:
+    progress-workload:
+      image: progress-workload
   targets:
     - steps/echo/manifest.yaml
 """,
@@ -1058,8 +1060,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: cred-workload
+  workloads:
+    cred-workload:
+      image: cred-workload
   targets:
     - steps/ok/manifest.yaml
     - steps/connection/manifest.yaml

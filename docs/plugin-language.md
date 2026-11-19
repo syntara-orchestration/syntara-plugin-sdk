@@ -56,9 +56,35 @@ Schema: [`plugin.schema.json`](../contracts/schemas/v1alpha1/plugin.schema.json)
 | --- | --- |
 | `spec.targets` | Required list of contained YAML target paths. These are step types, integration types, and credential recipes included in the release. |
 | `spec.documentation.path` | Required contained UTF-8 Markdown file published with the plugin. |
-| `spec.workload.image` | Legacy optional logical image ID shared by every `custom-runner` Step type. |
-| `spec.workloads.<id>.image` | Logical workload/image ID used by custom-runner Step types that name the corresponding workload in `spec.runtime.workload`. A plugin may declare multiple workload IDs. These are logical IDs, not registry references. |
+| `spec.workloads.<id>.image` | Logical image ID for a named workload. Required for custom-runner Step types; these IDs are not registry references. |
 | `spec.providers` | Optional declarative form-provider image definitions. Each item has an `id` and a logical `image` ID. |
+
+Declare a non-empty `spec.workloads` map when the plugin has a custom-runner
+Step. A custom-runner Step selects a declared ID with `spec.runtime.workload`.
+If there is exactly one workload, the Step can omit that field and selects it
+implicitly. When there are multiple workloads, every custom-runner Step must
+name one. Platform-runner Steps must not declare `spec.runtime.workload`;
+platform-only plugins do not need a workload declaration.
+
+For example, these excerpts declare two workloads in `plugin.yaml` and select
+one in an Action manifest:
+
+```yaml
+# plugin.yaml
+spec:
+  workloads:
+    issue-worker:
+      image: issue-worker
+    report-worker:
+      image: report-worker
+---
+# Action manifest
+spec:
+  runtime:
+    kind: custom-runner
+    entryPoint: example.create_issue:CreateIssueStep
+    workload: issue-worker
+```
 
 For new custom-runner releases, define the available image options and immutable
 image digests in a separate `kind: RuntimeBinding` manifest. See the
@@ -76,6 +102,7 @@ Schema: [`action.schema.json`](../contracts/schemas/v1alpha1/action.schema.json)
 | `spec.runtime.implementation` | Required for `platform-runner`; a registered step type reference in `<namespace>.<plugin>.<step>@version` form, with a SemVer 2.0.0 version (including optional prerelease and build metadata), such as `example.hello-world.hello@0.1.0`. Forbidden for `custom-runner`. |
 | `spec.runtime.operation` | Optional HTTP operation metadata for the built-in `syntara.http.request@<version>` platform runner: an inert method, relative path, and optional mappings. Forbidden for `custom-runner` and all other implementations. |
 | `spec.runtime.entryPoint` | Required for `custom-runner`; a `module:Class` handle for the step type implementation inside the digest-pinned runner image. It is an implementation identity, not a placement decision: Syntara policy may run it in the selected host execution path or delegate it to the Execution Plane. |
+| `spec.runtime.workload` | A workload ID declared in the plugin's `spec.workloads`. Required for `custom-runner` when more than one workload is declared; otherwise the sole workload is selected implicitly. Forbidden for `platform-runner`. |
 | `spec.domain` | Optional qualified domain identifier that groups an Action step type independently of its runner. |
 | `spec.integrationType` | Optional qualified integration type required by the step type. A workflow selects an instance of this type, not raw credentials. |
 | `spec.input` | Required input JSON Schema source. |

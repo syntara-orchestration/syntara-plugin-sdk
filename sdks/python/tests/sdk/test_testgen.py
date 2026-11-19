@@ -63,8 +63,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: gen-workload
+  workloads:
+    gen-workload:
+      image: gen-workload
   targets:
     - steps/create/manifest.yaml
 """,
@@ -452,8 +453,9 @@ metadata:
 spec:
   documentation:
     path: docs/README.md
-  workload:
-    image: business-workload
+  workloads:
+    business-workload:
+      image: business-workload
   targets:
     - steps/count-report/manifest.yaml
 """,
