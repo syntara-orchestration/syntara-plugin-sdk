@@ -202,6 +202,7 @@ class CompilationResult:
 
     descriptor: Mapping[str, Any]
     assets: Mapping[str, CompiledAsset]
+    workload_images: Mapping[str, str] = field(default_factory=dict)
     diagnostics: tuple[Diagnostic, ...] = ()
     deferred_image_bindings: tuple[str, ...] = ()
 
@@ -390,6 +391,7 @@ def _compile(
     return CompilationResult(
         descriptor=cast(Mapping[str, Any], _ordered(descriptor)),
         assets={key: assets[key] for key in sorted(assets)},
+        workload_images=_source_workload_images(plugin.document),
         deferred_image_bindings=tuple(
             sorted(
                 identifier
@@ -1048,7 +1050,7 @@ def _validate_custom_workload_assignments(
         runtime = target["runtime"]
         workload_id = runtime.get("workload")
         source_path = str(target.get("sourcePath") or PLUGIN_MANIFEST_FILENAME)
-        if workload_id is None:
+        if workload_id is None and len(declared_workload_ids) > 1:
             diagnostics.append(
                 _diagnostic(
                     "WORKLOAD_STEP_ASSIGNMENT_MISSING",
@@ -1057,7 +1059,9 @@ def _validate_custom_workload_assignments(
                     "Set spec.runtime.workload to a workload declared in plugin.yaml.",
                 )
             )
-        elif not isinstance(workload_id, str) or workload_id not in declared_workload_ids:
+        elif workload_id is not None and (
+            not isinstance(workload_id, str) or workload_id not in declared_workload_ids
+        ):
             diagnostics.append(
                 _diagnostic(
                     "WORKLOAD_STEP_ASSIGNMENT_INVALID",
@@ -1133,6 +1137,16 @@ def _root_workloads(plugin: Mapping[str, Any]) -> Mapping[str, Any]:
     specification = plugin.get("spec", {})
     workloads = specification.get("workloads") if isinstance(specification, Mapping) else None
     return workloads if isinstance(workloads, Mapping) else {}
+
+
+def _source_workload_images(plugin: Mapping[str, Any]) -> dict[str, str]:
+    """Return source image IDs keyed by their logical workload IDs."""
+
+    return {
+        str(workload_id): str(workload["image"])
+        for workload_id, workload in _root_workloads(plugin).items()
+        if isinstance(workload, Mapping) and isinstance(workload.get("image"), str)
+    }
 
 
 def _workload_image_ids(plugin: Mapping[str, Any]) -> set[str]:

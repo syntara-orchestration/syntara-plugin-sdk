@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import uuid
+from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -2907,6 +2908,76 @@ def test_mode_spies_source_image_and_address(monkeypatch, tmp_path: Path, capsys
     assert len(calls["image"]) == 1
     assert calls["image"][0].get("startup_seconds") is not None
     assert calls["managed"] == []
+
+
+def test_image_mode_uses_named_workload_image_id(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Managed image mode resolves the image ID separately from the workload key."""
+
+    import syntara_plugin.sdk.runner as runner_module
+    from syntara_plugin.sdk import container_engine
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    manifest = workspace / "plugin.yaml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "run-workload:\n      image: run-workload",
+            "python:\n      image: python-runtime",
+        ),
+        encoding="utf-8",
+    )
+    calls: dict[str, Any] = {}
+
+    @contextmanager
+    def fake_managed_runtime(image, target, **kwargs):
+        calls["managed_image"] = image
+        yield container_engine.ManagedRuntime(
+            engine=container_engine.ContainerEngine("podman"),
+            image=image,
+            container_name="syntara-run-test",
+            address="127.0.0.1:50051",
+        )
+
+    def fake_run_image(address, target, inputs, input_source, **kwargs):
+        calls["target"] = target
+        return runner_module.RunReport(
+            mode="image",
+            target=target.identity,
+            input_source=input_source,
+            input_values=inputs,
+            ok=True,
+            invocation_id="invocation",
+            status=0,
+            status_message="",
+            output={"slug": "ok"},
+            object_reference=None,
+            output_schema_digest=None,
+            error=None,
+            outcome=None,
+            image=target.workload_image,
+        )
+
+    monkeypatch.setattr(container_engine, "managed_runtime", fake_managed_runtime)
+    monkeypatch.setattr(runner_module, "run_image", fake_run_image)
+
+    status = main(
+        [
+            "run",
+            "--manifest",
+            str(manifest),
+            "--mode",
+            "image",
+            "--input",
+            '{"title": "x"}',
+        ]
+    )
+
+    assert status == 0
+    assert calls["managed_image"] == "python-runtime"
+    assert calls["target"].workload_id == "python"
+    assert calls["target"].workload_image == "python-runtime"
+    assert "python-runtime" in capsys.readouterr().out
 
 
 def test_invalid_input_never_invokes_the_execution_machinery(

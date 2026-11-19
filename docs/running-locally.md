@@ -346,8 +346,8 @@ The managed path never builds or pulls images: a missing image is an error
 with the fix, not a side effect, because building requires the author-owned
 Containerfile and bindings factory the CLI cannot infer. Build the release
 first with `syntara-plugin build`; for a RuntimeBinding release, use the
-inventory and option shown above. The legacy single-image path uses the image
-reference recorded in the compiled descriptor. A
+inventory and option shown above. The managed path uses the workload image ID
+declared in the source plugin manifest. A
 container whose process exits before its runtime becomes healthy is reported
 immediately, with its exit status and the last lines of its log, instead of
 waiting out the startup window. The

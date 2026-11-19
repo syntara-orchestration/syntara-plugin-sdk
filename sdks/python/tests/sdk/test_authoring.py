@@ -1108,6 +1108,7 @@ def test_sole_workload_is_selected_by_id_not_image() -> None:
 
     assert result.descriptor["spec"]["targets"][0]["runtime"]["workload"] == "python"
     assert result.descriptor["spec"]["workloads"]["python"]["image"] == DIGEST
+    assert result.workload_images == {"python": "python-runtime"}
 
 
 def test_multiple_workloads_require_explicit_step_assignment() -> None:

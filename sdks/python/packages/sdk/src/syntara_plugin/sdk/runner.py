@@ -663,6 +663,12 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         selected: Mapping[str, Any] = runnable[0]
     else:
         selected = _select_requested(targets, runnable, requested)
+    workload_id = selected.get("runtime", {}).get("workload")
+    workload_image = (
+        result.workload_images.get(workload_id, workload_id)
+        if isinstance(workload_id, str)
+        else None
+    )
     return RunTarget(
         identity=str(selected["identity"]),
         kind=str(selected["kind"]),
@@ -670,8 +676,8 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         metadata_name=str(selected["metadata"]["name"]),
         input_schema=selected["input"],
         schema_digests=selected["schemaDigests"],
-        workload_image=selected.get("runtime", {}).get("workload"),
-        workload_id=selected.get("runtime", {}).get("workload"),
+        workload_image=workload_image,
+        workload_id=workload_id,
         step_revision_id=str(selected["step_revision_id"]),
         integration_type=selected.get("integrationType"),
     )
