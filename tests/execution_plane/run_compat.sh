@@ -38,31 +38,38 @@ test_file="$ep/tests/integration/kind/test_sdk_checkout_compat.py"
 registry_started=0
 runtime_container=""
 runtime_started=0
+pods_dispatched=0
 api_pid=""
 secrets_owned=0
 secrets_dir="$ep/.secrets"
 cleanup() {
   status=$?
+  # Worker-pod output is the primary leak surface, so it is collected on
+  # success and failure alike: the sentinel scan below must see it even
+  # when the run passed. The Execution Plane normally deletes completed
+  # workload pods during dispatch, so this is best effort; the runtime's
+  # structured log stream reaches the scan through the JUnit results.
+  if (( pods_dispatched )) \
+    && [[ "$(command kubectl config current-context 2>/dev/null || true)" == "kind-$cluster" ]]; then
+    kubectl logs -n execution-plane --all-containers --prefix \
+      --tail=-1 -l execution-plane.syntara.io/work-item \
+      > "$logs/worker-pod-logs.txt" 2>&1 || true
+  fi
   if (( status != 0 )); then
     if [[ "$(command kubectl config current-context 2>/dev/null || true)" == "kind-$cluster" ]]; then
       kubectl get pods -A -o wide > "$logs/pods.txt" 2>&1 || true
       kubectl get events -A --sort-by=.lastTimestamp > "$logs/events.txt" 2>&1 || true
       kubectl describe pods -n execution-plane > "$logs/pod-details.txt" 2>&1 || true
-      kubectl logs -n execution-plane --all-containers --prefix \
-        --tail=-1 -l execution-plane.syntara.io/work-item \
-        > "$logs/worker-pod-logs.txt" 2>&1 || true
     fi
     if (( registry_started )); then "$engine" logs "$registry" > "$logs/registry.log" 2>&1 || true; fi
     if (( runtime_started )); then "$engine" logs "$runtime_container" > "$logs/runtime-server.log" 2>&1 || true; fi
     echo "Compatibility test failed; diagnostics: $logs" >&2
   fi
   [[ -z "$api_pid" ]] || kill "$api_pid" 2>/dev/null || true
-  # Scan every collected log and result for the credential sentinel. This
-  # runs on success and failure alike, after diagnostics collection, so a
-  # leak into the worker-pod or runtime logs cannot escape the run. On a
-  # hit, redact the value from every affected file before the workflow
-  # uploads the log directory as an artifact; the sentinel is plain hex,
-  # so it is safe as a sed pattern.
+  # Scan every collected log and result for the credential sentinel, on
+  # success and failure alike. On a hit, redact the value from every
+  # affected file before the workflow uploads the log directory as an
+  # artifact; the sentinel is plain hex, so it is safe as a sed pattern.
   if [[ -n "${EP_COMPAT_CREDENTIAL_TOKEN:-}" ]] \
     && grep -R -F -q -- "$EP_COMPAT_CREDENTIAL_TOKEN" "$logs" 2>/dev/null; then
     echo 'The credential sentinel value appeared in compatibility logs or test output and was redacted before upload' >&2
@@ -207,6 +214,7 @@ export EP_COMPAT_CREDENTIAL_TOKEN="$sentinel"
 unset sentinel
 
 cp "$root/tests/execution_plane/test_compat.py" "$test_file"
+pods_dispatched=1
 compat_status=0
 if ! (cd "$ep" && UV_PROJECT_ENVIRONMENT="$tmp/ep-venv" uv run --no-sync pytest "$test_file" -v --timeout=600 --junitxml="$logs/results.xml"); then
   compat_status=1
