@@ -12,7 +12,10 @@ kubectl apply -f "$root/tests/execution_plane/network-probe.yaml"
 kubectl wait --for=condition=Ready pod/compat-network-probe --timeout=120s
 kubectl wait --for=condition=Ready pod/compat-network-peer --timeout=120s
 peer_index="$(kubectl exec compat-network-probe -- cat /sys/class/net/eth0/iflink | tr -d '\r')"
-"$engine" exec "$node" ip -o link show | grep -Eq "^${peer_index}: veth[^:]*:"
+# Consume the complete command output before checking the match. With
+# pipefail, grep -q can close the pipe early and make the producer exit with
+# SIGPIPE (141), turning a successful interface check into a flaky failure.
+"$engine" exec "$node" ip -o link show | grep -E "^${peer_index}: veth[^:]*:" >/dev/null
 node_ip="$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')"
 api_ip="$(kubectl get service kubernetes -o jsonpath='{.spec.clusterIP}')"
 peer_ip="$(kubectl get pod compat-network-peer -o jsonpath='{.status.podIP}')"

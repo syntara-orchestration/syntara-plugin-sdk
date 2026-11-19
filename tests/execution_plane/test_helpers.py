@@ -263,8 +263,12 @@ def test_egress_firewall_blocks_new_pod_connections(tmp_path):
     engine = bin_dir / "engine"
     engine.write_text(
         "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
         'echo "engine $*" >> "$CALLS"\n'
-        'if [[ "$*" == *"ip -o link show"* ]]; then echo "7: vethabc: <UP>"; fi\n'
+        'if [[ "$*" == *"ip -o link show"* ]]; then\n'
+        '  echo "7: vethabc: <UP>"\n'
+        '  for i in {1..10000}; do printf "dummy-interface-%s\\n" "$i"; done\n'
+        'fi\n'
         'if [[ "$*" == *"iptables -I FORWARD"* ]]; then touch "$FIREWALL"; fi\n'
     )
     engine.chmod(0o755)
