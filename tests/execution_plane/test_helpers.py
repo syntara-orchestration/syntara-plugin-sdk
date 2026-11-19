@@ -294,14 +294,14 @@ def test_runner_does_not_collect_diagnostics_if_context_changes(tmp_path):
     )
     assert result.returncode != 0
     assert "uv" in calls
-    assert "kubectl --context kind-integration-test get" not in calls
-    assert "kubectl --context kind-integration-test describe" not in calls
+    assert "kubectl --context kind-integration-test --request-timeout=30s get" not in calls
+    assert "kubectl --context kind-integration-test --request-timeout=30s describe" not in calls
 
 
 def test_runner_collects_diagnostics_only_from_expected_context(tmp_path):
     result, calls = _run_preflight(tmp_path, dirty=False, context="kind-integration-test")
     assert result.returncode != 0
-    assert "kubectl --context kind-integration-test get pods" in calls
+    assert "kubectl --context kind-integration-test --request-timeout=30s get pods" in calls
 
 
 def test_egress_firewall_blocks_new_pod_connections(tmp_path):
@@ -433,6 +433,21 @@ def test_runner_removes_files_it_cannot_redact(tmp_path):
     assert not (ep / ".secrets").exists()
 
 
+def test_runner_scans_worker_pod_logs_on_a_passing_run(tmp_path):
+    result, ep, _ = _run_with_fake_secrets(tmp_path, failure="pod-leak")
+    assert result.returncode == 1, result.stderr
+    assert "sentinel value appeared" in result.stderr
+    # The run itself must have passed: the collection-under-test only
+    # happens on the passing path, and a pytest regression would otherwise
+    # satisfy these assertions through the failure-diagnostics route.
+    assert "Compatibility test failed" not in result.stderr
+    # Worker-pod output is collected and scanned even when the run passed,
+    # and the hit is redacted before any upload.
+    redacted = (tmp_path / "logs" / "worker-pod-logs.txt").read_text(encoding="utf-8")
+    assert "REDACTED-CREDENTIAL-SENTINEL" in redacted
+    assert not (ep / ".secrets").exists()
+
+
 def test_runner_preserves_preexisting_secrets(tmp_path):
     result, ep, _ = _run_with_fake_secrets(tmp_path, failure="none", preexisting=True)
     assert result.returncode != 0
@@ -462,6 +477,10 @@ def _run_with_fake_secrets(tmp_path, *, failure, preexisting=False):
             '  *"get pod"*) echo 10.244.0.8;;\n'
             '  *"nc -z"*) [[ ! -e "$FIREWALL" ]];;\n'
             '  *"certificate-authority-data"*) echo Y2E=;;\n'
+            # The trap collects worker-pod output on passing runs too; a
+            # pod-leak run simulates the token surfacing there.
+            '  *"logs -n execution-plane"*)'
+            ' [[ "$FAILURE" != pod-leak ]] || printf \'%s\' "$EP_COMPAT_CREDENTIAL_TOKEN";;\n'
             "esac"
         ),
         "uv": (
