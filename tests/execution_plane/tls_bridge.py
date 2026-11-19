@@ -8,7 +8,9 @@ import threading
 import time
 from pathlib import Path
 
-_CERTS = Path("/run/secrets")
+# Keep in sync with the generated compat Containerfile: the certificates are
+# staged under /opt/syntara because some build engines reserve /run/secrets.
+_CERTS = Path("/opt/syntara/certificates")
 
 
 def _copy(source: socket.socket, destination: socket.socket) -> None:

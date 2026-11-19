@@ -1,0 +1,11 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "syntara-credential-steps"
+version = "0.1.0"
+dependencies = ["syntara-plugin-contracts>=0.1.0a1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/credential_steps"]

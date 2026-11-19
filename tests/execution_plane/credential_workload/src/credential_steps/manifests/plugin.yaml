@@ -1,0 +1,26 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "Plugin",
+  "metadata": {
+    "namespace": "compat",
+    "name": "credential-steps",
+    "version": "0.1.0",
+    "displayName": "Credential compat steps",
+    "description": "Credential HTTP and script step shapes for Execution Plane compatibility."
+  },
+  "spec": {
+    "documentation": {
+      "path": "docs/README.md"
+    },
+    "workload": {
+      "image": "credential-steps-workload"
+    },
+    "targets": [
+      "steps/script-bash.yaml",
+      "steps/script-python.yaml",
+      "steps/http-request.yaml",
+      "steps/connection.yaml",
+      "steps/bearer-token.yaml"
+    ]
+  }
+}

@@ -21,19 +21,31 @@ kubectl exec compat-network-probe -- nc -z -w 3 "$api_ip" 443
 kubectl exec compat-network-probe -- nc -z -w 3 "$peer_ip" 80
 
 # Block forwarded traffic and node-local sockets, including IPv6 link-local.
-"$engine" exec "$node" iptables -N COMPAT-EGRESS
-"$engine" exec "$node" iptables -A COMPAT-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j RETURN
-"$engine" exec "$node" iptables -A COMPAT-EGRESS -j REJECT
-"$engine" exec "$node" iptables -I FORWARD 1 -s 10.244.0.0/16 -j COMPAT-EGRESS
-"$engine" exec "$node" iptables -I FORWARD 1 -i veth+ -j COMPAT-EGRESS
-"$engine" exec "$node" iptables -I INPUT 1 -s 10.244.0.0/16 -j REJECT
-"$engine" exec "$node" iptables -I INPUT 1 -i veth+ -j REJECT
-"$engine" exec "$node" ip6tables -I INPUT 1 -i veth+ -j REJECT
-"$engine" exec "$node" ip6tables -I FORWARD 1 -i veth+ -j REJECT
+# Rootless engines cannot autoload the legacy iptables kernel modules inside
+# the node; fall back to the nft-backed binaries, which work there.
+iptables_bin="iptables"
+if ! "$engine" exec "$node" "$iptables_bin" -L -n >/dev/null 2>&1; then
+  "$engine" exec "$node" iptables-nft -L -n >/dev/null 2>&1 || { echo 'No usable iptables backend in the Kind node' >&2; exit 1; }
+  iptables_bin="iptables-nft"
+fi
+ip6tables_bin="ip6tables"
+if ! "$engine" exec "$node" "$ip6tables_bin" -L -n >/dev/null 2>&1; then
+  "$engine" exec "$node" ip6tables-nft -L -n >/dev/null 2>&1 || { echo 'No usable ip6tables backend in the Kind node' >&2; exit 1; }
+  ip6tables_bin="ip6tables-nft"
+fi
+"$engine" exec "$node" "$iptables_bin" -N COMPAT-EGRESS
+"$engine" exec "$node" "$iptables_bin" -A COMPAT-EGRESS -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j RETURN
+"$engine" exec "$node" "$iptables_bin" -A COMPAT-EGRESS -j REJECT
+"$engine" exec "$node" "$iptables_bin" -I FORWARD 1 -s 10.244.0.0/16 -j COMPAT-EGRESS
+"$engine" exec "$node" "$iptables_bin" -I FORWARD 1 -i veth+ -j COMPAT-EGRESS
+"$engine" exec "$node" "$iptables_bin" -I INPUT 1 -s 10.244.0.0/16 -j REJECT
+"$engine" exec "$node" "$iptables_bin" -I INPUT 1 -i veth+ -j REJECT
+"$engine" exec "$node" "$ip6tables_bin" -I INPUT 1 -i veth+ -j REJECT
+"$engine" exec "$node" "$ip6tables_bin" -I FORWARD 1 -i veth+ -j REJECT
 # Allow replies to node-initiated connections such as kubelet probes.
-"$engine" exec "$node" iptables -I INPUT 1 -s 10.244.0.0/16 -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
-"$engine" exec "$node" iptables -I INPUT 1 -i veth+ -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
-"$engine" exec "$node" ip6tables -I INPUT 1 -i veth+ -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
+"$engine" exec "$node" "$iptables_bin" -I INPUT 1 -s 10.244.0.0/16 -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
+"$engine" exec "$node" "$iptables_bin" -I INPUT 1 -i veth+ -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
+"$engine" exec "$node" "$ip6tables_bin" -I INPUT 1 -i veth+ -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -j ACCEPT
 if kubectl exec compat-network-probe -- nc -z -w 3 "$node_ip" 6443; then
   echo 'Pod unexpectedly reached the node API endpoint' >&2
   exit 1

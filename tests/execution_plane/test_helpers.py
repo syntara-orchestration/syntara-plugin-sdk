@@ -64,7 +64,13 @@ def test_image_context_derives_resolved_bindings_and_avoids_checkout_build_hooks
     assert "pip install --no-index --no-deps /wheels/*.whl" in containerfile
     assert "pip check" in containerfile
     assert "SYNTARA_RUNTIME_GRPC_ADDRESS=127.0.0.1:50052" in containerfile
-    assert "COPY certificates /run/secrets" in containerfile
+    assert "COPY certificates/ /opt/syntara/certificates/" in containerfile
+    assert "SYNTARA_RUNTIME_GRPC_TLS_CERT=/opt/syntara/certificates/server.crt" in containerfile
+    assert "SYNTARA_RUNTIME_GRPC_TLS_KEY=/opt/syntara/certificates/server.key" in containerfile
+    assert (
+        "SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA=/opt/syntara/certificates/client-ca.crt"
+        in containerfile
+    )
     assert 'ENTRYPOINT ["python3.12", "/opt/syntara/runtime_entrypoint.py"]' in containerfile
     assert (context / "runtime_entrypoint.py").is_file()
     assert (context / "tls_bridge.py").is_file()
@@ -77,6 +83,40 @@ def test_ci_workflow_tracks_ep_devel_and_records_resolved_revision() -> None:
     assert 'EP_REVISION=$(git -C execution-plane rev-parse HEAD)' in workflow
 
 
+def test_credential_workload_context_stages_recipe_and_locked_image(tmp_path, monkeypatch):
+    helper = _load("prepare_image")
+    commands = []
+    monkeypatch.setattr(
+        helper.subprocess, "run", lambda command, **kwargs: commands.append(command)
+    )
+    context = tmp_path / "context"
+    manifest = helper.prepare_credential_workload(context)
+    resolved = json.loads((context / "resolved.json").read_text())
+    assert len(manifest["steps"]) == 3
+    assert resolved["bindings"] == [
+        {"stepRevisionId": revision, "runtimeKind": "custom-runner", **entry}
+        for revision, entry in manifest["steps"].items()
+    ]
+    assert {entry["stepIdentity"] for entry in manifest["steps"].values()} == {
+        "compat.credential-steps.script-bash",
+        "compat.credential-steps.script-python",
+        "compat.credential-steps.http-request",
+    }
+    steps = context / "projects/credential_steps/src/credential_steps/manifests/steps"
+    connection = json.loads((steps / "connection.yaml").read_text())
+    recipe = json.loads((steps / "bearer-token.yaml").read_text())
+    assert connection["spec"]["credentialTypes"] == ["compat.credentials.bearer-token"]
+    assert recipe["spec"]["id"] == "compat.credentials.bearer-token"
+    assert recipe["spec"]["integrationType"] == "compat.credentials.connection"
+    containerfile = (context / "Containerfile").read_text()
+    assert "SYNTARA_RESOLVED_EXECUTION=/opt/syntara/resolved.json" in containerfile
+    assert "pip download --only-binary :all: --require-hashes" in containerfile
+    assert "pip install --no-index --no-deps /wheels/*.whl" in containerfile
+    assert 'ENTRYPOINT ["python3.12", "/opt/syntara/runtime_entrypoint.py"]' in containerfile
+    builds = [command for command in commands if command[0:2] == ["uv", "build"]]
+    assert len(builds) == 2
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -87,6 +127,9 @@ def test_ci_workflow_tracks_ep_devel_and_records_resolved_revision() -> None:
         "contract-data",
         "runtime-metadata",
         "containerfile",
+        "credential-package",
+        "credential-runtime-metadata",
+        "credential-containerfile",
     ],
 )
 def test_image_context_rejects_symlinked_sources_before_staging(tmp_path, monkeypatch, source):
@@ -94,15 +137,20 @@ def test_image_context_rejects_symlinked_sources_before_staging(tmp_path, monkey
     root = tmp_path / "checkout"
     example = root / "examples/existing-step"
     contracts = root / "sdks/python/packages/contracts"
+    credential = root / "tests/execution_plane/credential_workload"
     (example / "src/existing_step").mkdir(parents=True)
     (contracts / "src/syntara_plugin").mkdir(parents=True)
+    (credential / "src/credential_steps").mkdir(parents=True)
     (root / "contracts").mkdir()
     for directory in ("schemas", "fixtures", "proto"):
         (root / "contracts" / directory).mkdir()
     (example / "pyproject.toml").write_text("[project]\n")
     (contracts / "pyproject.toml").write_text("[project]\n")
+    (credential / "pyproject.toml").write_text("[project]\n")
     (example / "runtime.json").write_text("{}")
     (example / "Containerfile").write_text("FROM scratch\n")
+    (credential / "runtime.json").write_text("{}")
+    (credential / "Containerfile").write_text("FROM scratch\n")
     target = tmp_path / "runner-secret"
     target.write_text("must not be staged")
     if source == "package":
@@ -125,20 +173,33 @@ def test_image_context_rejects_symlinked_sources_before_staging(tmp_path, monkey
     elif source == "runtime-metadata":
         (example / "runtime.json").unlink()
         (example / "runtime.json").symlink_to(target)
-    else:
+    elif source == "containerfile":
         (example / "Containerfile").unlink()
         (example / "Containerfile").symlink_to(target)
+    elif source == "credential-package":
+        (credential / "src/credential_steps/leak.py").symlink_to(target)
+    elif source == "credential-runtime-metadata":
+        (credential / "runtime.json").unlink()
+        (credential / "runtime.json").symlink_to(target)
+    else:
+        (credential / "Containerfile").unlink()
+        (credential / "Containerfile").symlink_to(target)
     monkeypatch.setattr(helper, "ROOT", root)
     monkeypatch.setattr(helper, "EXAMPLE", example)
     monkeypatch.setattr(helper, "CONTRACTS", contracts)
+    monkeypatch.setattr(helper, "CREDENTIAL_WORKLOAD", credential)
     commands = []
     monkeypatch.setattr(
         helper.subprocess, "run", lambda command, **kwargs: commands.append(command)
     )
     context = tmp_path / "context"
 
-    with pytest.raises(ValueError, match="symlink"):
-        helper.prepare(context)
+    if source.startswith("credential-"):
+        with pytest.raises(ValueError, match="symlink"):
+            helper.prepare_credential_workload(context)
+    else:
+        with pytest.raises(ValueError, match="symlink"):
+            helper.prepare(context)
 
     assert commands == []
     assert not context.exists()
@@ -149,6 +210,7 @@ def test_image_context_rejects_symlinked_sources_before_staging(tmp_path, monkey
     [
         "<testsuite/>",
         "<testsuite><testcase/><testcase/><testcase><skipped/></testcase></testsuite>",
+        "<testsuite><testcase/><testcase/><testcase/><testcase/><testcase/></testsuite>",
     ],
 )
 def test_check_results_rejects_missing_or_skipped_cases(tmp_path, monkeypatch, content):
@@ -156,14 +218,18 @@ def test_check_results_rejects_missing_or_skipped_cases(tmp_path, monkeypatch, c
     result = tmp_path / "results.xml"
     result.write_text(content)
     monkeypatch.setattr(helper.sys, "argv", ["check_results.py", str(result)])
-    with pytest.raises(SystemExit, match="three executed"):
+    with pytest.raises(SystemExit, match="7 executed"):
         helper.main()
 
 
-def test_check_results_accepts_three_executed_cases(tmp_path, monkeypatch):
+def test_check_results_accepts_seven_executed_cases(tmp_path, monkeypatch):
     helper = _load("check_results")
     result = tmp_path / "results.xml"
-    result.write_text("<testsuite><testcase/><testcase/><testcase/></testsuite>")
+    result.write_text(
+        "<testsuite>"
+        + "<testcase/>" * 7
+        + "</testsuite>"
+    )
     monkeypatch.setattr(helper.sys, "argv", ["check_results.py", str(result)])
     helper.main()
 
@@ -342,6 +408,13 @@ def test_runner_removes_generated_secrets_on_exit(tmp_path, failure):
     assert not (ep / ".secrets").exists()
 
 
+def test_runner_fails_when_the_sentinel_reaches_test_output(tmp_path):
+    result, ep, _ = _run_with_fake_secrets(tmp_path, failure="leak")
+    assert result.returncode == 1, result.stderr
+    assert "sentinel value appeared" in result.stderr
+    assert not (ep / ".secrets").exists()
+
+
 def test_runner_preserves_preexisting_secrets(tmp_path):
     result, ep, _ = _run_with_fake_secrets(tmp_path, failure="none", preexisting=True)
     assert result.returncode != 0
@@ -373,7 +446,13 @@ def _run_with_fake_secrets(tmp_path, *, failure, preexisting=False):
             '  *"certificate-authority-data"*) echo Y2E=;;\n'
             "esac"
         ),
-        "uv": "exit 0",
+        "uv": (
+            'if [[ "$*" == *pytest* ]]; then\n'
+            "  echo '<testsuite/>' > \"$EP_COMPAT_LOG_DIR/results.xml\"\n"
+            '  [[ "$FAILURE" != leak ]] || echo -n "$EP_COMPAT_CREDENTIAL_TOKEN" >> "$EP_COMPAT_LOG_DIR/results.xml"\n'
+            "fi\n"
+            "exit 0"
+        ),
         "make": (
             'printf %s "$EP_AO_JWT_PUBLIC_KEY_PATH" > "$KEY_PATH"\n'
             "mkdir -p .secrets\n"
