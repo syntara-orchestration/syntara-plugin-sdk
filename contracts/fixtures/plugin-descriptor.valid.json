@@ -24,7 +24,7 @@
         "size": 14
       }
     },
-    "contractBundleDigest": "sha256:f655f69645be2c40f11f279c060a5259995e86196d4f5583a3c46b1bf22c7aec",
+    "contractBundleDigest": "sha256:8384603423e5481c13bf6ae87e64e3b123f1e7cf17f3a330c85113e2e6b64a51",
     "sdkVersion": "0.1.0-alpha.1",
     "documentation": {
       "digest": "sha256:e922a2dd32b9adb968faa0284a3fb5cf8f4a478aaac4d19914fd2bccaceddbe6",
@@ -57,7 +57,7 @@
         },
         "sourcePath": "steps/create-issue.yaml",
         "version": "0.1.0",
-        "step_revision_id": "sha256:ddd0cf167313bfad3118bd248945f5e88021dd621ec96effa4ad54d844d7b8d2"
+        "step_revision_id": "sha256:58634af3dbbc0d6685e6b9d1362bd921af5d849d6108bd0cb69dcd612d656dfb"
       },
       {
         "identity": "acme.issue-tools.invoke-deploy",
@@ -93,7 +93,7 @@
         },
         "sourcePath": "controls/invoke.yaml",
         "version": "0.1.0",
-        "step_revision_id": "sha256:775fcdf646c21af3bf98f5977ad7e4ac21dda9d04a5aeb38c93eed9cede80176"
+        "step_revision_id": "sha256:6b44520e3ae8b47d7853b56ccfeb96523af9ea9a3ba99116a91b1e2f9f1d9c3b"
       },
       {
         "configuration": {
@@ -139,7 +139,7 @@
         },
         "sourcePath": "triggers/issue-opened.yaml",
         "version": "0.1.0",
-        "step_revision_id": "sha256:15e73944d07a6da64bb0fd9b47a59972e3d8e4ef4a963506b544689f051e6641"
+        "step_revision_id": "sha256:df889fc317850bb04bccc1895f82e406a119b31ed366f5d385065afd1cc8fc6c"
       }
     ],
     "workloads": {
@@ -148,6 +148,6 @@
         "image": "quay.io/acme/issue-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     },
-    "plugin_revision_id": "sha256:ce18b4bf333fc64a749b4c37fd6eb74396a1171589916ec6174716166f85ec9e"
+    "plugin_revision_id": "sha256:728b276cb09e636dd10d7abaee9a4180878f790c7b4c574f061a19735db5c87f"
   }
 }
