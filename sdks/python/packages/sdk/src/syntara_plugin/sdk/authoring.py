@@ -877,10 +877,23 @@ def _document_source(
         canonical_digest=canonical_digest,
         references=(f"{target_path}#/spec/{field_name}",),
     )
-    existing = assets.get(asset_path)
+    _record_compiled_asset(assets, asset, target_path, diagnostics)
+    return canonical
+
+
+def _record_compiled_asset(
+    assets: dict[str, CompiledAsset],
+    asset: CompiledAsset,
+    target_path: str,
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Store one asset, merging references when the same path is reused."""
+
+    existing = assets.get(asset.path)
     if existing is None:
-        assets[asset_path] = asset
-    elif (
+        assets[asset.path] = asset
+        return
+    if (
         existing.media_type != asset.media_type
         or existing.content != asset.content
         or existing.source_digest != asset.source_digest
@@ -889,16 +902,15 @@ def _document_source(
         diagnostics.append(
             _diagnostic(
                 "ASSET_CONFLICT",
-                f"Asset {asset_path!r} resolved to different source bytes.",
+                f"Asset {asset.path!r} resolved to different source bytes.",
                 target_path,
                 "Reference each asset path consistently within the plugin workspace.",
             )
         )
-    else:
-        assets[asset_path] = replace(
-            existing, references=tuple(sorted({*existing.references, *asset.references}))
-        )
-    return canonical
+        return
+    assets[asset.path] = replace(
+        existing, references=tuple(sorted({*existing.references, *asset.references}))
+    )
 
 
 def _documentation_source(

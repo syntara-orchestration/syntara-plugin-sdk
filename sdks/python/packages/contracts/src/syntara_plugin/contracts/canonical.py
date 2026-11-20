@@ -88,27 +88,39 @@ def _serialize(value: object, fragments: list[str]) -> None:
     elif isinstance(value, float):
         fragments.append(_ecmascript_number(value))
     elif isinstance(value, Mapping):
-        fragments.append("{")
-        try:
-            items = sorted(value.items(), key=lambda item: _sort_key(item[0]))
-        except TypeError as error:
-            raise CanonicalJsonError("object keys must be strings") from error
-        for index, (key, item) in enumerate(items):
-            if index:
-                fragments.append(",")
-            fragments.append(_JSON_STRING(key))
-            fragments.append(":")
-            _serialize(item, fragments)
-        fragments.append("}")
+        _serialize_object(value, fragments)
     elif isinstance(value, (list, tuple)):
-        fragments.append("[")
-        for index, item in enumerate(value):
-            if index:
-                fragments.append(",")
-            _serialize(item, fragments)
-        fragments.append("]")
+        _serialize_array(value, fragments)
     else:
         raise CanonicalJsonError(f"value of type {type(value).__name__} is not JSON")
+
+
+def _serialize_object(value: Mapping[Any, Any], fragments: list[str]) -> None:
+    """Append one object with keys ordered by UTF-16 code unit."""
+
+    fragments.append("{")
+    try:
+        items = sorted(value.items(), key=lambda item: _sort_key(item[0]))
+    except TypeError as error:
+        raise CanonicalJsonError("object keys must be strings") from error
+    for index, (key, item) in enumerate(items):
+        if index:
+            fragments.append(",")
+        fragments.append(_JSON_STRING(key))
+        fragments.append(":")
+        _serialize(item, fragments)
+    fragments.append("}")
+
+
+def _serialize_array(value: list[Any] | tuple[Any, ...], fragments: list[str]) -> None:
+    """Append one array, preserving element order."""
+
+    fragments.append("[")
+    for index, item in enumerate(value):
+        if index:
+            fragments.append(",")
+        _serialize(item, fragments)
+    fragments.append("]")
 
 
 def _sort_key(key: object) -> bytes:
@@ -135,7 +147,8 @@ def _ecmascript_integer(value: int) -> str:
         raise CanonicalJsonError(
             f"integer {value} exceeds the IEEE 754 double range"
         ) from error
-    if as_double != value:
+    # int() recovers the double's value and differs when that conversion rounded.
+    if int(as_double) != value:
         raise CanonicalJsonError(
             f"integer {value} is not exactly representable as an IEEE 754 double"
         )
@@ -154,7 +167,8 @@ def _ecmascript_number(value: float) -> str:
 
     if math.isnan(value) or math.isinf(value):
         raise CanonicalJsonError("non-finite numbers cannot be canonical JSON")
-    if value == 0.0:
+    # ±0.0 are the only falsy finite floats, so negative zero collapses to "0".
+    if not value:
         return "0"
     negative = value < 0
     # repr() is Python's shortest round-trip form, which matches the shortest
