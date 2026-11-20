@@ -90,7 +90,7 @@ from .outcome import (
 )
 from .plugin_bindings import load_plugin_bindings
 from .step import ActionStep, BaseStep, ControlStep, TriggerStep
-from .toolbox import ContainerToolbox
+from .toolbox import ContainerToolbox, HostOperationError
 from .validation import StepInputValidationError
 
 if TYPE_CHECKING:
@@ -114,6 +114,8 @@ if TYPE_CHECKING:
         ContainerStepHandler,
         CredentialRequestContext,
         CredentialResolver,
+        HostOperationHandler,
+        HostOperationRequestContext,
         RuntimeComponentInfo,
         StepRegistry,
         add_container_runtime_service,
@@ -139,6 +141,8 @@ _LAZY_EXPORTS = {
     "RuntimeComponentInfo": _CONTAINER_MODULE,
     "CredentialRequestContext": _CONTAINER_MODULE,
     "CredentialResolver": _CONTAINER_MODULE,
+    "HostOperationHandler": _CONTAINER_MODULE,
+    "HostOperationRequestContext": _CONTAINER_MODULE,
     "StepRegistry": _CONTAINER_MODULE,
     "add_container_runtime_service": _CONTAINER_MODULE,
     "standard_output_from_container_result": _CONTAINER_MODULE,
@@ -185,8 +189,11 @@ __all__ = [
     "ContainerStepHandler",
     "RuntimeComponentInfo",
     "ContainerToolbox",
+    "HostOperationError",
     "CredentialRequestContext",
     "CredentialResolver",
+    "HostOperationHandler",
+    "HostOperationRequestContext",
     "ContractBundle",
     "DriftCode",
     "DriftIssue",

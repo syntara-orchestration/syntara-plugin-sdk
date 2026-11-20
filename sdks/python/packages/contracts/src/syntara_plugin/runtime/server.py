@@ -72,7 +72,9 @@ class _DaemonStepWorkerPool:
         self._threads: list[Thread] = []
 
     def submit(
-        self, handler: ContainerStepHandler, invocation: ContainerInvocation,
+        self,
+        handler: ContainerStepHandler,
+        invocation: ContainerInvocation,
     ) -> Future[ContainerResult]:
         future: Future[ContainerResult] = Future()
         with self._shutdown_lock:
@@ -202,7 +204,8 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         self._shutdown = False
 
     async def Execute(
-        self, requests: AsyncIterator[container_pb2.ExecuteClientMessage],
+        self,
+        requests: AsyncIterator[container_pb2.ExecuteClientMessage],
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[container_pb2.ExecuteServerMessage]:
         session = _ExecutionSession(asyncio.Queue())
@@ -213,7 +216,9 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         except StopAsyncIteration:
             return
         except ContainerInvocationError as error:
-            yield container_pb2.ExecuteServerMessage(event=failure_event(session.invocation_id, error))
+            yield container_pb2.ExecuteServerMessage(
+                event=failure_event(session.invocation_id, error)
+            )
         finally:
             self._finish_execution(session)
 
@@ -245,14 +250,21 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             except RuntimeError:
                 pass
 
+        def send_host(request: container_pb2.HostRequest) -> None:
+            try:
+                loop.call_soon_threadsafe(
+                    session.outgoing.put_nowait,
+                    container_pb2.ExecuteServerMessage(host_request=request),
+                )
+            except RuntimeError:
+                pass
+
         provider = CallbackCredentialProvider(
-            session.invocation_id, send, cancellation, invocation.timeout_seconds
+            session.invocation_id, send, cancellation, invocation.timeout_seconds, send_host
         )
         session.provider = provider
         object.__setattr__(invocation, "credential_provider", provider)
-        self._register_invocation(
-            session.invocation_id, cancellation, provider, session.outgoing
-        )
+        self._register_invocation(session.invocation_id, cancellation, provider, session.outgoing)
 
         def close() -> None:
             invocation.cancellation.set()
@@ -287,7 +299,11 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 task.cancel()
 
     @staticmethod
-    def _queue_log(provider: CallbackCredentialProvider, invocation_id: str, outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None]) -> None:
+    def _queue_log(
+        provider: CallbackCredentialProvider,
+        invocation_id: str,
+        outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None],
+    ) -> None:
         message = _log_notification(provider, invocation_id)
         if message is not None:
             outgoing.put_nowait(message)
@@ -301,15 +317,28 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     ) -> None:
         try:
             async for message in requests:
-                if message.WhichOneof("message") != "credential_response":
+                kind = message.WhichOneof("message")
+                if kind == "host_response":
+                    provider.receive_host(message.host_response)
+                    continue
+                if kind != "credential_response":
                     invocation.cancellation.set()
                     provider.close()
-                    AsyncContainerRuntimeService._queue_log(provider, invocation.invocation_id, outgoing)
-                    outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
-                        invocation.invocation_id, ContainerInvocationError(
-                            FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+                    AsyncContainerRuntimeService._queue_log(
+                        provider, invocation.invocation_id, outgoing
+                    )
+                    outgoing.put_nowait(
+                        container_pb2.ExecuteServerMessage(
+                            event=failure_event(
+                                invocation.invocation_id,
+                                ContainerInvocationError(
+                                    FailureCode.CANCELLED,
+                                    _CANCELLED_STEP_MESSAGE,
+                                    outcome="not_completed",
+                                ),
+                            )
                         )
-                    )))
+                    )
                     outgoing.put_nowait(None)
                     return
                 provider.receive(message.credential_response)
@@ -327,15 +356,21 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             result = await self._execute_step(handler, invocation)
             event = terminal_execution_event(invocation, result)
         except StepExecutionError as error:
-            event = failure_event(invocation.invocation_id, ContainerInvocationError(
-                error.failure_code, error.safe_message, outcome=error.outcome
-            ))
+            event = failure_event(
+                invocation.invocation_id,
+                ContainerInvocationError(
+                    error.failure_code, error.safe_message, outcome=error.outcome
+                ),
+            )
         except ContainerInvocationError as error:
             event = failure_event(invocation.invocation_id, error)
         except Exception:
-            event = failure_event(invocation.invocation_id, ContainerInvocationError(
-                FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
-            ))
+            event = failure_event(
+                invocation.invocation_id,
+                ContainerInvocationError(
+                    FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
+                ),
+            )
         finally:
             provider.close()
         self._queue_log(provider, invocation.invocation_id, outgoing)
@@ -343,7 +378,9 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         outgoing.put_nowait(None)
 
     async def Cancel(
-        self, request: container_pb2.CancelRequest, context: grpc.aio.ServicerContext,
+        self,
+        request: container_pb2.CancelRequest,
+        context: grpc.aio.ServicerContext,
     ) -> container_pb2.CancelResponse:
         active = self._active.get(request.invocation_id)
         if active is None:
@@ -352,11 +389,16 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         cancellation.set()
         provider.close()
         self._queue_log(provider, request.invocation_id, outgoing)
-        outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
-            request.invocation_id, ContainerInvocationError(
-                FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+        outgoing.put_nowait(
+            container_pb2.ExecuteServerMessage(
+                event=failure_event(
+                    request.invocation_id,
+                    ContainerInvocationError(
+                        FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+                    ),
+                )
             )
-        )))
+        )
         outgoing.put_nowait(None)
         return container_pb2.CancelResponse(accepted=True)
 
@@ -369,11 +411,16 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             cancellation.set()
             provider.close()
             self._queue_log(provider, invocation_id, outgoing)
-            outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
-                invocation_id, ContainerInvocationError(
-                    FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+            outgoing.put_nowait(
+                container_pb2.ExecuteServerMessage(
+                    event=failure_event(
+                        invocation_id,
+                        ContainerInvocationError(
+                            FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+                        ),
+                    )
                 )
-            )))
+            )
             outgoing.put_nowait(None)
         # Running Python code cannot be stopped safely. Daemon workers keep it
         # bounded without making interpreter shutdown wait for it to return.
@@ -394,7 +441,13 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ],
         )
 
-    def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: asyncio.Queue[Any]) -> None:
+    def _register_invocation(
+        self,
+        invocation_id: str,
+        cancellation: Event,
+        provider: CallbackCredentialProvider,
+        outgoing: asyncio.Queue[Any],
+    ) -> None:
         if invocation_id in self._active:
             raise ContainerInvocationError(
                 FailureCode.CONFLICT,
@@ -431,9 +484,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         task = asyncio.wrap_future(worker)
         task.add_done_callback(_discard_step_result)
         try:
-            return await asyncio.wait_for(
-                asyncio.shield(task), timeout=invocation.timeout_seconds
-            )
+            return await asyncio.wait_for(asyncio.shield(task), timeout=invocation.timeout_seconds)
         except TimeoutError:
             if task.done():
                 return task.result()
@@ -447,7 +498,6 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         except asyncio.CancelledError:
             invocation.cancellation.set()
             raise
-
 
     def _release_step_slot(self, worker: Future[ContainerResult]) -> None:
         del worker
@@ -540,7 +590,9 @@ def create_runtime_server(config: RuntimeServerConfig) -> grpc.aio.Server:
     return _create_runtime_server(config)[0]
 
 
-def _create_runtime_server(config: RuntimeServerConfig) -> tuple[grpc.aio.Server, AsyncContainerRuntimeService]:
+def _create_runtime_server(
+    config: RuntimeServerConfig,
+) -> tuple[grpc.aio.Server, AsyncContainerRuntimeService]:
 
     _validate_listener(config.address, config.tls_certificate, config.tls_key, config.tls_client_ca)
     bindings = load_runtime_bindings(config.bindings_factory)
@@ -631,7 +683,9 @@ def _parse_resolved_execution_binding(record: Any) -> _ResolvedExecutionBinding:
     assert isinstance(entry_point, str)
     assert isinstance(abi, str)
     assert isinstance(schema_digests, Mapping)
-    assert all(isinstance(name, str) and isinstance(digest, str) for name, digest in schema_digests.items())
+    assert all(
+        isinstance(name, str) and isinstance(digest, str) for name, digest in schema_digests.items()
+    )
     return _ResolvedExecutionBinding(
         revision, step_identity, runtime_kind, entry_point, abi, schema_digests
     )
@@ -700,7 +754,9 @@ def _container_handler_for_resolved_binding(
                 raise StepBindingError("resolved schema digests differ from the installed contract")
         return container_step_for_binding(installed_binding, step_revision_id=binding.revision)
     except (TypeError, ValueError) as error:
-        raise RuntimeServerError(f"resolved entry point has an invalid installed binding: {error}") from error
+        raise RuntimeServerError(
+            f"resolved entry point has an invalid installed binding: {error}"
+        ) from error
 
 
 def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) -> StepRegistry:
@@ -714,7 +770,9 @@ def resolved_step_registry(config: RuntimeServerConfig, bindings: StepBindings) 
     manifest_steps: Mapping[str, Any] | None = None
     for binding in _resolved_execution_bindings(config):
         if binding.revision in handlers:
-            raise RuntimeServerError("resolved execution data contains a duplicate step type revision")
+            raise RuntimeServerError(
+                "resolved execution data contains a duplicate step type revision"
+            )
         manifest_steps = _validate_custom_runner_mapping(
             binding, manifest_steps, config.registration_manifest_path
         )
@@ -804,7 +862,10 @@ def _listener_settings(
 
 
 def _validate_listener(
-    address: str, certificate: Path | None, key: Path | None, client_ca: Path | None,
+    address: str,
+    certificate: Path | None,
+    key: Path | None,
+    client_ca: Path | None,
 ) -> None:
     host, port = _split_address(address)
     if not host or not port.isdecimal() or not 1 <= int(port) <= 65_535:

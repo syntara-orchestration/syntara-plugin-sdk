@@ -21,6 +21,7 @@ from .toolbox import _close_toolbox, _new_toolbox
 _MAX_PENDING = 16
 _READ_TIMEOUT = 30.0
 _MAX_BYTES = 1_048_576
+_MAX_HOST_BYTES = 512 * 1024
 
 
 def _invalid_constant(value: str) -> NoReturn:
@@ -149,6 +150,7 @@ class CallbackCredentialProvider:
         send: Callable[[container_pb2.CredentialRequest], None],
         cancellation: Event,
         timeout: float,
+        send_host: Callable[[container_pb2.HostRequest], None] | None = None,
     ) -> None:
         self._context = _InvocationRequestContext(
             invocation_id, cancellation, time.monotonic() + timeout
@@ -157,7 +159,98 @@ class CallbackCredentialProvider:
         self._toolbox = _ContainerToolbox(
             self._context, _CredentialCallbackTransport(send, self._scope)
         )
-        self._public_toolbox = _new_toolbox(cancellation, invocation_id)
+        self._host_send = send_host
+        self._host_lock = Lock()
+        self._host_pending: dict[str, tuple[Event, list[container_pb2.HostResponse]]] = {}
+        self._public_toolbox = _new_toolbox(cancellation, invocation_id, self.request_host)
+
+    def request_host(self, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Send one correlated host operation and wait within this invocation's deadline."""
+        if operation not in {"agent.model.turn", "agent.mcp.call"} or self._host_send is None:
+            raise RuntimeError("Host operation is unavailable.")
+        try:
+            encoded = canonical_json_bytes(dict(payload))
+        except (TypeError, ValueError, RecursionError):
+            raise ValueError("Host operation payload must be valid JSON.") from None
+        if len(encoded) > _MAX_HOST_BYTES:
+            raise ValueError("Host operation payload exceeds the transport limit.")
+        request_id = str(uuid.uuid4())
+        ready = Event()
+        responses: list[container_pb2.HostResponse] = []
+        with self._host_lock:
+            if (
+                not self._scope.active
+                or self._context.cancellation.is_set()
+                or time.monotonic() >= self._context.deadline
+                or len(self._host_pending) >= _MAX_PENDING
+            ):
+                raise RuntimeError("Host operation is no longer available.")
+            self._host_pending[request_id] = (ready, responses)
+        try:
+            self._host_send(
+                container_pb2.HostRequest(
+                    invocation_id=self._context.invocation_id,
+                    request_id=request_id,
+                    operation=operation,
+                    payload_json=encoded,
+                )
+            )
+            while not ready.wait(min(0.1, max(0.0, self._context.deadline - time.monotonic()))):
+                if (
+                    self._context.cancellation.is_set()
+                    or time.monotonic() >= self._context.deadline
+                ):
+                    raise TimeoutError("Host operation deadline expired.")
+            if not responses:
+                from .toolbox import HostOperationError
+
+                raise HostOperationError(
+                    "cancelled",
+                    "The workload ended before the host operation completed.",
+                    outcome_unknown=True,
+                )
+            response = responses[0]
+            if response.WhichOneof("outcome") == "error":
+                error = response.error
+                from .toolbox import HostOperationError
+
+                raise HostOperationError(
+                    error.code or "host_error",
+                    error.message or "Host operation failed.",
+                    outcome_unknown=error.outcome_unknown,
+                )
+            if (
+                response.WhichOneof("outcome") != "result_json"
+                or len(response.result_json) > _MAX_HOST_BYTES
+            ):
+                raise RuntimeError("Host returned an invalid operation response.")
+            value = json.loads(
+                response.result_json,
+                parse_constant=_invalid_constant,
+                object_pairs_hook=_unique_members,
+            )
+            if not isinstance(value, dict):
+                raise ValueError
+            canonical_json_bytes(value)
+            return value
+        except (TypeError, ValueError, RecursionError):
+            raise RuntimeError("Host returned an invalid operation response.") from None
+        finally:
+            with self._host_lock:
+                self._host_pending.pop(request_id, None)
+
+    def receive_host(self, response: container_pb2.HostResponse) -> None:
+        """Resolve a pending host operation response from the Execute stream."""
+        if response.invocation_id != self._context.invocation_id:
+            return
+        with self._host_lock:
+            pending = self._host_pending.get(response.request_id)
+            if pending is None:
+                return
+            ready, responses = pending
+            if not ready.is_set():
+                responses.append(response)
+                ready.set()
 
     def restrict(
         self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
@@ -223,6 +316,10 @@ class CallbackCredentialProvider:
 
     def close(self) -> None:
         self.close_credentials()
+        with self._host_lock:
+            for ready, _responses in self._host_pending.values():
+                ready.set()
+            self._host_pending.clear()
         _close_toolbox(self._public_toolbox)
 
 
