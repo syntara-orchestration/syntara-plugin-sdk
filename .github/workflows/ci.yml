@@ -2,10 +2,21 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [devel]
   workflow_dispatch:
     inputs:
+      step_types_ref:
+        description: Step types commit, branch, or tag (defaults to the pinned revision)
+        required: false
+        default: ""
+        type: string
+      report_only:
+        description: Report step-type incompatibilities without failing
+        required: false
+        default: false
+        type: boolean
       ep-ref:
         description: Execution Plane branch, tag, or commit to test (defaults to devel)
         required: false
@@ -13,6 +24,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   EP_REF: ${{ inputs['ep-ref'] || 'devel' }}
@@ -153,3 +168,35 @@ jobs:
           path: execution-plane-compat-logs/
           if-no-files-found: ignore
           retention-days: 7
+
+  step-types-compat:
+    name: Step type compatibility
+    uses: $/.github/workflows/step-types-compat.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    with:
+      step_types_ref: ${{ inputs.step_types_ref || '' }}
+      report_only: ${{ inputs.report_only || false }}
+
+  required-checks:
+    name: CI Required Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+    env:
+      REQUIRED_JOBS: >-
+        ["Test (Python 3.12)", "Test (Python 3.13)", "Test (Python 3.14)",
+         "Pre-commit", "Build and install distributions", "Runtime image integration",
+         "Execution Plane Integration", "Step type compatibility / Step type compatibility"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Wait for required jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/required_checks.py

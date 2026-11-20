@@ -88,9 +88,10 @@ submitting: docs that drift from real behavior are bugs.
 
 - CI runs the Python test matrix (3.12 to 3.14), pre-commit, the package
   build with its install smoke test, the opt-in runtime-image integration
-  job, and the step types compatibility check (one job per step type, with a
-  failure analysis in each job's log and summary). Failures are usually caused by the change just pushed: read the
-  failing job's log and fix the cause instead of re-running and hoping.
+  job, and one step types compatibility job that tests each type sequentially
+  and reports failures in its log and summary. Failures are usually caused by
+  the change just pushed: read the failing job's log and fix the cause instead
+  of re-running and hoping.
 - Check the SonarCloud results on the PR and fix every finding on New Code:
   new issues including code smells, Security Hotspots, and Duplication. There
   is no coverage gate yet; check coverage too once one exists.

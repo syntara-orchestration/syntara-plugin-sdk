@@ -9,8 +9,10 @@ import urllib.parse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from importlib.resources import files
 from pathlib import Path
+from threading import Lock
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -82,6 +84,7 @@ _STEP_TARGET_KINDS = frozenset({"Action", "Control", "Trigger"})
 _UTC_OFFSET_SUFFIX = "+00:00"
 _SCHEMA_KEYWORD = "$schema"
 _CANONICAL_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+_SCHEMA_VALIDATION_LOCK = Lock()
 
 
 def _asserted_formats(documents: Mapping[str, Mapping[str, Any]]) -> frozenset[str]:
@@ -307,7 +310,7 @@ _WRAPPER_ERROR_DOCUMENTS: tuple[dict[str, Any], ...] = (
     },
     {
         "category": "business",
-        "code": "STEP_FAILED",
+        "code": "BUSINESS_RULE_FAILED",
         "message": "The step failed.",
         "retryable": False,
     },
@@ -318,7 +321,8 @@ def validate_declared_error_schema(document: Mapping[str, Any]) -> None:
     """Reject a declared ``spec.error`` that cannot carry an SDK wrapper error.
 
     Every wrapper error — including the INVALID_INPUT wrapper emitted before
-    the step hook runs, and the default STEP_FAILED shape of ``StepFailure`` —
+    the step hook runs, and the default BUSINESS_RULE_FAILED shape of
+    ``StepFailure`` —
     is validated against the declared ``spec.error`` at invocation time. A
     schema that cannot carry those shapes would turn a routine invalid-input
     report into an opaque execution error, so authoring rejects it up front.
@@ -384,15 +388,10 @@ def bundle_digest(documents: dict[str, dict[str, Any]]) -> str:
     return "sha256:" + hashlib.sha256(_canonical_bytes(documents)).hexdigest()
 
 
-def load_bundle() -> ContractBundle:
-    """Load the packaged, local-only `syntara.io/v1alpha1` contract bundle."""
-    directory = _schema_directory()
-    documents: dict[str, dict[str, Any]] = {}
-    for entry in sorted(directory.iterdir(), key=lambda item: item.name):
-        if entry.name.endswith(".schema.json"):
-            documents[entry.name] = json.loads(entry.read_text(encoding="utf-8"))
-    if set(_SCHEMA_FILES.values()) - set(documents):
-        raise RuntimeError("contract bundle is missing a required manifest or runtime schema")
+@lru_cache(maxsize=8)
+def _validate_bundle_schemas(canonical: bytes) -> None:
+    """Check each distinct bundle's schemas, caching only successful checks."""
+    documents: dict[str, dict[str, Any]] = json.loads(canonical)
     for name, document in documents.items():
         if document.get(_SCHEMA_KEYWORD) != _CANONICAL_SCHEMA_DIALECT:
             raise RuntimeError(
@@ -406,6 +405,21 @@ def load_bundle() -> ContractBundle:
                 f"contract bundle document {name!r} is not a valid "
                 f"Draft 2020-12 schema: {error}"
             ) from error
+
+
+def load_bundle() -> ContractBundle:
+    """Load the packaged, local-only `syntara.io/v1alpha1` contract bundle."""
+    directory = _schema_directory()
+    documents: dict[str, dict[str, Any]] = {}
+    for entry in sorted(directory.iterdir(), key=lambda item: item.name):
+        if entry.name.endswith(".schema.json"):
+            documents[entry.name] = json.loads(entry.read_text(encoding="utf-8"))
+    if set(_SCHEMA_FILES.values()) - set(documents):
+        raise RuntimeError("contract bundle is missing a required manifest or runtime schema")
+    canonical = _canonical_bytes(documents)
+    # lru_cache permits concurrent misses to execute the wrapped function more than once.
+    with _SCHEMA_VALIDATION_LOCK:
+        _validate_bundle_schemas(canonical)
     asserted_formats = _asserted_formats(documents)
     registered_formats = frozenset(_FORMAT_CHECKER.checkers)
     if asserted_formats != registered_formats:
@@ -418,7 +432,7 @@ def load_bundle() -> ContractBundle:
         )
     return ContractBundle(
         version="syntara.io/v1alpha1",
-        digest=bundle_digest(documents),
+        digest="sha256:" + hashlib.sha256(canonical).hexdigest(),
         documents=documents,
         asserted_formats=asserted_formats,
     )

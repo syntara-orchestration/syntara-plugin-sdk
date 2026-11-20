@@ -349,6 +349,15 @@ def _error_from_container_result(
             candidate_schemas.append(error_schema)
         else:
             candidate_schemas.append(error_result_schema())
+        # SDK input validation can fail before the declared error schema applies.
+        # Only its base-field INVALID_INPUT result may use the base schema digest.
+        if (
+            isinstance(error_document, dict)
+            and error_document.get("category") == "validation"
+            and error_document.get("code") == "INVALID_INPUT"
+            and set(error_document) <= {"category", "code", "message", "retryable"}
+        ):
+            candidate_schemas.append(error_result_base_schema())
         for candidate in candidate_schemas:
             schema = _thaw_json_document(candidate)
             Draft202012Validator.check_schema(schema)

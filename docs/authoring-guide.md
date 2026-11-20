@@ -398,7 +398,7 @@ SDK's base error composition, and when a step type declares no `error`
 schema, failures must fit the closed fallback `ErrorResult` shape (category,
 code, message, retryable — nothing else). A declared `error` schema must also
 admit the SDK's own wrapper errors — the `INVALID_INPUT` wrapper reported
-before `run()` is called and the default `STEP_FAILED` shape of
+before `run()` is called and the default `BUSINESS_RULE_FAILED` shape of
 `StepFailure` — because every wrapper error is validated against it. The
 compiler rejects an `error` schema that cannot carry those shapes, for
 example one that pins `code` to a single domain value. Installation rejects
@@ -573,7 +573,7 @@ When a step type cannot complete for a reason that the workflow user needs to
 know, raise `StepFailure` from `run()`:
 
 ```python
-from syntara_plugin.runtime import ErrorCategory, FailureCode, StepFailure
+from syntara_plugin.runtime import ErrorCategory, ErrorCode, StepFailure
 
 
 class CreateIssueStep(ActionStep[CreateIssueInput, CreateIssueOutput]):
@@ -584,7 +584,7 @@ class CreateIssueStep(ActionStep[CreateIssueInput, CreateIssueOutput]):
                 1,
                 "The tracker rate limit was reached.",  # the result's status message
                 "The tracker rate limit was reached.",  # the structured error message
-                code=FailureCode.RATE_LIMITED.value,
+                code=ErrorCode.RATE_LIMITED,
                 category=ErrorCategory.DEPENDENCY,
                 retryable=True,
             )
@@ -594,24 +594,28 @@ class CreateIssueStep(ActionStep[CreateIssueInput, CreateIssueOutput]):
 | Situation | Code | `retryable` |
 | --- | --- | --- |
 | The provider throttled the request | `RATE_LIMITED` | `True` |
-| A temporary provider outage | `UPSTREAM_TRANSIENT` | `True` |
-| The provider rejected the request | `REMOTE_REJECTED` | Depends on the reason |
+| A temporary provider outage | `DEPENDENCY_FAILED` | `True` |
+| The provider rejected the request | `DEPENDENCY_FAILED` | Depends on the reason |
 | The target does not exist | `NOT_FOUND` | `False` |
 | Cancellation was requested | `CANCELLED` | `False` |
 
 The first two arguments are the result's status code and status message; the
 third is the structured error message delivered to the workflow user. The
 status code can be any nonzero unsigned 32-bit integer you choose; retry
-behavior is driven by the failure code and `retryable`, not the status code.
+policy belongs to Automation Orchestrator; `retryable` advises whether another
+attempt with the same step definition and workflow input may succeed. The
+Execution Plane reports the failure and does not retry it.
 Keep both messages short, actionable, and free of secrets. `code` defaults to
-`STEP_FAILED`, `category` to `business`, and `retryable` to `False`.
+`BUSINESS_RULE_FAILED`, `category` to `business`, and `retryable` to `False`.
 `StepFailure` carries no `outcome` argument: a deliberate failure completes
 as a nonzero-status result, while an unexpected exception becomes a terminal
 `OUTCOME_UNKNOWN` failure. To signal that the invocation itself did not
 finish, raise `ContainerInvocationError` instead, as the next section shows.
 The failure code, message, and retryability are handed to the platform,
-which owns retry policy. For every code, see `FailureCode` in
-[`abi.py`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/abi.py).
+where Automation Orchestrator owns retry policy. The
+[contract registry](../contracts/README.md) lists
+the allowed category/code pairs and explains when to use each code.
+`FailureCode` is a separate registry for terminal failures with no wrapper.
 
 ### Signal a terminal failure
 
@@ -1068,11 +1072,12 @@ step type:
 
 ### Handle errors at the right boundary
 
-- Fail deliberately with `StepFailure` and a precise `FailureCode`, as
+- Fail deliberately with `StepFailure` and a precise `ErrorCode`, as
   described in [Signal a deliberate failure](#signal-a-deliberate-failure).
 - Stop with `ContainerInvocationError` when the invocation cannot finish, as
   described in [Signal a terminal failure](#signal-a-terminal-failure).
-- Set `retryable=True` only when retrying the whole step type is safe.
+- Set `retryable=True` when another attempt with the same step definition and
+  workflow input may succeed.
 - Design for retries. Create issue is a classic non-idempotent call: a retry
   after a timeout can open a duplicate issue. When the provider supports
   idempotency keys, derive the key from input values that stay the same
@@ -1085,7 +1090,7 @@ A manifest `error` schema is optional. It documents a domain error shape and
 does not replace the SDK-owned failure envelope. Every wrapper error,
 including the `INVALID_INPUT` wrapper for invalid input, is validated
 against it, so it must admit the SDK wrapper codes (`INVALID_INPUT` and
-`STEP_FAILED`) alongside the step type's own codes.
+`BUSINESS_RULE_FAILED`) alongside the step type's own codes.
 
 ### Keep the workflow readable
 
@@ -1100,7 +1105,7 @@ debug. To keep it readable, follow these practices:
 - Put branching and fan-out in Control step types, so that the graph shows them.
 - Keep the internal operations of an opaque step type private. Do not expose their
   names as step type identities or as output fields that workflows depend on, and
-  report a `FailureCode` instead of the name of the internal operation that
+  report an `ErrorCode` instead of the name of the internal operation that
   failed. If workflow authors need to address a part directly, promote it to
   its own step type with its own manifest.
 

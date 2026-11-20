@@ -99,7 +99,7 @@ class _FailingStep:
             "The remote operation was rejected.",
             "The remote service rejected the request.",
             category="dependency",
-            code="REMOTE_REJECTED",
+            code="DEPENDENCY_FAILED",
             retryable=True,
         )
 
@@ -112,7 +112,7 @@ class DetailedFailureStep(ActionStep[InvocationInput, InvocationOutput]):
     def run(self, inputs: InvocationInput, context: ExecutionContext) -> InvocationOutput:
         raise StepFailure(
             73, "Rejected", error_result=ErrorResult(
-                category="dependency", code="REMOTE_REJECTED", message="Rejected",
+                category="dependency", code="DEPENDENCY_FAILED", message="Rejected",
                 retryable=True, provider={"requestId": "req-1", "attempts": [1, 2]},
             )
         )
@@ -469,7 +469,7 @@ def test_invoke_returns_typed_failure_for_each_step_kind(
     error = _error_document(wrapper.error_message)
     assert error == {
         "category": "dependency",
-        "code": "REMOTE_REJECTED",
+        "code": "DEPENDENCY_FAILED",
         "message": "The remote service rejected the request.",
         "retryable": True,
     }
@@ -517,7 +517,7 @@ def test_wrapper_hash_uses_its_immutable_content() -> None:
     first_failure = StandardOutputWrapper.failure(
         ErrorResult(
             category="dependency",
-            code="REMOTE_REJECTED",
+            code="DEPENDENCY_FAILED",
             message="Rejected",
             provider={"requestId": "req-1"},
         )
@@ -525,7 +525,7 @@ def test_wrapper_hash_uses_its_immutable_content() -> None:
     second_failure = StandardOutputWrapper.failure(
         ErrorResult(
             category="dependency",
-            code="REMOTE_REJECTED",
+            code="DEPENDENCY_FAILED",
             message="Rejected",
             provider={"requestId": "req-1"},
         )
@@ -546,7 +546,7 @@ def test_wrapper_equality_distinguishes_boolean_and_number_json_values() -> None
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"code": "STEP_FAILED"},
+        {"code": "BUSINESS_RULE_FAILED"},
         {"category": "business"},
         {"retryable": False},
         {"retryable": True},
@@ -556,7 +556,7 @@ def test_step_failure_rejects_error_result_with_metadata_overrides(
     overrides: dict[str, object],
 ) -> None:
     error = ErrorResult(
-        category="dependency", code="REMOTE_REJECTED", message="Rejected"
+        category="dependency", code="DEPENDENCY_FAILED", message="Rejected"
     )
 
     with pytest.raises(ValueError, match="without code, category, or retryable overrides"):
@@ -569,18 +569,18 @@ def test_step_failure_preserves_legacy_defaults_and_overrides() -> None:
         73,
         "Rejected",
         "The service rejected the request.",
-        code="REMOTE_REJECTED",
+        code="DEPENDENCY_FAILED",
         category="dependency",
         retryable=True,
     )
 
     assert defaulted.error_result.model_dump(mode="json") == {
         "category": "business",
-        "code": "STEP_FAILED",
+        "code": "BUSINESS_RULE_FAILED",
         "message": "The operation failed.",
         "retryable": False,
     }
-    assert customized.error_result.code == "REMOTE_REJECTED"
+    assert customized.error_result.code == "DEPENDENCY_FAILED"
     assert customized.error_result.category == "dependency"
     assert customized.error_result.retryable is True
 
@@ -1044,7 +1044,7 @@ def test_container_result_and_container_failure_remain_distinct() -> None:
     assert result_event.WhichOneof("event") == "result"
     result = result_event.result
     assert result.status_code == 73
-    assert b'"code":"REMOTE_REJECTED"' in result.error_result_json
+    assert b'"code":"DEPENDENCY_FAILED"' in result.error_result_json
     assert failure_event.WhichOneof("event") == "failure"
     assert failure_event.failure.outcome == "unknown"
     assert "unexpected failure secret sentinel" not in failure_event.failure.message
@@ -1124,7 +1124,7 @@ def test_default_error_schema_rejects_undeclared_step_fields() -> None:
 
 def test_error_result_subclass_fields_are_preserved_and_immutable() -> None:
     provider = {"attempts": ["first"]}
-    error = TypedErrorResult(code="FAILED", message="Failed", provider=provider)
+    error = TypedErrorResult(code="BUSINESS_RULE_FAILED", message="Failed", provider=provider)
     provider["attempts"].append("second")
     assert error.model_dump(mode="json")["provider"] == {"attempts": ["first"]}
     with pytest.raises(TypeError):
@@ -1139,7 +1139,7 @@ def test_author_error_that_violates_installed_schema_has_no_valid_outcome() -> N
         # Admits the SDK wrapper codes but rejects this step's REMOTE_REJECTED.
         error_schema={
             "type": "object",
-            "properties": {"code": {"enum": ["INVALID_INPUT", "STEP_FAILED"]}},
+            "properties": {"code": {"enum": ["INVALID_INPUT", "BUSINESS_RULE_FAILED"]}},
         },
     )
     context = _context(binding)
@@ -1154,7 +1154,7 @@ def test_reconstruction_checks_error_schema_even_with_matching_digest() -> None:
     schema = {"type": "object", "required": ["missing"]}
     result = ContainerResult(
         canonical_json_digest({"type": "object"}), status_code=1,
-        error_result={"category": "business", "code": "FAILED", "message": "Failed", "retryable": False},
+        error_result={"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "Failed", "retryable": False},
         error_schema_digest=canonical_json_digest(schema),
     )
     with pytest.raises(ContainerRemoteError):
@@ -1172,7 +1172,7 @@ def test_reconstruction_rejects_a_base_digest_when_a_trusted_schema_is_supplied(
     output_schema = _declared({"type": "object"})
     base_document = {
         "category": "business",
-        "code": "FAILED",
+        "code": "BUSINESS_RULE_FAILED",
         "message": "Failed",
         "retryable": False,
     }

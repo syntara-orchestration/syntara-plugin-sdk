@@ -1179,7 +1179,7 @@ class Driver:
         sections.append(Section("What to do", actions))
         if record.log:
             sections.append(
-                Section("Full log", [f"artifact step-types-compat-{self.plugin}: {record.log}"])
+                Section("Full log", [f"artifact step-types-compat-grouped: {record.log}"])
             )
         self.out.panel(f"FAILURE {dot} {self.plugin} {dot} {record.name}", sections, tone=RED)
 
@@ -1253,7 +1253,7 @@ class Driver:
             sections.append(
                 Section(
                     "Migration patch",
-                    [f"artifact step-types-compat-{self.plugin}: {info.get('patch')}"],
+                    [f"artifact step-types-compat-grouped: {info.get('patch')}"],
                 )
             )
             residual = info.get("residual")
@@ -1310,7 +1310,7 @@ class Driver:
             if info and info.get("outcome") in ("passed", "failed"):
                 body.append(
                     f"**Adapter:** {info['title']}: {info['outcome']}. {info['caveat']} Patch in "
-                    f"artifact `step-types-compat-{self.plugin}` (`{info['patch']}`).\n"
+                    f"artifact `step-types-compat-grouped` (`{info['patch']}`).\n"
                 )
                 if info.get("patch_text"):
                     body.append("\n" + md_code(info["patch_text"].rstrip()))

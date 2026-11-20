@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from threading import Event, Lock
 from typing import Any
 
 import pytest
@@ -90,6 +92,136 @@ def test_plugin_schema_accepts_only_nonempty_named_workloads() -> None:
     del plugin["spec"]["workload"]
     plugin["spec"]["workloads"] = {}
     assert validate_document(bundle, "plugin", plugin)
+
+
+def test_load_bundle_checks_each_unchanged_schema_only_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from syntara_plugin.contracts import bundle as bundle_module
+
+    for source in bundle_module._schema_directory().iterdir():
+        if source.name.endswith(".schema.json"):
+            document = json.loads(source.read_text(encoding="utf-8"))
+            if source.name == "step.schema.json":
+                document["description"] = "A unique, valid schema for this test"
+            (tmp_path / source.name).write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(bundle_module, "_schema_directory", lambda: tmp_path)
+    checks: list[object] = []
+    original_check = bundle_module.Draft202012Validator.check_schema
+
+    def check_schema(document: object) -> None:
+        checks.append(document)
+        original_check(document)
+
+    monkeypatch.setattr(bundle_module.Draft202012Validator, "check_schema", check_schema)
+    first = load_bundle()
+    first_count = len(checks)
+    second = load_bundle()
+
+    assert first_count == len(first.documents)
+    assert len(checks) == first_count
+    assert first.documents is not second.documents
+    for name in first.documents:
+        assert first.documents[name] is not second.documents[name]
+    first_formats = first.documents["common.schema.json"]["$defs"]["assertedFormats"]["enum"]
+    second_formats = second.documents["common.schema.json"]["$defs"]["assertedFormats"]["enum"]
+    assert first_formats is not second_formats
+    first_formats.append("test-only-format")
+    assert "test-only-format" not in second_formats
+
+
+def test_concurrent_cold_loads_validate_each_schema_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from syntara_plugin.contracts import bundle as bundle_module
+
+    for source in bundle_module._schema_directory().iterdir():
+        if source.name.endswith(".schema.json"):
+            document = json.loads(source.read_text(encoding="utf-8"))
+            if source.name == "step.schema.json":
+                document["description"] = "A unique schema for concurrent validation"
+            (tmp_path / source.name).write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(bundle_module, "_schema_directory", lambda: tmp_path)
+    first_check_started = Event()
+    second_load_entered = Event()
+    checks: list[object] = []
+    checks_lock = Lock()
+    original_check = bundle_module.Draft202012Validator.check_schema
+
+    class ObservedLock:
+        def __init__(self) -> None:
+            self.lock = Lock()
+            self.attempts = 0
+
+        def __enter__(self) -> None:
+            with checks_lock:
+                self.attempts += 1
+                if self.attempts == 2:
+                    second_load_entered.set()
+            self.lock.acquire()
+
+        def __exit__(self, *args: object) -> None:
+            self.lock.release()
+
+    monkeypatch.setattr(bundle_module, "_SCHEMA_VALIDATION_LOCK", ObservedLock(), raising=False)
+
+    def check_schema(document: object) -> None:
+        with checks_lock:
+            checks.append(document)
+            count = len(checks)
+        if count == 1:
+            first_check_started.set()
+            assert second_load_entered.wait(timeout=10)
+        elif count == 2:
+            second_load_entered.set()
+        original_check(document)
+
+    monkeypatch.setattr(bundle_module.Draft202012Validator, "check_schema", check_schema)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(load_bundle)
+        assert first_check_started.wait(timeout=5)
+        second = executor.submit(load_bundle)
+        first_bundle = first.result(timeout=20)
+        second_bundle = second.result(timeout=20)
+
+    assert first_bundle.digest == second_bundle.digest
+    assert len(checks) == len(first_bundle.documents)
+
+
+def test_load_bundle_rechecks_changed_content_and_never_caches_invalid_content(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from syntara_plugin.contracts import bundle as bundle_module
+
+    for source in bundle_module._schema_directory().iterdir():
+        if source.name.endswith(".schema.json"):
+            (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(bundle_module, "_schema_directory", lambda: tmp_path)
+    original = load_bundle()
+
+    checks: list[object] = []
+    original_check = bundle_module.Draft202012Validator.check_schema
+
+    def check_schema(schema: object) -> None:
+        checks.append(schema)
+        original_check(schema)
+
+    monkeypatch.setattr(bundle_module.Draft202012Validator, "check_schema", check_schema)
+    path = tmp_path / "step.schema.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["description"] = "A modified but valid schema"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    changed = load_bundle()
+    assert changed.digest != original.digest
+    assert len(checks) == len(changed.documents)
+
+    document["type"] = "invalid"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    for _ in range(2):
+        previous_count = len(checks)
+        with pytest.raises(RuntimeError, match="step.schema.json.*not a valid Draft 2020-12 schema"):
+            load_bundle()
+        assert len(checks) > previous_count
 
 
 def test_load_bundle_rejects_a_non_2020_12_dialect_declaration(

@@ -254,7 +254,7 @@ def test_macos_podman_probe_uses_the_internal_network_tunnel(monkeypatch, tmp_pa
     assert runtime.tunnel_process is tunnel
 
 
-def test_liveness_probe_raises_with_exit_status_and_logs(monkeypatch) -> None:
+def test_liveness_probe_raises_with_exit_status_and_logs(monkeypatch, capsys) -> None:
     """A dead container fails fast with its exit code and log tail."""
 
     def fake_run(command, **_kwargs):
@@ -274,8 +274,20 @@ def test_liveness_probe_raises_with_exit_status_and_logs(monkeypatch) -> None:
         probe()
 
     assert "exited with status 1" in raised.value.message
+    assert raised.value.failure_code.value == "UPSTREAM_TRANSIENT"
+    assert raised.value.outcome == "not_started"
     assert any("workload startup failed" in line for line in raised.value.detail)
     assert any("--mode source" in step for step in raised.value.next_steps)
+    import argparse
+    import json
+
+    from syntara_plugin.sdk.cli import _print_run_error
+
+    _print_run_error(raised.value, argparse.Namespace(json=True))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errorResult"] is None
+    assert payload["containerFailure"]["code"] == "UPSTREAM_TRANSIENT"
+    assert payload["containerFailure"]["outcome"] == "not_started"
 
 
 def test_liveness_probe_scrubs_secrets_before_truncating_log_lines(monkeypatch) -> None:

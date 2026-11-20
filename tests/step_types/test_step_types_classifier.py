@@ -357,7 +357,6 @@ def test_settings_error_text_is_not_mistaken_for_a_diagnostic_code() -> None:
     result = classify(failure(stderr="error: build contains unsupported setting(s): workload\n"))
     assert result.rule_id == "MC001"
 
-
 def test_rules_carry_baseline_identity_facts() -> None:
     # The devel-baseline comparison keys on these facts (tests/step_types/baseline.py).
     schema = classify(
@@ -422,3 +421,32 @@ def test_exception_class_is_the_traceback_identity() -> None:
     )
     assert exception_class(crash) == "ValueError"
     assert exception_class(failure(stderr="no traceback here\n")) is None
+@pytest.mark.parametrize(
+    ("field", "code", "category", "expected"),
+    [
+        ("errorResult", "BUSINESS_RULE_FAILED", "business", "IM003"),
+        ("errorResult", "INVALID_INPUT", "validation", "UN000"),
+        ("errorResult", "CONTRACT_VIOLATION", "contract", "IM003"),
+        ("errorResult", "TIMEOUT_EXCEEDED", "timeout", "IN004"),
+        ("containerFailure", "TIMEOUT", None, "IN004"),
+        ("containerFailure", "ABI_VIOLATION", None, "CT007"),
+    ],
+)
+def test_structured_run_failure_classifies_by_its_registry(field, code, category, expected):
+    error = {"code": code, "message": "example", "retryable": True}
+    if category:
+        error["category"] = category
+    document = {"ok": False, field: error, "status": 1}
+    assert classify(failure(stage="run", diagnostic=document)).rule_id == expected
+
+
+@pytest.mark.parametrize(("retryable", "expected"), [(True, "IN004"), (False, "IM003")])
+def test_dependency_failure_uses_retryability(retryable, expected):
+    document = {"ok": False, "status": 1, "errorResult": {"code": "DEPENDENCY_FAILED", "message": "failed", "retryable": retryable}}
+    assert classify(failure(stage="run", diagnostic=document)).rule_id == expected
+
+
+@pytest.mark.parametrize("code", ["INVALID_INPUT", "INTERNAL_ERROR"])
+def test_diagnostic_error_result_is_not_a_step_failure(code):
+    document = {"ok": False, "outcome": "not_started", "errorResult": {"code": code, "message": "failed", "retryable": False}, "error": {"kind": "RunUsageError", "message": "failed"}}
+    assert classify(failure(stage="run", diagnostic=document)).rule_id not in {"CT006", "IM003"}

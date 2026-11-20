@@ -231,7 +231,7 @@ def test_deliberate_failures_are_equivalent_with_matching_codes() -> None:
     assert container.error is not None
     assert direct.error.category == "dependency"
     assert container.error.category == "dependency"
-    assert direct.error.code == container.error.code == "UPSTREAM_TRANSIENT"
+    assert direct.error.code == container.error.code == "DEPENDENCY_FAILED"
     assert direct.error.message == container.error.message == "The upstream service rejected the request."
     assert direct.error.retryable is container.error.retryable is True
 

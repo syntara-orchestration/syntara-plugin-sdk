@@ -71,7 +71,7 @@ def test_deliberate_failure_case_matches_the_failing_reference_step() -> None:
         assert not outcome.ok, case.name
         assert outcome.raised is None, case.name
         assert outcome.error is not None, case.name
-        assert outcome.error.code == "UPSTREAM_TRANSIENT", case.name
+        assert outcome.error.code == "DEPENDENCY_FAILED", case.name
         assert outcome.error.category is ErrorCategory.DEPENDENCY, case.name
         assert outcome.error.retryable, case.name
 
@@ -150,7 +150,7 @@ class _LeakyMessageStep(ReferenceControlStep):
             17,
             "The upstream service rejected the request.",
             f"failed for {self.token}",
-            code="UPSTREAM_TRANSIENT",
+            code="DEPENDENCY_FAILED",
             category=ErrorCategory.DEPENDENCY,
             retryable=True,
         )

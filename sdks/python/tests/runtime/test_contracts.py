@@ -179,7 +179,7 @@ def test_container_result_envelope_fixtures_conform() -> None:
             "statusCode": 1,
             "statusMessage": "The upstream service rejected the request.",
             "errorSchemaDigest": HASH,
-            "errorResult": {"category": "dependency", "code": "REMOTE_REJECTED", "message": "The upstream service rejected the request.", "retryable": False},
+            "errorResult": {"category": "dependency", "code": "DEPENDENCY_FAILED", "message": "The upstream service rejected the request.", "retryable": False},
         }
     ).valid
     # A legacy result that predates the status fields decodes as a success.
@@ -226,7 +226,7 @@ def test_container_result_envelope_rejects_invalid_payload_shapes() -> None:
     ).valid
 
     assert not harness.validate_runtime(
-        dict(base, output={"issue": 42}, errorCode="REMOTE_REJECTED")
+        dict(base, output={"issue": 42}, errorCode="DEPENDENCY_FAILED")
     ).valid
 
     assert not harness.validate_runtime(dict(base, output={"issue": 42}, retryable=True)).valid
@@ -238,14 +238,14 @@ def test_container_result_envelope_rejects_invalid_payload_shapes() -> None:
     # A nonzero status must carry error metadata in both representations.
     assert not harness.validate_runtime(dict(base, statusCode=7)).valid
     assert not harness.validate_runtime(
-        dict(base, statusCode=7, errorCode="REMOTE_REJECTED")
+        dict(base, statusCode=7, errorCode="DEPENDENCY_FAILED")
     ).valid
 
     failure = dict(
         base,
         statusCode=7,
         errorSchemaDigest=HASH,
-        errorResult={"category": "dependency", "code": "REMOTE_REJECTED", "message": "The upstream service rejected the request.", "retryable": True},
+        errorResult={"category": "dependency", "code": "DEPENDENCY_FAILED", "message": "The upstream service rejected the request.", "retryable": True},
     )
     assert harness.validate_runtime(failure).valid
     assert not harness.validate_runtime({key: value for key, value in failure.items() if key != "errorSchemaDigest"}).valid
@@ -271,7 +271,7 @@ def test_standard_output_wrapper_requires_object_result_and_complete_error_metad
         "statusMessage": "Rejected",
         "errorResult": {
             "category": "dependency",
-            "code": "REMOTE_REJECTED",
+            "code": "DEPENDENCY_FAILED",
             "message": "The upstream service rejected the request.",
             "retryable": True,
         },
@@ -307,6 +307,8 @@ def test_standard_output_wrapper_conformance_fixtures() -> None:
         ("standard-output-wrapper.success.valid.json", True),
         ("standard-output-wrapper.failure-missing-error.invalid.json", False),
         ("standard-output-wrapper.no-valid-outcome.invalid.json", False),
+        ("standard-output-wrapper.unknown-code.invalid.json", False),
+        ("standard-output-wrapper.mismatched-category.invalid.json", False),
     ):
         document = json.loads((fixtures / fixture_name).read_text(encoding="utf-8"))
         validation = harness.validate_runtime(document)

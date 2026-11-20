@@ -28,7 +28,10 @@ from pathlib import Path
 from typing import Any
 
 import grpc
-from jsonschema import Draft202012Validator, ValidationError, validators
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 from syntara_plugin.contracts import build_validator
 from syntara_plugin.runtime.abi import CONTAINER_ABI, ContainerInvocationError, FailureCode
 from syntara_plugin.runtime.adapter import container_step_for_binding
@@ -44,11 +47,13 @@ from syntara_plugin.runtime.container import (
     CredentialRequestContext,
     CredentialResolver,
     StepRegistry,
+    _error_from_container_result,
     add_container_runtime_service,
 )
 from syntara_plugin.runtime.contract_validation import SchemaDriftError
 from syntara_plugin.runtime.credentials import CredentialAccessError
 from syntara_plugin.runtime.execution import StepExecutionError
+from syntara_plugin.runtime.outcome import bounded_message, error_result_schema
 from syntara_plugin.testing import (
     BoundedStepHandler,
     HarnessUsageError,
@@ -147,12 +152,18 @@ class RunExecutionError(RuntimeError):
         message: str,
         *,
         failure_code: FailureCode | None = None,
+        outcome: str = "not_started",
+        retryable: bool = False,
+        error_kind: str | None = None,
         detail: Sequence[str] = (),
         next_steps: Sequence[str] = (),
     ) -> None:
         super().__init__(message)
         self.message = message
         self.failure_code = failure_code
+        self.outcome = outcome
+        self.retryable = retryable
+        self.error_kind = error_kind
         self.detail = tuple(detail)
         self.next_steps = tuple(next_steps)
 
@@ -167,6 +178,7 @@ class RunTarget:
     metadata_name: str
     input_schema: Mapping[str, Any]
     schema_digests: Mapping[str, str]
+    error_schema: Mapping[str, Any] = field(default_factory=error_result_schema)
     workload_image: str | None = None
     workload_id: str | None = None
     step_revision_id: str = ""
@@ -182,6 +194,7 @@ class RunErrorDetail:
     retryable: bool
     # The workload's provider correlation code; empty when it carried none.
     provider_code: str = ""
+    error_result: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -459,8 +472,194 @@ def _scrub_structure(
             )
             for key, item in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_scrub_structure(item, secrets, scalars) for item in value]
+    return _scrub_scalar(value, scalars)
+
+
+def _schema_resolver(schema: Mapping[str, Any], resolver: Any, scoped: bool) -> Any:
+    if scoped:
+        return resolver
+    return resolver.in_subresource(DRAFT202012.create_resource(schema))
+
+
+def _referenced_schemas(schema: Mapping[str, Any], resolver: Any) -> list[tuple[Any, Any, bool]]:
+    references: list[tuple[Any, Any, bool]] = []
+    for keyword in ("$ref", "$dynamicRef"):
+        reference = schema.get(keyword)
+        if isinstance(reference, str):
+            resolved = resolver.lookup(reference)
+            references.append((resolved.contents, resolved.resolver, True))
+    return references
+
+
+def _matching_branches(
+    schema: Mapping[str, Any], resolver: Any, value: Any, keyword: str, format_checker: FormatChecker
+) -> list[tuple[Any, Any, bool]]:
+    branches = schema.get(keyword)
+    if not isinstance(branches, (list, tuple)):
+        return []
+    matches: list[tuple[Any, Any, bool]] = []
+    for branch in branches:
+        try:
+            branch_resolver = resolver.in_subresource(DRAFT202012.create_resource(branch))
+            if Draft202012Validator(
+                branch, format_checker=format_checker, _resolver=branch_resolver
+            ).is_valid(value):
+                matches.append((branch, resolver, False))
+        except Unresolvable:
+            if keyword != "anyOf":
+                raise
+    return matches
+
+
+def _schema_children(
+    schema: Mapping[str, Any], resolver: Any, value: Any, format_checker: FormatChecker
+) -> list[tuple[Any, Any, bool]]:
+    children = _referenced_schemas(schema, resolver)
+    all_of = schema.get("allOf")
+    if isinstance(all_of, (list, tuple)):
+        children.extend((branch, resolver, False) for branch in all_of)
+    children.extend(_matching_branches(schema, resolver, value, "anyOf", format_checker))
+    children.extend(_matching_branches(schema, resolver, value, "oneOf", format_checker))
+    condition = schema.get("if")
+    if isinstance(condition, (Mapping, bool)):
+        condition_resolver = resolver.in_subresource(DRAFT202012.create_resource(condition))
+        selected = "then" if Draft202012Validator(
+            condition, format_checker=format_checker, _resolver=condition_resolver
+        ).is_valid(value) else "else"
+        children.append((schema.get(selected), resolver, False))
+    dependent = schema.get("dependentSchemas")
+    if isinstance(value, Mapping) and isinstance(dependent, Mapping):
+        children.extend((branch, resolver, False) for key, branch in dependent.items() if key in value)
+    return children
+
+
+def _error_schema_nodes(
+    schemas: Sequence[tuple[Any, Any, bool]], value: Any,
+) -> list[tuple[Mapping[str, Any], Any]]:
+    """Expand applicable branches and references in their resource scope."""
+    pending = list(schemas)
+    seen: set[tuple[int, str]] = set()
+    nodes: list[tuple[Mapping[str, Any], Any]] = []
+    validation_value = _scrub_structure(value, ())
+    format_checker = FormatChecker()
+    while pending and len(seen) < 10000:
+        schema, resolver, scoped = pending.pop()
+        if not isinstance(schema, Mapping):
+            continue
+        resolver = _schema_resolver(schema, resolver, scoped)
+        marker = (id(schema), repr(resolver))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        nodes.append((schema, resolver))
+        pending.extend(_schema_children(schema, resolver, validation_value, format_checker))
+    return nodes
+
+
+def _scrub_error_extensions(
+    value: Any, schemas: Sequence[Any], root_schema: Mapping[str, Any],
+    secrets: tuple[str, ...], scalars: tuple[Any, ...],
+    *, selection_value: Any = None,
+) -> Any:
+    """Preserve declared names while scrubbing dynamic keys and all values."""
+    root = _scrub_structure(root_schema, ())
+    resolver = Registry().resolver_with_root(DRAFT202012.create_resource(root))
+    scoped_schemas = [
+        (root if schema is root_schema else _scrub_structure(schema, ()), resolver, schema is root_schema)
+        for schema in schemas
+    ]
+    return _scrub_error_value(value, scoped_schemas, secrets, scalars, selection_value=selection_value)
+
+
+def _explicit_property_schema(
+    node: Mapping[str, Any], resolver: Any, key: Any
+) -> tuple[bool, list[tuple[Any, Any, bool]]]:
+    properties = node.get("properties")
+    if not isinstance(properties, Mapping) or key not in properties:
+        return False, []
+    return True, [(properties[key], resolver, False)]
+
+
+def _pattern_property_schemas(
+    node: Mapping[str, Any], resolver: Any, key: Any
+) -> list[tuple[Any, Any, bool]]:
+    patterns = node.get("patternProperties")
+    if not isinstance(patterns, Mapping) or not isinstance(key, str):
+        return []
+    return [
+        (child, resolver, False)
+        for pattern, child in patterns.items()
+        if isinstance(pattern, str) and re.search(pattern, key)
+    ]
+
+
+def _property_schemas(
+    nodes: Sequence[tuple[Mapping[str, Any], Any]], key: Any
+) -> tuple[bool, list[tuple[Any, Any, bool]]]:
+    explicitly_declared = False
+    children: list[tuple[Any, Any, bool]] = []
+    for node, resolver in nodes:
+        property_declared, property_children = _explicit_property_schema(node, resolver, key)
+        pattern_children = _pattern_property_schemas(node, resolver, key)
+        # A pattern only declares the *shape* of a key. Its concrete text is
+        # supplied by the workload, so it must be redacted like any other
+        # workload-controlled key. ``properties`` is the only declaration
+        # whose key text is fixed by the schema author.
+        explicitly_declared = explicitly_declared or property_declared
+        children.extend(property_children)
+        children.extend(pattern_children)
+        if not property_declared and not pattern_children:
+            children.append((node.get("additionalProperties"), resolver, False))
+    return explicitly_declared, children
+
+
+def _scrub_error_mapping(
+    value: Mapping[Any, Any], nodes: Sequence[tuple[Mapping[str, Any], Any]],
+    secrets: tuple[str, ...], scalars: tuple[Any, ...],
+) -> dict[Any, Any]:
+    scrubbed: dict[Any, Any] = {}
+    for key, item in value.items():
+        declared, children = _property_schemas(nodes, key)
+        safe_key = key if declared or not isinstance(key, str) else _scrub_text(key, secrets)
+        scrubbed[safe_key] = _scrub_error_value(item, children, secrets, scalars)
+    return scrubbed
+
+
+def _item_schemas(
+    nodes: Sequence[tuple[Mapping[str, Any], Any]], index: int
+) -> list[tuple[Any, Any, bool]]:
+    children: list[tuple[Any, Any, bool]] = []
+    for node, resolver in nodes:
+        prefix = node.get("prefixItems")
+        child = prefix[index] if isinstance(prefix, (list, tuple)) and index < len(prefix) else node.get("items")
+        children.append((child, resolver, False))
+    return children
+
+
+def _scrub_error_sequence(
+    value: Sequence[Any], nodes: Sequence[tuple[Mapping[str, Any], Any]],
+    secrets: tuple[str, ...], scalars: tuple[Any, ...],
+) -> list[Any]:
+    return [
+        _scrub_error_value(item, _item_schemas(nodes, index), secrets, scalars)
+        for index, item in enumerate(value)
+    ]
+
+
+def _scrub_error_value(
+    value: Any, schemas: Sequence[tuple[Any, Any, bool]],
+    secrets: tuple[str, ...], scalars: tuple[Any, ...],
+    *, selection_value: Any = None,
+) -> Any:
+    nodes = _error_schema_nodes(schemas, value if selection_value is None else selection_value)
+    if isinstance(value, Mapping):
+        return _scrub_error_mapping(value, nodes, secrets, scalars)
+    if isinstance(value, (list, tuple)):
+        return _scrub_error_sequence(value, nodes, secrets, scalars)
+    if isinstance(value, str):
+        return _scrub_text(value, secrets)
     return _scrub_scalar(value, scalars)
 
 
@@ -682,6 +881,7 @@ def resolve_run_target(result: CompilationResult, requested: str | None) -> RunT
         metadata_name=str(selected["metadata"]["name"]),
         input_schema=selected["input"],
         schema_digests=selected["schemaDigests"],
+        error_schema=selected.get("error", error_result_schema()),
         workload_image=workload_image,
         workload_id=workload_id,
         step_revision_id=str(selected["step_revision_id"]),
@@ -1219,16 +1419,28 @@ def _collect_nested_scalars(value: Any, picked: list[Any]) -> None:
             _collect_nested_scalars(item, picked)
 
 
+def _collect_sensitive_input_scalars(original: Any, masked: Any, picked: list[Any]) -> None:
+    if masked == _REDACTED:
+        _collect_nested_scalars(original, picked)
+    elif isinstance(original, Mapping) and isinstance(masked, Mapping):
+        for key, value in original.items():
+            if key in masked:
+                _collect_sensitive_input_scalars(value, masked[key], picked)
+    elif isinstance(original, list) and isinstance(masked, list):
+        for value, masked_value in zip(original, masked, strict=True):
+            _collect_sensitive_input_scalars(value, masked_value, picked)
+
+
+def _sensitive_input_scalars(inputs: Any, redacted: Any) -> tuple[Any, ...]:
+    """Collect typed values from input fields already marked sensitive."""
+    picked: list[Any] = []
+    _collect_sensitive_input_scalars(inputs, redacted, picked)
+    return tuple(picked)
+
+
 def _redacted_input_log_scalars(inputs: Any, redacted: Any, scalars: list[Any]) -> None:
-    """Collect hidden input scalars for exact local structured-log scrubbing."""
-    if redacted == _REDACTED:
-        _collect_nested_scalars(inputs, scalars)
-    elif isinstance(inputs, Mapping) and isinstance(redacted, Mapping):
-        for key, value in inputs.items():
-            _redacted_input_log_scalars(value, redacted[key], scalars)
-    elif isinstance(inputs, list) and isinstance(redacted, list):
-        for value, masked in zip(inputs, redacted, strict=True):
-            _redacted_input_log_scalars(value, masked, scalars)
+    """Append sensitive input scalars for local structured-log redaction."""
+    scalars.extend(_sensitive_input_scalars(inputs, redacted))
 
 
 def credential_secret_values(credentials: Sequence[LoadedCredential]) -> tuple[str, ...]:
@@ -1296,7 +1508,21 @@ def run_source(
     """
 
     _make_importable(manifest.parent)
-    binding = _bind_target(manifest, target)
+    secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(credentials)
+    scrubbing_stderr = _ScrubbingWriter(sys.stderr, secrets)
+    try:
+        with contextlib.redirect_stdout(scrubbing_stderr), contextlib.redirect_stderr(scrubbing_stderr):
+            binding = _bind_target(manifest, target)
+    except RunExecutionError as error:
+        raise RunExecutionError(
+            _scrub_text(error.message, secrets),
+            failure_code=error.failure_code,
+            outcome=error.outcome,
+            retryable=error.retryable,
+            error_kind=error.error_kind,
+            detail=tuple(_scrub_text(line, secrets) for line in error.detail),
+            next_steps=tuple(_scrub_text(line, secrets) for line in error.next_steps),
+        ) from error
     captured: list[str] = []
     handler = BoundedStepHandler(
         _LocalErrorCapture(container_step_for_binding(binding), captured), timeout_seconds
@@ -1461,6 +1687,53 @@ class _ChannelExecution:
     diagnostic_stream: Any = None
 
 
+def _scrub_run_error(
+    result: ContainerResult, target: RunTarget, secrets: tuple[str, ...], scalars: tuple[Any, ...]
+) -> RunErrorDetail | None:
+    if result.error_result is None:
+        return None
+    try:
+        _error_from_container_result(result, target.error_schema)
+    except ContainerRemoteError as error:
+        raise RunExecutionError(
+            "the runtime returned an invalid error result",
+            failure_code=error.code,
+            outcome=error.outcome,
+            retryable=error.retryable,
+        ) from error
+    error_result = result.error_result
+    extensions = {
+        key: value
+        for key, value in error_result.items()
+        if key not in {"category", "code", "message", "retryable"}
+    }
+    scrubbed_error = (
+        _scrub_error_extensions(
+            extensions,
+            [target.error_schema],
+            target.error_schema,
+            secrets,
+            scalars,
+            selection_value=error_result,
+        )
+        if extensions
+        else {}
+    )
+    scrubbed_error.update({key: error_result[key] for key in ("category", "code", "retryable")})
+    original_message = str(error_result["message"])
+    message = bounded_message(
+        _scrub_text(original_message, secrets)[:len(original_message)],
+        fallback="The step failed.",
+    )
+    scrubbed_error["message"] = message
+    return RunErrorDetail(
+        code=str(error_result["code"]),
+        message=message,
+        retryable=bool(error_result["retryable"]),
+        error_result=scrubbed_error,
+    )
+
+
 def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     client = ContainerClient(execution.channel)
     target = execution.target
@@ -1472,7 +1745,10 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     secrets = _secret_values(target.input_schema, inputs) + credential_secret_values(
         execution.credentials
     )
-    scalars = credential_secret_scalars(execution.credentials)
+    masked_inputs = redact_inputs(target.input_schema, inputs)
+    scalars = _sensitive_input_scalars(inputs, masked_inputs) + credential_secret_scalars(
+        execution.credentials
+    )
     advertised = _health(
         client,
         execution.address,
@@ -1484,6 +1760,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         listed = ", ".join(sorted(advertised)) or "none"
         raise RunExecutionError(
             f"the runtime at {execution.address} does not advertise {dispatch_id!r}",
+            failure_code=FailureCode.ABI_VIOLATION if execution.mode == "image" else None,
             detail=(f"Advertised step types: {listed}",),
             next_steps=(
                 "check that the runtime was built from this workspace",
@@ -1499,9 +1776,6 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         runtime_context={},
     )
     credential_names = tuple(credential.name for credential in execution.credentials)
-    masked_inputs = redact_inputs(target.input_schema, inputs)
-    input_scalars: list[Any] = []
-    _redacted_input_log_scalars(inputs, masked_inputs, input_scalars)
     redacted_inputs = _scrub_structure(masked_inputs, secrets, scalars)
     terminal = _consume(
         client,
@@ -1510,7 +1784,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
         _credential_reader(execution.credentials),
         execution.diagnostic_stream or sys.stderr,
         secrets=secrets,
-        secret_scalars=scalars + tuple(input_scalars),
+        secret_scalars=scalars,
     )
     detail = (
         _scrub_text("\n\n".join(execution.captured_detail).rstrip(), secrets)
@@ -1533,7 +1807,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
             object_reference=None,
             output_schema_digest=None,
             error=RunErrorDetail(
-                code=_scrub_text(terminal.error.code, secrets),
+                code=terminal.error.code,
                 message=_scrub_text(terminal.error.message, secrets),
                 retryable=terminal.error.retryable,
                 provider_code=_scrub_text(terminal.error.provider_code, secrets),
@@ -1544,14 +1818,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
             credentials=credential_names,
         )
     result = terminal
-    error: RunErrorDetail | None = None
-    if result.error_result is not None:
-        error_result = result.error_result
-        error = RunErrorDetail(
-            code=_scrub_text(str(error_result["code"]), secrets),
-            message=_scrub_text(str(error_result["message"]), secrets),
-            retryable=bool(error_result["retryable"]),
-        )
+    error = _scrub_run_error(result, target, secrets, scalars)
     return RunReport(
         mode=execution.mode,
         target=target.identity,
@@ -1620,6 +1887,8 @@ def _health(
                     f"the runtime at {address} does not implement the supported "
                     f"container ABI ({CONTAINER_ABI})",
                     failure_code=error.code,
+                    outcome="not_started",
+                    retryable=error.retryable,
                     next_steps=("rebuild or update the workload image to the supported ABI",),
                 ) from error
             last_remote_error = error
@@ -1636,6 +1905,8 @@ def _health(
             f"the workload container never became healthy within "
             f"{startup_seconds:.0f} seconds",
             failure_code=last_remote_error.code,
+            outcome="not_started",
+            retryable=last_remote_error.retryable,
             next_steps=(
                 "check the container log for the startup failure",
                 "or rerun with --mode source to execute the step type from the workspace",
@@ -1644,6 +1915,8 @@ def _health(
     raise RunExecutionError(
         f"cannot reach a container runtime at {address}",
         failure_code=last_remote_error.code,
+        outcome="not_started",
+        retryable=last_remote_error.retryable,
         next_steps=(
             "start the workload image and publish its port",
             f"or pass --address HOST:PORT (default {DEFAULT_ADDRESS})",
@@ -1694,6 +1967,9 @@ def _scrubbing_liveness(
             raise RunExecutionError(
                 _scrub_text(error.message, secrets),
                 failure_code=error.failure_code,
+                outcome=error.outcome,
+                retryable=error.retryable,
+                error_kind=error.error_kind,
                 detail=tuple(_scrub_text(line, secrets) for line in error.detail),
                 next_steps=error.next_steps,
             ) from error
@@ -1761,6 +2037,8 @@ def _consume(
                 f"the invocation did not complete within its "
                 f"{invocation.timeout_seconds} second timeout",
                 failure_code=error.code,
+                outcome=error.outcome,
+                retryable=error.retryable,
                 detail=(f"outcome: {error.outcome}",),
                 next_steps=(
                     "make the step type finish within the timeout",
@@ -1770,10 +2048,15 @@ def _consume(
         raise RunExecutionError(
             f"the invocation did not complete ({error.code}, source: {error.source})",
             failure_code=error.code,
+            outcome=error.outcome,
+            retryable=error.retryable,
             detail=(f"outcome: {error.outcome}",),
             next_steps=("address the failure above and rerun",),
         ) from error
-    raise RunExecutionError("the runtime closed the stream without a terminal result")
+    raise RunExecutionError(
+        "the runtime closed the stream without a terminal result",
+        failure_code=FailureCode.OUTCOME_UNKNOWN, outcome="unknown",
+    )
 
 
 def _render_log_batch(
@@ -1811,6 +2094,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
     except SchemaDriftError as error:
         raise RunExecutionError(
             "the step type implementation drifted from the compiled manifest",
+            error_kind="SchemaDriftError",
             detail=(str(error),),
             next_steps=(
                 "fix the implementation or the manifest, then rerun",
@@ -1831,6 +2115,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
     except HarnessUsageError as error:
         raise RunExecutionError(
             f"the step type implementation could not be bound: {error}",
+            error_kind="ImportError",
             next_steps=(
                 "check that the entry point module imports and its dependencies are installed;"
                 " a step type implemented in another language runs with"
@@ -1843,6 +2128,7 @@ def _bind_target(manifest: Path, target: RunTarget) -> StepBinding:
         location = _raise_location(error)
         raise RunExecutionError(
             f"the step type implementation could not be loaded: {type(error).__name__}: {error}",
+            error_kind="ImportError",
             detail=(location,) if location is not None else (),
             next_steps=(
                 "fix the error above; the entry point module must import cleanly",

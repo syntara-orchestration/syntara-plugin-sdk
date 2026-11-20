@@ -1,468 +1,252 @@
 name: Step types compatibility
 
-# Builds this pull request's SDK and contracts wheels and runs the maintained
-# syntara-step-types plugins through their own validate, run, and
-# build-inspect flow against them. See docs/step-type-compatibility.md.
-
 on:
-  pull_request:
-    # labeled/unlabeled: adding or removing the breaking-change label re-evaluates the
-    # check by itself (any label change re-runs it in full, which keeps it correct).
-    types: [opened, synchronize, reopened, labeled, unlabeled]
-  push:
-    branches: [devel]
-  workflow_dispatch:
+  workflow_call:
     inputs:
       step_types_ref:
-        description: syntara-step-types commit, branch, or tag (empty uses the pinned revision)
+        type: string
         required: false
         default: ""
-        type: string
       report_only:
-        description: Report incompatibilities without failing the check
+        type: boolean
         required: false
         default: false
-        type: boolean
 
 permissions:
   contents: read
-
-concurrency:
-  # Pull request runs share one group per pull request (superseded runs are
-  # cancelled). Every other event keys on its commit: the compat baseline is
-  # the devel push run for a pull request's base commit, so a devel push run
-  # must never be cancelled by a newer one.
-  group: step-types-compat-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  actions: read
+  pull-requests: read
 
 env:
-  # Pinned syntara-step-types revision. Bump it with a pull request that edits this line.
   STEP_TYPES_REF: ${{ inputs.step_types_ref || '3991e986f92f4b1b00a76e21902038215915bd19' }}
-  UV_VERSION: "0.12.3"
 
 jobs:
-  changes:
-    name: Detect relevant changes
+  step-types-compat:
+    name: Step type compatibility
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 300
     permissions:
       contents: read
-      pull-requests: read # read the breaking-change label; this job runs no repository code
-    outputs:
-      run_compat: ${{ steps.decide.outputs.run_compat }}
-      mode: ${{ steps.mode.outputs.mode }}
-      base_sha: ${{ steps.decide.outputs.base_sha }}
+      actions: read
+      pull-requests: read
+    concurrency:
+      group: step-types-compat-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: github.event_name == 'pull_request'
         with:
+          path: sdk
           fetch-depth: 2
           persist-credentials: false
       - name: Decide whether the check applies
-        id: decide
+        id: changes
+        working-directory: sdk
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "$EVENT_NAME" != "pull_request" ]; then
+          if [ "$EVENT_NAME" != pull_request ]; then
             echo "run_compat=true" >> "$GITHUB_OUTPUT"
             echo "base_sha=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # HEAD is the pull request merge commit; HEAD^1 is the base it merges into.
-          # Only changes that cannot affect the wheels or the check skip it. --no-renames
-          # lists both sides of a move, so moving code into docs/ still runs the check.
           relevant="$(git diff --no-renames --name-only HEAD^1 HEAD \
             | grep -Ev '^(docs/.*|.*\.md|LICENSE|\.github/CODEOWNERS|\.github/pull_request_template\.md)$' \
             || true)"
           if [ -n "$relevant" ]; then
             echo "run_compat=true" >> "$GITHUB_OUTPUT"
-            # The file list is pull-request-controlled: print it inside a
-            # stop-commands region, so a filename like "::add-mask::x" cannot
-            # be parsed as a workflow command.
-            token="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-            echo "::stop-commands::${token}"
-            printf 'Relevant changes:\n%s\n' "$relevant"
-            echo "::${token}::"
           else
             echo "run_compat=false" >> "$GITHUB_OUTPUT"
             echo "Only documentation changed; the step types check is skipped by design."
           fi
-          # The devel commit this pull request is tested against (the merge
-          # commit's first parent); the compat baseline is its push run.
           echo "base_sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
-      - name: Resolve report mode
-        id: mode
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPOSITORY: ${{ github.repository }}
-          DISPATCH_REPORT_ONLY: ${{ inputs.report_only }}
-        run: |
-          # Labels are read live, not from the event payload, which re-runs reuse. This
-          # mode only lets the legs report without failing; the gate decides from its own
-          # live read in compat-report.
-          mode=enforcing
-          if [ "$DISPATCH_REPORT_ONLY" = "true" ]; then
-            mode=report-only:dispatch
-          elif [ "$EVENT_NAME" = "pull_request" ]; then
-            labels="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name')"
-            if printf '%s\n' "$labels" | grep -qx 'breaking-change'; then
-              mode=report-only:label
-            fi
-          fi
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "Report mode: $mode"
-
-  discover:
-    name: Discover step types
-    needs: changes
-    if: needs.changes.outputs.run_compat == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      plugins: ${{ steps.discover.outputs.plugins }}
-      pin: ${{ steps.discover.outputs.pin }}
-    steps:
       - name: Validate the step-types ref
+        if: steps.changes.outputs.run_compat == 'true'
         run: |
           if ! [[ "$STEP_TYPES_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]]; then
-            echo "::error title=Invalid step_types_ref::Use a commit SHA, branch, or tag name."
+            echo '::error title=Invalid step_types_ref::Use a commit SHA, branch, or tag name.'
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          path: sdk
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: steps.changes.outputs.run_compat == 'true'
         with:
           repository: syntara-orchestration/syntara-step-types
           ref: ${{ env.STEP_TYPES_REF }}
           path: step-types
           persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        if: steps.changes.outputs.run_compat == 'true'
+        with:
+          python-version: '3.12'
+          version: '0.12.3'
       - name: Discover step types
         id: discover
+        if: steps.changes.outputs.run_compat == 'true'
         run: python3 sdk/tests/step_types/discover.py step-types
-
-  tooling:
-    name: Check tooling tests
-    needs: changes
-    if: needs.changes.outputs.run_compat == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          python-version: "3.12"
-          version: ${{ env.UV_VERSION }}
-      - run: uv sync --locked --all-groups # NOSONAR: installs local editable workspace packages.
-      - run: make test-step-types-helpers
-
-  compat:
-    name: ${{ matrix.plugin }}
-    needs: [changes, discover]
-    if: needs.changes.outputs.run_compat == 'true'
-    runs-on: ubuntu-latest
-    # Above the driver's own 40-minute budget, so a hang is classified, not cut off.
-    timeout-minutes: 50
-    strategy:
-      fail-fast: false
-      matrix:
-        plugin: ${{ fromJSON(needs.discover.outputs.plugins) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          path: sdk
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: syntara-orchestration/syntara-step-types
-          ref: ${{ needs.discover.outputs.pin }}
-          path: step-types
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          python-version: "3.12"
-          version: ${{ env.UV_VERSION }}
       - name: Build candidate SDK wheels
+        id: candidate-wheels
+        if: steps.changes.outputs.run_compat == 'true'
         working-directory: sdk
-        run: uv build --all-packages --out-dir "$RUNNER_TEMP/wheels"
-      - name: Check the step type against the candidate SDK
-        env:
-          PLUGIN: ${{ matrix.plugin }}
-          MODE: ${{ needs.changes.outputs.mode }}
+        run: uv build --all-packages --out-dir "$RUNNER_TEMP/candidate-wheels"
+      - name: Check tooling tests
+        id: tooling
+        if: steps.changes.outputs.run_compat == 'true'
+        continue-on-error: true
+        working-directory: sdk
         run: |
-          podman --version
-          uv run --no-project --python 3.12 python sdk/tests/step_types/driver.py \
-            --plugin "$PLUGIN" \
-            --step-types-dir step-types \
-            --wheels-dir "$RUNNER_TEMP/wheels" \
-            --report-dir report \
-            --mode "$MODE"
-      - name: Upload report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: step-types-compat-${{ matrix.plugin }}
-          path: report/
-          if-no-files-found: warn
-          # Devel runs are the compat baseline (push, or a manual run used to
-          # refresh an expired one), so they outlive pull request artifacts.
-          retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
-          overwrite: true
-      - name: Remove the temporary registry
-        if: always()
-        run: podman rm --force step-types-compat-registry || true
-
-  baseline:
-    name: Resolve the devel baseline
-    needs: [changes, discover]
-    if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read # read the devel run's reports for the base commit
-    outputs:
-      run_id: ${{ steps.resolve.outputs.run_id }}
-      base_has_check: ${{ steps.resolve.outputs.base_has_check }}
-      available: ${{ steps.decide.outputs.available }}
-    steps:
-      - name: Resolve the devel run for the base commit
-        id: resolve
-        # Pull request runs only: devel and manual runs are judged as they are,
-        # so devel stays red while a break waits on step-types. The baseline is
-        # the devel run for this pull request's base commit (HEAD^1 of the
-        # merge commit), exactly the devel this pull request is tested against.
-        # Push and manual runs both count; cancelled runs are skipped, they
-        # produced no reports.
+          uv sync --locked --all-groups --no-build --no-install-workspace
+          uv pip install --no-deps --no-build "$RUNNER_TEMP"/candidate-wheels/*.whl
+          make test-step-types-helpers
+      - name: Resolve the devel baseline
+        id: baseline-run
+        if: github.event_name == 'pull_request' && steps.changes.outputs.run_compat == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          BASE_SHA: ${{ needs.changes.outputs.base_sha }}
+          BASE_SHA: ${{ steps.changes.outputs.base_sha }}
         run: |
-          run_id=""
-          base_has_check=false
-          if [ -n "$BASE_SHA" ]; then
-            run_id="$(gh api "repos/$REPOSITORY/actions/workflows/step-types-compat.yml/runs?head_sha=$BASE_SHA&status=completed&per_page=20" \
-              --jq '[.workflow_runs[] | select((.event == "push" or .event == "workflow_dispatch") and (.conclusion == "success" or .conclusion == "failure"))][0].id // ""')"
-            # A base commit older than this check has no run and nothing to
-            # recompute; the gate reports that instead of failing oddly.
-            if gh api "repos/$REPOSITORY/contents/tests/step_types/driver.py?ref=$BASE_SHA" --silent 2>/dev/null; then
-              base_has_check=true
-            fi
-          fi
+          run_id="$(gh api "repos/$REPOSITORY/actions/runs?head_sha=$BASE_SHA&status=completed&per_page=100" \
+            | env -u GH_TOKEN python3 sdk/tests/step_types/select_baseline.py --base-sha "$BASE_SHA")"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "base_has_check=$base_has_check" >> "$GITHUB_OUTPUT"
-          echo "baseline run for base ${BASE_SHA:-unknown}: ${run_id:-none} (base has the check: $base_has_check)"
-      - name: Download the devel run's reports
-        id: download
-        if: steps.resolve.outputs.run_id != ''
+      - name: Download the devel baseline
+        id: baseline-download
+        if: github.event_name == 'pull_request' && steps.baseline-run.outputs.run_id != ''
         continue-on-error: true
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          run-id: ${{ steps.resolve.outputs.run_id }}
+          run-id: ${{ steps.baseline-run.outputs.run_id }}
           github-token: ${{ github.token }}
           pattern: step-types-compat-*
           path: baseline
           merge-multiple: true
-      - name: Republish the baseline for this run
-        id: republish
-        if: steps.resolve.outputs.run_id != '' && steps.download.outcome == 'success'
+      - name: Check the devel baseline
+        id: baseline-check
+        if: github.event_name == 'pull_request' && steps.changes.outputs.run_compat == 'true'
         continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: devel-baseline-download
-          path: baseline/
-          if-no-files-found: error
-          retention-days: 5
-      - name: Decide
-        id: decide
-        if: always()
         env:
-          REPUBLISHED: ${{ steps.republish.outcome }}
+          PLUGINS: ${{ steps.discover.outputs.plugins }}
+          DOWNLOADED: ${{ steps.baseline-download.outcome }}
         run: |
           available=false
-          if [ "$REPUBLISHED" = "success" ]; then
+          if [ "$DOWNLOADED" = success ] && python3 sdk/tests/step_types/run_grouped.py \
+              --check-baseline baseline --plugins "$PLUGINS"; then
             available=true
           fi
           echo "available=$available" >> "$GITHUB_OUTPUT"
-
-  baseline-recompute:
-    # Static name on purpose: when this job is skipped (the common case, the
-    # devel baseline was available), GitHub lists it with the name template
-    # unexpanded, so "${{ matrix.plugin }}" would show literally in the checks
-    # list. Each leg is still identified by its plugin in the logs and in the
-    # devel-baseline-<plugin> artifact.
-    name: Recompute the baseline
-    needs: [changes, discover, baseline]
-    # The fallback that keeps pull requests self-sufficient: when the devel
-    # run's reports are unavailable (the run has not finished yet, was
-    # cancelled, or its artifacts expired), derive the baseline here, by
-    # running the same legs against the base commit's own wheels. Nobody
-    # refreshes anything by hand.
-    if: >-
-      github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true' &&
-      needs.baseline.outputs.available != 'true' && needs.baseline.outputs.base_has_check == 'true'
-    runs-on: ubuntu-latest
-    # Above the driver's own 40-minute budget, so a hang is classified, not cut off.
-    timeout-minutes: 50
-    strategy:
-      fail-fast: false
-      matrix:
-        plugin: ${{ fromJSON(needs.discover.outputs.plugins) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out the base SDK
+        id: base-checkout
+        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.changes.outputs.base_sha }}
-          path: sdk
+          ref: ${{ steps.changes.outputs.base_sha }}
+          path: baseline-sdk
           persist-credentials: false
-      - name: Resolve the base commit's step-types pin
+      - name: Resolve the base step-types pin
         id: base-pin
-        working-directory: sdk
+        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true' && steps.base-checkout.outcome == 'success'
+        continue-on-error: true
         run: |
-          # The recomputed baseline must run against the step-types revision
-          # the BASE commit pins, not this pull request's: a pin bump is
-          # judged strictly, so an incompatibility introduced by the pin
-          # itself must not look inherited. Anchored on the two-space env
-          # declaration and quitting at the first match: this file also
-          # contains this very command line, which mentions STEP_TYPES_REF
-          # too, and must never be the match.
-          pin="$(sed -n "/^  STEP_TYPES_REF: /{s/.*'\([^']*\)'.*/\1/p;q;}" .github/workflows/step-types-compat.yml)"
-          if [ -z "$pin" ]; then
-            echo "::error title=Base pin unavailable::Could not read STEP_TYPES_REF from the base commit's workflow; the baseline cannot be recomputed."
+          workflow=baseline-sdk/.github/workflows/ci.yml
+          if ! grep -q '^  STEP_TYPES_REF: ' "$workflow"; then
+            workflow=baseline-sdk/.github/workflows/step-types-compat.yml
+          fi
+          pin="$(sed -n "/^  STEP_TYPES_REF: /{s/.*'\([^']*\)'.*/\1/p;q;}" "$workflow")"
+          if ! [[ "$pin" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error title=Base pin unavailable::Cannot recompute the devel baseline.'
             exit 1
           fi
           echo "pin=$pin" >> "$GITHUB_OUTPUT"
-          echo "base commit's step-types pin: $pin"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out the base step types
+        id: base-step-types
+        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true' && steps.base-pin.outcome == 'success'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: syntara-orchestration/syntara-step-types
           ref: ${{ steps.base-pin.outputs.pin }}
-          path: step-types
+          path: baseline-step-types
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          python-version: "3.12"
-          version: ${{ env.UV_VERSION }}
-      - name: Build the base commit's wheels
-        working-directory: sdk
-        run: uv build --all-packages --out-dir "$RUNNER_TEMP/wheels"
-      - name: Run the step type against the base commit
+      - name: Recompute the devel baseline
+        id: baseline-recompute
+        if: github.event_name == 'pull_request' && steps.baseline-check.outputs.available != 'true' && steps.changes.outputs.run_compat == 'true' && steps.base-step-types.outcome == 'success'
+        continue-on-error: true
         env:
-          PLUGIN: ${{ matrix.plugin }}
+          PLUGINS: ${{ steps.discover.outputs.plugins }}
         run: |
-          podman --version
-          uv run --no-project --python 3.12 python sdk/tests/step_types/driver.py \
-            --plugin "$PLUGIN" \
-            --step-types-dir step-types \
-            --wheels-dir "$RUNNER_TEMP/wheels" \
-            --report-dir report \
-            --mode enforcing
-      - name: Upload the recomputed baseline
-        if: ${{ !cancelled() }}
+          rm -rf baseline
+          mkdir -p baseline
+          (cd baseline-sdk && uv build --all-packages --out-dir "$RUNNER_TEMP/baseline-wheels")
+          python3 sdk/tests/step_types/run_grouped.py \
+            --plugins "$PLUGINS" --driver baseline-sdk/tests/step_types/driver.py \
+            --checkout baseline-step-types --wheels "$RUNNER_TEMP/baseline-wheels" \
+            --reports baseline --mode enforcing
+          python3 sdk/tests/step_types/run_grouped.py --check-baseline baseline --plugins "$PLUGINS"
+      - name: Check the step types against the candidate SDK
+        id: compat
+        if: ${{ !cancelled() && steps.changes.outputs.run_compat == 'true' && steps.discover.outcome == 'success' && steps.candidate-wheels.outcome == 'success' }}
+        env:
+          PLUGINS: ${{ steps.discover.outputs.plugins }}
+          DISPATCH_REPORT_ONLY: ${{ inputs.report_only }}
+        run: |
+          mode=enforcing
+          if [ "$DISPATCH_REPORT_ONLY" = true ]; then mode=report-only:dispatch; fi
+          python3 sdk/tests/step_types/run_grouped.py \
+            --plugins "$PLUGINS" --driver sdk/tests/step_types/driver.py \
+            --checkout step-types --wheels "$RUNNER_TEMP/candidate-wheels" \
+            --reports reports --mode "$mode"
+      - name: Upload step-type reports
+        id: upload
+        if: ${{ !cancelled() && steps.changes.outputs.run_compat == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: devel-baseline-${{ matrix.plugin }}
-          path: report/
-          if-no-files-found: warn
-          retention-days: 5
-          overwrite: true
-      - name: Remove the temporary registry
-        if: always()
-        run: podman rm --force step-types-compat-registry || true
-
-  compat-report:
-    name: compat-report
-    needs: [changes, discover, tooling, compat, baseline, baseline-recompute]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read # re-read the breaking-change label
-    steps:
+          name: step-types-compat-grouped
+          path: reports/
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
       - name: Read the breaking-change label
         id: label
+        if: ${{ !cancelled() && steps.changes.outputs.run_compat == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          # Runs before any repository code is checked out. This live read is the only
-          # source of the label for the verdict: the legs' recorded mode can be stale
-          # (label removed later, or outputs reused by "Re-run failed jobs").
           present=false
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          if [ "$EVENT_NAME" = pull_request ]; then
             labels="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name')"
-            if printf '%s\n' "$labels" | grep -qx 'breaking-change'; then
-              present=true
-            fi
+            if printf '%s\n' "$labels" | grep -qx breaking-change; then present=true; fi
           fi
           echo "present=$present" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          path: sdk
-          persist-credentials: false
-      - name: Download reports
-        if: needs.changes.outputs.run_compat == 'true'
-        continue-on-error: true
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          pattern: step-types-compat-*
-          path: reports
-          merge-multiple: true
-      - name: Download the devel baseline
-        if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
-        continue-on-error: true
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          pattern: devel-baseline-*
-          path: baseline
-          merge-multiple: true
-      - name: Describe the baseline
-        if: github.event_name == 'pull_request' && needs.changes.outputs.run_compat == 'true'
+      - name: compat-report
+        if: ${{ !cancelled() }}
         env:
-          BASE_SHA: ${{ needs.changes.outputs.base_sha }}
-          RUN_ID: ${{ needs.baseline.outputs.run_id }}
-          AVAILABLE: ${{ needs.baseline.outputs.available }}
-          RECOMPUTE_RESULT: ${{ needs.baseline-recompute.result }}
-        run: |
-          mkdir -p baseline
-          source="absent"
-          if [ "$AVAILABLE" = "true" ]; then
-            source="devel-run"
-          elif compgen -G "baseline/*.json" > /dev/null; then
-            source="recomputed"
-          elif [ "$RECOMPUTE_RESULT" = "failure" ]; then
-            source="failed"
-          fi
-          printf '{"base_sha":"%s","run_id":"%s","source":"%s"}\n' "$BASE_SHA" "$RUN_ID" "$source" > baseline/meta.json
-          echo "devel baseline source: $source"
-      - name: Aggregate the verdict
-        env:
-          PLUGINS: ${{ needs.discover.outputs.plugins }}
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          RUN_COMPAT: ${{ needs.changes.outputs.run_compat }}
-          DISCOVER_RESULT: ${{ needs.discover.result }}
-          TOOLING_RESULT: ${{ needs.tooling.result }}
-          COMPAT_RESULT: ${{ needs.compat.result }}
+          PLUGINS: ${{ steps.discover.outputs.plugins }}
+          CHANGES: ${{ steps.changes.outcome }}
+          RUN_COMPAT: ${{ steps.changes.outputs.run_compat }}
+          DISCOVER: ${{ steps.discover.outcome }}
+          TOOLING: ${{ steps.tooling.outcome }}
+          COMPAT: ${{ steps.compat.outcome }}
+          UPLOAD: ${{ steps.upload.outcome }}
+          LABEL_OUTCOME: ${{ steps.label.outcome }}
           LABEL_PRESENT: ${{ steps.label.outputs.present }}
+          BASE_SHA: ${{ steps.changes.outputs.base_sha }}
+          BASE_RUN_ID: ${{ steps.baseline-run.outputs.run_id }}
+          BASE_CHECK: ${{ steps.baseline-check.outcome }}
+          BASE_AVAILABLE: ${{ steps.baseline-check.outputs.available }}
+          BASE_RECOMPUTE: ${{ steps.baseline-recompute.outcome }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          python3 sdk/tests/step_types/report.py \
-            --reports-dir reports \
-            --baseline-dir baseline \
-            --event "$EVENT_NAME" \
-            --plugins "${PLUGINS:-[]}" \
-            --changes "$CHANGES_RESULT" \
-            --run-compat "$RUN_COMPAT" \
-            --discover "$DISCOVER_RESULT" \
-            --tooling "$TOOLING_RESULT" \
-            --compat "$COMPAT_RESULT" \
-            --label-report-only "${LABEL_PRESENT:-false}"
+          source=not-attempted
+          if [ "$BASE_AVAILABLE" = true ]; then source=devel-run; fi
+          if [ "$BASE_RECOMPUTE" = success ]; then source=recomputed; fi
+          if { [ "$BASE_AVAILABLE" = false ] || [ "$BASE_CHECK" = failure ]; } && [ "$BASE_RECOMPUTE" != success ]; then source=failed; fi
+          if [ "$source" = failed ] || [ "$source" = not-attempted ]; then rm -rf baseline; fi
+          mkdir -p baseline
+          BASE_SOURCE="$source" python3 -c 'import json, os; from pathlib import Path; Path("baseline/meta.json").write_text(json.dumps({"base_sha": os.environ["BASE_SHA"], "run_id": os.environ["BASE_RUN_ID"], "source": os.environ["BASE_SOURCE"]}))'
+          if [ "$RUN_COMPAT" = true ] && { [ "$UPLOAD" != success ] || [ "$LABEL_OUTCOME" != success ]; }; then COMPAT=failure; fi
+          python3 sdk/tests/step_types/report.py --reports-dir reports --baseline-dir baseline \
+            --event "$EVENT_NAME" --plugins "${PLUGINS:-[]}" --changes "$CHANGES" \
+            --run-compat "$RUN_COMPAT" --discover "$DISCOVER" --tooling "$TOOLING" \
+            --compat "$COMPAT" --label-report-only "${LABEL_PRESENT:-false}"
