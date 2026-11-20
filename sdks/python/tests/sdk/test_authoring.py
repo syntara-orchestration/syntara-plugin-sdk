@@ -1608,7 +1608,8 @@ def _published_step_revision_id(
 
     metadata = descriptor["metadata"]
     spec = descriptor["spec"]
-    assert isinstance(metadata, dict) and isinstance(spec, dict)
+    assert isinstance(metadata, dict)
+    assert isinstance(spec, dict)
     preimage = {
         "projection": "syntara.compiled-contract/v1",
         "kind": "step",

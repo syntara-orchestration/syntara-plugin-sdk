@@ -307,28 +307,7 @@ def _compile(
     _validate_contract(
         bundle, "plugin", plugin.document, PLUGIN_MANIFEST_FILENAME, plugin.locations, diagnostics
     )
-    declared_targets = _declared_target_paths(plugin.document)
-    paths = [target.path for target in targets]
-    if declared_targets is not None and (
-        len(set(paths)) != len(paths) or len(set(declared_targets)) != len(declared_targets)
-    ):
-        diagnostics.append(
-            _diagnostic(
-                "TARGET_DUPLICATE",
-                "Each target must be declared once.",
-                PLUGIN_MANIFEST_FILENAME,
-                "Remove the duplicate target entry.",
-            )
-        )
-    if declared_targets is not None and list(declared_targets) != paths:
-        diagnostics.append(
-            _diagnostic(
-                "TARGET_DECLARATION_MISMATCH",
-                "Targets must be compiled in the root manifest's explicit order.",
-                PLUGIN_MANIFEST_FILENAME,
-                "Pass exactly the explicitly declared target manifests.",
-            )
-        )
+    _validate_target_declarations(plugin.document, targets, diagnostics)
     canonical_targets, assets = _canonicalize_targets(
         plugin,
         targets,
@@ -435,6 +414,37 @@ def _compile(
             )
         ),
     )
+
+
+def _validate_target_declarations(
+    document: Mapping[str, Any],
+    targets: Sequence[Target],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Reject duplicate targets and a compiled order that disagrees with the manifest."""
+
+    declared_targets = _declared_target_paths(document)
+    paths = [target.path for target in targets]
+    if declared_targets is not None and (
+        len(set(paths)) != len(paths) or len(set(declared_targets)) != len(declared_targets)
+    ):
+        diagnostics.append(
+            _diagnostic(
+                "TARGET_DUPLICATE",
+                "Each target must be declared once.",
+                PLUGIN_MANIFEST_FILENAME,
+                "Remove the duplicate target entry.",
+            )
+        )
+    if declared_targets is not None and list(declared_targets) != paths:
+        diagnostics.append(
+            _diagnostic(
+                "TARGET_DECLARATION_MISMATCH",
+                "Targets must be compiled in the root manifest's explicit order.",
+                PLUGIN_MANIFEST_FILENAME,
+                "Pass exactly the explicitly declared target manifests.",
+            )
+        )
 
 
 def _canonicalize_targets(
@@ -1561,7 +1571,7 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
                 ]
             ) from error
         except RecursionError as error:
-            # Raised directly, not as a ValueError: the classifier below
+            # Raised directly, not as a ValueError: _document_value_error_code
             # inspects the message, and this message embeds the filename,
             # which could itself contain a classifier keyword like "anchors".
             raise CompilationError(
@@ -1587,18 +1597,12 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
             ]
         ) from error
     except ValueError as error:
-        code = (
-            "DOCUMENT_TOO_LARGE"
-            if "larger than" in str(error)
-            else "YAML_ALIAS_FORBIDDEN"
-            if "anchors" in str(error)
-            else "DOCUMENT_LIMIT_EXCEEDED"
-        )
+        message = str(error)
         raise CompilationError(
             [
                 _diagnostic(
-                    code,
-                    str(error),
+                    _document_value_error_code(message),
+                    message,
                     str(path),
                     "Use a bounded YAML document without anchors or aliases.",
                 )
@@ -1639,6 +1643,16 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
         location=SourceLocation(file=relative_file),
         locations=_yaml_locations(raw, relative_file),
     )
+
+
+def _document_value_error_code(message: str) -> str:
+    """Map a bounded-document guard message to its diagnostic code."""
+
+    if "larger than" in message:
+        return "DOCUMENT_TOO_LARGE"
+    if "anchors" in message:
+        return "YAML_ALIAS_FORBIDDEN"
+    return "DOCUMENT_LIMIT_EXCEEDED"
 
 
 class _NumberTokenError(ValueError):
