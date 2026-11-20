@@ -50,3 +50,40 @@ RFC's published test vectors. The preimage rule (remove only the two mirrored
 `requestHash` fields) is unchanged. As the SDK is pre-release, the resulting
 digest values changed forward-only; every consumer recomputes them from the
 same contracts package rather than pinning them.
+
+### Exception to the versioning rule
+
+The consequence above requires a new versioned runtime contract for any
+semantic change to the canonical JSON representation. This change takes a
+documented exception to that rule, and only because every Syntara runtime
+contract is still pre-release (`v1alpha1`), no released consumer pins a digest
+across package versions, and both the composing and verifying sides recompute
+from the same `syntara-plugin-contracts` package rather than persisting an
+independent serialization.
+
+Consumers coordinate the upgrade as follows:
+
+- The request composer and the Execution Plane verifier upgrade
+  `syntara-plugin-contracts` in the same change train. This repository's
+  Execution Plane compatibility check gates that upgrade: it recomputes
+  request hashes with the candidate package and fails on any divergence.
+- A digest computed by the previous canonicalization is never accepted
+  silently. Verification is fail-closed: a mismatched `requestHash` rejects
+  the request, and the caller recomposes it under the current package.
+- Once any runtime contract reaches a stable (non-alpha) version, this
+  exception lapses: every later semantic change to the canonical form
+  requires a new versioned runtime contract and cross-language conformance
+  coverage, with no forward-only digest migration.
+
+### Cross-language conformance coverage
+
+The rule is provable across languages against
+`contracts/fixtures/runtime-workload-request.canonicalization.valid.json`.
+That fixture composes a request whose inputs exercise the three behaviors a
+near-JCS implementation gets wrong: number serialization (`1.0` canonicalizes
+to `1`, `1e21` to `1e+21`), UTF-16 code-unit key ordering (a U+10000 key sorts
+before a U+FFFD key, the opposite of code-point order), and minimal
+string escaping (control characters, quotes, backslash, and non-ASCII text).
+Both mirrored `requestHash` fields carry the digest of that request under the
+current rule, so any language implementation removes the two fields,
+canonicalizes, and must reproduce the pinned digest byte-for-byte.

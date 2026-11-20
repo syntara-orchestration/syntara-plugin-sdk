@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -1515,7 +1516,7 @@ def test_deeply_nested_json_asset_reports_a_bounded_diagnostic(tmp_path: Path) -
 def test_compile_preserves_plugin_and_target_metadata_tags(tmp_path: Path) -> None:
     """Author discovery tags survive compilation into the descriptor (AAP-102213)."""
     plugin = _plugin()
-    plugin["metadata"]["tags"] = ["issues", "github/api"]
+    plugin["metadata"]["tags"] = ["issues", "github-api"]
     action = _action(
         {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
     )
@@ -1525,7 +1526,7 @@ def test_compile_preserves_plugin_and_target_metadata_tags(tmp_path: Path) -> No
 
     result = _compile(root)
 
-    assert result.descriptor["metadata"]["tags"] == ["issues", "github/api"]
+    assert result.descriptor["metadata"]["tags"] == ["issues", "github-api"]
     (target,) = result.descriptor["spec"]["targets"]
     assert target["metadata"]["tags"] == ["automation"]
     assert validate_plugin_descriptor_semantics(result.descriptor) == ()
@@ -1583,6 +1584,94 @@ def test_formatting_only_schema_edits_keep_canonical_digests_and_revision_ids(
         != second.descriptor["spec"]["plugin_revision_id"]
     )
     assert first.digest != second.digest
+
+
+def _published_canonical_digest(value: object) -> str:
+    """Digest as the published, pre-RFC 8785 serializer computed it.
+
+    ADR 0005's original rule: UTF-8 JSON with sorted object keys, compact
+    separators, and no non-finite numbers. A workload image built by the
+    published SDK carries schema digests and step revision IDs derived from
+    these bytes.
+    """
+
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+    return "sha256:" + sha256(encoded).hexdigest()
+
+
+def _published_step_revision_id(
+    descriptor: dict[str, object], target: dict[str, object]
+) -> str:
+    """Step revision ID as the published SDK's serializer computed it."""
+
+    metadata = descriptor["metadata"]
+    spec = descriptor["spec"]
+    assert isinstance(metadata, dict) and isinstance(spec, dict)
+    preimage = {
+        "projection": "syntara.compiled-contract/v1",
+        "kind": "step",
+        "plugin": {key: metadata[key] for key in ("namespace", "name", "version")},
+        "contractBundleDigest": spec["contractBundleDigest"],
+        "target": {key: value for key, value in target.items() if key != "step_revision_id"},
+    }
+    return _published_canonical_digest(preimage)
+
+
+def test_candidate_host_rejects_an_image_hashed_by_the_published_serializer(
+    tmp_path: Path,
+) -> None:
+    """The host/image digest boundary is checked across implementations.
+
+    The maintained step-type compatibility check runs in source mode, so the
+    candidate implementation sits on both sides of every digest it computes
+    and cannot observe a published image whose digests were hashed by the
+    previous serializer. This test is that boundary: a schema value of 1.0
+    canonicalizes to 1 under RFC 8785 but survived as 1.0 in the published
+    serializer, so an image built before the change carries different
+    schema digests and step revision IDs. The candidate host must detect
+    the mismatch instead of accepting it.
+    """
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"maximum": {"type": "number", "maximum": 1.0}},
+    }
+    action = _action({"kind": "inline", "value": schema})
+    root = _workspace(tmp_path, action=action)
+
+    result = _compile(root)
+
+    descriptor = result.descriptor
+    (target,) = descriptor["spec"]["targets"]
+    # The mismatch is real: the same schema hashes differently per
+    # implementation, and so does the step revision ID keyed on it.
+    assert target["schemaDigests"]["input"] != _published_canonical_digest(schema)
+    assert target["step_revision_id"] != _published_step_revision_id(descriptor, target)
+
+    # Positive control: the candidate's own registration manifest validates.
+    manifest = registration_manifest(descriptor, "plugin-workload")
+    validate_registration_manifest(descriptor, "plugin-workload", manifest)
+
+    # The image built by the published SDK ships a manifest keyed by the
+    # published step revision ID with the published schema digests.
+    published_revision = _published_step_revision_id(descriptor, target)
+    (candidate_revision, step), = manifest["steps"].items()
+    image_manifest = {
+        **manifest,
+        "steps": {
+            published_revision: {
+                **step,
+                "schemaDigests": {
+                    "input": _published_canonical_digest(schema),
+                    "output": step["schemaDigests"]["output"],
+                },
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="does not match"):
+        validate_registration_manifest(descriptor, "plugin-workload", image_manifest)
 
 
 def test_structured_assets_carry_distinct_source_and_canonical_digests(
@@ -1663,3 +1752,127 @@ def test_compile_reports_a_structured_diagnostic_for_unrepresentable_asset_numbe
     assert any(
         "9007199254740993" in item.message for item in error.value.diagnostics
     )
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["9007199254740993.0", "9007199254740993e0", "9007199254740993E0"],
+)
+def test_asset_decimal_number_tokens_are_rejected_before_float_rounding(
+    tmp_path: Path, token: str
+) -> None:
+    """Integer-valued decimal and exponent tokens cannot round silently to binary64."""
+    action = _action({"kind": "asset", "path": "schemas/input.json"})
+    root = _workspace(tmp_path, action=action)
+    asset = tmp_path / "schemas/input.json"
+    asset.parent.mkdir()
+    asset.write_text(
+        '{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+        f'"type":"object","maximum":{token}}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+
+    assert "ASSET_NUMBER_UNREPRESENTABLE" in {item.code for item in error.value.diagnostics}
+    assert any(token in item.message for item in error.value.diagnostics)
+
+
+def test_manifest_inline_decimal_number_token_is_rejected(tmp_path: Path) -> None:
+    """A decimal token a double cannot carry fails at manifest parse, not at hashing."""
+    action = _action(
+        {
+            "kind": "inline",
+            "value": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "maximum": "NUMBER_TOKEN",
+            },
+        }
+    )
+    root = tmp_path / "plugin.yaml"
+    target = tmp_path / "steps/create-issue/manifest.yaml"
+    target.parent.mkdir(parents=True)
+    root.write_text(_yaml(_plugin()))
+    # Substitute after dumping so the raw token reaches the YAML loader as
+    # written, instead of a Python float that already rounded to binary64.
+    target.write_text(
+        _yaml(action).replace("NUMBER_TOKEN", "9007199254740993.0"), encoding="utf-8"
+    )
+    (tmp_path / "docs/README.md").parent.mkdir(exist_ok=True)
+    (tmp_path / "docs/README.md").write_text("# Issue tools\n", encoding="utf-8")
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+
+    assert "DOCUMENT_NUMBER_UNREPRESENTABLE" in {item.code for item in error.value.diagnostics}
+    assert any(
+        "9007199254740993.0" in item.message for item in error.value.diagnostics
+    )
+
+
+@pytest.mark.parametrize(
+    ("members", "described_key"),
+    [
+        (
+            '"type":"object","maximum":1,"maximum":2',
+            "'maximum'",
+        ),
+        (
+            '"\\u006daximum":1,"maximum":2',
+            "'maximum'",
+        ),
+    ],
+)
+def test_duplicate_json_property_names_are_rejected(
+    tmp_path: Path, members: str, described_key: str
+) -> None:
+    """JCS requires unique property names; escaped equivalents collide too."""
+    action = _action({"kind": "asset", "path": "schemas/input.json"})
+    root = _workspace(tmp_path, action=action)
+    asset = tmp_path / "schemas/input.json"
+    asset.parent.mkdir()
+    asset.write_text(
+        '{"$schema":"https://json-schema.org/draft/2020-12/schema",' + members + "}",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+
+    assert "ASSET_INVALID" in {item.code for item in error.value.diagnostics}
+    assert any(
+        f"duplicate JSON object key {described_key}" in item.message
+        for item in error.value.diagnostics
+    )
+
+
+def test_target_revision_number_errors_report_the_target_manifest(tmp_path: Path) -> None:
+    """An unrepresentable inline UI-schema number blames the target, not plugin.yaml."""
+    action = _action(
+        {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}}
+    )
+    action["spec"]["inputPresentation"] = {
+        "renderer": "rjsf.v1",
+        "uiSchema": {
+            "kind": "inline",
+            "value": {"ui:widget": "number", "ui:options": {"step": 9223372036854775807}},
+        },
+    }
+    root = _workspace(tmp_path, action=action)
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+
+    assert "DESCRIPTOR_NUMBER_UNREPRESENTABLE" in {item.code for item in error.value.diagnostics}
+    number_errors = [
+        item
+        for item in error.value.diagnostics
+        if item.code == "DESCRIPTOR_NUMBER_UNREPRESENTABLE"
+    ]
+    # The target-revision failure blames the target manifest; the separate
+    # plugin-level projection failure still reports the root manifest.
+    files = {item.location.file for item in number_errors}
+    assert "steps/create-issue/manifest.yaml" in files
+    assert "plugin.yaml" in files

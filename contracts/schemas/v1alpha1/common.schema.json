@@ -34,7 +34,7 @@
       "type": "array",
       "uniqueItems": true,
       "maxItems": 32,
-      "items": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._/-]*$"}
+      "items": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$(?![\\s\\S])"}
     },
     "metadata": {
       "type": "object",

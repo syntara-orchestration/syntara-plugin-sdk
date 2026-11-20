@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import stat
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
@@ -33,6 +35,7 @@ from syntara_plugin.contracts import (
     validate_document,
 )
 from syntara_plugin.runtime.yaml_loader import UniqueKeyLoader
+from yaml.constructor import SafeConstructor
 from yaml.tokens import AliasToken, AnchorToken
 
 DEFAULT_CONTAINER_ABI = "syntara.container/v1alpha1"
@@ -374,10 +377,22 @@ def _compile(
         "metadata": _ordered(plugin.document["metadata"]),
         "spec": descriptor_spec,
     }
+    for target in canonical_targets:
+        if target.get("kind") not in STEP_KINDS:
+            continue
+        try:
+            target["step_revision_id"] = step_revision_id(descriptor, target)
+        except CanonicalJsonError as error:
+            diagnostics.append(
+                _diagnostic(
+                    "DESCRIPTOR_NUMBER_UNREPRESENTABLE",
+                    f"Cannot hash the compiled contract of "
+                    f"{target.get('sourcePath', PLUGIN_MANIFEST_FILENAME)!r}: {error}",
+                    str(target.get("sourcePath", PLUGIN_MANIFEST_FILENAME)),
+                    _NUMBER_REMEDIATION,
+                )
+            )
     try:
-        for target in canonical_targets:
-            if target.get("kind") in STEP_KINDS:
-                target["step_revision_id"] = step_revision_id(descriptor, target)
         descriptor_spec["plugin_revision_id"] = plugin_revision_id(descriptor)
     except CanonicalJsonError as error:
         diagnostics.append(
@@ -840,6 +855,16 @@ def _document_source(
                 f"Cannot load asset {asset_path!r}: it is nested too deeply to parse.",
                 target_path,
                 "Use a contained JSON or YAML document within the size limit.",
+            )
+        )
+        return None
+    except _NumberTokenError as error:
+        diagnostics.append(
+            _diagnostic(
+                "ASSET_NUMBER_UNREPRESENTABLE",
+                f"Asset {asset_path!r} cannot be parsed exactly: {error}",
+                target_path,
+                _NUMBER_REMEDIATION,
             )
         )
         return None
@@ -1523,7 +1548,18 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
         raw = _read_regular_file(path, max_bytes, root=root)
         _reject_yaml_aliases(raw)
         try:
-            value = yaml.load(raw, Loader=UniqueKeyLoader)
+            value = yaml.load(raw, Loader=_StrictNumberLoader)
+        except _NumberTokenError as error:
+            raise CompilationError(
+                [
+                    _diagnostic(
+                        "DOCUMENT_NUMBER_UNREPRESENTABLE",
+                        f"{path.name} cannot be parsed exactly: {error}",
+                        str(path),
+                        _NUMBER_REMEDIATION,
+                    )
+                ]
+            ) from error
         except RecursionError as error:
             # Raised directly, not as a ValueError: the classifier below
             # inspects the message, and this message embeds the filename,
@@ -1605,13 +1641,81 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
     )
 
 
+class _NumberTokenError(ValueError):
+    """A numeric token an IEEE 754 double cannot carry exactly."""
+
+
+class _StrictNumberLoader(UniqueKeyLoader):
+    """The unique-key loader with the I-JSON number policy applied to floats."""
+
+
+def _construct_checked_float(loader: _StrictNumberLoader, node: yaml.Node) -> float:
+    value = SafeConstructor.construct_yaml_float(loader, node)
+    _check_number_token(str(node.value), value)
+    return value
+
+
+_StrictNumberLoader.add_constructor(
+    "tag:yaml.org,2002:float", _construct_checked_float
+)
+
+
+def _check_number_token(token: str, value: float) -> None:
+    """Apply the exact-integer policy before a decimal token rounds to binary64.
+
+    ``json`` and ``yaml`` convert every decimal and exponent token to a float
+    first, so ``9007199254740993.0`` would silently become ``...992.0`` before
+    the canonical serializer could reject it. Comparing the token's decimal
+    value against the parsed double preserves the author's intent.
+    """
+
+    try:
+        decimal = Decimal(token.replace("_", ""))
+    except InvalidOperation:
+        # Exotic YAML scalar forms keep their PyYAML semantics.
+        return
+    if decimal != decimal.to_integral_value():
+        return
+    if not math.isfinite(value) or decimal != Decimal(value):
+        raise _NumberTokenError(
+            f"number {token} is not exactly representable as an IEEE 754 double"
+        )
+
+
+def _checked_json_float(token: str) -> float:
+    value = float(token)
+    _check_number_token(token, value)
+    return value
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate JSON property names before the last value wins.
+
+    JSON parsing keeps the last duplicate silently, so a schema asset with
+    ``{"type": "string", "type": "integer"}`` would hash as if it declared
+    only the integer. Keys are compared after escape decoding, so ``"type"``
+    and ``"\\u0074ype"`` collide as RFC 8785 requires.
+    """
+
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
 def _parse_asset(path: Path, raw: bytes) -> object:
     if path.suffix == _JSON_SUFFIX:
-        return json.loads(raw)
+        return json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_float=_checked_json_float,
+        )
     if path.suffix in {".yaml", ".yml"}:
         _reject_yaml_aliases(raw)
         try:
-            value = yaml.load(raw, Loader=UniqueKeyLoader)
+            value = yaml.load(raw, Loader=_StrictNumberLoader)
         except RecursionError as error:
             raise ValueError("asset is nested too deeply to parse.") from error
         _enforce_document_limits(value)

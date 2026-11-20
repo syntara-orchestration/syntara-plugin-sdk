@@ -14,6 +14,11 @@ from typing import Any
 # (Number::toString step 6: n > 21) and below 1e-7 (step 8: n <= -6).
 _ECMASCRIPT_EXPONENT_UPPER = 21
 _ECMASCRIPT_EXPONENT_LOWER = -6
+# Unicode noncharacters: the U+FDD0..U+FDEF block and the two code points
+# ending in U+FFFE or U+FFFF on every plane. RFC 8785 builds on the I-JSON
+# input model, which excludes them from string values and member names.
+_NONCHARACTER_FIRST = 0xFDD0
+_NONCHARACTER_LAST = 0xFDEF
 # Python's json.dumps with ensure_ascii=False applies exactly the RFC 8785
 # string escaping rules: the two-character escapes for backslash, quote, and
 # the short control names, plus \u00XX for every other control character.
@@ -82,6 +87,7 @@ def _serialize(value: object, fragments: list[str]) -> None:
     elif value is False:
         fragments.append("false")
     elif isinstance(value, str):
+        _validate_string(value)
         fragments.append(_JSON_STRING(value))
     elif isinstance(value, int):
         fragments.append(_ecmascript_integer(value))
@@ -106,6 +112,7 @@ def _serialize_object(value: Mapping[Any, Any], fragments: list[str]) -> None:
     for index, (key, item) in enumerate(items):
         if index:
             fragments.append(",")
+        _validate_string(key)
         fragments.append(_JSON_STRING(key))
         fragments.append(":")
         _serialize(item, fragments)
@@ -121,6 +128,20 @@ def _serialize_array(value: list[Any] | tuple[Any, ...], fragments: list[str]) -
             fragments.append(",")
         _serialize(item, fragments)
     fragments.append("]")
+
+
+def _validate_string(value: str) -> None:
+    """Reject Unicode noncharacters per the I-JSON input model (RFC 7493)."""
+
+    for character in value:
+        code = ord(character)
+        if (
+            _NONCHARACTER_FIRST <= code <= _NONCHARACTER_LAST
+            or (code & 0xFFFE) == 0xFFFE
+        ):
+            raise CanonicalJsonError(
+                f"strings must not contain the Unicode noncharacter U+{code:04X}"
+            )
 
 
 def _sort_key(key: object) -> bytes:

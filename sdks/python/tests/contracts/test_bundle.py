@@ -373,7 +373,7 @@ def test_plugin_metadata_preserves_discovery_tags() -> None:
     }
     assert validate_document(bundle, "plugin", plugin) == []
 
-    plugin["metadata"] = {**_metadata(), "tags": ["automation", "issues/github"]}
+    plugin["metadata"] = {**_metadata(), "tags": ["automation", "github-issues"]}
 
     assert validate_document(bundle, "plugin", plugin) == []
 
@@ -387,6 +387,13 @@ def test_plugin_metadata_preserves_discovery_tags() -> None:
         ["a" * 65],
         ["tag"] * 33,
         [" automation"],
+        ["issues/github"],
+        ["under_score"],
+        ["name.with.dot"],
+        ["-leading"],
+        ["trailing-"],
+        ["double--hyphen"],
+        ["automation\n"],
     ],
 )
 def test_plugin_metadata_rejects_malformed_tags(tags: list[str]) -> None:

@@ -800,7 +800,7 @@ invents author-facing content:
 | `spec.assets[].canonicalDigest` | The RFC 8785 canonical form of the parsed asset document. For Markdown documentation, which has no structured value, it equals the source-byte digest. |
 | `spec.targets[].schemaDigests` | SHA-256 over the RFC 8785 canonical form of each materialized schema. |
 | `spec.targets[].step_revision_id` | Compiler-derived from the target's canonical contract projection; stable across formatting-only edits to the source schemas. |
-| `spec.plugin_revision_id` | Compiler-derived from the full compiled spec, including the exact source-byte asset inventory. Reformatting a source file changes it because the artifact's bytes change. |
+| `spec.plugin_revision_id` | Compiler-derived from the `syntara.compiled-contract/v1` projection of the compiled spec: everything except `sdkVersion`, the generated revision IDs, and custom-runner workload bindings (whose image bindings may not exist until after this projection is hashed). It includes the exact source-byte asset inventory, so reformatting a source file changes it because the artifact's bytes change. |
 | `spec.sdkVersion`, `spec.contractBundleDigest` | The compiling SDK release and the contract bundle the descriptor was checked against. |
 | `spec.workloads[].image` | The immutable digest reference supplied by the build, never a mutable tag. |
 

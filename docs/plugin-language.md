@@ -16,7 +16,7 @@ Every plugin inventory and target document starts with this envelope.
 | `metadata.version` | Semantic plugin release version. Plugin only. |
 | `metadata.displayName` | Short UI label. |
 | `metadata.description` | User-facing explanation of the plugin or target. |
-| `metadata.tags` | Optional discovery labels: up to 32 unique strings of 1–64 lowercase characters, digits, `.`, `_`, `-`, or `/`, each starting with a lowercase character or digit. Compilation preserves them verbatim in the compiled descriptor. |
+| `metadata.tags` | Optional discovery labels: up to 32 unique strings of 1–64 lowercase characters, digits, and hyphens (lowercase kebab-case, no leading or trailing hyphen). Compilation preserves them verbatim in the compiled descriptor. |
 
 ## Terms and execution model
 

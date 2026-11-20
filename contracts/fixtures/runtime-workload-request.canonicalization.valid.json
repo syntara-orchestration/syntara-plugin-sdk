@@ -1,0 +1,37 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerWorkloadRequest",
+  "workItem": {
+    "apiVersion": "syntara.io/v1alpha1",
+    "kind": "ContainerStepWorkItem",
+    "invocationId": "invoke-1",
+    "stepRevisionId": "step-1",
+    "pluginDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtimeAbi": "syntara.container/v1alpha1",
+    "imageDigest": "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "integrationHandle": "integration-1",
+    "inputs": {
+      "count": 1.0,
+      "ratio": 0.5,
+      "large": 1e+21,
+      "escaped": "line\nbreak \"quoted\" back\\slash café",
+      "�-bmp": "U+FFFD: first by code point, second by UTF-16 code unit",
+      "𐀀-non-bmp": "U+10000: second by code point, first by UTF-16 code unit"
+    },
+    "credentialHandles": [
+      "credential-1"
+    ],
+    "capabilityGrantId": "grant-1",
+    "executionPolicyId": "policy-1",
+    "timeoutSeconds": 300,
+    "requestHash": "sha256:96fce038f27e7f64ca34fdb4bb76bb97540b7fad6cb68398865d2feea496555e"
+  },
+  "policySnapshot": {
+    "apiVersion": "syntara.io/v1alpha1",
+    "kind": "ExecutionPolicySnapshot",
+    "policyId": "policy-1",
+    "revision": "revision-1",
+    "effectiveCapabilities": [],
+    "requestHash": "sha256:96fce038f27e7f64ca34fdb4bb76bb97540b7fad6cb68398865d2feea496555e"
+  }
+}

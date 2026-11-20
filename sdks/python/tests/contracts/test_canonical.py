@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -142,6 +144,20 @@ def test_canonical_json_rejects_lone_surrogates() -> None:
         canonical_json_bytes({"\ud800": 1})
 
 
+@pytest.mark.parametrize("value", ["﷐", "a﷯b", "\U0009fffe", "\U0010ffff"])
+def test_canonical_json_rejects_unicode_noncharacters_in_values(value: str) -> None:
+    """The I-JSON input model excludes noncharacters from string values."""
+    with pytest.raises(CanonicalJsonError, match="Unicode noncharacter"):
+        canonical_json_bytes({"key": value})
+
+
+@pytest.mark.parametrize("key", ["﷐", "\U000ffffe", "\U0010ffff"])
+def test_canonical_json_rejects_unicode_noncharacters_in_keys(key: str) -> None:
+    """The I-JSON input model excludes noncharacters from member names too."""
+    with pytest.raises(CanonicalJsonError, match="Unicode noncharacter"):
+        canonical_json_bytes({key: 1})
+
+
 def test_canonical_json_rejections_carry_specific_reasons() -> None:
     """The blanket wrapper does not erase the detailed serializer messages."""
     with pytest.raises(CanonicalJsonError, match="not exactly representable"):
@@ -163,3 +179,49 @@ def test_container_request_hash_ignores_only_the_mirrored_hash_fields() -> None:
 
     request["workItem"]["inputs"]["title"] = "Tampered"
     assert container_workload_request_digest(request) != expected
+
+
+def _canonicalization_fixture() -> dict[str, Any]:
+    """Load the ADR 0005 cross-language request-hash conformance vector."""
+
+    path = Path(__file__).parents[4] / "contracts" / "fixtures"
+    document = json.loads(
+        (path / "runtime-workload-request.canonicalization.valid.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return document
+
+
+def test_request_hash_conformance_fixture_pins_the_digest() -> None:
+    """Both mirrored hash fields carry the digest under the current rule."""
+    request = _canonicalization_fixture()
+
+    digest = container_workload_request_digest(request)
+
+    assert request["workItem"]["requestHash"] == digest
+    assert request["policySnapshot"]["requestHash"] == digest
+
+
+def test_request_hash_conformance_fixture_covers_jcs_behaviors() -> None:
+    """The fixture exercises number, ordering, and escaping forms (ADR 0005)."""
+    request = _canonicalization_fixture()
+    preimage = json.loads(json.dumps(request))
+    for section in ("workItem", "policySnapshot"):
+        preimage[section].pop("requestHash")
+
+    canonical = canonical_json_bytes(preimage)
+
+    # Number serialization: a decimal-written integer drops the fraction and
+    # the ECMAScript exponent boundary holds.
+    assert b'"count":1,' in canonical
+    assert b'"ratio":0.5,' in canonical
+    assert b'"large":1e+21,' in canonical
+    # UTF-16 code-unit key ordering: U+10000's high surrogate (0xD800) sorts
+    # before U+FFFD (0xFFFD), the opposite of code-point order.
+    assert canonical.index("\U00010000-non-bmp".encode()) < canonical.index(
+        "�-bmp".encode()
+    )
+    # Minimal string escaping: controls, quotes, and backslash escaped;
+    # non-ASCII text emitted as UTF-8.
+    assert b'"escaped":"line\\nbreak \\"quoted\\" back\\\\slash caf\xc3\xa9"' in canonical
