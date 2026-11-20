@@ -42,7 +42,11 @@ def test_context_exposes_a_stable_read_only_toolbox() -> None:
     assert context.toolbox is toolbox
     assert context._with_credentials(()).toolbox is toolbox
     assert ExecutionContext("another").toolbox is not toolbox
-    assert [name for name in dir(toolbox) if not name.startswith("_")] == ["log"]
+    assert [name for name in dir(toolbox) if not name.startswith("_")] == [
+        "call_mcp_tool",
+        "log",
+        "model_turn",
+    ]
     assert not hasattr(toolbox, "resolve_credential_ref")
     assert not hasattr(toolbox, "request_credential")
     assert not hasattr(toolbox, "_transport")

@@ -21,6 +21,15 @@ _MAX_EVENTS = 128
 _MAX_DROPPED = 4_294_967_295
 
 
+class HostOperationError(RuntimeError):
+    """A host callback failed or returned an uncertain result."""
+
+    def __init__(self, code: str, message: str, *, outcome_unknown: bool = False) -> None:
+        self.code = code
+        self.outcome_unknown = outcome_unknown
+        super().__init__(message)
+
+
 class _JsonSnapshotter:
     """Build a detached JSON value while enforcing the attribute contract."""
 
@@ -34,9 +43,8 @@ class _JsonSnapshotter:
 
     def string(self, value: str) -> bool:
         # Even before escaping or UTF-8 encoding, a JSON string needs quotes.
-        return (
-            len(value) + 2 <= self.remaining
-            and self.spend(len(json.dumps(value, ensure_ascii=False).encode("utf-8")))
+        return len(value) + 2 <= self.remaining and self.spend(
+            len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
         )
 
     def copy(self, item: Any, depth: int = 0) -> tuple[bool, Any]:
@@ -61,9 +69,7 @@ class _JsonSnapshotter:
         if type(item) is int:
             return -(2**63) <= item < 2**63 and self.spend(len(str(item))), item
         if type(item) is float:
-            return math.isfinite(item) and self.spend(
-                len(json.dumps(item, allow_nan=False))
-            ), item
+            return math.isfinite(item) and self.spend(len(json.dumps(item, allow_nan=False))), item
         return False, None
 
     def _copy_list(self, items: list[Any], depth: int) -> tuple[bool, Any]:
@@ -94,10 +100,7 @@ class _JsonSnapshotter:
 
     def _copy_member_prefix(self, key: Any, index: int) -> bool:
         return (
-            type(key) is str
-            and (not index or self.spend(1))
-            and self.string(key)
-            and self.spend(1)
+            type(key) is str and (not index or self.spend(1)) and self.string(key) and self.spend(1)
         )
 
 
@@ -195,11 +198,20 @@ class ContainerToolbox:
             except Exception:
                 state.dropped = min(_MAX_DROPPED, state.dropped + 1)
 
+    def model_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Ask the host to run one model inference turn."""
+        return _host_call(self, "agent.model.turn", payload)
+
+    def call_mcp_tool(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Ask the host to execute one assigned MCP tool call."""
+        return _host_call(self, "agent.mcp.call", payload)
+
 
 class _ToolboxState:
-    def __init__(self, cancellation: Event, invocation_id: str) -> None:
+    def __init__(self, cancellation: Event, invocation_id: str, host_call: Any = None) -> None:
         self.cancellation = cancellation
         self.invocation_id = invocation_id
+        self.host_call = host_call
         self.closed = Event()
         self.lock = RLock()
         self.events: list[_LogRecord] = []
@@ -212,10 +224,12 @@ _states: dict[int, _ToolboxState] = {}
 _states_lock = RLock()
 
 
-def _new_toolbox(cancellation: Event, invocation_id: str = "") -> ContainerToolbox:
+def _new_toolbox(
+    cancellation: Event, invocation_id: str = "", host_call: Any = None
+) -> ContainerToolbox:
     toolbox = ContainerToolbox()
     with _states_lock:
-        _states[id(toolbox)] = _ToolboxState(cancellation, invocation_id)
+        _states[id(toolbox)] = _ToolboxState(cancellation, invocation_id, host_call)
     finalize(toolbox, _discard_toolbox_state, id(toolbox))
     return toolbox
 
@@ -233,6 +247,23 @@ def _discard_toolbox_state(toolbox_id: int) -> None:
 def _toolbox_active(toolbox: ContainerToolbox) -> bool:
     state = _toolbox_state(toolbox)
     return not state.closed.is_set() and not state.cancellation.is_set()
+
+
+def _host_call(
+    toolbox: ContainerToolbox, operation: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    state = _toolbox_state(toolbox)
+    with state.lock:
+        callback = state.host_call
+        active = not state.closed.is_set() and not state.cancellation.is_set()
+    if callback is None or not active:
+        raise RuntimeError("Host operation is unavailable for this invocation.")
+    if type(payload) is not dict:
+        raise TypeError("Host operation payload must be an object.")
+    result = callback(operation, payload)
+    if type(result) is not dict:
+        raise RuntimeError("Host operation returned an invalid response.")
+    return result
 
 
 def _close_toolbox(toolbox: ContainerToolbox) -> None:

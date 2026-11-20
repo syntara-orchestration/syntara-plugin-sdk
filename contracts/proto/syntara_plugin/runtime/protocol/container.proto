@@ -45,15 +45,16 @@ message ExecuteRequest {
 }
 
 // The first client message is start; subsequent messages are responses to
-// credential requests. Each request ID is unique within an invocation. A
-// client may close its send stream; the invocation continues, but pending and
-// future credential reads fail. Any other subsequent message processed before
-// the terminal event is committed cancels the invocation with a terminal
+// credential or host-operation requests. Each request ID is unique within an
+// invocation. A client may close its send stream; the invocation continues,
+// but pending and future callbacks fail. Any other subsequent message processed
+// before the terminal event is committed cancels the invocation with a terminal
 // CANCELLED failure. Messages arriving after that point may be ignored.
 message ExecuteClientMessage {
   oneof message {
     ExecuteRequest start = 1;
     CredentialResponse credential_response = 2;
+    HostResponse host_response = 3;
   }
 }
 
@@ -62,7 +63,33 @@ message ExecuteServerMessage {
     ExecutionEvent event = 1;
     CredentialRequest credential_request = 2;
     LogBatch log_batch = 3;
+    HostRequest host_request = 4;
   }
+}
+
+// A typed request for an operation implemented by the trusted workload host.
+// Payloads are operation-specific JSON objects. The host must authorize each
+// operation from its dispatch assignment and must never trust a payload URL.
+message HostRequest {
+  string invocation_id = 1;
+  string request_id = 2;
+  string operation = 3;
+  bytes payload_json = 4;
+}
+
+message HostResponse {
+  string invocation_id = 1;
+  string request_id = 2;
+  oneof outcome {
+    bytes result_json = 3;
+    HostError error = 4;
+  }
+}
+
+message HostError {
+  string code = 1;
+  string message = 2;
+  bool outcome_unknown = 3;
 }
 
 // Version 1 operational logs. A batch is sent at most once, immediately
