@@ -49,9 +49,9 @@ error schema that was validated.
 **Wrapper errors are validated against the declared `spec.error`.** Every
 wrapper error is validated against the declared schema, not only a deliberate
 failure's error result: the `INVALID_INPUT` wrapper emitted before `run()` is
-called and the default `STEP_FAILED` shape of `StepFailure` are SDK-defined
-error results a step type author does not choose per call. Because the
-receiver-side digest rule forbids recording a base-only digest, a declared
+called and the default `BUSINESS_RULE_FAILED` shape of `StepFailure` are
+SDK-defined error results a step type author does not choose per call. Because
+the receiver-side digest rule forbids recording a base-only digest, a declared
 `spec.error` that cannot carry those shapes would turn a routine
 invalid-input report into an opaque `StepExecutionError`. The compiler and
 the installation boundary (`InstalledStepManifest.from_manifest`) therefore

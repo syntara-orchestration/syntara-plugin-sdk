@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from syntara_plugin.runtime import FailureCode, StepBinding
+from syntara_plugin.runtime import ErrorCategory, ErrorCode, StepBinding
 
 from .context_builder import build_execution_context
 from .equivalence import _describe, _error_brief, assert_outcomes_equivalent
@@ -73,8 +73,10 @@ def check_invalid_blocks_hook(
                 f"expected an INVALID_INPUT failure, got ok={outcome.ok}, "
                 f"error={_error_brief(outcome.error)}, raised={_describe(outcome.raised)}"
             )
-        elif outcome.error.code != FailureCode.INVALID_INPUT.value:
-            problems.append(f"expected INVALID_INPUT code, got {outcome.error.code}")
+        elif (outcome.error.category, outcome.error.code) != (
+            ErrorCategory.VALIDATION, ErrorCode.INVALID_INPUT
+        ):
+            problems.append("expected validation/INVALID_INPUT")
         if problems:
             failures.append(
                 ConformanceFailure(payload.name, "invalid_blocks_hook", "; ".join(problems))

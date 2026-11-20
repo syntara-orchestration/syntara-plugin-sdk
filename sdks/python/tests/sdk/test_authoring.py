@@ -1391,7 +1391,8 @@ def test_accepts_a_declared_error_schema_that_admits_wrapper_errors(
         **_DECLARED_ERROR_SCHEMA,
         "properties": {
             **_DECLARED_ERROR_SCHEMA["properties"],
-            "code": {"enum": ["TRACKER_DOWN", "INVALID_INPUT", "STEP_FAILED"]},
+            "code": {"enum": ["INVALID_INPUT", "BUSINESS_RULE_FAILED"]},
+            "providerCode": {"enum": ["TRACKER_DOWN"]},
         },
     }
     action = _action(

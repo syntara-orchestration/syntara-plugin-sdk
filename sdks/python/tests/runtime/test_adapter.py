@@ -478,7 +478,7 @@ def test_wrapper_output_on_a_deliberate_failure_uses_transport_externalization()
     wrapper = StandardOutputWrapper.failure(
         ErrorMessage(
             category=ErrorCategory.DEPENDENCY,
-            code="REMOTE_REJECTED",
+            code="DEPENDENCY_FAILED",
             message="The upstream service rejected the request.",
             retryable=True,
         ),
@@ -610,13 +610,13 @@ def test_oversized_output_round_trips_as_a_reference_over_grpc() -> None:
     [
         StandardOutputWrapper.success({"value": 42}, status_message="Custom success"),
         StandardOutputWrapper.failure(
-            ErrorMessage(code="REMOTE_REJECTED", message="Try again", retryable=True),
+            ErrorMessage(category="dependency", code="DEPENDENCY_FAILED", message="Try again", retryable=True),
             status_code=7,
             status_message="A distinct status message",
             result={"partial": True},
         ),
         StandardOutputWrapper.failure(
-            ErrorMessage(code="INVALID_INPUT", message="Invalid input"),
+            ErrorMessage(category="validation", code="INVALID_INPUT", message="Invalid input"),
             status_code=1,
         ),
     ],
@@ -684,7 +684,7 @@ def test_reference_resolution_preserves_failed_result_metadata() -> None:
         object_reference="host:partial",
         status_code=3,
         status_message="Partial result",
-        error_result={"category": "dependency", "code": "REMOTE_REJECTED", "message": "Rejected", "retryable": True},
+        error_result={"category": "dependency", "code": "DEPENDENCY_FAILED", "message": "Rejected", "retryable": True},
         error_schema_digest=canonical_json_digest(error_result_schema()),
     )
 
@@ -695,7 +695,7 @@ def test_reference_resolution_preserves_failed_result_metadata() -> None:
     ) == StandardOutputWrapper.failure(
         ErrorMessage(
             category=ErrorCategory.DEPENDENCY,
-            code="REMOTE_REJECTED",
+            code="DEPENDENCY_FAILED",
             message="Rejected",
             retryable=True,
         ),
@@ -711,8 +711,8 @@ def test_failed_container_result_empty_status_message_uses_error_message() -> No
         status_code=7,
         status_message="",
         error_result={
-            "category": "business",
-            "code": "REMOTE_REJECTED",
+            "category": "dependency",
+            "code": "DEPENDENCY_FAILED",
             "message": "Rejected",
             "retryable": False,
         },
@@ -1016,3 +1016,26 @@ def test_registry_dispatches_only_registered_binding_identities() -> None:
     assert result.output["message"] == "hello"
     with pytest.raises(ContainerInvocationError):
         steps.resolve("unknown")
+
+
+@pytest.mark.parametrize("error, accepted", [
+    ({"category": "validation", "code": "INVALID_INPUT", "message": "bad", "retryable": False}, True),
+    ({"category": "business", "code": "BUSINESS_RULE_FAILED", "message": "bad", "retryable": False}, False),
+    ({"category": "validation", "code": "INVALID_INPUT", "message": "bad", "retryable": False, "extra": "data"}, False),
+])
+def test_base_error_digest_only_accepts_sdk_validation(error, accepted):
+    from syntara_plugin.runtime import error_result_base_schema
+    result = ContainerResult(_expected_digest(), status_code=1, status_message="bad", error_result=error, error_schema_digest=canonical_json_digest(error_result_base_schema()))
+    schema = {"type": "object", "required": ["reason"]}
+    if accepted:
+        output_schema = _permissive_output_schema()
+        wrapper = standard_output_from_container_result(
+            result, output_schema=output_schema, error_schema=schema
+        )
+        assert wrapper.error.code == "INVALID_INPUT"
+    else:
+        output_schema = _permissive_output_schema()
+        with pytest.raises(ContainerRemoteError):
+            standard_output_from_container_result(
+                result, output_schema=output_schema, error_schema=schema
+            )

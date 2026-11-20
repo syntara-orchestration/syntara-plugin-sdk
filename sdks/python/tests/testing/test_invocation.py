@@ -67,7 +67,7 @@ class TypedFailureTask(ControlStep[CaptureInput, CaptureOutput]):
             "The dependency rejected this operation.",
             "The remote service rejected the request.",
             category="dependency",
-            code="REMOTE_REJECTED",
+            code="DEPENDENCY_FAILED",
             retryable=True,
         )
 
@@ -133,7 +133,7 @@ def test_deliberate_failure_is_captured_with_its_code() -> None:
     assert outcome.status == 17
     assert outcome.error is not None
     assert outcome.error.category == "dependency"
-    assert outcome.error.code == "REMOTE_REJECTED"
+    assert outcome.error.code == "DEPENDENCY_FAILED"
     assert outcome.error.retryable is True
     assert isinstance(outcome.raw, StandardOutputWrapper)
     assert outcome.raw.error_message == outcome.error

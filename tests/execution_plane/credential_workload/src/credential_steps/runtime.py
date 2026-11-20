@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict
 from syntara_plugin.contracts import canonical_json_bytes
 from syntara_plugin.runtime import (
     ActionStep,
+    ErrorCategory,
     ExecutionContext,
     StepBindings,
     StepFailure,
@@ -249,7 +250,8 @@ class HttpRequestStep(ActionStep[HttpRequestInput, HttpRequestOutput]):
                 1,
                 "The delivered credential document has no token field.",
                 "The delivered credential document has no token field.",
-                code="COMPAT_INVALID_CREDENTIAL",
+                code="AUTHENTICATION_FAILED",
+                category=ErrorCategory.AUTHENTICATION,
             )
         authorization = f"Bearer {token}"
         server = _verification_server(authorization, _credential_digest(document))
@@ -275,7 +277,8 @@ class HttpRequestStep(ActionStep[HttpRequestInput, HttpRequestOutput]):
                     1,
                     "The verification server did not answer the request.",
                     "The verification server did not answer the request.",
-                    code="COMPAT_REQUEST_FAILED",
+                    code="DEPENDENCY_FAILED",
+                    category=ErrorCategory.DEPENDENCY,
                 ) from None
         finally:
             server.shutdown()

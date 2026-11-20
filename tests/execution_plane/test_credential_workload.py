@@ -190,7 +190,7 @@ def test_http_request_step_rejects_documents_without_a_token(
     assert not outcome.ok
     assert outcome.status == 1
     assert outcome.error is not None
-    assert outcome.error.code == "COMPAT_INVALID_CREDENTIAL"
+    assert outcome.error.code == "AUTHENTICATION_FAILED"
     assert outcome.raised is None
 
 
@@ -228,7 +228,7 @@ def test_http_request_step_fails_closed_when_the_server_is_unreachable(
     assert not outcome.ok
     assert outcome.status == 1
     assert outcome.error is not None
-    assert outcome.error.code == "COMPAT_REQUEST_FAILED"
+    assert outcome.error.code == "DEPENDENCY_FAILED"
     assert outcome.raised is None
 
 

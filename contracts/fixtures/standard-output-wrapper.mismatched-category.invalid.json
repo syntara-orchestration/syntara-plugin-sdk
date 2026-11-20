@@ -1,0 +1,11 @@
+{
+  "result": null,
+  "statusCode": 1,
+  "statusMessage": "The service failed.",
+  "errorResult": {
+    "category": "business",
+    "code": "DEPENDENCY_FAILED",
+    "message": "The service failed.",
+    "retryable": false
+  }
+}

@@ -676,12 +676,13 @@ serialized in the result fields, alongside the digest of the applied
 declared `spec.output` schema. A nonzero status is still a valid result and
 carries the complete structured error JSON and the canonical digest of the
 effective error schema. The SDK base requires a category, code, message, and
-retryability value. When `spec.error` is declared, its schema may add
+retryability value from the [closed category/code registry](../contracts/README.md).
+When `spec.error` is declared, its schema may add
 step type-specific fields and the runtime validates errors against both schemas.
 When `spec.error` is absent, the SDK uses a closed fallback schema that accepts
 only the base fields; custom fields require a declared `spec.error`.
-An error that fails either schema produces no valid wrapper, including an
-input-validation error when a declared schema requires additional fields.
+An error that fails either applicable schema produces no valid wrapper. Input
+validation errors use the SDK base schema because the step has not run.
 `ContainerFailure` is reserved for
 cases where no valid wrapper/outcome exists, such as invalid output,
 serialization failure, or a runtime/protocol failure. Direct and container
@@ -690,7 +691,7 @@ only the container path adds ABI serialization and transport limits. The JSON
 runtime contract names this outcome `ContainerFailure`; the gRPC protocol
 carries it in a `Failure` event.
 For a nonzero `ContainerResult`, the error and its schema digest are required.
-A missing or unknown category is a protocol error. Inline output and object references are
+A missing or unknown category, unknown code, or mismatched pair is a protocol error. Inline output and object references are
 mutually exclusive; either may carry a deliberate failure's optional business
 result.
 
@@ -750,7 +751,7 @@ wrapper API. The client verifies its digest and validates the complete error
 before reconstruction. Without that argument it uses the closed, base-fields-only
 fallback schema, so custom fields require a declared `spec.error`. Authors can
 supply step type-specific fields with `StepFailure(...,
-error_result=ErrorResult(category="dependency", code="REMOTE_REJECTED",
+error_result=ErrorResult(category="dependency", code="DEPENDENCY_FAILED",
 message="Rejected", retryable=True, requestId="request-1"))`.
 They can also subclass `ErrorResult` to declare step type-specific fields.
 Preserve an upstream `requestId` in declared step type-specific error fields when

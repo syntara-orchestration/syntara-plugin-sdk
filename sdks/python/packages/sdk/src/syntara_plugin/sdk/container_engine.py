@@ -40,7 +40,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from syntara_plugin.runtime.abi import CONTAINER_ABI
+from syntara_plugin.runtime.abi import CONTAINER_ABI, FailureCode
 
 from .runner import RunExecutionError, RunTarget, TlsOptions
 
@@ -318,6 +318,7 @@ def _select_engine(image: str) -> ContainerEngine:
     if not engines:
         raise RunExecutionError(
             "neither podman nor docker is available to run the workload image",
+            error_kind="MissingImage",
             next_steps=(
                 "install podman or docker",
                 _SELF_MANAGED_NEXT_STEP,
@@ -333,6 +334,7 @@ def _select_engine(image: str) -> ContainerEngine:
             failures.append(f"{engine.command}: {error.message}")
     raise RunExecutionError(
         f"no usable container engine has the workload image {image!r} locally",
+        error_kind="MissingImage",
         detail=tuple(failures),
         next_steps=(
             f"build and tag the image as {image!r} (see the image-mode guide)",
@@ -858,6 +860,8 @@ def _container_exit_error(
     return RunExecutionError(
         f"the workload container for {image!r} exited with status {exit_code} "
         "before its runtime became healthy",
+        failure_code=FailureCode.UPSTREAM_TRANSIENT,
+        outcome="not_started",
         detail=tuple(detail),
         next_steps=(
             "check the container log above",

@@ -308,7 +308,7 @@ _WRAPPER_ERROR_DOCUMENTS: tuple[dict[str, Any], ...] = (
     },
     {
         "category": "business",
-        "code": "STEP_FAILED",
+        "code": "BUSINESS_RULE_FAILED",
         "message": "The step failed.",
         "retryable": False,
     },
@@ -319,7 +319,8 @@ def validate_declared_error_schema(document: Mapping[str, Any]) -> None:
     """Reject a declared ``spec.error`` that cannot carry an SDK wrapper error.
 
     Every wrapper error — including the INVALID_INPUT wrapper emitted before
-    the step hook runs, and the default STEP_FAILED shape of ``StepFailure`` —
+    the step hook runs, and the default BUSINESS_RULE_FAILED shape of
+    ``StepFailure`` —
     is validated against the declared ``spec.error`` at invocation time. A
     schema that cannot carry those shapes would turn a routine invalid-input
     report into an opaque execution error, so authoring rejects it up front.

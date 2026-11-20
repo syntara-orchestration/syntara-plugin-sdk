@@ -88,7 +88,6 @@ _ABI_SIGNATURE = "does not support the requested runtime ABI"
 _GRPC_SIGNATURE = re.compile(r"StatusCode\.[A-Z_]+|grpc\._channel|_InactiveRpcError")
 _MAKE_ERROR = re.compile(r"^make(\[\d+\])?: \*\*\*", re.MULTILINE)
 
-# FailureCode values a step reports through the SDK runtime (syntara_plugin.runtime).
 # FailureCode values a step reports through the SDK runtime (syntara_plugin.runtime),
 # mapped by meaning for a failed run document without a traceback (a traceback
 # classifies by provenance first, in every stage). Every member of the SDK's
@@ -110,6 +109,12 @@ _STEP_REPORTED_CODES = frozenset({
 # cancellations and for cancelled transport RPCs, and only a traceback
 # (classified first, by provenance) tells them apart.
 _UNDETERMINED_CODES = frozenset({"OUTCOME_UNKNOWN", "CANCELLED"})
+# Deliberate ErrorResult codes are a separate registry from container failures.
+_RESULT_TRANSIENT_CODES = frozenset({"DEPENDENCY_FAILED", "RATE_LIMITED", "RESOURCE_EXHAUSTED", "TIMEOUT_EXCEEDED"})
+_RESULT_BOUNDARY_CODES = frozenset()
+_RESULT_INPUT_CODES = frozenset()
+_RESULT_STEP_CODES = frozenset({"CONTRACT_VIOLATION", "VALIDATION_FAILED", "MISCONFIGURATION", "UNSUPPORTED", "AUTHENTICATION_FAILED", "AUTHORIZATION_FAILED", "BUSINESS_RULE_FAILED", "NOT_FOUND", "POLICY_DENIED", "INTERNAL_ERROR"})
+_RESULT_UNDETERMINED_CODES = frozenset({"INVALID_INPUT", "CANCELLED", "UNKNOWN"})
 _SETTINGS_KINDS = frozenset({"SettingsError", "CompilationError"})
 
 
@@ -756,13 +761,30 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
     document = captured_document(failure)
     if document is None or document.get("ok") is not False:
         return None
-    error = _error(document)
+    result = document.get("errorResult")
+    container = document.get("containerFailure")
+    if isinstance(container, Mapping):
+        error, field = container, "containerFailure"
+        groups = (_TRANSIENT_CODES, _BOUNDARY_CODES, _INPUT_CODES, _STEP_REPORTED_CODES, _UNDETERMINED_CODES)
+    elif isinstance(result, Mapping):
+        # CLI diagnostics also carry ErrorResult, but only a nonzero wrapper
+        # status establishes that a step returned a deliberate failure.
+        if not isinstance(document.get("status"), int) or isinstance(document.get("status"), bool) or document["status"] == 0:
+            return None
+        error, field = result, "errorResult"
+        groups = (_RESULT_TRANSIENT_CODES, _RESULT_BOUNDARY_CODES, _RESULT_INPUT_CODES, _RESULT_STEP_CODES, _RESULT_UNDETERMINED_CODES)
+    else:
+        error, field = _error(document), "error"
+        if error.get("kind"):
+            return None
+        groups = (_TRANSIENT_CODES, _BOUNDARY_CODES, _INPUT_CODES, _STEP_REPORTED_CODES, _UNDETERMINED_CODES)
     code = str(error.get("code", ""))
     message = str(error.get("message", ""))
-    reported = f"error.code {code}: {message}" if code else ""
-    if not code or error.get("kind"):
+    reported = f"{field}.code {code}: {message}" if code else ""
+    if not code:
         return None
-    if code in _TRANSIENT_CODES:
+    transient, boundary, inputs, step_reported, undetermined = groups
+    if code in transient and (field != "errorResult" or error.get("retryable") is True):
         return Classification(
             category="infra",
             rule_id="IN004",
@@ -775,7 +797,7 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
             actions=("Re-run the failed job.",),
             facts={"code": code, "retryable": error.get("retryable")},
         )
-    if code in _BOUNDARY_CODES:
+    if code in boundary:
         return Classification(
             category="contract",
             rule_id="CT007",
@@ -788,7 +810,7 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
             # The identity of this failure for the devel-baseline comparison.
             facts={"code": code, "message": message},
         )
-    if code in _INPUT_CODES:
+    if code in inputs and field != "errorResult":
         # The runtime validates the step's inputs before the step runs, so this
         # is the SDK rejecting step-types' example input, not the step failing.
         return Classification(
@@ -804,7 +826,7 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
             # The identity of this failure for the devel-baseline comparison.
             facts={"code": code, "message": message},
         )
-    if code in _STEP_REPORTED_CODES:
+    if code in step_reported or (field == "errorResult" and (code in transient or code in inputs)):
         return Classification(
             category="implementation",
             rule_id="IM003",
@@ -826,9 +848,9 @@ def _run_document_rule(failure: Failure, frames: tuple[Frame, ...]) -> Classific
     # OUTCOME_UNKNOWN, or a code the SDK added without a mapping: without a
     # traceback the report does not establish an origin, so stay uncertain.
     actions = [_REPRODUCE.format(plugin=failure.plugin)]
-    if code not in _UNDETERMINED_CODES:
+    if code not in undetermined:
         actions.append(
-            "This looks like a new SDK FailureCode; add it to the run-code sets in "
+            "This looks like a new SDK error code; add it to the appropriate run-code sets in "
             "classifier.py."
         )
     return Classification(

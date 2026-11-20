@@ -493,7 +493,7 @@ def test_image_mode_scrubs_a_remote_error_code(capsys) -> None:
     assert status == 1
     captured = capsys.readouterr()
     assert "GHPTOKEN123XYZ" not in captured.out
-    assert _report_field(captured.out, "Error").startswith("***")
+    assert _report_field(captured.out, "Error").startswith("OUTCOME_UNKNOWN")
 
 
 _E2E_STEPS_SOURCE = '''"""Real step type implementations served over gRPC for image-mode e2e."""
@@ -529,7 +529,7 @@ class FailStep(ActionStep[StepInput, StepOutput]):
             1,
             "The tracker rejected the request.",
             error_message="The tracker rejected the request.",
-            code=FailureCode.REMOTE_REJECTED.value,
+            code="DEPENDENCY_FAILED",
             category=ErrorCategory.DEPENDENCY,
             retryable=True,
         )
@@ -623,7 +623,7 @@ def _serve_real_steps(
 
     from syntara_plugin.runtime import StepBindings
     from syntara_plugin.runtime.adapter import container_step_for_binding
-    from syntara_plugin.testing.bindings_factory import installed_binding
+    from syntara_plugin.testing.bindings_factory import StepBindingsFactory
 
     if str(workspace) not in sys.path:
         sys.path.insert(0, str(workspace))
@@ -631,7 +631,9 @@ def _serve_real_steps(
     bindings = StepBindings()
     for class_name, target_name in (("OkStep", "ok"), ("FailStep", "fail"), ("CrashStep", "crash")):
         step = getattr(module, class_name)()
-        binding = installed_binding(step, identity=f"run.{plugin_name}.{target_name}")
+        binding = StepBindingsFactory().bind_step(
+            step, workspace=workspace, identity=f"run.{plugin_name}.{target_name}"
+        )
         bindings.bind(binding.descriptor, binding.step)
     server = grpc.server(ThreadPoolExecutor(max_workers=2))
     revisions = {str(t["identity"]): str(t["step_revision_id"]) for t in _compiled_targets(workspace)}
@@ -693,7 +695,7 @@ def test_image_mode_reports_a_real_steps_deliberate_failure(
         _stop(server)
 
     assert status == 1
-    assert _report_field(captured.out, "Error") == "REMOTE_REJECTED (retryable: true)"
+    assert _report_field(captured.out, "Error") == "DEPENDENCY_FAILED (retryable: true)"
     assert _report_field(captured.out, "Message") == "The tracker rejected the request."
     assert "Error detail:" not in captured.out
 

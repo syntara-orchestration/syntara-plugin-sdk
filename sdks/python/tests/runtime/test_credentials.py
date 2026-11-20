@@ -258,7 +258,7 @@ def test_declared_credential_keys_can_appear_in_output_and_failure(tmp_path: Pat
         assert failure.status == 401
         assert failure.status_message == "invalid username or password"
         assert failure.error.message == "authentication rejected"
-        assert failure.error.code == "STEP_FAILED"
+        assert failure.error.code == "BUSINESS_RULE_FAILED"
         assert failure.raw is not None
 
 

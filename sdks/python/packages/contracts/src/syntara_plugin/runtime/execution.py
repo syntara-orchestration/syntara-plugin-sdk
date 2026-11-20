@@ -23,6 +23,7 @@ from .context import ExecutionContext
 from .credentials import _CredentialScanStatus, _CredentialScope
 from .outcome import (
     ErrorCategory,
+    ErrorCode,
     ErrorResult,
     StandardOutputWrapper,
     bounded_message,
@@ -76,7 +77,7 @@ def _resolve_step_failure_error(
 
     if error_message is None:
         raise ValueError("StepFailure requires an error result")
-    effective_code = "STEP_FAILED" if code is _UNSET_CODE else _validate_step_failure_code(code)
+    effective_code = "BUSINESS_RULE_FAILED" if code is _UNSET_CODE else _validate_step_failure_code(code)
     effective_category = ErrorCategory.BUSINESS if category is _UNSET_CATEGORY else category
     effective_retryable = False if retryable is _UNSET_RETRYABLE else retryable
     if not isinstance(effective_retryable, bool):
@@ -194,7 +195,7 @@ class StepExecutor:
             return self._failure(
                 ErrorResult(
                     category=ErrorCategory.VALIDATION,
-                    code=FailureCode.INVALID_INPUT.value,
+                    code=ErrorCode.INVALID_INPUT,
                     message=error.safe_message,
                 ),
                 outcome="not_started",
