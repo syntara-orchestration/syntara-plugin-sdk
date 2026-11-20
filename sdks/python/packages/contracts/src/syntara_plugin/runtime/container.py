@@ -1084,6 +1084,20 @@ class _CredentialRequestBridge:
             response.error = container_pb2.CREDENTIAL_ERROR_UNAVAILABLE
         self._complete_response(request, response, context)
 
+    def _complete_response(
+        self,
+        request: container_pb2.CredentialRequest,
+        response: container_pb2.CredentialResponse,
+        context: CredentialRequestContext,
+    ) -> None:
+        """Release a credential response only while its invocation is active."""
+        with self._lock:
+            self._pending.discard(request.request_id)
+            if self._active.is_set() and not context.cancelled:
+                self._outgoing.put(
+                    container_pb2.ExecuteClientMessage(credential_response=response)
+                )
+
     def accept_host_request(self, request: container_pb2.HostRequest) -> None:
         """Run an authorized host operation and return its correlated response."""
         if (
