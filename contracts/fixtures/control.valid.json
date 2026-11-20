@@ -4,7 +4,11 @@
   "metadata": {
     "name": "invoke-deploy",
     "displayName": "Invoke deploy",
-    "description": "Invokes a deployment workflow."
+    "description": "Invokes a deployment workflow.",
+    "tags": [
+      "workflow",
+      "deploy"
+    ]
   },
   "spec": {
     "invocation": {
@@ -19,19 +23,34 @@
       "kind": "inline",
       "value": {
         "type": "object",
-        "properties": {"environment": {"type": "string"}}
+        "properties": {
+          "environment": {
+            "type": "string"
+          }
+        }
       }
     },
     "output": {
       "kind": "inline",
       "value": {
         "type": "object",
-        "properties": {"runId": {"type": "string"}}
+        "properties": {
+          "runId": {
+            "type": "string"
+          }
+        }
       }
     },
     "error": {
       "kind": "inline",
-      "value": {"type": "object", "properties": {"message": {"type": "string"}}}
+      "value": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

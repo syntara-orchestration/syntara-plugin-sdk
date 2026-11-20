@@ -29,6 +29,13 @@
     "rfc3339Timestamp": {"type": "string", "format": "date-time"},
     "repository": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"},
     "opaqueReference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"},
+    "tags": {
+      "description": "Author-owned discovery labels preserved verbatim by compilation.",
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 32,
+      "items": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$(?![\\s\\S])"}
+    },
     "metadata": {
       "type": "object",
       "additionalProperties": false,
@@ -38,7 +45,8 @@
         "name": {"$ref": "#/$defs/identifier"},
         "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]*)\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
-        "description": {"type": "string", "minLength": 1, "maxLength": 2000}
+        "description": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "tags": {"$ref": "#/$defs/tags"}
       }
     },
     "runtimeBindingMetadata": {
@@ -58,7 +66,8 @@
       "properties": {
         "name": {"$ref": "#/$defs/identifier"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
-        "description": {"type": "string", "minLength": 1, "maxLength": 2000}
+        "description": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "tags": {"$ref": "#/$defs/tags"}
       }
     },
     "documentSource": {

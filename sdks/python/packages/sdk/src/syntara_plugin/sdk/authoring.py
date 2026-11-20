@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import stat
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
@@ -18,8 +20,11 @@ import yaml
 from jsonschema import SchemaError
 from syntara_plugin.contracts import (
     STEP_KINDS,
+    CanonicalJsonError,
     ContractBundle,
     SchemaDocumentError,
+    canonical_json_bytes,
+    canonical_json_digest,
     load_bundle,
     plugin_revision_id,
     revision_errors,
@@ -30,6 +35,7 @@ from syntara_plugin.contracts import (
     validate_document,
 )
 from syntara_plugin.runtime.yaml_loader import UniqueKeyLoader
+from yaml.constructor import SafeConstructor
 from yaml.tokens import AliasToken, AnchorToken
 
 DEFAULT_CONTAINER_ABI = "syntara.container/v1alpha1"
@@ -45,6 +51,10 @@ _MAX_DOCUMENT_BYTES = 1024 * 1024
 _MAX_DOCUMENT_DEPTH = 100
 _MAX_DOCUMENT_NODES = 10_000
 _RECURSIVE_ALIAS_REMEDIATION = "Replace the recursive alias with finite data."
+_NUMBER_REMEDIATION = (
+    "Use numbers an IEEE 754 double carries exactly: integers within ±2**53"
+    " and finite values, per the RFC 8785 canonicalization used for digests."
+)
 _PYTHON_SDK_PRE_RELEASE = re.compile(
     r"^(?P<major>0|[1-9][0-9]*)\.(?P<minor>0|[1-9][0-9]*)\.(?P<patch>0|[1-9][0-9]*)"
     r"(?:(?P<phase>a|b|rc)(?P<serial>0|[1-9][0-9]*))?$"
@@ -297,28 +307,7 @@ def _compile(
     _validate_contract(
         bundle, "plugin", plugin.document, PLUGIN_MANIFEST_FILENAME, plugin.locations, diagnostics
     )
-    declared_targets = _declared_target_paths(plugin.document)
-    paths = [target.path for target in targets]
-    if declared_targets is not None and (
-        len(set(paths)) != len(paths) or len(set(declared_targets)) != len(declared_targets)
-    ):
-        diagnostics.append(
-            _diagnostic(
-                "TARGET_DUPLICATE",
-                "Each target must be declared once.",
-                PLUGIN_MANIFEST_FILENAME,
-                "Remove the duplicate target entry.",
-            )
-        )
-    if declared_targets is not None and list(declared_targets) != paths:
-        diagnostics.append(
-            _diagnostic(
-                "TARGET_DECLARATION_MISMATCH",
-                "Targets must be compiled in the root manifest's explicit order.",
-                PLUGIN_MANIFEST_FILENAME,
-                "Pass exactly the explicitly declared target manifests.",
-            )
-        )
+    _validate_target_declarations(plugin.document, targets, diagnostics)
     canonical_targets, assets = _canonicalize_targets(
         plugin,
         targets,
@@ -368,9 +357,31 @@ def _compile(
         "spec": descriptor_spec,
     }
     for target in canonical_targets:
-        if target.get("kind") in STEP_KINDS:
+        if target.get("kind") not in STEP_KINDS:
+            continue
+        try:
             target["step_revision_id"] = step_revision_id(descriptor, target)
-    descriptor_spec["plugin_revision_id"] = plugin_revision_id(descriptor)
+        except CanonicalJsonError as error:
+            diagnostics.append(
+                _diagnostic(
+                    "DESCRIPTOR_NUMBER_UNREPRESENTABLE",
+                    f"Cannot hash the compiled contract of "
+                    f"{target.get('sourcePath', PLUGIN_MANIFEST_FILENAME)!r}: {error}",
+                    str(target.get("sourcePath", PLUGIN_MANIFEST_FILENAME)),
+                    _NUMBER_REMEDIATION,
+                )
+            )
+    try:
+        descriptor_spec["plugin_revision_id"] = plugin_revision_id(descriptor)
+    except CanonicalJsonError as error:
+        diagnostics.append(
+            _diagnostic(
+                "DESCRIPTOR_NUMBER_UNREPRESENTABLE",
+                f"Cannot hash the compiled contract: {error}",
+                PLUGIN_MANIFEST_FILENAME,
+                _NUMBER_REMEDIATION,
+            )
+        )
     for message in revision_errors(descriptor):
         diagnostics.append(
             _diagnostic(
@@ -403,6 +414,37 @@ def _compile(
             )
         ),
     )
+
+
+def _validate_target_declarations(
+    document: Mapping[str, Any],
+    targets: Sequence[Target],
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Reject duplicate targets and a compiled order that disagrees with the manifest."""
+
+    declared_targets = _declared_target_paths(document)
+    paths = [target.path for target in targets]
+    if declared_targets is not None and (
+        len(set(paths)) != len(paths) or len(set(declared_targets)) != len(declared_targets)
+    ):
+        diagnostics.append(
+            _diagnostic(
+                "TARGET_DUPLICATE",
+                "Each target must be declared once.",
+                PLUGIN_MANIFEST_FILENAME,
+                "Remove the duplicate target entry.",
+            )
+        )
+    if declared_targets is not None and list(declared_targets) != paths:
+        diagnostics.append(
+            _diagnostic(
+                "TARGET_DECLARATION_MISMATCH",
+                "Targets must be compiled in the root manifest's explicit order.",
+                PLUGIN_MANIFEST_FILENAME,
+                "Pass exactly the explicitly declared target manifests.",
+            )
+        )
 
 
 def _canonicalize_targets(
@@ -513,7 +555,7 @@ def _normalize_target(
         _normalize_integration_type(target, spec, context)
     else:
         _normalize_credential_recipe(target, spec, context)
-    _record_schema_digests(target)
+    _record_schema_digests(target, path, diagnostics)
     return cast(dict[str, Any], _ordered(target))
 
 
@@ -683,10 +725,23 @@ def _normalize_credential_recipe(
         target["output"] = _target_document_source(output, "output", context)
 
 
-def _record_schema_digests(target: dict[str, Any]) -> None:
+def _record_schema_digests(
+    target: dict[str, Any], path: str, diagnostics: list[Diagnostic]
+) -> None:
     """Attach canonical digests for every materialized schema in a target."""
 
-    digests = schema_digests(target)
+    try:
+        digests = schema_digests(target)
+    except CanonicalJsonError as error:
+        diagnostics.append(
+            _diagnostic(
+                "SCHEMA_NUMBER_UNREPRESENTABLE",
+                f"Cannot hash the schemas of {path!r}: {error}",
+                path,
+                _NUMBER_REMEDIATION,
+            )
+        )
+        return
     if digests:
         target["schemaDigests"] = digests
 
@@ -813,6 +868,16 @@ def _document_source(
             )
         )
         return None
+    except _NumberTokenError as error:
+        diagnostics.append(
+            _diagnostic(
+                "ASSET_NUMBER_UNREPRESENTABLE",
+                f"Asset {asset_path!r} cannot be parsed exactly: {error}",
+                target_path,
+                _NUMBER_REMEDIATION,
+            )
+        )
+        return None
     except (OSError, ValueError, yaml.YAMLError) as error:
         diagnostics.append(
             _diagnostic(
@@ -827,18 +892,43 @@ def _document_source(
     _validate_typed_document(
         canonical, target_path, diagnostics, bundle, document_kind, field_name
     )
+    try:
+        canonical_digest = _canonical_digest(canonical)
+    except CanonicalJsonError as error:
+        diagnostics.append(
+            _diagnostic(
+                "ASSET_NUMBER_UNREPRESENTABLE",
+                f"Asset {asset_path!r} cannot be canonically hashed: {error}",
+                target_path,
+                _NUMBER_REMEDIATION,
+            )
+        )
+        return None
     asset = CompiledAsset(
         path=asset_path,
         media_type=_structured_media_type(Path(asset_path), document_kind),
         content=raw,
         source_digest=f"sha256:{sha256(raw).hexdigest()}",
-        canonical_digest=_canonical_digest(canonical),
+        canonical_digest=canonical_digest,
         references=(f"{target_path}#/spec/{field_name}",),
     )
-    existing = assets.get(asset_path)
+    _record_compiled_asset(assets, asset, target_path, diagnostics)
+    return canonical
+
+
+def _record_compiled_asset(
+    assets: dict[str, CompiledAsset],
+    asset: CompiledAsset,
+    target_path: str,
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Store one asset, merging references when the same path is reused."""
+
+    existing = assets.get(asset.path)
     if existing is None:
-        assets[asset_path] = asset
-    elif (
+        assets[asset.path] = asset
+        return
+    if (
         existing.media_type != asset.media_type
         or existing.content != asset.content
         or existing.source_digest != asset.source_digest
@@ -847,16 +937,15 @@ def _document_source(
         diagnostics.append(
             _diagnostic(
                 "ASSET_CONFLICT",
-                f"Asset {asset_path!r} resolved to different source bytes.",
+                f"Asset {asset.path!r} resolved to different source bytes.",
                 target_path,
                 "Reference each asset path consistently within the plugin workspace.",
             )
         )
-    else:
-        assets[asset_path] = replace(
-            existing, references=tuple(sorted({*existing.references, *asset.references}))
-        )
-    return canonical
+        return
+    assets[asset.path] = replace(
+        existing, references=tuple(sorted({*existing.references, *asset.references}))
+    )
 
 
 def _documentation_source(
@@ -1469,9 +1558,20 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
         raw = _read_regular_file(path, max_bytes, root=root)
         _reject_yaml_aliases(raw)
         try:
-            value = yaml.load(raw, Loader=UniqueKeyLoader)
+            value = yaml.load(raw, Loader=_StrictNumberLoader)
+        except _NumberTokenError as error:
+            raise CompilationError(
+                [
+                    _diagnostic(
+                        "DOCUMENT_NUMBER_UNREPRESENTABLE",
+                        f"{path.name} cannot be parsed exactly: {error}",
+                        str(path),
+                        _NUMBER_REMEDIATION,
+                    )
+                ]
+            ) from error
         except RecursionError as error:
-            # Raised directly, not as a ValueError: the classifier below
+            # Raised directly, not as a ValueError: _document_value_error_code
             # inspects the message, and this message embeds the filename,
             # which could itself contain a classifier keyword like "anchors".
             raise CompilationError(
@@ -1497,18 +1597,12 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
             ]
         ) from error
     except ValueError as error:
-        code = (
-            "DOCUMENT_TOO_LARGE"
-            if "larger than" in str(error)
-            else "YAML_ALIAS_FORBIDDEN"
-            if "anchors" in str(error)
-            else "DOCUMENT_LIMIT_EXCEEDED"
-        )
+        message = str(error)
         raise CompilationError(
             [
                 _diagnostic(
-                    code,
-                    str(error),
+                    _document_value_error_code(message),
+                    message,
                     str(path),
                     "Use a bounded YAML document without anchors or aliases.",
                 )
@@ -1551,13 +1645,129 @@ def _read_document(path: Path, root: Path, max_bytes: int) -> _LoadedDocument:
     )
 
 
+def _document_value_error_code(message: str) -> str:
+    """Map a bounded-document guard message to its diagnostic code."""
+
+    if "larger than" in message:
+        return "DOCUMENT_TOO_LARGE"
+    if "anchors" in message:
+        return "YAML_ALIAS_FORBIDDEN"
+    return "DOCUMENT_LIMIT_EXCEEDED"
+
+
+class _NumberTokenError(ValueError):
+    """A numeric token an IEEE 754 double cannot carry exactly."""
+
+
+class _StrictNumberLoader(UniqueKeyLoader):
+    """The unique-key loader with the I-JSON number policy applied to floats."""
+
+
+def _construct_checked_float(loader: _StrictNumberLoader, node: yaml.Node) -> float:
+    value = SafeConstructor.construct_yaml_float(loader, node)
+    _check_number_token(str(node.value), value)
+    return value
+
+
+_StrictNumberLoader.add_constructor(
+    "tag:yaml.org,2002:float", _construct_checked_float
+)
+
+
+def _check_number_token(token: str, value: float) -> None:
+    """Apply the exact-integer policy before a decimal token rounds to binary64.
+
+    ``json`` and ``yaml`` convert every decimal and exponent token to a float
+    first, so ``9007199254740993.0`` would silently become ``...992.0`` before
+    the canonical serializer could reject it. Comparing the token's decimal
+    value against the parsed double preserves the author's intent.
+    """
+
+    try:
+        decimal = Decimal(token.replace("_", ""))
+    except InvalidOperation:
+        if ":" not in token:
+            # Exotic YAML scalar forms keep their PyYAML semantics.
+            return
+        try:
+            decimal = _sexagesimal_decimal(token)
+        except ValueError:
+            raise _NumberTokenError(
+                f"number {token} is not a supported YAML numeric form"
+            ) from None
+    if decimal != decimal.to_integral_value():
+        return
+    if not math.isfinite(value) or decimal != Decimal(value):
+        raise _NumberTokenError(
+            f"number {token} is not exactly representable as an IEEE 754 double"
+        )
+
+
+def _sexagesimal_decimal(token: str) -> Decimal:
+    """Compute the exact base-60 value of a YAML sexagesimal float token.
+
+    PyYAML rounds these scalars to a double as it constructs them, so the
+    guard needs the pre-rounding value. Raises ``ValueError`` for any token
+    that is not a plain sexagesimal float.
+    """
+
+    body = token.replace("_", "")
+    sign = Decimal(1)
+    if body.startswith(("-", "+")):
+        sign = Decimal(-1) if body[0] == "-" else Decimal(1)
+        body = body[1:]
+    if "e" in body or "E" in body:
+        raise ValueError(token)
+    whole, _, fraction = body.partition(".")
+    result = Decimal(0)
+    for group in whole.split(":"):
+        if not group.isdigit():
+            raise ValueError(token)
+        result = result * 60 + Decimal(group)
+    scale = Decimal(1)
+    if fraction:
+        for group in fraction.split(":"):
+            if not group.isdigit():
+                raise ValueError(token)
+            scale /= 60
+            result += Decimal(group) * scale
+    return sign * result
+
+
+def _checked_json_float(token: str) -> float:
+    value = float(token)
+    _check_number_token(token, value)
+    return value
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate JSON property names before the last value wins.
+
+    JSON parsing keeps the last duplicate silently, so a schema asset with
+    ``{"type": "string", "type": "integer"}`` would hash as if it declared
+    only the integer. Keys are compared after escape decoding, so ``"type"``
+    and ``"\\u0074ype"`` collide as RFC 8785 requires.
+    """
+
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
 def _parse_asset(path: Path, raw: bytes) -> object:
     if path.suffix == _JSON_SUFFIX:
-        return json.loads(raw)
+        return json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_float=_checked_json_float,
+        )
     if path.suffix in {".yaml", ".yml"}:
         _reject_yaml_aliases(raw)
         try:
-            value = yaml.load(raw, Loader=UniqueKeyLoader)
+            value = yaml.load(raw, Loader=_StrictNumberLoader)
         except RecursionError as error:
             raise ValueError("asset is nested too deeply to parse.") from error
         _enforce_document_limits(value)
@@ -1776,13 +1986,15 @@ def _ordered(value: object) -> object:
 
 
 def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(
-        _ordered(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    """Return the RFC 8785 canonical bytes shared with the contracts package."""
+
+    return canonical_json_bytes(value)
 
 
 def _canonical_digest(value: object) -> str:
-    return f"sha256:{sha256(_canonical_bytes(value)).hexdigest()}"
+    """Return the RFC 8785 canonical SHA-256 digest of one descriptor value."""
+
+    return canonical_json_digest(value)
 
 
 def _diagnostic(

@@ -4,7 +4,11 @@
   "metadata": {
     "name": "normalize-records",
     "displayName": "Normalize records",
-    "description": "Trims and lowercases record names in a Go workload."
+    "description": "Trims and lowercases record names in a Go workload.",
+    "tags": [
+      "records",
+      "go"
+    ]
   },
   "spec": {
     "runtime": {

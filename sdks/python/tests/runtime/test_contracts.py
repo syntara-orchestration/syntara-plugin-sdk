@@ -342,3 +342,18 @@ def test_workload_request_rejects_legacy_file_leases() -> None:
     assert len(errors) == 1
     assert len(errors[0].context) == 1
     assert errors[0].context[0].validator == "additionalProperties"
+
+
+def test_workload_request_canonicalization_conformance_fixture() -> None:
+    """The ADR 0005 cross-language vector is a valid request with a pinned hash."""
+    harness = ConformanceHarness()
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+    request = json.loads(
+        (fixtures / "runtime-workload-request.canonicalization.valid.json").read_text()
+    )
+    from syntara_plugin.contracts import container_workload_request_digest
+
+    assert harness.validate_runtime(request).valid
+    digest = container_workload_request_digest(request)
+    assert request["workItem"]["requestHash"] == digest
+    assert request["policySnapshot"]["requestHash"] == digest

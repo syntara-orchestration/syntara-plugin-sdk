@@ -230,7 +230,12 @@ pushed to it).
 - Workload images install `syntara-plugin-contracts` from published releases
   (step-types' lock file and Containerfiles), not from the pull request. Changes
   to the contracts package are exercised through the authoring and source-mode
-  stages only.
+  stages only. The host/image digest boundary those stages cannot see — an
+  already-built image whose schema digests and step revision IDs were
+  computed by an older contracts package — is covered instead by
+  `test_candidate_host_rejects_an_image_hashed_by_the_published_serializer`
+  in `sdks/python/tests/sdk/test_authoring.py`, which verifies the candidate
+  fails closed on a registration manifest hashed by the previous serializer.
 - Built images are inspected, not executed. Source-mode runs use the candidate
   on both sides of the runtime protocol, so a protocol change between the
   platform host and an already-built image is outside this check. The

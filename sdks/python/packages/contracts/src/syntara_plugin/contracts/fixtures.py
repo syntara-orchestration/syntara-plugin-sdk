@@ -10,6 +10,8 @@ from importlib.resources import files
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .canonical import canonical_json_bytes
+
 _FIXTURE_BUNDLE_VERSION = "syntara.catalog-fixtures/v1alpha1"
 _MANIFEST_PATH = "catalog-fixture-bundle.json"
 
@@ -37,9 +39,7 @@ def fixture_content_digest(documents: Mapping[str, Mapping[str, Any]]) -> str:
     """Return the stable digest for the manifest-listed fixture documents."""
 
     payload = {path: documents[path] for path in sorted(documents)}
-    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
-        "utf-8"
-    )
+    encoded = canonical_json_bytes(payload)
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
