@@ -1779,6 +1779,90 @@ def test_asset_decimal_number_tokens_are_rejected_before_float_rounding(
     assert any(token in item.message for item in error.value.diagnostics)
 
 
+@pytest.mark.parametrize(
+    "token",
+    ["9007199254740993:0.0", "-9007199254740993:0.0", "1:0:0:0:0:0:0:0:0:1.0"],
+)
+def test_manifest_inline_sexagesimal_token_is_rejected(
+    tmp_path: Path, token: str
+) -> None:
+    """A sexagesimal float cannot round silently to binary64 before the guard."""
+    action = _action(
+        {
+            "kind": "inline",
+            "value": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "maximum": "NUMBER_TOKEN",
+            },
+        }
+    )
+    root = tmp_path / "plugin.yaml"
+    target = tmp_path / "steps/create-issue/manifest.yaml"
+    target.parent.mkdir(parents=True)
+    root.write_text(_yaml(_plugin()))
+    # Substitute after dumping so the raw sexagesimal token reaches the YAML
+    # loader as written, instead of a Python float that already rounded.
+    target.write_text(_yaml(action).replace("NUMBER_TOKEN", token), encoding="utf-8")
+    (tmp_path / "docs/README.md").parent.mkdir(exist_ok=True)
+    (tmp_path / "docs/README.md").write_text("# Issue tools\n", encoding="utf-8")
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+
+    assert "DOCUMENT_NUMBER_UNREPRESENTABLE" in {item.code for item in error.value.diagnostics}
+    assert any(token in item.message for item in error.value.diagnostics)
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["9007199254740993:0.0", "1:0:0:0:0:0:0:0:0:1.0"],
+)
+def test_asset_sexagesimal_token_is_rejected(tmp_path: Path, token: str) -> None:
+    """A YAML asset sexagesimal float beyond the double range fails at parse."""
+    action = _action({"kind": "asset", "path": "schemas/input.yaml"})
+    root = _workspace(tmp_path, action=action)
+    asset = tmp_path / "schemas/input.yaml"
+    asset.parent.mkdir()
+    asset.write_text(
+        "$schema: https://json-schema.org/draft/2020-12/schema\n"
+        "type: object\n"
+        f"maximum: {token}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CompilationError) as error:
+        _compile(root)
+
+    assert "ASSET_NUMBER_UNREPRESENTABLE" in {item.code for item in error.value.diagnostics}
+    assert any(token in item.message for item in error.value.diagnostics)
+
+
+def test_manifest_inline_sexagesimal_token_in_range_is_accepted(
+    tmp_path: Path,
+) -> None:
+    """An exact, in-range sexagesimal float keeps PyYAML semantics and compiles."""
+    action = _action(
+        {
+            "kind": "inline",
+            "value": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "maximum": "NUMBER_TOKEN",
+            },
+        }
+    )
+    root = tmp_path / "plugin.yaml"
+    target = tmp_path / "steps/create-issue/manifest.yaml"
+    target.parent.mkdir(parents=True)
+    root.write_text(_yaml(_plugin()))
+    target.write_text(_yaml(action).replace("NUMBER_TOKEN", "1:30.0"), encoding="utf-8")
+    (tmp_path / "docs/README.md").parent.mkdir(exist_ok=True)
+    (tmp_path / "docs/README.md").write_text("# Issue tools\n", encoding="utf-8")
+
+    assert _compile(root) is not None
+
+
 def test_manifest_inline_decimal_number_token_is_rejected(tmp_path: Path) -> None:
     """A decimal token a double cannot carry fails at manifest parse, not at hashing."""
     action = _action(

@@ -1672,14 +1672,52 @@ def _check_number_token(token: str, value: float) -> None:
     try:
         decimal = Decimal(token.replace("_", ""))
     except InvalidOperation:
-        # Exotic YAML scalar forms keep their PyYAML semantics.
-        return
+        if ":" not in token:
+            # Exotic YAML scalar forms keep their PyYAML semantics.
+            return
+        try:
+            decimal = _sexagesimal_decimal(token)
+        except ValueError:
+            raise _NumberTokenError(
+                f"number {token} is not a supported YAML numeric form"
+            ) from None
     if decimal != decimal.to_integral_value():
         return
     if not math.isfinite(value) or decimal != Decimal(value):
         raise _NumberTokenError(
             f"number {token} is not exactly representable as an IEEE 754 double"
         )
+
+
+def _sexagesimal_decimal(token: str) -> Decimal:
+    """Compute the exact base-60 value of a YAML sexagesimal float token.
+
+    PyYAML rounds these scalars to a double as it constructs them, so the
+    guard needs the pre-rounding value. Raises ``ValueError`` for any token
+    that is not a plain sexagesimal float.
+    """
+
+    body = token.replace("_", "")
+    sign = Decimal(1)
+    if body.startswith(("-", "+")):
+        sign = Decimal(-1) if body[0] == "-" else Decimal(1)
+        body = body[1:]
+    if "e" in body or "E" in body:
+        raise ValueError(token)
+    whole, _, fraction = body.partition(".")
+    result = Decimal(0)
+    for group in whole.split(":"):
+        if not group.isdigit():
+            raise ValueError(token)
+        result = result * 60 + Decimal(group)
+    scale = Decimal(1)
+    if fraction:
+        for group in fraction.split(":"):
+            if not group.isdigit():
+                raise ValueError(token)
+            scale /= 60
+            result += Decimal(group) * scale
+    return sign * result
 
 
 def _checked_json_float(token: str) -> float:

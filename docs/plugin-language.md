@@ -337,7 +337,9 @@ requires numbers an IEEE 754 double carries exactly. A document source
 containing an integer outside ±2**53 that the double format cannot represent
 exactly (for example a full int64 bound like `9223372036854775807`) is
 rejected at compilation with a remediation diagnostic; use a bound within
-±2**53 or express the limit as a string.
+±2**53 or express the limit as a string. YAML sexagesimal (base-60) numbers
+like `1:30.0` follow the same rule: the exact base-60 value must be a number
+the double format carries exactly.
 
 ### Input presentation
 
