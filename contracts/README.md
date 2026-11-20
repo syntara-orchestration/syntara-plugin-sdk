@@ -233,3 +233,11 @@ workloads use logging; Health does not distinguish this addition under the
 existing ABI identifier. Host consumers receive validated batches as
 `ContainerLogBatch` events from `ContainerClient.stream()`, alongside progress
 and the terminal result. See [ADR 0013](../.sdlc/adrs/0013-toolbox-logging.md).
+
+The Execute stream also carries request/response callbacks for host operations.
+`ContainerToolbox.model_turn()` and `call_mcp_tool()` are available only when
+the dispatcher supplies a `HostOperationHandler`; the workload cannot choose a
+provider URL, MCP endpoint, or credential. The dispatcher grants the allowed
+operation names per invocation, correlates each bounded JSON response by
+request ID, and must reject operations outside that grant. See
+[the protocol definition](proto/syntara_plugin/runtime/protocol/container.proto).
