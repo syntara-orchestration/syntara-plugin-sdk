@@ -1341,7 +1341,7 @@ def _validate_schema_document(
                 error.message,
                 target_path,
                 "Allow the SDK wrapper error codes (at minimum INVALID_INPUT "
-                "and STEP_FAILED) alongside the step type's own codes.",
+                "and BUSINESS_RULE_FAILED) alongside the step type's own codes.",
             )
         )
 

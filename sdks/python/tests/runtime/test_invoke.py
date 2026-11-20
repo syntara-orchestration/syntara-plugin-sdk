@@ -1139,7 +1139,7 @@ def test_author_error_that_violates_installed_schema_has_no_valid_outcome() -> N
         # Admits the SDK wrapper codes but rejects this step's REMOTE_REJECTED.
         error_schema={
             "type": "object",
-            "properties": {"code": {"enum": ["INVALID_INPUT", "STEP_FAILED"]}},
+            "properties": {"code": {"enum": ["INVALID_INPUT", "BUSINESS_RULE_FAILED"]}},
         },
     )
     context = _context(binding)
@@ -1172,7 +1172,7 @@ def test_reconstruction_rejects_a_base_digest_when_a_trusted_schema_is_supplied(
     output_schema = _declared({"type": "object"})
     base_document = {
         "category": "business",
-        "code": "FAILED",
+        "code": "BUSINESS_RULE_FAILED",
         "message": "Failed",
         "retryable": False,
     }

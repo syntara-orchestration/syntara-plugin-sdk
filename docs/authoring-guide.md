@@ -398,7 +398,7 @@ SDK's base error composition, and when a step type declares no `error`
 schema, failures must fit the closed fallback `ErrorResult` shape (category,
 code, message, retryable — nothing else). A declared `error` schema must also
 admit the SDK's own wrapper errors — the `INVALID_INPUT` wrapper reported
-before `run()` is called and the default `STEP_FAILED` shape of
+before `run()` is called and the default `BUSINESS_RULE_FAILED` shape of
 `StepFailure` — because every wrapper error is validated against it. The
 compiler rejects an `error` schema that cannot carry those shapes, for
 example one that pins `code` to a single domain value. Installation rejects
@@ -1090,7 +1090,7 @@ A manifest `error` schema is optional. It documents a domain error shape and
 does not replace the SDK-owned failure envelope. Every wrapper error,
 including the `INVALID_INPUT` wrapper for invalid input, is validated
 against it, so it must admit the SDK wrapper codes (`INVALID_INPUT` and
-`STEP_FAILED`) alongside the step type's own codes.
+`BUSINESS_RULE_FAILED`) alongside the step type's own codes.
 
 ### Keep the workflow readable
 

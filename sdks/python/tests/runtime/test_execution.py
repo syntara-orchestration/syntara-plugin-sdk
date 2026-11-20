@@ -469,7 +469,7 @@ class ExtraFieldErrorStep(ExampleStep):
             "deliberate",
             error_result=ErrorResult(
                 category=ErrorCategory.BUSINESS,
-                code="STEP_FAILED",
+                code="BUSINESS_RULE_FAILED",
                 message="deliberate",
                 retryable=False,
                 provider="unexpected-extra",
@@ -478,9 +478,9 @@ class ExtraFieldErrorStep(ExampleStep):
 
 
 class DeclaredErrorStep(ExampleStep):
-    def __init__(self, code: str = "TRACKER_DOWN") -> None:
+    def __init__(self, provider_code: str = "TRACKER_DOWN") -> None:
         super().__init__()
-        self._failure_code = code
+        self._provider_code = provider_code
 
     def run(self, inputs: ExampleInput, context: ExecutionContext) -> ExampleOutput:
         raise StepFailure(
@@ -488,9 +488,10 @@ class DeclaredErrorStep(ExampleStep):
             "deliberate",
             error_result=ErrorResult(
                 category=ErrorCategory.BUSINESS,
-                code=self._failure_code,
+                code="BUSINESS_RULE_FAILED",
                 message="deliberate",
                 retryable=False,
+                providerCode=self._provider_code,
             ),
         )
 
@@ -502,9 +503,10 @@ _DECLARED_ERROR_SCHEMA = {
     "required": ["category", "code", "message", "retryable"],
     "properties": {
         "category": {"type": "string"},
-        "code": {"enum": ["TRACKER_DOWN", "INVALID_INPUT", "STEP_FAILED"]},
+        "code": {"enum": ["INVALID_INPUT", "BUSINESS_RULE_FAILED"]},
         "message": {"type": "string"},
         "retryable": {"type": "boolean"},
+        "providerCode": {"enum": ["TRACKER_DOWN"]},
     },
 }
 
@@ -538,14 +540,15 @@ def test_failure_with_declared_error_schema_accepts_a_matching_result() -> None:
 
     assert wrapper.status != 0
     assert wrapper.error is not None
-    assert wrapper.error.code == "TRACKER_DOWN"
+    assert wrapper.error.code == "BUSINESS_RULE_FAILED"
+    assert wrapper.error.providerCode == "TRACKER_DOWN"
 
 
 def test_failure_with_declared_error_schema_rejects_a_mismatched_result() -> None:
     """Declared error constraints fail the wrapper when the result does not match."""
 
     bindings = StepBindings()
-    step = DeclaredErrorStep(code="TRACKER_UNAVAILABLE")
+    step = DeclaredErrorStep(provider_code="TRACKER_UNAVAILABLE")
     manifest = _installed_step(
         _input_schema(),
         step_class=DeclaredErrorStep,
