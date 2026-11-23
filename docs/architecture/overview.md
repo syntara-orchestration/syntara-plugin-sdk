@@ -9,23 +9,26 @@ are authored from the repository evidence linked below; the Execution Plane
 handbook diagrams were not available for verification or reuse.
 
 The schemas and protobuf under [`contracts/`](../../contracts/) are normative.
-The implementation is Python; [`sdks/typescript/`](../../sdks/typescript/) is
-reserved for a future SDK. Platform behavior described here is an integration
-boundary, not a claim that this repository implements it.
+The SDK and supplied runtime adapter are Python. Custom-runner entry points
+and the container ABI are language-neutral. Future SDK additions will provide
+runtime adapters for other languages; platform behavior described here is an
+integration boundary, not a claim that this repository implements it.
 
 ## System context
 
 ```mermaid
 flowchart LR
     accTitle: Plugin SDK system context
-    accDescr: An author uses the SDK to validate and package a plugin and publish release objects to a registry. Syntara consumes contracts and release objects outside this repository; Execution Plane integration is prospective.
+    accDescr: An author publishes release objects to a registry. Syntara consumes catalog and binding objects, selects an image, and dispatches it to the Execution Plane for execution.
     author[Plugin author or CI] -->|manifests, schemas, code| sdk[Plugin SDK and CLI]
     sdk -->|release objects and indexes| registry[(OCI registry)]
     sdk -->|local validation and execution| author
     contracts[Shared contracts] --> sdk
-    contracts -->|shared package and ABI for Syntara; intended ABI for Execution Plane| platform[Syntara and prospective Execution Plane]
-    registry -->|discovery and immutable artifacts| platform
-    platform -.->|container ABI when integrated| workload[Author-owned workload image]
+    contracts -->|shared contracts| syntara[Syntara]
+    contracts -->|shared package and ABI| ep[Execution Plane]
+    registry -->|catalog and RuntimeBinding| syntara
+    syntara -->|selected image digest and work| ep
+    ep -->|container ABI| workload[Author-owned workload image]
     workload -->|provider operations| provider[External services]
 ```
 
@@ -33,11 +36,15 @@ A plugin declares Action, Control, and Trigger step types, integration types,
 credential recipes, and documentation. A step's category describes its role;
 `platform-runner` or `custom-runner` selects its implementation ownership.
 An author uses the SDK to validate and compile those declarations, test custom
-Python implementations, and prepare and publish release objects. Syntara owns
-catalog consumption, installation, implementation and image selection, and
-workflow policy. The Execution Plane is a prospective host for container
-execution; this repository supplies the ABI and Python adapter, not that
-service. See the [plugin language reference](../plugin-language.md) and
+Python implementations, and prepare and publish release objects. The checked-in
+[Go](../../examples/go-steps) and [TypeScript](../../examples/typescript-steps)
+examples demonstrate language-neutral handlers and manifests; future SDK
+adapters will provide their runtime support.
+Syntara owns catalog consumption, installation, implementation
+and image selection, workflow policy, and credential authority. The Execution
+Plane hosts container execution and maps per-attempt credential callbacks to
+that authority. This repository supplies the ABI and Python adapter. See the
+[plugin language reference](../plugin-language.md) and
 [runtime and OCI model](../runtime-and-oci.md).
 
 ## Topology and responsibilities
@@ -82,15 +89,16 @@ flowchart TB
   CLI and settings, OCI artifact construction and inspection, bounded registry
   publication, catalog operations, and the optional pytest-facing testing
   harness. It depends on the contracts distribution.
-- An author-owned workload image packages plugin code, manifests, and the
-  Python runtime adapter. Its runtime loads bindings from packaged manifests
+- An author-owned workload image packages plugin code, manifests, and an ABI
+  server. The supplied adapter loads bindings from packaged manifests
   and checks platform-supplied resolved execution data before serving exact
   registered revisions. The SDK does not provide a universal base image.
-- Syntara and the Execution Plane are external to this repository. They own
-  catalog trust and installation, approved image and implementation selection,
-  scheduling, retries, production credential authority and mapping, and
-  operational log forwarding. A registry stores OCI objects; it does not confer
-  trust merely by holding them.
+- Syntara and the Execution Plane are external to this repository. Syntara owns
+  catalog trust and installation,
+  approved image and implementation selection, workflow retries, and credential
+  authority. The Execution Plane schedules execution attempts and maps their
+  credential callbacks to the authority. A registry stores OCI objects; it does
+  not confer trust merely by holding them.
 
 See the [developer guide](../developer-guide.md),
 [ADR 0001](../../.sdlc/adrs/0001-language-sdk-layout.md), and
@@ -118,14 +126,19 @@ flowchart LR
 ```
 
 Compilation validates source documents against the shared contracts and
-produces a descriptor and packaged assets. A metadata-only build can create P
+produces a descriptor and packaged assets. Descriptor canonical digests and
+revision IDs use RFC 8785 canonical JSON. A metadata-only build can create P
 offline. For a custom workload, a release can also contain I and B: B binds
 the exact P digest to named immutable image options. The build writes local
 archives and, for the multi-object flow, a release inventory. Publication
 verifies and uploads the prepared objects; a release publishes images, P when
 new, B, and its index in dependency order. A new P may then update the separate
 plugin catalog. An image-only update leaves P and its catalog entry unchanged.
-Optional Cosign signing happens during publication when configured.
+Optional Cosign signing happens during publication when configured. Build probes
+each image option's `Health` endpoint and records runtime component observations
+in the RuntimeBinding. Publish re-probes and compares them with the binding.
+`probeStatus` is compatibility metadata supplied by the image, not proof of
+provenance or integrity; see [RuntimeBindings](../runtime-bindings.md#author-the-manifests).
 
 Index tags are mutable pointers to immutable artifacts. Catalog generations
 link to a predecessor; RuntimeBinding index updates use conditional registry
@@ -141,9 +154,9 @@ transaction: receipts identify completed phases for recovery. See
 sequenceDiagram
     accTitle: Container invocation boundary
     accDescr: A host checks health, starts a revision, answers an optional credential request, and receives a log batch and terminal outcome from the workload runtime.
-    participant Host as Local runner or prospective platform host
+    participant Host as Local runner or platform host
     participant Runtime as Workload runtime
-    participant Step as Bound Python step
+    participant Step as Bound step
     Host->>Runtime: Health: ABI and registered revisions
     Host->>Runtime: Execute start: ABI, invocation ID, revision, input, context, timeout_seconds
     Runtime->>Step: Validate input and invoke
@@ -158,11 +171,12 @@ sequenceDiagram
 ```
 
 The protobuf defines `Health`, bidirectional `Execute`, and `Cancel` over
-gRPC. The host sends non-secret input and caller-owned runtime context; the
+gRPC. The host sends input and bounded, non-secret caller-owned runtime context; the
 runtime dispatches the exact advertised revision, validates input and output,
 and distinguishes a completed result (including a deliberate nonzero
-failure) from an invocation that produced no valid outcome. Credentials use a
-separate, correlated callback by declared recipe name. The host authorizes and
+failure with a shared `ErrorResult`) from an invocation that produced no valid
+outcome. Credentials use a separate, correlated callback by declared recipe
+name. The host authorizes and
 resolves the name per invocation; IDs and provider references stay on the host.
 The step's invocation-scoped Toolbox can collect bounded structured logs,
 which are sent at most once immediately before the terminal event. Logs are
@@ -175,20 +189,22 @@ socket in source mode or an image runtime in image mode. The testing harness
 also supports direct in-process execution. Local credentials are held in memory
 and supplied by callback to a CLI-managed runtime; the CLI rejects
 `--credential` for a self-managed runtime, whose host must configure its own
-resolver. These paths test the SDK adapter but do not prove
-production dispatch. See [Running locally](../running-locally.md) and
-[Testing](../testing.md).
+resolver. CI also dispatches Action, Control, Trigger, and credential-backed
+test workloads through the Execution Plane Kubernetes worker, using a synthetic
+credential resolver. See
+[Running locally](../running-locally.md), [Testing](../testing.md), and the
+[Execution Plane integration prerequisites](../developer-guide.md#prerequisites).
 
 ### Credentials, integrations, and logs
 
 An `IntegrationType` declares the `CredentialRecipe` IDs a step may use; a
 recipe defines a secret document's shape, never its value. The host authorizes
-a declared recipe name and maps it to its per-attempt credential authority.
+a declared recipe name and maps it to the credential authority for the attempt.
 The callback is bounded and revoked with the invocation; its detailed limits
 and lifecycle are defined by [ADR 0011](../../.sdlc/adrs/0011-credential-callback.md). The
 Toolbox emits at most one bounded terminal `LogBatch`. Records are not scrubbed
-on the wire, so plugin authors and the host's log-forwarding path must keep
-secrets out of log messages and attributes.
+on the wire, so plugin authors must keep secrets out of log messages and
+attributes.
 
 ## Controls and trust boundaries
 
@@ -212,20 +228,23 @@ secrets out of log messages and attributes.
   declared credentials and invocation lifetime. The runtime bounds reads and
   scans outcomes for values it has delivered, but Python step code is not
   sandboxed.
-- The shared workload-request digest detects changed request content across a
-  trusted handoff; it is not a signature, credential, or authorization decision.
+- The shared workload-request digest uses RFC 8785 canonical JSON to detect
+  changed request content across a trusted handoff; it is not a signature,
+  credential, or authorization decision.
   See [ADR 0005](../../.sdlc/adrs/0005-generic-container-request-hash.md).
 
 ## Current limitations
 
-- The checked-in standalone Execution Plane still vendors the older
-  `syntara.node.v1` protocol. It must implement the bidirectional
-  `syntara.container/v1alpha1` callback stream and terminal log notifications
-  before this repository can claim end-to-end dispatch; `Health` cannot
-  distinguish the incompatible shapes under the same `v1alpha1` identifier.
-- This repository does not establish the AO-to-EP transport or the Execution
+- The Execution Plane compatibility test does not exercise Automation
+  Orchestrator end to end or prove production deployment behavior. Its pinned
+  EP revision does not supply resolved execution data, so the test generates a
+  fixture from the compiled registration. A test-only bridge in the workload
+  accepts plaintext on loopback and connects to the SDK runtime's mTLS
+  listener. `Health` cannot distinguish older incompatible peers that share the
+  `v1alpha1` identifier.
+- This repository does not establish the Syntara-to-EP transport or the Execution
   Plane's Kubernetes port-forward and certificate provisioning. A production
-  integration must verify authenticated, integrity-protected AO-to-EP commands,
+  integration must verify authenticated, integrity-protected Syntara-to-EP commands,
   consumer-side image-admission checks, and end-to-end mTLS to the workload
   listener.
 - The custom workload build remains a developer preview. Credential
