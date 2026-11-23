@@ -12,6 +12,7 @@ from syntara_plugin.contracts import (
     canonical_json_digest,
 )
 
+from . import _telemetry
 from .abi import ContainerInvocationError, FailureCode
 from .bindings import (
     StepBinding,
@@ -185,12 +186,13 @@ class StepExecutor:
 
         self._last_error_schema_digest = None
         try:
-            validated_inputs = validate_step_inputs(
-                inputs,
-                self._binding.descriptor.input_schema,
-                self._binding.step.input_model(),
-                self._binding.descriptor.input_schema_source,
-            )
+            with _telemetry.measure_detail("input_validation"):
+                validated_inputs = validate_step_inputs(
+                    inputs,
+                    self._binding.descriptor.input_schema,
+                    self._binding.step.input_model(),
+                    self._binding.descriptor.input_schema_source,
+                )
         except StepInputValidationError as error:
             return self._failure(
                 ErrorResult(
@@ -210,7 +212,8 @@ class StepExecutor:
         unexpected_step_error: str | None = None
         output: Any = None
         try:
-            output = self._binding.step.execute(validated_inputs, context)
+            with _telemetry.measure_detail("step_execution"):
+                output = self._binding.step.execute(validated_inputs, context)
         except StepFailure as error:
             return self._failure(
                 error.error_result,
@@ -231,21 +234,24 @@ class StepExecutor:
                 detail=unexpected_step_error,
             )
 
-        output_model = self._binding.step.output_model()
-        if not isinstance(output, output_model):
-            raise StepExecutionError(_INVALID_STEP_RESPONSE)
-        invalid_output = False
-        result: Any = None
-        try:
-            result = output.model_dump(mode="json")
-        except Exception:
-            invalid_output = True
-        if invalid_output:
-            raise StepExecutionError(_INVALID_STEP_RESPONSE)
-        if not isinstance(result, Mapping):
-            raise StepExecutionError(_INVALID_STEP_RESPONSE)
-        self._validate_result(result)
-        return StandardOutputWrapper.success(result)
+        with _telemetry.measure_detail("output_serialization"):
+            output_model = self._binding.step.output_model()
+            if not isinstance(output, output_model):
+                raise StepExecutionError(_INVALID_STEP_RESPONSE)
+            invalid_output = False
+            result: Any = None
+            try:
+                result = output.model_dump(mode="json")
+            except Exception:
+                invalid_output = True
+            if invalid_output:
+                raise StepExecutionError(_INVALID_STEP_RESPONSE)
+        with _telemetry.measure_detail("output_validation"):
+            if not isinstance(result, Mapping):
+                raise StepExecutionError(_INVALID_STEP_RESPONSE)
+            self._validate_result(result)
+        with _telemetry.measure_detail("wrapper"):
+            return StandardOutputWrapper.success(result)
 
     def _failure(
         self,
@@ -266,22 +272,23 @@ class StepExecutor:
         base-only digest.
         """
 
-        try:
-            document = error.model_dump(mode="json")
-            canonical_json_bytes(document)
-            effective_schema = self._binding.descriptor.error_schema
-            self._last_error_schema_digest = canonical_json_digest(
-                _thaw_json_document(effective_schema)
+        with _telemetry.measure_detail("wrapper"):
+            try:
+                document = error.model_dump(mode="json")
+                canonical_json_bytes(document)
+                effective_schema = self._binding.descriptor.error_schema
+                self._last_error_schema_digest = canonical_json_digest(
+                    _thaw_json_document(effective_schema)
+                )
+                for schema in (error_result_base_schema(), effective_schema):
+                    validator = build_validator(_thaw_json_document(schema))
+                    if not validator.is_valid(document):
+                        raise ValueError("invalid error result")
+            except Exception:
+                raise StepExecutionError(_INVALID_STEP_RESPONSE, outcome=outcome) from None
+            return StandardOutputWrapper.failure(
+                error, status_code=status_code, status_message=status_message
             )
-            for schema in (error_result_base_schema(), effective_schema):
-                validator = build_validator(_thaw_json_document(schema))
-                if not validator.is_valid(document):
-                    raise ValueError("invalid error result")
-        except Exception:
-            raise StepExecutionError(_INVALID_STEP_RESPONSE, outcome=outcome) from None
-        return StandardOutputWrapper.failure(
-            error, status_code=status_code, status_message=status_message
-        )
 
     def _validate_result(self, result: Mapping[str, Any]) -> None:
         """Validate serialization and output-schema conformance without leaking details."""
@@ -330,14 +337,16 @@ def _invoke_with_error_schema(
         if untrusted_binding or executor is None:
             raise StepExecutionError(_UNTRUSTED_BINDING, outcome="not_started")
 
-        scoped_context = context._with_credentials(
-            step.descriptor.credential_names, step.descriptor.credential_schemas
-        )
+        with _telemetry.measure_detail("credential_scope"):
+            scoped_context = context._with_credentials(
+                step.descriptor.credential_names, step.descriptor.credential_schemas
+            )
         scope = scoped_context._credential_scope
         assert scope is not None
         try:
             wrapper = _execute_scoped(executor, step, input, scoped_context, scope)
-            _reject_credential_output(wrapper, scope)
+            with _telemetry.measure_detail("credential_output_check"):
+                _reject_credential_output(wrapper, scope)
             object.__setattr__(wrapper, "error_schema_digest", executor.last_error_schema_digest)
             return wrapper, executor.last_error_schema_digest
         finally:
@@ -506,7 +515,13 @@ def invoke(
 ) -> StandardOutputWrapper[Mapping[str, Any]]:
     """Invoke one step type through its trusted descriptor and schema contract."""
 
-    return _invoke_with_error_schema(step, input, context)[0]
+    telemetry = _telemetry.runtime_telemetry
+    if telemetry is None:
+        return _invoke_with_error_schema(step, input, context)[0]
+    with telemetry.measure("invocation") as measurement:
+        wrapper, _ = _invoke_with_error_schema(step, input, context)
+        measurement.failed = wrapper.status_code != 0
+        return wrapper
 
 
 def _validate_context_output_digest(

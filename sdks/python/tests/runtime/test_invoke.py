@@ -5,13 +5,20 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from typing import Any
 
 import grpc
 import pytest
+from opentelemetry import metrics, trace
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import Histogram, HistogramDataPoint, InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 from pydantic import BaseModel, field_serializer
 from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
@@ -38,6 +45,7 @@ from syntara_plugin.runtime import (
     StepFailure,
     StepRegistry,
     TriggerStep,
+    _telemetry,
     add_container_runtime_service,
     container_step_for_binding,
     error_result_base_schema,
@@ -1233,3 +1241,249 @@ def test_direct_runtime_import_does_not_load_transport_modules() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.fixture
+def runtime_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> Iterator[tuple[InMemoryMetricReader, InMemorySpanExporter, TracerProvider]]:
+    reader = InMemoryMetricReader()
+    meter = MeterProvider(metric_readers=[reader])
+    exporter = InMemorySpanExporter()
+    tracer = TracerProvider()
+    tracer.add_span_processor(SimpleSpanProcessor(exporter))
+    mode = getattr(request, "param", "performance")
+    if mode is None:
+        monkeypatch.delenv("SYNTARA_RUNTIME_TELEMETRY_MODE", raising=False)
+    else:
+        monkeypatch.setenv("SYNTARA_RUNTIME_TELEMETRY_MODE", mode)
+    monkeypatch.setattr(metrics, "get_meter", meter.get_meter)
+    monkeypatch.setattr(trace, "get_tracer", tracer.get_tracer)
+    monkeypatch.setattr(_telemetry, "runtime_telemetry", _telemetry._configured_runtime_telemetry())
+    try:
+        yield reader, exporter, tracer
+    finally:
+        meter.shutdown()
+        tracer.shutdown()
+
+
+def _runtime_measurements(reader: InMemoryMetricReader) -> dict[str, list[HistogramDataPoint]]:
+    data = reader.get_metrics_data()
+    assert data is not None
+    return {
+        metric.name: list(metric.data.data_points)
+        for resource in data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+        if isinstance(metric.data, Histogram) and metric.unit == "s"
+    }
+
+
+@pytest.mark.parametrize("container", [False, True], ids=["direct", "container-adapter"])
+def test_runtime_records_stages_and_thread_cpu_under_the_caller_span(
+    container: bool,
+    runtime_telemetry: tuple[InMemoryMetricReader, InMemorySpanExporter, TracerProvider],
+) -> None:
+    reader, exporter, provider = runtime_telemetry
+    binding = _binding(ActionEchoStep(), "tests.runtime.telemetry")
+    with provider.get_tracer("host").start_as_current_span("caller") as caller:
+        if container:
+            response = container_step_for_binding(binding)(
+                _invocation(binding, {"value": "synthetic payload"})
+            )
+        else:
+            response = invoke(binding, {"value": "synthetic payload"}, _context(binding))
+        assert response.status_code == 0
+
+    measured = _runtime_measurements(reader)
+    stage_points = measured["syntara.sdk.runtime.stage.duration"]
+    expected_stages = {
+        "invocation",
+        "input_validation",
+        "step_execution",
+        "output_serialization",
+        "output_validation",
+        "wrapper",
+        "credential_scope",
+        "credential_output_check",
+    }
+    if container:
+        expected_stages |= {"container_invocation", "container_result"}
+    assert {point.attributes["stage"] for point in stage_points} == expected_stages
+    assert all(
+        set(point.attributes) == {"stage", "outcome"}
+        and point.attributes["outcome"] == "ok"
+        and point.count == 1
+        and point.sum is not None
+        and point.sum >= 0
+        for point in stage_points
+    )
+    (cpu,) = measured["syntara.sdk.runtime.invocation.cpu_time"]
+    assert cpu.attributes == {"outcome": "ok"}
+    assert cpu.count == 1
+    assert cpu.sum is not None and cpu.sum >= 0
+
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    prefix = "syntara.sdk.runtime."
+    caller_context = caller.get_span_context()
+    invocation = spans[prefix + "invocation"]
+    assert invocation.context.trace_id == caller_context.trace_id
+    assert spans[prefix + "input_validation"].parent == invocation.context
+    if container:
+        adapter = spans[prefix + "container_invocation"]
+        assert adapter.parent == caller_context
+        assert invocation.parent == adapter.context
+        assert spans[prefix + "container_result"].parent == adapter.context
+    else:
+        assert invocation.parent == caller_context
+
+
+def test_runtime_telemetry_records_errors_without_payloads_or_exception_events(
+    runtime_telemetry: tuple[InMemoryMetricReader, InMemorySpanExporter, TracerProvider],
+) -> None:
+    reader, exporter, _ = runtime_telemetry
+    sentinel = "secret-value-must-stay-out-of-telemetry"
+    echo = _binding(ActionEchoStep(), "tests.runtime.telemetry-safe-input")
+    invalid = invoke(echo, {"irrelevant": sentinel}, _context(echo, invocation_id=sentinel))
+    assert invalid.status_code != 0
+    unexpected = _binding(UnexpectedStep(), "tests.runtime.telemetry-safe-failure")
+    with pytest.raises(StepExecutionError):
+        invoke(unexpected, {"value": sentinel}, _context(unexpected, invocation_id=sentinel))
+    reported = _binding(ActionFailureStep(), "tests.runtime.telemetry-reported-failure")
+    failed = container_step_for_binding(reported)(
+        _invocation(reported, {"value": sentinel}, invocation_id=sentinel)
+    )
+    assert failed.status_code == 73
+
+    points = _runtime_measurements(reader)
+    stages = {
+        (point.attributes["stage"], point.attributes["outcome"]): point.count
+        for point in points["syntara.sdk.runtime.stage.duration"]
+    }
+    assert stages["invocation", "error"] == 3
+    assert stages["input_validation", "error"] == 1
+    assert stages["step_execution", "error"] == 2
+    assert stages["container_invocation", "error"] == 1
+    (cpu,) = points["syntara.sdk.runtime.invocation.cpu_time"]
+    assert cpu.attributes == {"outcome": "error"}
+    assert cpu.count == 3
+    assert sentinel not in repr(points)
+    spans = exporter.get_finished_spans()
+    assert all(not span.events for span in spans)
+    errors = [span for span in spans if span.attributes.get("syntara.sdk.outcome") == "error"]
+    assert sorted(span.name.removeprefix("syntara.sdk.runtime.") for span in errors) == [
+        "container_invocation", "input_validation", "invocation", "invocation",
+        "invocation", "step_execution", "step_execution",
+    ]
+    assert all(
+        span.status.status_code is StatusCode.ERROR and span.status.description is None
+        for span in errors
+    )
+    serialized_spans = "\n".join(span.to_json() for span in spans)
+    assert sentinel not in serialized_spans
+    assert "unexpected failure secret sentinel" not in serialized_spans
+    assert "The remote service rejected the request." not in serialized_spans
+
+
+def test_noop_runtime_tracer_preserves_a_recording_caller_span() -> None:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    telemetry = _telemetry._RuntimeTelemetry(
+        metrics.NoOpMeterProvider().get_meter("test"),
+        trace.NoOpTracerProvider().get_tracer("test"),
+        detailed=False,
+    )
+    try:
+        with provider.get_tracer("host").start_as_current_span("caller") as caller:
+            with telemetry.measure("step_execution"):
+                assert trace.get_current_span() is caller
+                trace.get_current_span().add_event("work")
+    finally:
+        provider.shutdown()
+
+    (exported,) = exporter.get_finished_spans()
+    assert [event.name for event in exported.events] == ["work"]
+
+
+def test_failed_metric_provider_does_not_prevent_runtime_tracing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken_meter(*args: Any, **kwargs: Any) -> metrics.Meter:
+        raise RuntimeError("could not create meter")
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setenv("SYNTARA_RUNTIME_TELEMETRY_MODE", "performance")
+    monkeypatch.setattr(metrics, "get_meter", broken_meter)
+    monkeypatch.setattr(trace, "get_tracer", provider.get_tracer)
+    try:
+        telemetry = _telemetry._configured_runtime_telemetry()
+        assert telemetry is not None
+        with telemetry.measure("step_execution"):
+            assert trace.get_current_span().is_recording()
+    finally:
+        provider.shutdown()
+
+    (exported,) = exporter.get_finished_spans()
+    assert exported.name == "syntara.sdk.runtime.step_execution"
+
+
+@pytest.mark.parametrize(
+    "runtime_telemetry", [None, "off", "invalid"], indirect=True, ids=["unset", "off", "invalid"]
+)
+def test_disabled_runtime_telemetry_skips_all_measurements(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_telemetry: tuple[InMemoryMetricReader, InMemorySpanExporter, TracerProvider],
+) -> None:
+    def unexpected_clock() -> int:
+        pytest.fail("Disabled telemetry must bypass its clocks")
+
+    def unexpected_provider(*args: object, **kwargs: object) -> None:
+        pytest.fail("Disabled telemetry must bypass OpenTelemetry provider lookups")
+
+    monkeypatch.setattr(metrics, "get_meter", unexpected_provider)
+    monkeypatch.setattr(trace, "get_tracer", unexpected_provider)
+    assert _telemetry._configured_runtime_telemetry() is None
+    monkeypatch.setattr(_telemetry, "perf_counter_ns", unexpected_clock)
+    monkeypatch.setattr(_telemetry, "thread_time_ns", unexpected_clock)
+    reader, exporter, _ = runtime_telemetry
+    binding = _binding(ActionEchoStep(), "tests.runtime.telemetry-off")
+    inputs = {"value": "sample"}
+    assert invoke(binding, inputs, _context(binding)).status_code == 0
+    assert container_step_for_binding(binding)(_invocation(binding, inputs)).status_code == 0
+
+    assert reader.get_metrics_data() is None
+    assert not exporter.get_finished_spans()
+
+
+@pytest.mark.parametrize("runtime_telemetry", ["production"], indirect=True)
+def test_production_runtime_telemetry_measures_whole_invocations(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_telemetry: tuple[InMemoryMetricReader, InMemorySpanExporter, TracerProvider],
+) -> None:
+    def unexpected_clock() -> int:
+        pytest.fail("Production telemetry must bypass the thread CPU clock")
+
+    monkeypatch.setattr(_telemetry, "thread_time_ns", unexpected_clock)
+    reader, exporter, _ = runtime_telemetry
+    binding = _binding(ActionEchoStep(), "tests.runtime.telemetry-production")
+    response = container_step_for_binding(binding)(_invocation(binding, {"value": "sample"}))
+    assert response.status_code == 0
+
+    measured = _runtime_measurements(reader)
+    assert set(measured) == {"syntara.sdk.runtime.stage.duration"}
+    points = measured["syntara.sdk.runtime.stage.duration"]
+    assert {(point.attributes["stage"], point.count) for point in points} == {
+        ("invocation", 1),
+        ("container_invocation", 1),
+    }
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    assert set(spans) == {
+        "syntara.sdk.runtime.container_invocation",
+        "syntara.sdk.runtime.invocation",
+    }
+    invocation = spans["syntara.sdk.runtime.invocation"]
+    assert invocation.parent == spans["syntara.sdk.runtime.container_invocation"].context
