@@ -81,8 +81,6 @@ from .http import (
 from .manifest_validation import ManifestInputValidationError
 from .metadata import supports_runtime_probe
 from .outcome import (
-    DEFAULT_INVOCATION_FAILURE_STATUS,
-    INVOCATION_STATUS_SUCCESS,
     ErrorCategory,
     ErrorCode,
     ErrorMessage,
@@ -195,7 +193,6 @@ __all__ = [
     "DriftIssue",
     "DriftReport",
     "DriftSeverity",
-    "DEFAULT_INVOCATION_FAILURE_STATUS",
     "ErrorCategory",
     "ErrorCode",
     "EntryPointResolver",
@@ -215,7 +212,6 @@ __all__ = [
     "InlineDocument",
     "IntegrationType",
     "IntegrationTypeSpec",
-    "INVOCATION_STATUS_SUCCESS",
     "JwtTokenExchangeIssuance",
     "OAuthAuthorizationCodeIssuance",
     "StaticBearerIssuance",

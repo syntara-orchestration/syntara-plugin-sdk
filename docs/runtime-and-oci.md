@@ -681,10 +681,8 @@ may instead treat the response as a failure according to its own behavior.
 The runtime constructs wrappers for typed step execution. When constructing an
 outcome directly, use `StandardOutputWrapper.success(result)` or
 `StandardOutputWrapper.failure(error_result=error)`. These constructors enforce
-the success and failure combinations. The Python constants
-`INVOCATION_STATUS_SUCCESS` and `DEFAULT_INVOCATION_FAILURE_STATUS` identify
-the success value (`0`) and the default failure value (`1`); other nonzero
-failure values are accepted. They are available from `syntara_plugin.runtime`.
+the success and failure combinations. The failure constructor defaults to
+status code `1`; other nonzero failure values are accepted.
 
 Invalid input produces a nonzero error result when it satisfies the effective
 error schema; the implementation hook is not called. JSON Schema
