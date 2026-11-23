@@ -1222,12 +1222,17 @@ The two paths report outcomes differently:
 
 | Outcome | Direct path | Container path |
 | --- | --- | --- |
-| Success | `StandardOutputWrapper` with `status` `0`, `status_message` `Completed`, and `output` | Terminal result with the same fields |
-| Invalid input; `run()` is not called | Wrapper with a nonzero `status` and an `error` of code `INVALID_INPUT` | Terminal result with a nonzero status and the same error |
-| Deliberate failure (`StepFailure`) | Wrapper with a nonzero `status` and the structured error | Terminal result with a nonzero status and the same error |
+| Success | `StandardOutputWrapper` with `status_code` `0`, `status_message` `Completed`, and `result` | Terminal result with the same outcome and business output |
+| Invalid input; `run()` is not called | Wrapper with a nonzero `status_code` and an `error_result` of code `INVALID_INPUT` | Terminal result with a nonzero status and the same error |
+| Deliberate failure (`StepFailure`) | Wrapper with a nonzero `status_code` and the structured `error_result` | Terminal result with a nonzero status and the same error |
 | Terminal failure (`ContainerInvocationError`) | The exception is raised with its code, message, retryability, and outcome | Terminal failure with the code, message, retryability, outcome, and provider code |
 | Unexpected exception | `StepExecutionError` is raised with a safe message; the original traceback is kept as `detail` | Terminal failure `OUTCOME_UNKNOWN`; the exception text does not leave the container |
 | Output that violates the output schema | `StepExecutionError` is raised | Terminal failure `ABI_VIOLATION` |
+
+The wrapper's `status_code` describes the SDK invocation. A step type's
+business output may contain its own status fields, such as an HTTP response
+code. See [SDK invocation and result](runtime-and-oci.md#typed-python-step-types)
+for an example.
 
 Every wrapper error, `INVALID_INPUT` included, is validated against the
 step type's declared `error` schema when one exists; that is why the compiler

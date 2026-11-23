@@ -15,6 +15,8 @@ import pytest
 from pydantic import BaseModel, field_serializer
 from syntara_plugin.contracts import canonical_json_digest
 from syntara_plugin.runtime import (
+    DEFAULT_INVOCATION_FAILURE_STATUS,
+    INVOCATION_STATUS_SUCCESS,
     ActionStep,
     BaseStep,
     ConformanceHarness,
@@ -504,6 +506,23 @@ def test_wrapper_rejects_invalid_status_and_result_combinations() -> None:
             status_message="Completed",
             error_result=None,
         )
+
+
+def test_invocation_status_is_independent_of_step_http_response() -> None:
+    success = StandardOutputWrapper.success({"status_code": 404, "body": {"message": "Not found"}})
+    failure = StandardOutputWrapper.failure(error_message="Request failed")
+
+    assert INVOCATION_STATUS_SUCCESS == 0
+    assert DEFAULT_INVOCATION_FAILURE_STATUS == 1
+    assert success.model_dump(mode="json") == {
+        "result": {"status_code": 404, "body": {"message": "Not found"}},
+        "statusCode": INVOCATION_STATUS_SUCCESS,
+        "statusMessage": "Completed",
+        "errorResult": None,
+    }
+    assert failure.status_code == DEFAULT_INVOCATION_FAILURE_STATUS
+    assert failure.error_result is not None
+    assert failure.error_result.code == "BUSINESS_RULE_FAILED"
 
 
 def test_wrapper_hash_uses_its_immutable_content() -> None:

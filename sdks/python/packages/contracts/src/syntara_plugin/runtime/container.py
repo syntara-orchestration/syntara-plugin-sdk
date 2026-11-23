@@ -206,6 +206,8 @@ class ContainerResult:
     its business result, never both. ``status_code`` zero is success; a nonzero
     value is a deliberate step type failure that remains a valid outcome and must
     carry the complete ``error_result`` and its effective ``error_schema_digest``.
+    This code describes the SDK invocation; a step type may include an HTTP
+    response code or other service status in its own business output.
     The schema digests let the control plane interpret the result without
     importing plugin Python code.
     """

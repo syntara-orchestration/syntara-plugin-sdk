@@ -654,6 +654,38 @@ supported custom-runner step type kinds execute only through the factory-created
 identity and canonical installed-schema binding.
 
 The runtime owns the `StandardOutputWrapper` and `ErrorResult` result types.
+The wrapper's `status_code` (serialized as `statusCode`) describes the SDK
+step invocation. `0` means the invocation succeeded; a nonzero value means
+the SDK returned a deliberate failure with an `error_result`. The specific
+failure reason is in `error_result.code`. If execution cannot produce a valid
+wrapper, it reports a terminal failure instead.
+
+The step type defines the fields of its business result in `spec.output`. A
+step that returns an HTTP response can include the HTTP status in that result.
+For example, if a step treats a 404 response as a successful invocation, its
+wrapper can look like this:
+
+```json
+{
+  "result": {"status_code": 404, "body": {"message": "Not found"}},
+  "statusCode": 0,
+  "statusMessage": "Completed",
+  "errorResult": null
+}
+```
+
+Here `result.status_code` is a field chosen by the step author for the HTTP
+response. The outer `statusCode` reports the SDK invocation outcome. A step
+may instead treat the response as a failure according to its own behavior.
+
+The runtime constructs wrappers for typed step execution. When constructing an
+outcome directly, use `StandardOutputWrapper.success(result)` or
+`StandardOutputWrapper.failure(error_result=error)`. These constructors enforce
+the success and failure combinations. The Python constants
+`INVOCATION_STATUS_SUCCESS` and `DEFAULT_INVOCATION_FAILURE_STATUS` identify
+the success value (`0`) and the default failure value (`1`); other nonzero
+failure values are accepted. They are available from `syntara_plugin.runtime`.
+
 Invalid input produces a nonzero error result when it satisfies the effective
 error schema; the implementation hook is not called. JSON Schema
 `default` values are annotations, so the registered Pydantic model supplies the

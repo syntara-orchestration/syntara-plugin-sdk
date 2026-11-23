@@ -23,6 +23,8 @@ from pydantic import (
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, load_bundle
 
 MAX_MESSAGE_LENGTH = 4_096
+INVOCATION_STATUS_SUCCESS = 0
+DEFAULT_INVOCATION_FAILURE_STATUS = 1
 _DEFAULT_FAILURE_MESSAGE = "The step failed."
 
 
@@ -205,6 +207,9 @@ def validate_json_object(value: object) -> None:
 class StandardOutputWrapper[TOutput]:
     """A deeply immutable result envelope for one completed step invocation.
 
+    ``status_code`` describes the SDK invocation: zero means success and a
+    nonzero value means a deliberate failure with ``error_result``. It is
+    independent of any status code in the step type's business result.
     ``result`` contains the JSON representation checked against the installed
     output schema. Mappings become read-only mapping proxies and arrays become
     tuples, including at nested levels.
@@ -221,7 +226,7 @@ class StandardOutputWrapper[TOutput]:
         if type(self.status_code) is not int or not 0 <= self.status_code <= 4_294_967_295:
             raise ValueError("status_code must be an unsigned 32-bit integer")
         fallback = "Completed"
-        if self.status_code != 0:
+        if self.status_code != INVOCATION_STATUS_SUCCESS:
             fallback = (
                 self.error_result.message
                 if isinstance(self.error_result, ErrorResult)
@@ -236,7 +241,7 @@ class StandardOutputWrapper[TOutput]:
             validate_json_object(self.result)
             object.__setattr__(self, "result", cast(TOutput, freeze_json(self.result)))
 
-        if self.status_code == 0:
+        if self.status_code == INVOCATION_STATUS_SUCCESS:
             if self.error_result is not None:
                 raise ValueError("a successful outcome cannot carry an error")
             if self.result is None:
@@ -251,11 +256,11 @@ class StandardOutputWrapper[TOutput]:
         *,
         status_message: str = "Completed",
     ) -> StandardOutputWrapper[TOutput]:
-        """Build a successful outcome from a JSON-compatible result."""
+        """Build a successful invocation outcome from a JSON-compatible result."""
 
         return cls(
             result=result,
-            status_code=0,
+            status_code=INVOCATION_STATUS_SUCCESS,
             status_message=status_message,
             error_result=None,
         )
@@ -265,7 +270,7 @@ class StandardOutputWrapper[TOutput]:
         cls,
         error: ErrorResult | None = None,
         *,
-        status_code: int = 1,
+        status_code: int = DEFAULT_INVOCATION_FAILURE_STATUS,
         status_message: str | None = None,
         error_result: ErrorResult | None = None,
         error_message: ErrorResult | str | None = None,
@@ -275,8 +280,11 @@ class StandardOutputWrapper[TOutput]:
         result: TOutput | None = None,
         output: TOutput | None = None,
     ) -> StandardOutputWrapper[TOutput]:
-        """Build a deliberate failure outcome from caller-authored safe metadata.
+        """Build a deliberate invocation failure from caller-authored safe metadata.
 
+        ``status_code`` must be nonzero; the default is
+        ``DEFAULT_INVOCATION_FAILURE_STATUS``. The error's code gives the
+        specific failure reason.
         ``error=`` and ``error_message=`` are compatibility aliases for
         ``error_result=``; ``output=`` aliases ``result=``.
         """
@@ -289,7 +297,7 @@ class StandardOutputWrapper[TOutput]:
             raise ValueError("provide either result or output")
         if result is None:
             result = output
-        if status_code == 0:
+        if status_code == INVOCATION_STATUS_SUCCESS:
             raise ValueError("a failure status_code must be nonzero")
         if isinstance(error_message, ErrorResult):
             structured_error = error_message
