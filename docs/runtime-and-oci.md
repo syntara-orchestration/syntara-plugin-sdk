@@ -654,16 +654,12 @@ supported custom-runner step type kinds execute only through the factory-created
 identity and canonical installed-schema binding.
 
 The runtime owns the `StandardOutputWrapper` and `ErrorResult` result types.
-The wrapper's `status_code` (serialized as `statusCode`) describes the SDK
-step invocation. `0` means the invocation succeeded; a nonzero value means
-the SDK returned a deliberate failure with an `error_result`. The specific
-failure reason is in `error_result.code`. If execution cannot produce a valid
-wrapper, it reports a terminal failure instead.
-
-The step type defines the fields of its business result in `spec.output`. A
-step that returns an HTTP response can include the HTTP status in that result.
-For example, if a step treats a 404 response as a successful invocation, its
-wrapper can look like this:
+In this wrapper, `status_code` (serialized as `statusCode`) reports the SDK
+invocation result: `0` means success, and a nonzero value means deliberate
+failure. The step type defines its business result through `spec.output`; it
+may include status fields such as an HTTP response code. For example, if a
+step treats an HTTP 404 response as a successful invocation, its wrapper can
+look like this:
 
 ```json
 {
@@ -674,9 +670,9 @@ wrapper can look like this:
 }
 ```
 
-Here `result.status_code` is a field chosen by the step author for the HTTP
-response. The outer `statusCode` reports the SDK invocation outcome. A step
-may instead treat the response as a failure according to its own behavior.
+Here `result.status_code` is step-authored HTTP response data; the outer
+`statusCode` reports the SDK invocation. A step may instead treat the response
+as a failure according to its own behavior.
 
 The runtime constructs wrappers for typed step execution. When constructing an
 outcome directly, use `StandardOutputWrapper.success(result)` or
