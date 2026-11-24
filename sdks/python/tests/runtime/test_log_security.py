@@ -54,7 +54,8 @@ def test_log_secret_fields_and_late_reads_are_suppressed(tmp_path: Path, field: 
     elif field == "scalar":
         attrs["value"] = _SECRET
     context.toolbox.log("INFO", message, attrs, event_name=name)
-    assert context.credential(_NAME).read() == {"token": _SECRET}
+    handle = context.credential(_NAME)
+    assert handle.read() == {"token": _SECRET}
     context.toolbox.log("INFO", "safe last")
     _close_toolbox(context.toolbox)
     assert context._credential_scope is not None
@@ -65,7 +66,7 @@ def test_log_secret_fields_and_late_reads_are_suppressed(tmp_path: Path, field: 
     assert [event.message for event in batch.events] == ["safe first", "safe last"]
     assert batch.dropped_count == 1
     with pytest.raises(CredentialAccessError):
-        context.credential(_NAME).read()
+        handle.read()
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -114,7 +115,9 @@ def test_log_scans_typed_values_and_json_escaping(tmp_path: Path, value: Any) ->
     context.toolbox.log("INFO", "unsafe", {"nested": [value]})
     _close_toolbox(context.toolbox)
     batch = _take_log_batch(context.toolbox, "invocation")
-    assert batch is not None and not batch.events and batch.dropped_count == 1
+    assert batch is not None
+    assert not batch.events
+    assert batch.dropped_count == 1
     assert context._credential_scope is not None
     context._credential_scope.close()
 
@@ -135,7 +138,8 @@ def test_log_scan_budget_is_shared_across_all_records(
     context._credential_scope.close(finalize_logs=lambda: _close_toolbox(context.toolbox))
     batch = _take_log_batch(context.toolbox, "invocation")
     assert batch is not None
-    assert len(batch.events) == 1 and batch.dropped_count == 2
+    assert len(batch.events) == 1
+    assert batch.dropped_count == 2
     assert _take_log_batch(context.toolbox, "invocation") is None
 
 
@@ -160,8 +164,11 @@ def test_concurrent_logs_and_reads_are_scanned_before_scope_destruction(tmp_path
     scope = context._credential_scope
     scope.close(finalize_logs=lambda: _close_toolbox(context.toolbox))
     batch = _take_log_batch(context.toolbox, "invocation")
-    assert batch is not None and not batch.events and batch.dropped_count == 20
-    assert not scope._strings and not scope._scalars
+    assert batch is not None
+    assert not batch.events
+    assert batch.dropped_count == 20
+    assert not scope._strings
+    assert not scope._scalars
     assert not scope._active
 
 
@@ -189,7 +196,9 @@ def test_log_scan_uncertainty_drops_records(
         context._credential_scope._overflow = True
     _close_toolbox(toolbox)
     batch = _take_log_batch(toolbox, "invocation")
-    assert batch is not None and not batch.events and batch.dropped_count == 1
+    assert batch is not None
+    assert not batch.events
+    assert batch.dropped_count == 1
 
 
 def test_cyclic_gc_keeps_live_state_and_cleans_abandoned_views() -> None:
@@ -251,7 +260,8 @@ def test_log_finalization_failure_does_not_prevent_terminal(
             try:
                 await service._run_step(handler, invocation, provider, outgoing)
                 batch = outgoing.get_nowait().log_batch
-                assert not batch.events and batch.dropped_count == 1
+                assert not batch.events
+                assert batch.dropped_count == 1
                 event = outgoing.get_nowait().event
                 assert event.WhichOneof("event") == ("failure" if failure else "result")
                 assert _SECRET.encode() not in event.SerializeToString()
@@ -263,7 +273,8 @@ def test_log_finalization_failure_does_not_prevent_terminal(
         outgoing: Queue[Any] = Queue()
         _run_sync_step(handler, invocation, provider, outgoing, Lock())
         batch = outgoing.get_nowait().log_batch
-        assert not batch.events and batch.dropped_count == 1
+        assert not batch.events
+        assert batch.dropped_count == 1
         event = outgoing.get_nowait().event
         assert event.WhichOneof("event") == ("failure" if failure else "result")
         assert _SECRET.encode() not in event.SerializeToString()
@@ -278,7 +289,9 @@ def test_log_severity_is_screened(tmp_path: Path) -> None:
     context.toolbox.log("INFO", "safe message")
     _close_toolbox(context.toolbox)
     batch = _take_log_batch(context.toolbox, "invocation")
-    assert batch is not None and not batch.events and batch.dropped_count == 1
+    assert batch is not None
+    assert not batch.events
+    assert batch.dropped_count == 1
     assert context._credential_scope is not None
     context._credential_scope.close()
 
@@ -318,7 +331,8 @@ def test_async_cancel_does_not_wait_for_an_in_progress_log_scan() -> None:
             assert time.monotonic() - start < 0.4
             assert response.accepted
             batch = outgoing.get_nowait().log_batch
-            assert not batch.events and batch.dropped_count == 1
+            assert not batch.events
+            assert batch.dropped_count == 1
             assert outgoing.get_nowait().event.WhichOneof("event") == "failure"
             release.set()
             worker.join(2)
@@ -326,7 +340,8 @@ def test_async_cancel_does_not_wait_for_an_in_progress_log_scan() -> None:
             assert _take_log_batch(provider._public_toolbox, "invocation") is None
             from syntara_plugin.runtime.toolbox import _toolbox_state
             state = _toolbox_state(provider._public_toolbox)
-            assert not state.events and state.dropped == 1
+            assert not state.events
+            assert state.dropped == 1
         finally:
             release.set()
             worker.join(2)
@@ -438,7 +453,8 @@ def test_async_log_scan_cannot_turn_prepared_outcome_into_timeout(failure: bool)
         try:
             await asyncio.wait_for(service._run_step(handler, invocation, provider, outgoing), 0.5)
             batch = outgoing.get_nowait().log_batch
-            assert not batch.events and batch.dropped_count == 1
+            assert not batch.events
+            assert batch.dropped_count == 1
             event = outgoing.get_nowait().event
             assert event.WhichOneof("event") == ("failure" if failure else "result")
             if failure:
@@ -472,15 +488,18 @@ def test_half_close_after_read_keeps_fingerprints_for_queued_logs() -> None:
     thread = Thread(target=respond)
     thread.start()
     try:
-        assert context.credential(_NAME).read() == {"token": _SECRET}
+        handle = context.credential(_NAME)
+        assert handle.read() == {"token": _SECRET}
         provider.close_credentials()
         context.toolbox.log("INFO", _SECRET)
         assert context._credential_scope is not None
         context._credential_scope.close(finalize_logs=lambda: _close_toolbox(context.toolbox))
         batch = _take_log_batch(context.toolbox, "invocation")
-        assert batch is not None and not batch.events and batch.dropped_count == 1
+        assert batch is not None
+        assert not batch.events
+        assert batch.dropped_count == 1
         with pytest.raises(CredentialAccessError, match="expired"):
-            context.credential(_NAME).read()
+            handle.read()
     finally:
         thread.join(2)
 
@@ -524,7 +543,8 @@ def test_sync_log_scan_cannot_turn_prepared_outcome_into_timeout(failure: bool) 
     try:
         messages = list(service.Execute(iter([request]), Context()))  # type: ignore[arg-type]
         batch = next(message.log_batch for message in messages if message.HasField("log_batch"))
-        assert not batch.events and batch.dropped_count == 1
+        assert not batch.events
+        assert batch.dropped_count == 1
         event = next(message.event for message in messages if message.HasField("event"))
         assert event.WhichOneof("event") == ("failure" if failure else "result")
         if failure:

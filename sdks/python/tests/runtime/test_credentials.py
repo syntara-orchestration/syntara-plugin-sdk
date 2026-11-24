@@ -289,7 +289,9 @@ def test_invocation_filters_logs_before_scope_cleanup(
         def scan(scanner: _LogFingerprintScanner, value: Any) -> bool:
             assert CredentialStep.saved is not None
             scope = getattr(CredentialStep.saved, "_CredentialBinding__scope")  # noqa: B009
-            assert not scope._active and not scope._strings and not scope._scalars
+            assert not scope._active
+            assert not scope._strings
+            assert not scope._scalars
             with pytest.raises(CredentialAccessError, match="expired"):
                 CredentialStep.saved.read()
             assert set(vars(scanner)) == {"_strings", "_scalars", "_overflow", "_log_budget"}
@@ -1647,16 +1649,19 @@ def test_log_finalization_failure_preserves_direct_outcome_and_revokes_scope(
 
     monkeypatch.setattr(_CredentialScope, "close", close)
     monkeypatch.setattr(execution, "_close_toolbox", fail)
+    binding = _binding()
     if mode == "terminal_failure":
         with pytest.raises(ContainerInvocationError) as caught:
-            invoke(_binding(), {"mode": mode}, context)
+            invoke(binding, {"mode": mode}, context)
         assert caught.value.code is FailureCode.REMOTE_REJECTED
         assert _SECRET not in str(caught.value)
     else:
-        result = invoke(_binding(), {"mode": mode}, context)
+        result = invoke(binding, {"mode": mode}, context)
         assert result.status_code == (1 if mode == "structured_log_failure" else 0)
     assert len(scopes) == 1
-    assert not scopes[0]._active and not scopes[0]._strings and not scopes[0]._scalars
+    assert not scopes[0]._active
+    assert not scopes[0]._strings
+    assert not scopes[0]._scalars
     assert CredentialStep.saved is not None
     with pytest.raises(CredentialAccessError, match="expired"):
         CredentialStep.saved.read()
@@ -1682,7 +1687,9 @@ def test_scanner_setup_failure_discards_logs_without_failing_invocation(
     wrapper = invoke(_binding(), {"mode": "use"}, context)
     assert wrapper.status_code == 0
     batch = _take_log_batch(context.toolbox, context.invocation_id)
-    assert batch is not None and not batch.events and batch.dropped_count == 1
+    assert batch is not None
+    assert not batch.events
+    assert batch.dropped_count == 1
     assert CredentialStep.saved is not None
     with pytest.raises(CredentialAccessError, match="expired"):
         CredentialStep.saved.read()
@@ -1734,7 +1741,8 @@ def test_async_typed_result_survives_slow_log_finalization(
             await asyncio.wait_for(service._run_step(handler, invocation, provider, outgoing), 1)
             assert entered.is_set()
             batch = outgoing.get_nowait().log_batch
-            assert not batch.events and batch.dropped_count == 3
+            assert not batch.events
+            assert batch.dropped_count == 3
             assert _SECRET.encode() not in batch.SerializeToString()
             assert outgoing.get_nowait().event.WhichOneof("event") == "result"
         finally:
@@ -1802,7 +1810,8 @@ def test_sync_typed_result_survives_slow_log_finalization(
                 messages.append(message)
         assert entered.is_set()
         batch = next(message.log_batch for message in messages if message.HasField("log_batch"))
-        assert not batch.events and batch.dropped_count == 3
+        assert not batch.events
+        assert batch.dropped_count == 3
         event = next(message.event for message in messages if message.HasField("event"))
         assert event.WhichOneof("event") == "result"
     finally:
