@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import Event, RLock
@@ -144,7 +145,10 @@ class ContainerToolbox:
         event_name: str | None = None,
     ) -> None:
         """Record an operational event; invalid and excess records are dropped."""
-        state = _toolbox_state(self)
+        try:
+            state = _toolbox_state(self)
+        except Exception:
+            return
         with state.lock:
             if state.closed.is_set() or state.cancellation.is_set():
                 return
@@ -206,6 +210,10 @@ class _ToolboxState:
         self.wire_bytes = len(invocation_id.encode("utf-8")) + 32
         self.dropped = 0
         self.sent = False
+        self.scan: Callable[[Any], bool] | None = None
+        self.scan_done = Event()
+        self.discarded = False
+        self.finalized = False
 
 
 _states: dict[int, _ToolboxState] = {}
@@ -236,14 +244,84 @@ def _toolbox_active(toolbox: ContainerToolbox) -> bool:
 
 
 def _close_toolbox(toolbox: ContainerToolbox) -> None:
+    try:
+        state = _toolbox_state(toolbox)
+    except Exception:
+        return
+    with state.lock:
+        if state.closed.is_set():
+            scan = None
+            events = None
+        else:
+            state.closed.set()
+            scan, state.scan = state.scan, None
+            events = list(state.events)
+            if scan is None:
+                state.finalized = True
+                state.scan_done.set()
+                return
+    if events is None:
+        state.scan_done.wait()
+        return
+    try:
+        retained: list[_LogRecord] = []
+        dropped = 0
+        for event in events:
+            try:
+                safe = scan([event.severity, event.message, event.event_name,
+                             json.loads(event.attributes_json)])
+            except Exception:
+                safe = False
+            if safe:
+                retained.append(event)
+            else:
+                dropped += 1
+        with state.lock:
+            if not state.discarded:
+                state.events = retained
+                state.dropped = min(_MAX_DROPPED, state.dropped + dropped)
+                state.finalized = True
+    except BaseException:
+        _discard_toolbox(toolbox, force=True)
+        raise
+    finally:
+        state.scan_done.set()
+
+
+def _discard_toolbox(toolbox: ContainerToolbox, *, force: bool = False) -> None:
+    """Discard unfinished records without waiting, or force discard after a fault."""
+    try:
+        state = _toolbox_state(toolbox)
+    except Exception:
+        return
+    with state.lock:
+        if state.finalized and not force:
+            return
+        if not force and not state.closed.is_set() and state.scan is None:
+            state.closed.set()
+            state.finalized = True
+            state.scan_done.set()
+            return
+        state.closed.set()
+        state.scan = None
+        state.discarded = True
+        state.dropped = min(_MAX_DROPPED, state.dropped + len(state.events))
+        state.events = []
+        state.scan_done.set()
+
+
+def _set_log_scanner(toolbox: ContainerToolbox, scan: Callable[[Any], bool]) -> None:
+    """Install an invocation's bounded, fingerprint-only credential check."""
     state = _toolbox_state(toolbox)
     with state.lock:
-        state.closed.set()
+        if not state.closed.is_set():
+            state.scan = scan
 
 
 def _take_log_batch(toolbox: ContainerToolbox, invocation_id: str) -> container_pb2.LogBatch | None:
     from .protocol import container_pb2
 
+    _close_toolbox(toolbox)
     state = _toolbox_state(toolbox)
     with state.lock:
         state.closed.set()

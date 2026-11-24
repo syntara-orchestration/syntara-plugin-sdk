@@ -14,9 +14,9 @@ from weakref import finalize
 from syntara_plugin.contracts import canonical_json_bytes
 
 from ._toolbox import _ContainerToolbox, _InvocationRequestContext
-from .credentials import CredentialAccessError, ScopedCredentialProvider
+from .credentials import CredentialAccessError, ScopedCredentialProvider, _DeferredLogProvider
 from .protocol import container_pb2
-from .toolbox import _close_toolbox, _new_toolbox
+from .toolbox import _close_toolbox, _discard_toolbox, _new_toolbox
 
 _MAX_PENDING = 16
 _READ_TIMEOUT = 30.0
@@ -140,7 +140,7 @@ class _CredentialCallbackTransport:
             self._pending.clear()
 
 
-class CallbackCredentialProvider:
+class CallbackCredentialProvider(_DeferredLogProvider):
     """One invocation's revocable credential provider."""
 
     def __init__(
@@ -158,6 +158,10 @@ class CallbackCredentialProvider:
             self._context, _CredentialCallbackTransport(send, self._scope)
         )
         self._public_toolbox = _new_toolbox(cancellation, invocation_id)
+        self._defer_log_finalization = False
+        # Protected by the sync service's terminal lock.
+        self._prepared_event: container_pb2.ExecutionEvent | None = None
+        self._terminal_committed = False
 
     def restrict(
         self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
@@ -221,9 +225,19 @@ class CallbackCredentialProvider:
         """Stop reads when the client half-closes without ending logging."""
         self._toolbox._close()
 
-    def close(self) -> None:
+    def close(self, *, discard_logs: bool = False) -> None:
         self.close_credentials()
-        _close_toolbox(self._public_toolbox)
+        try:
+            if discard_logs:
+                _discard_toolbox(self._public_toolbox)
+            else:
+                _close_toolbox(self._public_toolbox)
+        except Exception:
+            # Log finalization must not replace the invocation outcome.
+            try:
+                _discard_toolbox(self._public_toolbox, force=True)
+            except Exception:
+                pass
 
 
 class _ScopedCallbackState:
@@ -293,6 +307,6 @@ class _ScopedCallback:
             state.names = frozenset()
             if state.provider is not None:
                 try:
-                    state.provider.close()
+                    state.provider.close_credentials()
                 finally:
                     state.provider = None

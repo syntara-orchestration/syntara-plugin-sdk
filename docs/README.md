@@ -46,6 +46,7 @@ Design records live in [`../.sdlc/adrs`](../.sdlc/adrs):
 - [Container Toolbox boundary](../.sdlc/adrs/0012-container-toolbox.md)
 - [Caller-owned runtime context](../.sdlc/adrs/0013-caller-runtime-context.md)
 - [Terminal structured Toolbox logs](../.sdlc/adrs/0013-toolbox-logging.md)
+- [Credential-safe Toolbox log delivery](../.sdlc/adrs/0016-credential-safe-toolbox-logs.md)
 - [Language-neutral custom-runner entry points](../.sdlc/adrs/0014-language-neutral-entry-points.md)
 
 - [Credential authenticate and test extension proposal v1](../.sdlc/proposals/credential-authenticate-test-v1.md)

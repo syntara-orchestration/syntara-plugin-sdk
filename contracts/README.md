@@ -232,4 +232,8 @@ acknowledgment. Peers that reject unknown server messages must be updated before
 workloads use logging; Health does not distinguish this addition under the
 existing ABI identifier. Host consumers receive validated batches as
 `ContainerLogBatch` events from `ContainerClient.stream()`, alongside progress
-and the terminal result. See [ADR 0013](../.sdlc/adrs/0013-toolbox-logging.md).
+and the terminal result. Before delivery, the SDK drops records matching
+credentials read during the invocation or whose bounded scan cannot finish;
+the existing drop count includes these records. Hosts retain their screening
+responsibility before persistence/export. See
+[ADR 0016](../.sdlc/adrs/0016-credential-safe-toolbox-logs.md).

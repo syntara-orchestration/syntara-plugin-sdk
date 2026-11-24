@@ -70,6 +70,9 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
 
     def run(self, inputs: CredentialInput, context: ExecutionContext) -> CredentialOutput:
         try:
+            if inputs.mode.startswith("structured_log"):
+                context.toolbox.log("INFO", "safe first")
+                context.toolbox.log("WARN", _SECRET, {_SECRET: [_SECRET]}, event_name=_SECRET)
             if inputs.mode == "system_exit_before":
                 raise SystemExit("pre-read")
             if inputs.mode == "keyboard_interrupt_before":
@@ -111,6 +114,12 @@ class CredentialStep(ActionStep[CredentialInput, CredentialOutput]):
                 handle = context.credential(_OTHER if inputs.mode == "undeclared" else _NAME)
                 type(self).saved = handle
                 credential = handle.read()
+            if inputs.mode.startswith("structured_log"):
+                context.toolbox.log("INFO", "safe last")
+                if inputs.mode == "structured_log_failure":
+                    raise StepFailure(1, "Failed", "Safe failure")
+                if inputs.mode == "structured_log_crash":
+                    raise RuntimeError("step failed")
             if inputs.mode == "exception":
                 raise ValueError(str(credential["token"]))
             if inputs.mode == "terminal_failure":
@@ -260,6 +269,89 @@ def test_declared_credential_keys_can_appear_in_output_and_failure(tmp_path: Pat
         assert failure.error.message == "authentication rejected"
         assert failure.error.code == "BUSINESS_RULE_FAILED"
         assert failure.raw is not None
+
+
+@pytest.mark.parametrize("mode", ["structured_log", "structured_log_failure", "structured_log_crash"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_invocation_filters_logs_before_scope_cleanup(
+    tmp_path: Path, mode: str, asynchronous: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if asynchronous:
+        import asyncio
+
+        from syntara_plugin.runtime import ContainerLogBatch, ContainerResult
+        from syntara_plugin.runtime.credentials import _LogFingerprintScanner
+        from syntara_plugin.runtime.server import AsyncContainerRuntimeService
+
+        original_scan = _LogFingerprintScanner.scan_log
+        scans: list[bool] = []
+
+        def scan(scanner: _LogFingerprintScanner, value: Any) -> bool:
+            assert CredentialStep.saved is not None
+            scope = getattr(CredentialStep.saved, "_CredentialBinding__scope")  # noqa: B009
+            assert not scope._active and not scope._strings and not scope._scalars
+            with pytest.raises(CredentialAccessError, match="expired"):
+                CredentialStep.saved.read()
+            assert set(vars(scanner)) == {"_strings", "_scalars", "_overflow", "_log_budget"}
+            scans.append(True)
+            return original_scan(scanner, value)
+
+        monkeypatch.setattr(_LogFingerprintScanner, "scan_log", scan)
+
+        binding = _binding()
+        handler = container_step_for_binding(binding)
+
+        async def run() -> list[Any]:
+            server = grpc.aio.server()
+            service = AsyncContainerRuntimeService(StepRegistry({
+                binding.descriptor.step_identity: handler,
+            }))
+            container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
+            port = server.add_insecure_port("127.0.0.1:0")
+            await server.start()
+            channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+            try:
+                def consume() -> list[Any]:
+                    events: list[Any] = []
+                    try:
+                        events.extend(runtime_container_client.stream(
+                            ContainerInvocation(
+                                "invocation", binding.descriptor.step_identity, {"mode": mode}, 5,
+                            ), credential_handler=lambda _: {"token": _SECRET},
+                        ))
+                    except ContainerRemoteError:
+                        assert mode == "structured_log_crash"
+                    return events
+
+                from syntara_plugin.runtime import ContainerClient
+                runtime_container_client = ContainerClient(channel)
+                return await asyncio.to_thread(consume)
+            finally:
+                channel.close()
+                service.shutdown()
+                await server.stop(0)
+
+        events = asyncio.run(run())
+        batch = next(event for event in events if isinstance(event, ContainerLogBatch))
+        assert scans
+        assert batch.dropped_count == 1
+        assert [record.message for record in batch.records] == ["safe first", "safe last"]
+        assert _SECRET not in repr(batch)
+        results = [event for event in events if isinstance(event, ContainerResult)]
+        assert len(results) == (0 if mode == "structured_log_crash" else 1)
+        if results:
+            assert results[0].status_code == int(mode == "structured_log_failure")
+        return
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    outcome = invoke_step_in_container(_binding(), {"mode": mode}, context=context)
+    assert outcome.ok is (mode == "structured_log")
+    assert outcome.logs.dropped_count == 1
+    assert [record.message for record in outcome.logs.records] == ["safe first", "safe last"]
+    assert _SECRET not in repr(outcome.logs)
 
 
 @pytest.mark.parametrize(
@@ -1529,3 +1621,192 @@ def test_scope_cannot_reach_unrecorded_credential_transport(tmp_path: Path) -> N
     if outcome.ok:
         pytest.fail("credential scope allowed a raw response to escape", pytrace=False)
     assert _SECRET not in repr(outcome)
+
+
+@pytest.mark.parametrize("mode", ["use", "structured_log_failure", "terminal_failure"])
+def test_log_finalization_failure_preserves_direct_outcome_and_revokes_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    from syntara_plugin.runtime import execution
+    from syntara_plugin.runtime.credentials import _CredentialScope
+
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    scopes: list[_CredentialScope] = []
+    original_close = _CredentialScope.close
+
+    def close(scope: _CredentialScope, **kwargs: Any) -> None:
+        scopes.append(scope)
+        original_close(scope, **kwargs)
+
+    def fail(*args: Any) -> None:
+        raise ValueError(_SECRET)
+
+    monkeypatch.setattr(_CredentialScope, "close", close)
+    monkeypatch.setattr(execution, "_close_toolbox", fail)
+    if mode == "terminal_failure":
+        with pytest.raises(ContainerInvocationError) as caught:
+            invoke(_binding(), {"mode": mode}, context)
+        assert caught.value.code is FailureCode.REMOTE_REJECTED
+        assert _SECRET not in str(caught.value)
+    else:
+        result = invoke(_binding(), {"mode": mode}, context)
+        assert result.status_code == (1 if mode == "structured_log_failure" else 0)
+    assert len(scopes) == 1
+    assert not scopes[0]._active and not scopes[0]._strings and not scopes[0]._scalars
+    assert CredentialStep.saved is not None
+    with pytest.raises(CredentialAccessError, match="expired"):
+        CredentialStep.saved.read()
+
+
+def test_scanner_setup_failure_discards_logs_without_failing_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from syntara_plugin.runtime import context as context_module
+    from syntara_plugin.runtime.toolbox import _take_log_batch
+
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    context.toolbox.log("INFO", _SECRET)
+
+    def fail(*args: Any) -> None:
+        raise ValueError(_SECRET)
+
+    monkeypatch.setattr(context_module, "_set_log_scanner", fail)
+    wrapper = invoke(_binding(), {"mode": "use"}, context)
+    assert wrapper.status_code == 0
+    batch = _take_log_batch(context.toolbox, context.invocation_id)
+    assert batch is not None and not batch.events and batch.dropped_count == 1
+    assert CredentialStep.saved is not None
+    with pytest.raises(CredentialAccessError, match="expired"):
+        CredentialStep.saved.read()
+
+
+def test_async_typed_result_survives_slow_log_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from threading import Thread
+
+    from syntara_plugin.runtime.credential_callback import CallbackCredentialProvider
+    from syntara_plugin.runtime.credentials import _LogFingerprintScanner
+    from syntara_plugin.runtime.server import AsyncContainerRuntimeService
+
+    release, entered = Event(), Event()
+    original_scan = _LogFingerprintScanner.scan_log
+
+    def slow_scan(scanner: _LogFingerprintScanner, value: Any) -> bool:
+        entered.set()
+        release.wait(2)
+        return original_scan(scanner, value)
+
+    monkeypatch.setattr(_LogFingerprintScanner, "scan_log", slow_scan)
+    binding = _binding()
+    handler = container_step_for_binding(binding)
+
+    async def run() -> None:
+        requests: Queue[Any] = Queue()
+        cancellation = Event()
+        provider = CallbackCredentialProvider("invocation", requests.put, cancellation, 5)
+        invocation = ContainerInvocation(
+            "invocation", binding.descriptor.step_identity, {"mode": "structured_log"}, 0.3,
+            cancellation=cancellation, credential_provider=provider,
+        )
+        service = AsyncContainerRuntimeService(StepRegistry({binding.descriptor.step_identity: handler}))
+        outgoing: asyncio.Queue[Any] = asyncio.Queue()
+
+        def respond() -> None:
+            request = requests.get(timeout=2)
+            provider.receive(container_pb2.CredentialResponse(
+                invocation_id="invocation", request_id=request.request_id,
+                document_json=json.dumps({"token": _SECRET}).encode(),
+            ))
+
+        thread = Thread(target=respond)
+        thread.start()
+        try:
+            await asyncio.wait_for(service._run_step(handler, invocation, provider, outgoing), 1)
+            assert entered.is_set()
+            batch = outgoing.get_nowait().log_batch
+            assert not batch.events and batch.dropped_count == 3
+            assert _SECRET.encode() not in batch.SerializeToString()
+            assert outgoing.get_nowait().event.WhichOneof("event") == "result"
+        finally:
+            release.set()
+            thread.join(2)
+            service.shutdown()
+
+    asyncio.run(run())
+
+
+def test_sync_typed_result_survives_slow_log_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threading import Timer
+
+    from syntara_plugin.runtime.container import ContainerRuntimeService
+    from syntara_plugin.runtime.credentials import _LogFingerprintScanner
+
+    release, entered = Event(), Event()
+    original_scan = _LogFingerprintScanner.scan_log
+
+    def slow_scan(scanner: _LogFingerprintScanner, value: Any) -> bool:
+        entered.set()
+        release.wait(2)
+        return original_scan(scanner, value)
+
+    monkeypatch.setattr(_LogFingerprintScanner, "scan_log", slow_scan)
+    binding = _binding()
+    handler = container_step_for_binding(binding)
+    invocation = ContainerInvocation(
+        "invocation", binding.descriptor.step_identity, {"mode": "structured_log"}, 1,
+    )
+    requests: Queue[Any] = Queue()
+    requests.put(container_pb2.ExecuteClientMessage(start=_request_from_invocation(invocation)))
+
+    def incoming() -> Any:
+        while True:
+            request = requests.get(timeout=2)
+            if request is None:
+                return
+            yield request
+
+    class Context:
+        def add_callback(self, callback: Any) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return True
+
+    service = ContainerRuntimeService(StepRegistry({binding.descriptor.step_identity: handler}))
+    timer = Timer(1.5, release.set)
+    timer.start()
+    messages: list[Any] = []
+    try:
+        for message in service.Execute(incoming(), Context()):  # type: ignore[arg-type]
+            if message.HasField("credential_request"):
+                request = message.credential_request
+                requests.put(container_pb2.ExecuteClientMessage(
+                    credential_response=container_pb2.CredentialResponse(
+                        invocation_id="invocation", request_id=request.request_id,
+                        document_json=json.dumps({"token": _SECRET}).encode(),
+                    )
+                ))
+            else:
+                messages.append(message)
+        assert entered.is_set()
+        batch = next(message.log_batch for message in messages if message.HasField("log_batch"))
+        assert not batch.events and batch.dropped_count == 3
+        event = next(message.event for message in messages if message.HasField("event"))
+        assert event.WhichOneof("event") == "result"
+    finally:
+        requests.put(None)
+        release.set()
+        timer.cancel()
+        service.shutdown()

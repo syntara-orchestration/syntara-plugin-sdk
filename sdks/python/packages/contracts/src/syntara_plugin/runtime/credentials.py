@@ -38,6 +38,12 @@ class _CredentialScanStatus(StrEnum):
     LIMIT_EXCEEDED = "limit_exceeded"
 
 
+class _DeferredLogProvider:
+    """Internal marker for a container provider that finalizes logs later."""
+
+    _defer_log_finalization: bool
+
+
 class CredentialAccessError(RuntimeError):
     """A safe credential access failure; no binding name or provider detail is exposed."""
 
@@ -519,7 +525,7 @@ class _CredentialScope:
     __slots__ = (
         "_allowed", "_provider", "_active", "_strings", "_scalars",
         "_fingerprint_count", "_overflow", "_has_read", "_restriction_failed", "__weakref__",
-        "_schemas", "_read_name", "_record_lock",
+        "_schemas", "_read_name", "_record_lock", "_log_budget", "_log_closed",
     )
 
     def __init__(
@@ -537,6 +543,8 @@ class _CredentialScope:
         self._schemas = schemas or {}
         self._read_name: ContextVar[str | None] = ContextVar("credential_read_name", default=None)
         self._record_lock = Lock()
+        self._log_budget = [_MAX_SCAN_WORK, _MAX_OUTPUT_NODES]
+        self._log_closed = False
         self._provider: _ScopedCredentialProvider | None = None
         if provider is not None:
             scope_ref = weakref.ref(self)
@@ -705,20 +713,27 @@ class _CredentialScope:
                 return _CredentialScanStatus.LIMIT_EXCEEDED
             return self._scan_active(value)
 
-    def _scan_active(self, value: Any) -> _CredentialScanStatus:
+    def scan_log(self, value: Any) -> bool:
+        """Scan all log records with one budget, including during read revocation."""
+        with self._record_lock:
+            if self._log_closed:
+                return False
+            return self._scan_active(value, self._log_budget) is _CredentialScanStatus.CLEAN
+
+    def _scan_active(self, value: Any, budget: list[int] | None = None) -> _CredentialScanStatus:
         if self._overflow:
             return _CredentialScanStatus.LIMIT_EXCEEDED
         if not self._strings and not self._scalars:
             return _CredentialScanStatus.CLEAN
-        budget = [_MAX_SCAN_WORK]
+        if budget is None:
+            budget = [_MAX_SCAN_WORK, _MAX_OUTPUT_NODES]
         pending = [value]
-        nodes = 0
         while pending:
             current = pending.pop()
-            nodes += 1
-            if nodes > _MAX_OUTPUT_NODES:
+            budget[1] -= 1
+            if budget[1] < 0:
                 return _CredentialScanStatus.LIMIT_EXCEEDED
-            queued = _enqueue_children(current, pending, _MAX_OUTPUT_NODES - nodes)
+            queued = _enqueue_children(current, pending, budget[1])
             if queued is True:
                 return _CredentialScanStatus.LIMIT_EXCEEDED
             if queued is None:
@@ -770,19 +785,48 @@ class _CredentialScope:
                     return _CredentialScanStatus.SECRET_FOUND
         return _CredentialScanStatus.CLEAN
 
-    def close(self) -> None:
+    def close(
+        self, *, finalize_logs: Callable[[], None] | None = None,
+        prepare_logs: Callable[[], None] | None = None,
+    ) -> None:
         with self._record_lock:
             self._active = False
             provider = self._provider
             self._provider = None
             if provider is not None:
                 provider._revoke()
-            self._strings.clear()
-            self._scalars.clear()
-            self._schemas = {}
+            if prepare_logs is not None:
+                prepare_logs()
         # The provider may wait for a callback; do not hold the record lock.
-        if provider is not None:
-            provider.close()
+        try:
+            if provider is not None:
+                provider.close()
+            if finalize_logs is not None:
+                finalize_logs()
+        finally:
+            with self._record_lock:
+                self._log_closed = True
+                self._strings.clear()
+                self._scalars.clear()
+                self._schemas = {}
+
+
+class _LogFingerprintScanner:
+    """A detached, bounded log scanner retaining fingerprints but no provider."""
+
+    _scan_active = _CredentialScope._scan_active
+    _scan_leaf = _CredentialScope._scan_leaf
+    _scan_text = _CredentialScope._scan_text
+
+    def __init__(self, scope: _CredentialScope) -> None:
+        scope._log_closed = True
+        self._strings, scope._strings = scope._strings, {}
+        self._scalars, scope._scalars = scope._scalars, set()
+        self._overflow = scope._overflow
+        self._log_budget = scope._log_budget
+
+    def scan_log(self, value: Any) -> bool:
+        return self._scan_active(value, self._log_budget) is _CredentialScanStatus.CLEAN
 
 
 class CredentialBinding:

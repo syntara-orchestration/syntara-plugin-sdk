@@ -68,12 +68,14 @@ message ExecuteServerMessage {
 // Version 1 operational logs. A batch is sent at most once, immediately
 // before a terminal event. It is a one-way notification; no reply is required.
 // The batch holds at most 128 events and 262144 serialized protobuf bytes.
-// Excess or invalid events are dropped without failing the invocation.
+// Excess, invalid, credential-bearing, or incompletely scanned events are
+// dropped without failing the invocation. Log delivery is best effort: batch
+// construction failure must not prevent delivery of a prepared terminal event.
 message LogBatch {
   string invocation_id = 1;
   uint32 version = 2; // Must be 1.
   repeated LogEvent events = 3;
-  uint32 dropped_count = 4; // Saturating count of rejected/overflow records.
+  uint32 dropped_count = 4; // Saturating count of rejected/overflow/filtered records.
 }
 
 // timestamp is UTC RFC 3339 with millisecond precision. severity is one of
@@ -82,7 +84,10 @@ message LogBatch {
 // attributes_json is a JSON object at most 16384 UTF-8 bytes containing at
 // most 32 top-level members and JSON values (finite numbers only), with at
 // most 8 nested container levels, at most 2048 values, and signed 64-bit
-// integers. It is never inspected for secrets.
+// integers. The SDK invocation boundary screens severity, message, event_name,
+// and all attribute keys/values against credentials read during that invocation before
+// emitting the batch. Screening is bounded and best effort, not a sandbox.
+// Hosts must still screen records before persistence or export.
 message LogEvent {
   string timestamp = 1;
   string severity = 2;

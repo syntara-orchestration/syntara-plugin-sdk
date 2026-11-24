@@ -21,7 +21,12 @@ from .bindings import (
     validate_executable_step_binding,
 )
 from .context import ExecutionContext
-from .credentials import _CredentialScanStatus, _CredentialScope
+from .credentials import (
+    _CredentialScanStatus,
+    _CredentialScope,
+    _DeferredLogProvider,
+    _LogFingerprintScanner,
+)
 from .outcome import (
     ErrorCategory,
     ErrorCode,
@@ -30,7 +35,7 @@ from .outcome import (
     bounded_message,
     error_result_base_schema,
 )
-from .toolbox import _close_toolbox
+from .toolbox import _close_toolbox, _discard_toolbox, _set_log_scanner
 from .validation import StepInputValidationError, validate_step_inputs
 
 _INVALID_STEP_RESPONSE = "The step returned an invalid response."
@@ -327,6 +332,7 @@ def _invoke_with_error_schema(
     exceptions, raise ``StepExecutionError`` and therefore have no wrapper.
     """
 
+    deferred_logs = False
     try:
         untrusted_binding = False
         executor: StepExecutor | None = None
@@ -343,6 +349,10 @@ def _invoke_with_error_schema(
             )
         scope = scoped_context._credential_scope
         assert scope is not None
+        deferred_logs = (
+            isinstance(context._provider, _DeferredLogProvider)
+            and context._provider._defer_log_finalization
+        )
         try:
             wrapper = _execute_scoped(executor, step, input, scoped_context, scope)
             with _telemetry.measure_detail("credential_output_check"):
@@ -350,9 +360,35 @@ def _invoke_with_error_schema(
             object.__setattr__(wrapper, "error_schema_digest", executor.last_error_schema_digest)
             return wrapper, executor.last_error_schema_digest
         finally:
-            scope.close()
+            if deferred_logs:
+                scope.close(prepare_logs=lambda: _prepare_deferred_logs(context, scope))
+            else:
+                scope.close(finalize_logs=lambda: _finalize_toolbox(context))
     finally:
+        if not deferred_logs:
+            _finalize_toolbox(context)
+
+
+def _prepare_deferred_logs(context: ExecutionContext, scope: _CredentialScope) -> None:
+    try:
+        scanner = _LogFingerprintScanner(scope)
+        _set_log_scanner(context.toolbox, scanner.scan_log)
+    except Exception:
+        try:
+            _discard_toolbox(context.toolbox, force=True)
+        except Exception:
+            pass
+
+
+def _finalize_toolbox(context: ExecutionContext) -> None:
+    try:
         _close_toolbox(context.toolbox)
+    except Exception:
+        # Logging is best effort and must not replace the invocation outcome.
+        try:
+            _discard_toolbox(context.toolbox, force=True)
+        except Exception:
+            pass
 
 
 def _execute_scoped(

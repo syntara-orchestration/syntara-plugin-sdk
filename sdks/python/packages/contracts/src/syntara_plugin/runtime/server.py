@@ -8,7 +8,7 @@ import json
 import os
 import signal
 import weakref
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
@@ -256,7 +256,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
 
         def close() -> None:
             invocation.cancellation.set()
-            provider.close()
+            provider.close(discard_logs=True)
 
         context.add_done_callback(lambda _context: close())
         session.receiver = asyncio.create_task(
@@ -280,7 +280,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         if session.cancellation is not None:
             session.cancellation.set()
             if session.provider is not None:
-                session.provider.close()
+                session.provider.close(discard_logs=True)
             self._unregister_invocation(session.invocation_id, session.cancellation)
         for task in (session.receiver, session.worker):
             if task is not None:
@@ -288,9 +288,12 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
 
     @staticmethod
     def _queue_log(provider: CallbackCredentialProvider, invocation_id: str, outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None]) -> None:
-        message = _log_notification(provider, invocation_id)
-        if message is not None:
-            outgoing.put_nowait(message)
+        try:
+            message = _log_notification(provider, invocation_id)
+            if message is not None:
+                outgoing.put_nowait(message)
+        except Exception:
+            pass
 
     @staticmethod
     async def _receive_responses(
@@ -303,7 +306,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             async for message in requests:
                 if message.WhichOneof("message") != "credential_response":
                     invocation.cancellation.set()
-                    provider.close()
+                    provider.close(discard_logs=True)
                     AsyncContainerRuntimeService._queue_log(provider, invocation.invocation_id, outgoing)
                     outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
                         invocation.invocation_id, ContainerInvocationError(
@@ -323,8 +326,26 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         provider: CallbackCredentialProvider,
         outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None],
     ) -> None:
+        provider._defer_log_finalization = True
+        prepared: Future[ContainerResult] = Future()
+
+        def run_and_close(invocation: ContainerInvocation) -> ContainerResult:
+            try:
+                result = handler(invocation)
+            except BaseException as error:
+                prepared.set_exception(error)
+                raise
+            else:
+                prepared.set_result(result)
+                return result
+            finally:
+                provider.close()
+
         try:
-            result = await self._execute_step(handler, invocation)
+            result = await self._execute_step(
+                run_and_close, invocation, prepared=prepared,
+                on_prepared_timeout=lambda: provider.close(discard_logs=True),
+            )
             event = terminal_execution_event(invocation, result)
         except StepExecutionError as error:
             event = failure_event(invocation.invocation_id, ContainerInvocationError(
@@ -337,7 +358,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
             ))
         finally:
-            provider.close()
+            provider.close(discard_logs=True)
         self._queue_log(provider, invocation.invocation_id, outgoing)
         outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
         outgoing.put_nowait(None)
@@ -350,7 +371,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             return container_pb2.CancelResponse(accepted=False)
         cancellation, provider, outgoing = active
         cancellation.set()
-        provider.close()
+        provider.close(discard_logs=True)
         self._queue_log(provider, request.invocation_id, outgoing)
         outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
             request.invocation_id, ContainerInvocationError(
@@ -367,7 +388,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         self._shutdown = True
         for invocation_id, (cancellation, provider, outgoing) in self._active.copy().items():
             cancellation.set()
-            provider.close()
+            provider.close(discard_logs=True)
             self._queue_log(provider, invocation_id, outgoing)
             outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
                 invocation_id, ContainerInvocationError(
@@ -409,7 +430,9 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             del self._active[invocation_id]
 
     async def _execute_step(
-        self, handler: ContainerStepHandler, invocation: ContainerInvocation
+        self, handler: ContainerStepHandler, invocation: ContainerInvocation,
+        *, prepared: Future[ContainerResult] | None = None,
+        on_prepared_timeout: Callable[[], None] | None = None,
     ) -> ContainerResult:
         if self._shutdown:
             raise ContainerInvocationError(
@@ -437,6 +460,10 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         except TimeoutError:
             if task.done():
                 return task.result()
+            if prepared is not None and prepared.done():
+                if on_prepared_timeout is not None:
+                    on_prepared_timeout()
+                return prepared.result()
             invocation.cancellation.set()
             raise ContainerInvocationError(
                 FailureCode.TIMEOUT,

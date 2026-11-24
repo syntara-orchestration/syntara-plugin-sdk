@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-13
 - Amends: [ADR 0012](0012-container-toolbox.md)
+- Amended by: [ADR 0016](0016-credential-safe-toolbox-logs.md)
 
 ## Decision
 
@@ -11,7 +12,8 @@ with an optional keyword-only `event_name`. The SDK assigns the timestamp and
 records valid events in call order. The language-neutral protobuf defines the
 version 1 event and batch, including severity, JSON attribute and size bounds.
 Invalid and excess records are dropped and counted; logging never changes the
-step outcome. The collector and wire batch do not inspect or scrub records.
+step outcome. Before delivery, the invocation boundary drops records matching
+credentials read during that invocation or whose bounded scan cannot complete.
 During direct local execution, the runner applies its existing local diagnostic
 scrubber when rendering records to stderr.
 
@@ -19,7 +21,8 @@ The container runtime sends at most one nonempty or drop-count-bearing batch
 on Execute immediately before the terminal result or handled failure, without
 waiting for acknowledgment. Cancellation flushes records already collected when
 the server can send a terminal failure; disconnect, a crash, or a stuck process
-may prevent delivery. The local runner renders the same events on stderr.
+may prevent delivery. Batch construction failures must not prevent a prepared
+terminal outcome from being sent. The local runner renders the same events on stderr.
 Credential reads remain exclusively on their separate callback surface.
 
 ## Consequences

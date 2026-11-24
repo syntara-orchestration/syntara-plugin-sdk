@@ -7,6 +7,7 @@ from dataclasses import InitVar, dataclass, field
 from enum import Enum
 from threading import Event
 from typing import Any
+from weakref import ref
 
 from .credentials import (
     CredentialAccessError,
@@ -14,7 +15,7 @@ from .credentials import (
     CredentialProvider,
     _CredentialScope,
 )
-from .toolbox import ContainerToolbox, _new_toolbox
+from .toolbox import ContainerToolbox, _discard_toolbox, _new_toolbox, _set_log_scanner
 
 
 class _NoCredentialProvider(Enum):
@@ -90,9 +91,22 @@ class ExecutionContext:
             cancellation=self.cancellation,
         )
         object.__setattr__(context, "_toolbox", self._toolbox)
-        object.__setattr__(
-            context, "_credential_scope", _CredentialScope(names, self._provider, schemas)
-        )
+        scope = _CredentialScope(names, self._provider, schemas)
+        object.__setattr__(context, "_credential_scope", scope)
+        scope_ref = ref(scope)
+
+        def scan(value: Any) -> bool:
+            current = scope_ref()
+            return current is not None and current.scan_log(value)
+
+        try:
+            _set_log_scanner(context.toolbox, scan)
+        except Exception:
+            # If the scanner cannot be bound, no queued record is safe to emit.
+            try:
+                _discard_toolbox(context.toolbox, force=True)
+            except Exception:
+                pass
         return context
 
     @property
