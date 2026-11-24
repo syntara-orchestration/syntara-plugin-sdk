@@ -514,6 +514,22 @@ def test_wrapper_rejects_invalid_status_and_result_combinations() -> None:
         )
 
 
+def test_invocation_status_is_independent_of_step_http_response() -> None:
+    success = StandardOutputWrapper.success({"status_code": 404, "body": {"message": "Not found"}})
+    failure = StandardOutputWrapper.failure(error_message="Request failed")
+
+    assert success.status_code == 0
+    assert success.model_dump(mode="json") == {
+        "result": {"status_code": 404, "body": {"message": "Not found"}},
+        "statusCode": 0,
+        "statusMessage": "Completed",
+        "errorResult": None,
+    }
+    assert failure.status_code == 1
+    assert failure.error_result is not None
+    assert failure.error_result.code == "BUSINESS_RULE_FAILED"
+
+
 def test_wrapper_hash_uses_its_immutable_content() -> None:
     first = StandardOutputWrapper.success({"nested": [{"value": "same"}]})
     second = StandardOutputWrapper.success({"nested": [{"value": "same"}]})

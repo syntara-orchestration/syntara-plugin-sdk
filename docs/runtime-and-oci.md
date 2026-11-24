@@ -699,6 +699,32 @@ supported custom-runner step type kinds execute only through the factory-created
 identity and canonical installed-schema binding.
 
 The runtime owns the `StandardOutputWrapper` and `ErrorResult` result types.
+In this wrapper, `status_code` (serialized as `statusCode`) reports the SDK
+invocation result: `0` means success, and a nonzero value means deliberate
+failure. The step type defines its business result through `spec.output`; it
+may include status fields such as an HTTP response code. For example, if a
+step treats an HTTP 404 response as a successful invocation, its wrapper can
+look like this:
+
+```json
+{
+  "result": {"status_code": 404, "body": {"message": "Not found"}},
+  "statusCode": 0,
+  "statusMessage": "Completed",
+  "errorResult": null
+}
+```
+
+Here `result.status_code` is step-authored HTTP response data; the outer
+`statusCode` reports the SDK invocation. A step may instead treat the response
+as a failure according to its own behavior.
+
+The runtime constructs wrappers for typed step execution. When constructing an
+outcome directly, use `StandardOutputWrapper.success(result)` or
+`StandardOutputWrapper.failure(error_result=error)`. These constructors enforce
+the success and failure combinations. The failure constructor defaults to
+status code `1`; other nonzero failure values are accepted.
+
 Invalid input produces a nonzero error result when it satisfies the effective
 error schema; the implementation hook is not called. JSON Schema
 `default` values are annotations, so the registered Pydantic model supplies the
