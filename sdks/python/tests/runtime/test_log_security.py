@@ -207,22 +207,24 @@ def test_cyclic_gc_keeps_live_state_and_cleans_abandoned_views() -> None:
     from syntara_plugin.runtime import credential_callback, toolbox
 
     gc.collect()
-    initial_tools = len(toolbox._states)
-    initial_callbacks = len(credential_callback._callback_states)
     live = []
     for index in range(100):
         provider = CallbackCredentialProvider(str(index), lambda _: None, Event(), 5)
         view = provider.restrict(frozenset(), lambda _: None)
+        abandoned_toolbox_id = id(provider._public_toolbox)
+        abandoned_view_id = id(view)
         cycle: list[Any] = [provider._public_toolbox, view]
         cycle.append(cycle)
         live.append(toolbox._new_toolbox(Event(), str(index)))
         del provider, view, cycle
         gc.collect()
         assert all(toolbox._toolbox_state(item) is not None for item in live)
-    assert len(credential_callback._callback_states) == initial_callbacks
+        assert abandoned_toolbox_id not in toolbox._states
+        assert abandoned_view_id not in credential_callback._callback_states
+    live_ids = {id(item) for item in live}
     live.clear()
     gc.collect()
-    assert len(toolbox._states) == initial_tools
+    assert live_ids.isdisjoint(toolbox._states)
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
