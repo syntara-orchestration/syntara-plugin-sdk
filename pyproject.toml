@@ -15,6 +15,7 @@ dev = [
   "hatchling==1.32.4",
   "pytest>=8.0",
   "jsonschema>=4.23",
+  "opentelemetry-sdk>=1.39.1,<2",
   "grpcio-tools==1.78.0",
   "pre-commit>=3.5",
   "ruff>=0.1",

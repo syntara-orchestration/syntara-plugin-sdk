@@ -427,6 +427,51 @@ from Toolbox. See [ADR 0013](../.sdlc/adrs/0013-toolbox-logging.md) and the
 [protobuf contract](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
 for the exact limits.
 
+### SDK runtime telemetry
+
+Set `SYNTARA_RUNTIME_TELEMETRY_MODE` in the process environment before importing
+the Python runtime:
+
+- `off` is the default. Execution skips telemetry clocks and span creation.
+- `production` measures the wall time and outcome of `invocation` and
+  `container_invocation`. Configure sampling and batched exports in the host's
+  OpenTelemetry providers.
+- `performance` adds detailed stage wall times and per-invocation thread CPU
+  time. Use it for workload qualification.
+
+The mode is read at import. Enabled modes use the application's OpenTelemetry
+meter and tracer providers under the `syntara_plugin.runtime` instrumentation
+scope. Configure providers and exporters in the invoking process. For
+container workloads, set the mode and configure providers in the workload
+process. AO's `metrics.perf_test_mode` controls access to AO's internal metrics
+endpoint. Workload telemetry has its own process setting.
+
+- `syntara.sdk.runtime.stage.duration` records monotonic wall time in seconds
+  with `stage` and `outcome` attributes. `outcome` is `ok` or `error`.
+  The stages are `invocation`, `input_validation`, `step_execution`,
+  `output_serialization`, `output_validation`, `wrapper`,
+  `credential_scope`, `credential_output_check`, `container_invocation`,
+  and `container_result`. There are at most 20 attribute combinations.
+- `syntara.sdk.runtime.invocation.cpu_time` records seconds of CPU time on the
+  calling thread, with the same two `outcome` values. It covers the shared
+  invocation and its synchronous work. Use platform metrics to measure total
+  process or container resource usage.
+- Spans use the same stage names with the prefix `syntara.sdk.runtime.` and
+  inherit the thread's active OpenTelemetry trace. A nonzero wrapper counts as
+  an invocation error. The wrapper stage can still succeed when the runtime
+  constructs that failure result correctly.
+
+The direct path measures the shared invocation. The container adapter adds
+`container_invocation` around the same work and `container_result` for result
+mapping, including any configured object-store write. Output validation includes
+the canonical JSON check. On the failure path, `wrapper` includes validation of the
+error result. Stage durations are inclusive where stages are nested.
+
+The SDK emits fixed stage names and outcomes. Payloads, credential values,
+exception messages, stack traces, and invocation identifiers are excluded
+from these signals. The deployment owns exporter configuration, metric
+aggregation, trace sampling, and retention.
+
 ### Credential access
 
 For an Action, Control, or Trigger, the installed `integrationType` and its linked

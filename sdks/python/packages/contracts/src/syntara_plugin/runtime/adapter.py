@@ -10,7 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from syntara_plugin.contracts import CanonicalJsonError, canonical_json_bytes, canonical_json_digest
 
-from . import invoke
+from . import _telemetry, invoke
 from .abi import ContainerInvocationError
 from .bindings import (
     InstalledStepManifest,
@@ -213,7 +213,7 @@ def container_step_for_binding(
     validate_executable_step_binding(binding.descriptor, binding.step)
     output_schema_digest = _applied_output_schema_digest(binding)
 
-    def handler(invocation: ContainerInvocation) -> ContainerResult:
+    def execute(invocation: ContainerInvocation) -> ContainerResult:
         if invocation.step_revision_id != (step_revision_id or binding.descriptor.step_identity):
             raise ContainerInvocationError(
                 FailureCode.NOT_FOUND,
@@ -229,12 +229,22 @@ def container_step_for_binding(
                 error.safe_message,
                 outcome=error.outcome,
             ) from error
-        return _container_result(
-            wrapper,
-            output_schema_digest,
-            wrapper.error_schema_digest or "",
-            object_store,
-        )
+        with _telemetry.measure_detail("container_result"):
+            return _container_result(
+                wrapper,
+                output_schema_digest,
+                wrapper.error_schema_digest or "",
+                object_store,
+            )
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        telemetry = _telemetry.runtime_telemetry
+        if telemetry is None:
+            return execute(invocation)
+        with telemetry.measure("container_invocation") as measurement:
+            result = execute(invocation)
+            measurement.failed = result.status_code != 0
+            return result
 
     return handler
 
