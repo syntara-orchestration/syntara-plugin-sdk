@@ -1322,7 +1322,8 @@ def test_runtime_records_stages_and_thread_cpu_under_the_caller_span(
     (cpu,) = measured["syntara.sdk.runtime.invocation.cpu_time"]
     assert cpu.attributes == {"outcome": "ok"}
     assert cpu.count == 1
-    assert cpu.sum is not None and cpu.sum >= 0
+    assert cpu.sum is not None
+    assert cpu.sum >= 0
 
     spans = {span.name: span for span in exporter.get_finished_spans()}
     prefix = "syntara.sdk.runtime."
@@ -1348,8 +1349,9 @@ def test_runtime_telemetry_records_errors_without_payloads_or_exception_events(
     invalid = invoke(echo, {"irrelevant": sentinel}, _context(echo, invocation_id=sentinel))
     assert invalid.status_code != 0
     unexpected = _binding(UnexpectedStep(), "tests.runtime.telemetry-safe-failure")
+    unexpected_context = _context(unexpected, invocation_id=sentinel)
     with pytest.raises(StepExecutionError):
-        invoke(unexpected, {"value": sentinel}, _context(unexpected, invocation_id=sentinel))
+        invoke(unexpected, {"value": sentinel}, unexpected_context)
     reported = _binding(ActionFailureStep(), "tests.runtime.telemetry-reported-failure")
     failed = container_step_for_binding(reported)(
         _invocation(reported, {"value": sentinel}, invocation_id=sentinel)
