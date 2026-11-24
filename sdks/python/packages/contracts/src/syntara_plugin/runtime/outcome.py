@@ -282,9 +282,8 @@ class StandardOutputWrapper[TOutput]:
     ) -> StandardOutputWrapper[TOutput]:
         """Build a deliberate invocation failure from caller-authored safe metadata.
 
-        ``status_code`` must be nonzero; the default is
-        The default invocation status code is ``1``. The error's code gives
-        the specific failure reason.
+        ``status_code`` must be nonzero and defaults to ``1``. The error's
+        code gives the specific failure reason.
         ``error=`` and ``error_message=`` are compatibility aliases for
         ``error_result=``; ``output=`` aliases ``result=``.
         """
