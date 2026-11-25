@@ -257,9 +257,17 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             session.invocation_id, cancellation, provider, session.outgoing
         )
 
+        # grpc.aio keeps done callbacks reachable after the RPC ends, so the
+        # callback must not hold the provider (and through it the invocation,
+        # session and log state) strongly, or every invocation stays alive.
+        cancellation_signal = invocation.cancellation
+        provider_ref = weakref.ref(provider)
+
         def close() -> None:
-            invocation.cancellation.set()
-            provider.close(discard_logs=True)
+            cancellation_signal.set()
+            current = provider_ref()
+            if current is not None:
+                current.close(discard_logs=True)
 
         context.add_done_callback(lambda _context: close())
         session.receiver = asyncio.create_task(

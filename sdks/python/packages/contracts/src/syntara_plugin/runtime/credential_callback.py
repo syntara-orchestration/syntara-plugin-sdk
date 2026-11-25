@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from threading import Event, Lock, RLock
+from threading import Event, Lock
 from typing import Any, NoReturn
 from weakref import finalize
 
@@ -16,7 +16,13 @@ from syntara_plugin.contracts import canonical_json_bytes
 from ._toolbox import _ContainerToolbox, _InvocationRequestContext
 from .credentials import CredentialAccessError, ScopedCredentialProvider, _DeferredLogProvider
 from .protocol import container_pb2
-from .toolbox import _cancel_toolbox, _close_toolbox, _discard_toolbox, _new_toolbox
+from .toolbox import (
+    _cancel_toolbox,
+    _close_toolbox,
+    _discard_toolbox,
+    _new_toolbox,
+    _states_lock,
+)
 
 _MAX_PENDING = 16
 _READ_TIMEOUT = 30.0
@@ -295,7 +301,8 @@ class _ScopedCallbackState:
 # provider off the view's direct attribute path so ordinary view reads record
 # their documents. This is not a sandbox for arbitrary in-process introspection.
 _callback_states: dict[int, _ScopedCallbackState] = {}
-_callback_states_lock = RLock()
+# The toolbox registry's lock: see toolbox._states_lock for why it is shared.
+_callback_states_lock = _states_lock
 
 
 def _callback_state(view: _ScopedCallback) -> _ScopedCallbackState:

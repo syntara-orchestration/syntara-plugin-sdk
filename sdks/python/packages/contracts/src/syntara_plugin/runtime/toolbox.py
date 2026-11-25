@@ -223,6 +223,10 @@ class _ToolboxState:
 
 
 _states: dict[int, _ToolboxState] = {}
+# Shared with the credential-callback registry. Both registries are cleaned by
+# weakref finalizers, which garbage collection can run on any thread while the
+# other registry's lock is held; one reentrant lock cannot be taken in opposite
+# orders by two threads, so it cannot deadlock.
 _states_lock = RLock()
 
 
