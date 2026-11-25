@@ -30,11 +30,32 @@ Logging remains best effort. Collection, scan, or serialization failures must
 not replace or prevent a prepared terminal result/failure. A batch containing
 only a drop count remains a valid version-1 notification. A construction
 failure may prevent the notification itself from being delivered.
-Early container cancellation discards records awaiting a bound scanner and reports
-them as dropped without waiting for that scan; already finalized records and
-records from unbound collectors remain available. If finalization outlasts the
-deadline after the terminal result is prepared, unfinished records are dropped
-and the prepared result is retained.
+Container cancellation, timeout, and an unexpected client message screen
+queued records instead of discarding them. They first revoke credential reads
+and detach the final fingerprints under the scope's record lock, so a
+concurrent read is either fingerprinted first or fails as expired before its
+document reaches step code. The records are then scanned within the remaining
+invocation budget and a one-second wall-clock limit, off the asynchronous event
+loop; the work budget bounds CPU, not latency, and the terminal event must stay
+inside the host's delivery grace. Records are discarded and counted only when
+another thread is already scanning them (cancellation never waits for that
+scan), when revocation fails, when the scan does not finish within that limit
+(the abandoned scan is stopped), or on runtime shutdown, which does not scan.
+A read cut off by termination never records fingerprints, although its value
+may already sit in a queued record, so the fingerprint set is treated as
+incomplete and every record is dropped when a read is still in flight at
+revocation or, once the invocation is cancelled or timed out, when any read
+failed. A read still in flight at normal scope teardown has the same effect.
+
+Each invocation commits exactly one terminal event. Every terminal path claims
+it through one gate, and a result or handled failure prepared before the claim
+is delivered instead of the cancellation or timeout failure. A step outcome
+that arrives after another path claimed the terminal event is discarded, and
+that step leaves log finalization to the claiming path. Fingerprints are
+detached from the scope once; scope teardown and cancellation share that
+detached scanner, and a closed scope without one fails closed. If
+finalization outlasts the deadline after the terminal result is prepared,
+unfinished records are dropped and the prepared result is retained.
 
 ## Security boundary
 
@@ -58,9 +79,19 @@ repeated forced GC found no lost live state; registries returned to baseline.
 The automated cyclic-GC regression also passed on Python 3.12.13, 3.13.15,
 and stable 3.14.0 without reproducing the claimed collision.
 Delayed cyclic collection alone does not establish address reuse before
-finalization. Keep the registries unchanged without a reproducible defect;
-test cleanup and contain logging faults independently. This check does not
-certify every supported interpreter or timing interleaving.
+finalization. Keep the registries' id-keyed ownership unchanged without a
+reproducible collision; test cleanup and contain logging faults independently.
+This check does not certify every supported interpreter or timing interleaving.
+
+Two other cleanup defects were reproduced and fixed. The toolbox and
+credential-callback registries had separate locks, and garbage collection can
+run either registry's weakref finalizer on any thread while the other lock is
+held, so concurrent invocations deadlocked under churn; both registries now
+share one reentrant lock. The asynchronous runtime's gRPC done callback held
+the invocation's provider strongly, and grpc.aio keeps that callback reachable
+after the RPC, so every invocation's provider and log state stayed alive; the
+callback now holds the provider weakly. Each fix has a regression test that
+fails without it.
 
 ## Compatibility
 

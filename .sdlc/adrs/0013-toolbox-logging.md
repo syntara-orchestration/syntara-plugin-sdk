@@ -19,8 +19,9 @@ scrubber when rendering records to stderr.
 
 The container runtime sends at most one nonempty or drop-count-bearing batch
 on Execute immediately before the terminal result or handled failure, without
-waiting for acknowledgment. Cancellation flushes records already collected when
-the server can send a terminal failure; disconnect, a crash, or a stuck process
+waiting for acknowledgment. Cancellation flushes records already collected,
+after [ADR 0016](0016-credential-safe-toolbox-logs.md) screening, when the
+server can send a terminal failure; disconnect, a crash, or a stuck process
 may prevent delivery. Batch construction failures must not prevent a prepared
 terminal outcome from being sent. The local runner renders the same events on stderr.
 Credential reads remain exclusively on their separate callback surface.
