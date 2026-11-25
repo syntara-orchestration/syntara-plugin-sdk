@@ -11,6 +11,7 @@ from syntara_plugin.runtime import (
     CONTAINER_ABI,
     ContainerClient,
     ContainerInvocation,
+    ContainerLogBatch,
     ContainerRemoteError,
     ContainerResult,
     FailureCode,
@@ -26,12 +27,33 @@ ERROR_RESULT = {"category": "dependency", "code": "DEPENDENCY_FAILED", "message"
 
 def test_generated_protocol_package_matches_container_abi() -> None:
     assert CONTAINER_ABI == "syntara.container/v1alpha2"
-    assert container_pb2.DESCRIPTOR.package == CONTAINER_ABI.replace("/", ".")
+    # Keep the RPC route stable so v1alpha1 clients can call Health and reject
+    # the v1alpha2 runtime ABI before attempting an Execute call.
+    assert container_pb2.DESCRIPTOR.package == "syntara.container.v1alpha1"
     execute = container_pb2.DESCRIPTOR.services_by_name["ContainerService"].methods_by_name["Execute"]
     assert execute.client_streaming
     assert execute.server_streaming
     assert execute.input_type.name == "ExecuteClientMessage"
     assert execute.output_type.name == "ExecuteServerMessage"
+
+
+def test_health_rejects_older_runtime_abi_before_execute() -> None:
+    class OlderRuntimeStub:
+        def Health(self, *_args: Any, **_kwargs: Any) -> Any:
+            return container_pb2.HealthResponse(
+                ready=True,
+                runtime_abi="syntara.container/v1alpha1",
+                step_revision_ids=["github.create-issue.v1"],
+            )
+
+    client = ContainerClient.__new__(ContainerClient)
+    client._stub = OlderRuntimeStub()
+
+    with pytest.raises(ContainerRemoteError) as raised:
+        client.health()
+
+    assert raised.value.source == "protocol"
+    assert raised.value.code is FailureCode.ABI_VIOLATION
 
 
 def test_progress_partial_result_requires_bounded_canonical_data() -> None:
@@ -280,12 +302,70 @@ def test_unhandled_step_exception_never_exposes_its_message(
     runtime: tuple[ContainerClient, container_pb2_grpc.ContainerServiceStub, dict[str, Any]],
 ) -> None:
     client, _stub, _calls = runtime
+    log_batches: list[ContainerLogBatch] = []
 
     with pytest.raises(ContainerRemoteError) as raised:
-        client.execute(_invocation("github.unsafe-failure.v1"))
+        for event in client.stream(_invocation("github.unsafe-failure.v1")):
+            if isinstance(event, ContainerLogBatch):
+                log_batches.append(event)
 
     assert raised.value.code is FailureCode.OUTCOME_UNKNOWN
     assert "plaintext-value" not in str(raised.value)
+    records = [record for batch in log_batches for record in batch.records]
+    diagnostic = next(record for record in records if record.event_name == "runtime.unexpected_failure")
+    assert diagnostic.attributes["exception_type"] == "RuntimeError"
+    assert "unsafe_failure" in diagnostic.attributes["traceback_frames"]
+    assert "plaintext-value" not in str(diagnostic.attributes)
+
+
+def test_client_rejects_non_increasing_progress_sequences() -> None:
+    class FakeCall:
+        def __iter__(self) -> Any:
+            return iter(
+                [
+                    container_pb2.ExecuteServerMessage(
+                        event=container_pb2.ExecutionEvent(
+                            invocation_id="invocation-1",
+                            progress=container_pb2.Progress(sequence=3, state="progress"),
+                        )
+                    ),
+                    container_pb2.ExecuteServerMessage(
+                        event=container_pb2.ExecutionEvent(
+                            invocation_id="invocation-1",
+                            progress=container_pb2.Progress(sequence=2, state="heartbeat"),
+                        )
+                    ),
+                    container_pb2.ExecuteServerMessage(
+                        event=container_pb2.ExecutionEvent(
+                            invocation_id="invocation-1",
+                            result=container_pb2.Result(
+                                output_schema_digest=OUTPUT_SCHEMA_DIGEST,
+                                output_json=b"{}",
+                            ),
+                        )
+                    ),
+                ]
+            )
+
+        def cancel(self) -> None:
+            return None
+
+    class FakeStub:
+        def Execute(self, *_args: Any, **_kwargs: Any) -> FakeCall:
+            return FakeCall()
+
+    client = ContainerClient.__new__(ContainerClient)
+    client._stub = FakeStub()
+    observed_sequences: list[int] = []
+
+    with pytest.raises(ContainerRemoteError) as raised:
+        for event in client.stream(_invocation("github.create-issue.v1")):
+            if hasattr(event, "sequence"):
+                observed_sequences.append(event.sequence)
+
+    assert observed_sequences == [3]
+    assert raised.value.source == "protocol"
+    assert raised.value.code is FailureCode.ABI_VIOLATION
 
 
 def test_normalized_transport_error_does_not_retain_the_rpc_exception() -> None:

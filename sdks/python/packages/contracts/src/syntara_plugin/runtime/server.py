@@ -37,6 +37,7 @@ from .container import (
     StepRegistry,
     _close_partial_result_reporter,
     _log_notification,
+    _log_unexpected_runtime_failure,
     _new_partial_result_reporter,
     _PartialResultReporter,
     failure_event,
@@ -358,7 +359,8 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ))
         except ContainerInvocationError as error:
             event = failure_event(invocation.invocation_id, error)
-        except Exception:
+        except Exception as error:
+            _log_unexpected_runtime_failure(provider, error)
             event = failure_event(invocation.invocation_id, ContainerInvocationError(
                 FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
             ))

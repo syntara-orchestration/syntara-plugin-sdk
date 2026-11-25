@@ -284,8 +284,10 @@ runtime context; credentials are supplied only when the step requests them.
 The client allows up to five additional seconds to receive the final result or
 failure message. This does not extend the step's execution timeout; see
 [Execution timeouts](runtime-and-oci.md#execution-timeouts).
-The identifier alone cannot distinguish the earlier unary `v1alpha1` protocol;
-the client and workload must both implement the current callback protocol.
+The current `v1alpha2` identifier distinguishes this protocol from earlier
+`v1alpha1` peers before `Execute`; those earlier peers may share an identifier
+despite differing Execute protocols. The client and workload must both
+implement the current callback protocol.
 
 ### Source mode (default)
 

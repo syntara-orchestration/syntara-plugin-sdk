@@ -67,6 +67,10 @@ This is an in-place breaking protocol change under the existing `v1alpha1`
 identifier. Earlier `v1alpha1` peers are incompatible; the Health ABI value
 does not distinguish them. Old images must be rebuilt and the Execution Plane
 must implement the matching stream and per-attempt name-to-credential mapping.
+That limitation applies to peers using the `v1alpha1` identifier. The later
+`v1alpha2` ABI advances the Health identifier while preserving the protobuf
+route so older clients can detect the mismatch; see
+[ADR 0015](0015-partial-result-progress.md).
 The SDK does not call the credential authority or perform that mapping itself.
 Callers using `ContainerClient` provide a context-aware resolver and own its
 concurrency policy. The Execution Plane and local runner should apply their

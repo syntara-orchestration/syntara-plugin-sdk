@@ -12,6 +12,7 @@ import json
 import os
 import re
 import signal
+import traceback
 from _thread import LockType
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -494,6 +495,25 @@ def _queue_sync_log(provider: CallbackCredentialProvider, invocation_id: str, ou
         outgoing.put(message)
 
 
+def _log_unexpected_runtime_failure(
+    provider: CallbackCredentialProvider, error: Exception
+) -> None:
+    """Log bounded stack frames without exception text or local values."""
+
+    frames = traceback.extract_tb(error.__traceback__, limit=16)
+    frame_summary = " <- ".join(
+        f"{re.sub(r'[^A-Za-z0-9_.<>-]', '_', frame.name)[:64]}:{frame.lineno}"
+        for frame in frames
+    )[-2048:]
+    exception_name = re.sub(r"[^A-Za-z0-9_.]", "_", type(error).__name__)[:128]
+    provider._public_toolbox.log(
+        "ERROR",
+        "The step raised an unexpected runtime exception.",
+        {"exception_type": exception_name or "Exception", "traceback_frames": frame_summary},
+        event_name="runtime.unexpected_failure",
+    )
+
+
 def _encode_partial_result(value: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
     """Snapshot and canonically encode one bounded partial-result data object."""
 
@@ -533,7 +553,9 @@ class _PartialResultReporter:
         """Attach the installed output-schema check before step execution."""
 
         with self._lock:
-            if self._closed or self._sequence:
+            if self._closed:
+                return
+            if self._sequence:
                 raise RuntimeError("partial-result validation must be configured before reporting")
             self._validator = validator
 
@@ -643,7 +665,8 @@ def _run_sync_step(
         ))
     except ContainerInvocationError as error:
         event = failure_event(invocation.invocation_id, error)
-    except Exception:
+    except Exception as error:
+        _log_unexpected_runtime_failure(provider, error)
         event = failure_event(invocation.invocation_id, ContainerInvocationError(
             FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
         ))
@@ -1312,8 +1335,8 @@ class ContainerClient:
     def health(self, *, timeout_seconds: float | None = None) -> tuple[str, ...]:
         """Check the ABI identifier and return the advertised step type identities.
 
-        Matching identifiers do not distinguish the earlier unary Execute
-        protocol from the current bidirectional v1alpha1 protocol.
+        The protobuf package path stays at v1alpha1 for route compatibility;
+        this client requires the v1alpha2 ``runtime_abi`` value before Execute.
         """
 
         return self.health_report(timeout_seconds=timeout_seconds).step_revision_ids
@@ -1431,6 +1454,7 @@ class ContainerClient:
                 add_done_callback(lambda: bridge.close(cancelled=bridge.has_pending))
             saw_log_batch = False
             saw_last_partial_result = False
+            last_progress_sequence = 0
             for message in call:
                 if message.WhichOneof("message") == "log_batch":
                     log_batch = self._read_log_batch(
@@ -1447,6 +1471,10 @@ class ContainerClient:
                     message, bridge, invocation.invocation_id, saw_terminal
                 )
                 if event is not None:
+                    if isinstance(event, ContainerProgress):
+                        if event.sequence <= last_progress_sequence:
+                            raise _protocol_error()
+                        last_progress_sequence = event.sequence
                     if isinstance(event, ContainerProgress) and event.partial_result is not None:
                         if saw_last_partial_result:
                             raise _protocol_error()

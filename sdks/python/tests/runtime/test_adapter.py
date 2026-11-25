@@ -585,6 +585,42 @@ def test_conditional_output_schema_requires_its_discriminator_for_branch_fields(
         validator({"message": "ready"})
 
 
+def test_conditional_partial_schema_checks_branch_values_without_closed_objects() -> None:
+    validator = _partial_result_validator(
+        {
+            "type": "object",
+            "if": {
+                "required": ["kind"],
+                "properties": {"kind": {"const": "message"}},
+            },
+            "then": {
+                "required": ["kind", "message"],
+                "properties": {
+                    "kind": {"const": "message"},
+                    "message": {"type": "string"},
+                },
+            },
+            "else": {
+                "required": ["kind", "count"],
+                "properties": {
+                    "kind": {"const": "count"},
+                    "count": {"type": "integer"},
+                },
+            },
+        }
+    )
+
+    validator({})
+    validator({"kind": "message", "message": "ready"})
+    validator({"kind": "count", "count": 2})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"message": 42})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"message": "ready"})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"count": "two"})
+
+
 def test_step_cannot_report_partial_data_incompatible_with_output_schema() -> None:
     handler = container_step_for_installed_manifest(
         InvalidPartialResultStep(),
@@ -630,6 +666,20 @@ def test_partial_result_validates_and_emits_the_same_json_snapshot() -> None:
     assert json.loads(emitted[0].progress.partial_result.data_json) == {
         "status": "running"
     }
+
+
+def test_closed_partial_reporter_ignores_late_validator_configuration() -> None:
+    emitted: list[Any] = []
+    reporter = _new_partial_result_reporter(
+        "invocation-1",
+        lambda event: emitted.append(event),
+    )
+    reporter.close()
+
+    reporter.set_validator(lambda _snapshot: None)
+    reporter({"status": "running"})
+
+    assert emitted == []
 
 
 def test_container_handler_uses_the_public_runtime_invoke(monkeypatch: pytest.MonkeyPatch) -> None:

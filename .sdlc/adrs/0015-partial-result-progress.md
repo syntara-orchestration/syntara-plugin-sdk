@@ -36,8 +36,11 @@ callback envelope.
 The container ABI advances to `syntara.container/v1alpha2`. The partial-result
 structure requires host support to expose its contents and final-update marker,
 so the ABI version makes support explicit and requires the host and workload
-to upgrade together. Local SDK progress callbacks recursively scrub known input
-and credential values from the structured data.
+to upgrade together. Keep the protobuf service package path at
+`syntara.container.v1alpha1` so older clients can call `Health` and reject the
+new ABI before `Execute`; `runtime_abi` is the authoritative compatibility
+check. Local SDK progress callbacks recursively scrub known input and
+credential values from the structured data.
 
 ## Consequences
 

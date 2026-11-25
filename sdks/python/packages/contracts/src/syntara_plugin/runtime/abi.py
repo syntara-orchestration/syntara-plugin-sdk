@@ -18,8 +18,9 @@ from .outcome import MAX_MESSAGE_LENGTH
 
 # ABI means Application Binary Interface. In this package an ABI value is a
 # identifier for a language-neutral runtime protocol, not the OCI image
-# architecture. Health compares this value but cannot distinguish the earlier
-# unary Execute protocol from the current bidirectional v1alpha1 protocol.
+# architecture. Health compares this value exactly. The stable protobuf route
+# lets v1alpha1 clients reach Health and reject this v1alpha2 runtime before
+# Execute.
 CONTAINER_ABI = "syntara.container/v1alpha2"
 PROVIDER_ABI = "syntara.provider/v1alpha1"
 

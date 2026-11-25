@@ -1910,6 +1910,7 @@ def test_report_labels_are_bold_only_on_an_interactive_terminal(
     main(arguments)
     assert "\033[1m" not in capsys.readouterr().out
 
+    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     main(arguments)
     bolded = capsys.readouterr().out

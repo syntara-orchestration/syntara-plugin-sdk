@@ -110,15 +110,16 @@ The JSON Schemas are the normative durable artifact and work-item contracts.
 The protobuf defines the `syntara.container/v1alpha2` in-container ABI. Its
 progress stream supports bounded structured partial-result snapshots with a
 final-update marker; these non-terminal updates do not satisfy or replace the
-step's declared output. An invocation is a bidirectional stream. After the
-start message, the workload may request a declared CredentialRecipe ID. The
-host resolves it within the current attempt and returns a bounded JSON object
-in a dedicated sensitive response; credential values never appear in business
-events, inputs, or runtime context. Requests and responses are correlated by
-invocation and request IDs. The host must authenticate the workload and provide
-transport confidentiality (mutual TLS in production). The `v1alpha2` ABI is
-incompatible with `v1alpha1` peers; clients and workloads require an exact ABI
-match. See
+step's declared output. The protobuf package path remains
+`syntara.container.v1alpha1` so earlier clients can call `Health`; the
+`runtime_abi` value is authoritative and clients require an exact match before
+execution. An invocation is a bidirectional stream. After the start message,
+the workload may request a declared CredentialRecipe ID. The host resolves it
+within the current attempt and returns a bounded JSON object in a dedicated
+sensitive response; credential values never appear in business events, inputs,
+or runtime context. Requests and responses are correlated by invocation and
+request IDs. The host must authenticate the workload and provide transport
+confidentiality (mutual TLS in production). See
 [ADR 0011](../.sdlc/adrs/0011-credential-callback.md).
 
 `runtime.schema.json` defines the canonical `StandardOutputWrapper` JSON shape
@@ -231,7 +232,8 @@ before its terminal outcome. The [protobuf](proto/syntara_plugin/runtime/protoco
 defines its event fields, allowed values, bounds, and overflow behavior. The
 batch is one-way, separate from credential responses, and requires no
 acknowledgment. Peers that reject unknown server messages must be updated before
-workloads use logging; Health does not distinguish this addition under the
-existing ABI identifier. Host consumers receive validated batches as
+workloads use logging. The `v1alpha2` Health identifier distinguishes this ABI
+from earlier `v1alpha1` peers, though those legacy peers cannot detect the log
+addition when they share that identifier. Host consumers receive validated batches as
 `ContainerLogBatch` events from `ContainerClient.stream()`, alongside progress
 and the terminal result. See [ADR 0013](../.sdlc/adrs/0013-toolbox-logging.md).

@@ -138,6 +138,116 @@ def _resolve_local_schema(root_schema: Mapping[str, Any], reference: str) -> Any
     return current
 
 
+def _conditional_schema_members(
+    schema: Any,
+    root_schema: Mapping[str, Any],
+    seen_references: frozenset[str] = frozenset(),
+) -> set[str]:
+    """Collect the object members a conditional schema uses at this level."""
+
+    if not isinstance(schema, Mapping):
+        return set()
+    reference = schema.get("$ref")
+    if isinstance(reference, str) and reference not in seen_references:
+        target = _resolve_local_schema(root_schema, reference)
+        if isinstance(target, Mapping):
+            return _conditional_schema_members(
+                target, root_schema, seen_references | {reference}
+            ) | _conditional_schema_members(
+                {key: value for key, value in schema.items() if key != "$ref"},
+                root_schema,
+                seen_references,
+            )
+    members = {
+        name for name in schema.get("required", []) if isinstance(name, str)
+    }
+    properties = schema.get("properties")
+    if isinstance(properties, Mapping):
+        members.update(name for name in properties if isinstance(name, str))
+    for keyword in ("allOf", "anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if isinstance(branches, list):
+            for branch in branches:
+                members.update(
+                    _conditional_schema_members(branch, root_schema, seen_references)
+                )
+    return members
+
+
+def _conditional_property_schemas(
+    schema: Any,
+    root_schema: Mapping[str, Any],
+    seen_references: frozenset[str] = frozenset(),
+) -> dict[str, list[Any]]:
+    """Collect same-level property declarations from conditional branches."""
+
+    if not isinstance(schema, Mapping):
+        return {}
+    reference = schema.get("$ref")
+    if isinstance(reference, str) and reference not in seen_references:
+        target = _resolve_local_schema(root_schema, reference)
+        if isinstance(target, Mapping):
+            properties = _conditional_property_schemas(
+                target, root_schema, seen_references | {reference}
+            )
+            siblings = {
+                key: value for key, value in schema.items() if key != "$ref"
+            }
+            for name, values in _conditional_property_schemas(
+                siblings, root_schema, seen_references
+            ).items():
+                properties.setdefault(name, []).extend(values)
+            return properties
+    properties: dict[str, list[Any]] = {}
+    declared = schema.get("properties")
+    if isinstance(declared, Mapping):
+        properties.update({name: [subschema] for name, subschema in declared.items()})
+    for keyword in ("allOf", "anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if isinstance(branches, list):
+            for branch in branches:
+                for name, values in _conditional_property_schemas(
+                    branch, root_schema, seen_references
+                ).items():
+                    properties.setdefault(name, []).extend(values)
+    return properties
+
+
+def _conditional_partial_guard(
+    schema: Mapping[str, Any], root_schema: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Require a selector when a partial object supplies branch-specific fields."""
+
+    condition = schema.get("if")
+    then_schema = schema.get("then")
+    else_schema = schema.get("else")
+    if not isinstance(condition, Mapping) or not (
+        isinstance(then_schema, Mapping) or isinstance(else_schema, Mapping)
+    ):
+        return None
+    selectors = _conditional_schema_members(condition, root_schema)
+    if not selectors:
+        return None
+    then_members = _conditional_schema_members(then_schema, root_schema)
+    else_members = _conditional_schema_members(else_schema, root_schema)
+    branch_members = then_members ^ else_members
+    then_properties = _conditional_property_schemas(then_schema, root_schema)
+    else_properties = _conditional_property_schemas(else_schema, root_schema)
+    for name in then_members & else_members:
+        if then_properties.get(name, []) != else_properties.get(name, []):
+            branch_members.add(name)
+    branch_members.difference_update(selectors)
+    if not branch_members:
+        return None
+    branch_field_present = {
+        "not": {
+            "anyOf": [{"required": [name]} for name in sorted(branch_members)]
+        }
+    }
+    selector_present = {"required": sorted(selectors)}
+    return {"anyOf": [branch_field_present, selector_present]}
+
+
 def _partial_schema(
     schema: Any,
     root_schema: Mapping[str, Any] | None = None,
@@ -257,6 +367,11 @@ def _partial_schema(
             partial[keyword] = value
         else:
             partial[keyword] = value
+    conditional_guard = _conditional_partial_guard(schema, root)
+    if conditional_guard is not None:
+        constraints = partial.setdefault("allOf", [])
+        if isinstance(constraints, list):
+            constraints.append(conditional_guard)
     return partial
 
 

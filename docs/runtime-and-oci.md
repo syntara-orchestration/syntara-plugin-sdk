@@ -334,10 +334,12 @@ is defined in
 and identified as `syntara.container/v1alpha2`.
 
 The `Result` protobuf uses the structured error-result fields defined by this
-release. The `v1alpha2` ABI extends the bidirectional `v1alpha1` protocol with
-optional structured partial-result progress data. It is incompatible with `v1alpha1`
-peers, so the host and workload must be updated together. Health reports the
-ABI and the client requires an exact match before execution.
+release. The `v1alpha2` ABI extends the bidirectional `v1alpha1` wire protocol
+with optional structured partial-result progress data. The protobuf package
+path stays at `syntara.container.v1alpha1` so older clients can call `Health`;
+the `runtime_abi` value is authoritative. A client requires an exact match
+before execution, so a v1alpha1 client can detect and reject a v1alpha2 workload
+before sending `Execute`.
 
 Final workload images, rather than a reusable SDK base layer, are the OCI
 artifacts published for deployment. They must record their immutable

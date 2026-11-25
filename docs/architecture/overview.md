@@ -240,8 +240,10 @@ attributes.
   EP revision does not supply resolved execution data, so the test generates a
   fixture from the compiled registration. A test-only bridge in the workload
   accepts plaintext on loopback and connects to the SDK runtime's mTLS
-  listener. `Health` cannot distinguish older incompatible peers that share the
-  `v1alpha1` identifier.
+  listener. The current `v1alpha2` identifier distinguishes this protocol from
+  older `v1alpha1` peers. Those legacy peers may share an identifier despite
+  differing Execute protocols, so one legacy peer cannot detect that mismatch
+  through `Health`.
 - This repository does not establish the Syntara-to-EP transport or the Execution
   Plane's Kubernetes port-forward and certificate provisioning. A production
   integration must verify authenticated, integrity-protected Syntara-to-EP commands,
