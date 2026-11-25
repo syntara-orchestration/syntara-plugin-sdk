@@ -435,7 +435,14 @@ def test_sync_shutdown_prevents_worker_start_after_startup_pause(monkeypatch: An
     )
     terminal_lock = runtime_container.Lock()
     service._register_invocation(
-        invocation.invocation_id, invocation.cancellation, provider, outgoing, terminal_lock
+        invocation.invocation_id,
+        invocation.cancellation,
+        provider,
+        outgoing,
+        terminal_lock,
+        runtime_container._new_partial_result_reporter(
+            invocation.invocation_id, lambda _event: None
+        ),
     )
 
     startup_paused = Event()

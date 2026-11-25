@@ -40,6 +40,7 @@ from syntara_plugin.runtime.container import (
     ContainerClient,
     ContainerInvocation,
     ContainerLogBatch,
+    ContainerPartialResult,
     ContainerProgress,
     ContainerRemoteError,
     ContainerResult,
@@ -1780,7 +1781,7 @@ def _execute_over_channel(execution: _ChannelExecution) -> RunReport:
     terminal = _consume(
         client,
         invocation,
-        _scrubbing_progress(execution.on_progress, secrets),
+        _scrubbing_progress(execution.on_progress, secrets, scalars),
         _credential_reader(execution.credentials),
         execution.diagnostic_stream or sys.stderr,
         secrets=secrets,
@@ -1925,9 +1926,11 @@ def _health(
 
 
 def _scrubbing_progress(
-    on_progress: ProgressCallback | None, secrets: tuple[str, ...]
+    on_progress: ProgressCallback | None,
+    secrets: tuple[str, ...],
+    scalars: tuple[Any, ...] = (),
 ) -> ProgressCallback | None:
-    """Wrap the progress callback so step type messages are scrubbed of secrets."""
+    """Wrap progress callbacks so text and structured partial results are scrubbed."""
 
     if on_progress is None:
         return None
@@ -1940,6 +1943,14 @@ def _scrubbing_progress(
                 state=event.state,
                 message=_scrub_text(event.message, secrets),
                 percent=event.percent,
+                partial_result=(
+                    ContainerPartialResult(
+                        is_last=event.partial_result.is_last,
+                        data=_scrub_structure(event.partial_result.data, secrets, scalars),
+                    )
+                    if event.partial_result is not None
+                    else None
+                ),
             )
         )
 

@@ -7,7 +7,7 @@
     "invocationId": "invoke-1",
     "stepRevisionId": "step-1",
     "pluginDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "runtimeAbi": "syntara.container/v1alpha1",
+    "runtimeAbi": "syntara.container/v1alpha2",
     "imageDigest": "registry.example/runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "integrationHandle": "integration-1",
     "inputs": {
@@ -24,7 +24,7 @@
     "capabilityGrantId": "grant-1",
     "executionPolicyId": "policy-1",
     "timeoutSeconds": 300,
-    "requestHash": "sha256:96fce038f27e7f64ca34fdb4bb76bb97540b7fad6cb68398865d2feea496555e"
+    "requestHash": "sha256:bd0ab037fcf603a3c1422a0d3ffb7b1c3d961dff157a90b0967f28bd90df3ab8"
   },
   "policySnapshot": {
     "apiVersion": "syntara.io/v1alpha1",
@@ -32,6 +32,6 @@
     "policyId": "policy-1",
     "revision": "revision-1",
     "effectiveCapabilities": [],
-    "requestHash": "sha256:96fce038f27e7f64ca34fdb4bb76bb97540b7fad6cb68398865d2feea496555e"
+    "requestHash": "sha256:bd0ab037fcf603a3c1422a0d3ffb7b1c3d961dff157a90b0967f28bd90df3ab8"
   }
 }

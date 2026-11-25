@@ -18,6 +18,7 @@ Choose the guide that matches what you are doing.
 | Prepare or approve a Python package release | [Release guide](releasing.md) |
 | Understand the OCI artifact and container ABI boundaries | [Runtime and OCI model](runtime-and-oci.md) |
 | Understand the current SDK architecture and review boundaries | [Architecture overview](architecture/overview.md) |
+| Understand the partial-result progress event design | [Partial-result progress events](partial-result-progress.md) |
 
 ## Normative sources
 
@@ -47,5 +48,6 @@ Design records live in [`../.sdlc/adrs`](../.sdlc/adrs):
 - [Caller-owned runtime context](../.sdlc/adrs/0013-caller-runtime-context.md)
 - [Terminal structured Toolbox logs](../.sdlc/adrs/0013-toolbox-logging.md)
 - [Language-neutral custom-runner entry points](../.sdlc/adrs/0014-language-neutral-entry-points.md)
+- [Partial-result progress data](../.sdlc/adrs/0015-partial-result-progress.md)
 
 - [Credential authenticate and test extension proposal v1](../.sdlc/proposals/credential-authenticate-test-v1.md)

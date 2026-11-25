@@ -32,11 +32,12 @@ class ContainerServiceStub(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    Health checks the ABI and step revision before Execute. This bidirectional
-    Execute replaces the earlier unary-request protocol under the same ABI
-    identifier; Health alone cannot distinguish them. Both peers must implement
-    this contract. The transport must authenticate both peers and protect
-    confidentiality (mTLS in production).
+    The protobuf package path remains stable so clients built against earlier
+    ABIs can call Health and read the exact runtime_abi before Execute. The
+    runtime_abi value is authoritative: v1alpha2 extends the bidirectional
+    v1alpha1 wire protocol with structured partial-result progress data, and
+    peers must match it exactly. The transport must authenticate both peers and
+    protect confidentiality (mTLS in production).
     """
 
     def __init__(self, channel):
@@ -69,11 +70,12 @@ class ContainerServiceServicer(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    Health checks the ABI and step revision before Execute. This bidirectional
-    Execute replaces the earlier unary-request protocol under the same ABI
-    identifier; Health alone cannot distinguish them. Both peers must implement
-    this contract. The transport must authenticate both peers and protect
-    confidentiality (mTLS in production).
+    The protobuf package path remains stable so clients built against earlier
+    ABIs can call Health and read the exact runtime_abi before Execute. The
+    runtime_abi value is authoritative: v1alpha2 extends the bidirectional
+    v1alpha1 wire protocol with structured partial-result progress data, and
+    peers must match it exactly. The transport must authenticate both peers and
+    protect confidentiality (mTLS in production).
     """
 
     def Execute(self, request_iterator, context):
@@ -127,11 +129,12 @@ class ContainerService(object):
     operating-system compatibility. A workload in any language may participate
     if it implements this service and the message semantics below.
 
-    Health checks the ABI and step revision before Execute. This bidirectional
-    Execute replaces the earlier unary-request protocol under the same ABI
-    identifier; Health alone cannot distinguish them. Both peers must implement
-    this contract. The transport must authenticate both peers and protect
-    confidentiality (mTLS in production).
+    The protobuf package path remains stable so clients built against earlier
+    ABIs can call Health and read the exact runtime_abi before Execute. The
+    runtime_abi value is authoritative: v1alpha2 extends the bidirectional
+    v1alpha1 wire protocol with structured partial-result progress data, and
+    peers must match it exactly. The transport must authenticate both peers and
+    protect confidentiality (mTLS in production).
     """
 
     @staticmethod

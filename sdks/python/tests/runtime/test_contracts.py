@@ -91,7 +91,7 @@ def test_malicious_runtime_and_provider_fixtures_are_rejected() -> None:
     assert not harness.validate_runtime(item).valid
 
     unsupported_work_item = _work_item()
-    unsupported_work_item["runtimeAbi"] = "syntara.container/v1alpha2"
+    unsupported_work_item["runtimeAbi"] = "syntara.container/v1alpha1"
     assert not harness.validate_runtime(unsupported_work_item).valid
 
     provider = _provider_request()
@@ -192,6 +192,38 @@ def test_container_result_envelope_fixtures_conform() -> None:
             "output": {"issue": 42},
         }
     ).valid
+
+
+def test_partial_result_progress_fixtures_conform() -> None:
+    harness = ConformanceHarness()
+    fixtures = Path(__file__).parents[4] / "contracts" / "fixtures"
+
+    partial_result = json.loads(
+        (fixtures / "runtime-progress-partial-result.valid.json").read_text(encoding="utf-8")
+    )
+    assert harness.validate_runtime(partial_result).valid
+    final_empty = json.loads(
+        (fixtures / "runtime-progress-partial-result-final-empty.valid.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert harness.validate_runtime(final_empty).valid
+    assert harness.validate_runtime(
+        {
+            "apiVersion": "syntara.io/v1alpha1",
+            "kind": "ContainerProgress",
+            "invocationId": "invoke-status-only",
+            "sequence": 1,
+            "state": "progress",
+        }
+    ).valid
+
+    for fixture_name in (
+        "runtime-progress-partial-result-on-heartbeat.invalid.json",
+        "runtime-progress-partial-result-missing-data.invalid.json",
+    ):
+        document = json.loads((fixtures / fixture_name).read_text(encoding="utf-8"))
+        assert not harness.validate_runtime(document).valid
 
 
 def test_container_result_envelope_rejects_invalid_payload_shapes() -> None:

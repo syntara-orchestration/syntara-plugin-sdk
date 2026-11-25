@@ -35,7 +35,11 @@ from .container import (
     ContainerResult,
     ContainerStepHandler,
     StepRegistry,
+    _close_partial_result_reporter,
     _log_notification,
+    _log_unexpected_runtime_failure,
+    _new_partial_result_reporter,
+    _PartialResultReporter,
     failure_event,
     invocation_from_request,
     terminal_execution_event,
@@ -196,7 +200,10 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             raise ValueError("max_concurrent_steps must be positive")
         self._steps = steps
         self._runtime_components = tuple(dict(item) for item in runtime_components)
-        self._active: dict[str, tuple[Event, CallbackCredentialProvider, asyncio.Queue[Any]]] = {}
+        self._active: dict[
+            str,
+            tuple[Event, CallbackCredentialProvider, asyncio.Queue[Any], _PartialResultReporter],
+        ] = {}
         self._step_executor = _DaemonStepWorkerPool(max_concurrent_steps)
         self._step_slots = BoundedSemaphore(max_concurrent_steps)
         self._shutdown = False
@@ -250,11 +257,29 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         )
         session.provider = provider
         object.__setattr__(invocation, "credential_provider", provider)
+
+        def send_partial_result(event: container_pb2.ExecutionEvent) -> None:
+            try:
+                loop.call_soon_threadsafe(
+                    session.outgoing.put_nowait,
+                    container_pb2.ExecuteServerMessage(event=event),
+                )
+            except RuntimeError:
+                # The stream may have ended while a handler was still running.
+                # Reporting is best-effort and never waits for host delivery.
+                pass
+
+        partial_result_reporter = _new_partial_result_reporter(
+            session.invocation_id, send_partial_result
+        )
+        object.__setattr__(invocation, "_partial_result_reporter", partial_result_reporter)
         self._register_invocation(
-            session.invocation_id, cancellation, provider, session.outgoing
+            session.invocation_id, cancellation, provider, session.outgoing,
+            partial_result_reporter,
         )
 
         def close() -> None:
+            partial_result_reporter.close()
             invocation.cancellation.set()
             provider.close()
 
@@ -302,6 +327,8 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         try:
             async for message in requests:
                 if message.WhichOneof("message") != "credential_response":
+                    _close_partial_result_reporter(invocation)
+                    await asyncio.sleep(0)
                     invocation.cancellation.set()
                     provider.close()
                     AsyncContainerRuntimeService._queue_log(provider, invocation.invocation_id, outgoing)
@@ -332,11 +359,15 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ))
         except ContainerInvocationError as error:
             event = failure_event(invocation.invocation_id, error)
-        except Exception:
+        except Exception as error:
+            _log_unexpected_runtime_failure(provider, error)
             event = failure_event(invocation.invocation_id, ContainerInvocationError(
                 FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
             ))
         finally:
+            _close_partial_result_reporter(invocation)
+            # Flush call_soon_threadsafe progress writes already queued by worker threads.
+            await asyncio.sleep(0)
             provider.close()
         self._queue_log(provider, invocation.invocation_id, outgoing)
         outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
@@ -348,7 +379,9 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         active = self._active.get(request.invocation_id)
         if active is None:
             return container_pb2.CancelResponse(accepted=False)
-        cancellation, provider, outgoing = active
+        cancellation, provider, outgoing, reporter = active
+        reporter.close()
+        await asyncio.sleep(0)
         cancellation.set()
         provider.close()
         self._queue_log(provider, request.invocation_id, outgoing)
@@ -365,16 +398,35 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         if self._shutdown:
             return
         self._shutdown = True
-        for invocation_id, (cancellation, provider, outgoing) in self._active.copy().items():
-            cancellation.set()
-            provider.close()
-            self._queue_log(provider, invocation_id, outgoing)
-            outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
-                invocation_id, ContainerInvocationError(
-                    FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-                )
-            )))
-            outgoing.put_nowait(None)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        for invocation_id, (cancellation, provider, outgoing, reporter) in self._active.copy().items():
+            reporter.close()
+
+            def finish(
+                invocation_id: str = invocation_id,
+                cancellation: Event = cancellation,
+                provider: CallbackCredentialProvider = provider,
+                outgoing: asyncio.Queue[Any] = outgoing,
+            ) -> None:
+                cancellation.set()
+                provider.close()
+                self._queue_log(provider, invocation_id, outgoing)
+                outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
+                    invocation_id, ContainerInvocationError(
+                        FailureCode.CANCELLED,
+                        _CANCELLED_STEP_MESSAGE,
+                        outcome="not_completed",
+                    )
+                )))
+                outgoing.put_nowait(None)
+
+            if loop is not None:
+                loop.call_soon(finish)
+            else:
+                finish()
         # Running Python code cannot be stopped safely. Daemon workers keep it
         # bounded without making interpreter shutdown wait for it to return.
         self._step_executor.shutdown(wait=False, cancel_futures=True)
@@ -394,14 +446,21 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ],
         )
 
-    def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: asyncio.Queue[Any]) -> None:
+    def _register_invocation(
+        self,
+        invocation_id: str,
+        cancellation: Event,
+        provider: CallbackCredentialProvider,
+        outgoing: asyncio.Queue[Any],
+        reporter: _PartialResultReporter,
+    ) -> None:
         if invocation_id in self._active:
             raise ContainerInvocationError(
                 FailureCode.CONFLICT,
                 "The step is already running.",
                 outcome="not_started",
             )
-        self._active[invocation_id] = (cancellation, provider, outgoing)
+        self._active[invocation_id] = (cancellation, provider, outgoing, reporter)
 
     def _unregister_invocation(self, invocation_id: str, cancellation: Event) -> None:
         active = self._active.get(invocation_id)

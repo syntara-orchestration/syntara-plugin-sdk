@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -16,6 +17,7 @@ from syntara_plugin.runtime import (
     ContainerClient,
     ContainerInvocation,
     ContainerInvocationError,
+    ContainerProgress,
     ContainerRemoteError,
     ContainerResult,
     ControlStep,
@@ -37,7 +39,8 @@ from syntara_plugin.runtime import (
     standard_output_from_container_result,
     step_registry_from_bindings,
 )
-from syntara_plugin.runtime.adapter import _container_result
+from syntara_plugin.runtime.adapter import _container_result, _partial_result_validator
+from syntara_plugin.runtime.container import _new_partial_result_reporter
 
 
 class EchoInput(BaseModel):
@@ -51,6 +54,12 @@ class EchoOutput(BaseModel):
     cancelled: bool
 
 
+class PartialResultOutput(BaseModel):
+    job_id: str
+    job_url: str
+    status: str
+
+
 class ActionEchoStep(ActionStep[EchoInput, EchoOutput]):
     def run(self, inputs: EchoInput, context: Any) -> EchoOutput:
         return EchoOutput(
@@ -58,6 +67,35 @@ class ActionEchoStep(ActionStep[EchoInput, EchoOutput]):
             invocation_id=context.invocation_id,
             execution_id=context.runtime_context.get("execution_id", ""),
             cancelled=context.cancelled,
+        )
+
+
+class PartialResultStep(ActionStep[EchoInput, PartialResultOutput]):
+    last_context: Any | None = None
+
+    def run(self, inputs: EchoInput, context: Any) -> PartialResultOutput:
+        self.last_context = context
+        context.report_partial_result(
+            {"job_id": "123", "job_url": "https://aap.example/jobs/123"}
+        )
+        context.report_partial_result(
+            {"job_id": "123", "job_url": "https://aap.example/jobs/123", "status": "running"},
+            is_last=True,
+        )
+        return PartialResultOutput(
+            job_id="123",
+            job_url="https://aap.example/jobs/123",
+            status="complete",
+        )
+
+
+class InvalidPartialResultStep(ActionStep[EchoInput, PartialResultOutput]):
+    def run(self, inputs: EchoInput, context: Any) -> PartialResultOutput:
+        context.report_partial_result({"status": 42})
+        return PartialResultOutput(
+            job_id="123",
+            job_url="https://aap.example/jobs/123",
+            status="complete",
         )
 
 
@@ -280,8 +318,6 @@ def test_container_handler_executes_a_typed_step() -> None:
         "execution_id": "workflow-run-1",
         "cancelled": False,
     }
-
-
 def test_direct_and_container_paths_return_identical_standard_output_wrappers() -> None:
     bindings = StepBindings()
     step = ActionEchoStep()
@@ -311,6 +347,339 @@ def test_direct_and_container_paths_return_identical_standard_output_wrappers() 
     assert container == direct
     assert container.status_code == 0
     assert container.error_result is None
+
+
+def test_step_can_stream_partial_result_snapshots_before_terminal_result() -> None:
+    bindings = StepBindings()
+    step = PartialResultStep()
+    bindings.bind(
+        StepDescriptor.for_installed_step(
+            step,
+            _installed_step(
+                "acme.plugin.partial",
+                _echo_input_schema(),
+                output_schema=_declared(PartialResultOutput.model_json_schema()),
+                step_class=PartialResultStep,
+            ),
+        ),
+        step,
+    )
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    add_container_runtime_service(server, step_registry_from_bindings(bindings))
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    try:
+        events = list(
+            ContainerClient(channel).stream(
+                _invocation("acme.plugin.partial")
+            )
+        )
+    finally:
+        channel.close()
+        server.stop(grace=0).wait()
+
+    assert len(events) == 3
+    first, second, result = events
+    assert isinstance(first, ContainerProgress)
+    assert first.state == "progress"
+    assert first.sequence == 1
+    assert first.partial_result is not None
+    assert first.partial_result.is_last is False
+    assert first.partial_result.data == {
+        "job_id": "123",
+        "job_url": "https://aap.example/jobs/123",
+    }
+    assert isinstance(second, ContainerProgress)
+    assert second.state == "progress"
+    assert second.sequence == 2
+    assert second.partial_result is not None
+    assert second.partial_result.is_last is True
+    assert second.partial_result.data == {
+        "job_id": "123",
+        "job_url": "https://aap.example/jobs/123",
+        "status": "running",
+    }
+    assert isinstance(result, ContainerResult)
+    assert result.output == {
+        "job_id": "123",
+        "job_url": "https://aap.example/jobs/123",
+        "status": "complete",
+    }
+    reporter = step.last_context._partial_result_reporter
+    assert reporter is not None
+    assert reporter._closed
+    step.last_context.report_partial_result({"late": True})
+
+
+def test_partial_result_validator_accepts_object_subsets_and_checks_supplied_values() -> None:
+    validator = _partial_result_validator(
+        _declared(
+            {
+                "type": "object",
+                "required": ["job_id", "details"],
+                "minProperties": 2,
+                "$defs": {
+                    "ArrayItem": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {"id": {"type": "string"}},
+                        "additionalProperties": False,
+                    }
+                },
+                "properties": {
+                    "job_id": {"type": "string"},
+                    "details": {
+                        "type": "object",
+                        "required": ["status", "count"],
+                        "properties": {
+                            "status": {"enum": ["running", "complete"]},
+                            "count": {"type": "integer"},
+                        },
+                        "additionalProperties": False,
+                    },
+                    "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {"$ref": "#/$defs/ArrayItem"},
+                    },
+                },
+                "additionalProperties": False,
+            }
+        )
+    )
+
+    validator({})
+    validator({"details": {"status": "running"}})
+    validator({"job_id": "123", "items": [{"id": "one"}, {"id": "two"}]})
+
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"unexpected": "field"})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"details": {"status": 42}})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"items": [{"id": "one"}]})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"items": [{"id": "one"}, {}]})
+
+
+def test_partial_schema_keeps_scalar_one_of_and_relaxes_object_branch_selection() -> None:
+    scalar_union = _partial_result_validator(
+        {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"const": "running"},
+                    ]
+                }
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        scalar_union({"status": "running"})
+
+    object_union = _partial_result_validator(
+        {
+            "$defs": {
+                "Message": {
+                    "type": "object",
+                    "required": ["kind", "message"],
+                    "properties": {"kind": {"const": "message"}, "message": {"type": "string"}},
+                },
+                "Count": {
+                    "type": "object",
+                    "required": ["kind", "count"],
+                    "properties": {"kind": {"const": "count"}, "count": {"type": "integer"}},
+                },
+            },
+            "oneOf": [
+                {"$ref": "#/$defs/Message"},
+                {"$ref": "#/$defs/Count"},
+            ],
+        }
+    )
+    object_union({})
+    object_union({"kind": "message"})
+
+    size_union = _partial_result_validator(
+        {"oneOf": [{"minProperties": 1}, {"minProperties": 2}]}
+    )
+    size_union({})
+
+
+def test_partial_schema_relaxes_recursive_object_references() -> None:
+    validator = _partial_result_validator(
+        {
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {
+                        "id": {"type": "string"},
+                        "child": {"$ref": "#/$defs/Node"},
+                    },
+                    "additionalProperties": False,
+                }
+            },
+            "$ref": "#/$defs/Node",
+        }
+    )
+
+    validator({"child": {}})
+
+    constrained_child = _partial_result_validator(
+        {
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {"id": {"type": "string"}},
+                }
+            },
+            "type": "object",
+            "properties": {
+                "child": {
+                    "$ref": "#/$defs/Node",
+                    "maxProperties": 1,
+                }
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        constrained_child({"child": {"id": "123", "other": True}})
+
+
+def test_conditional_output_schema_requires_its_discriminator_for_branch_fields() -> None:
+    validator = _partial_result_validator(
+        {
+            "type": "object",
+            "if": {
+                "required": ["kind"],
+                "properties": {"kind": {"const": "message"}},
+            },
+            "then": {
+                "required": ["kind", "message"],
+                "properties": {
+                    "kind": {"const": "message"},
+                    "message": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            "else": {
+                "required": ["kind", "count"],
+                "properties": {
+                    "kind": {"const": "count"},
+                    "count": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+        }
+    )
+
+    validator({})
+    validator({"kind": "message", "message": "ready"})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"message": "ready"})
+
+
+def test_conditional_partial_schema_checks_branch_values_without_closed_objects() -> None:
+    validator = _partial_result_validator(
+        {
+            "type": "object",
+            "if": {
+                "required": ["kind"],
+                "properties": {"kind": {"const": "message"}},
+            },
+            "then": {
+                "required": ["kind", "message"],
+                "properties": {
+                    "kind": {"const": "message"},
+                    "message": {"type": "string"},
+                },
+            },
+            "else": {
+                "required": ["kind", "count"],
+                "properties": {
+                    "kind": {"const": "count"},
+                    "count": {"type": "integer"},
+                },
+            },
+        }
+    )
+
+    validator({})
+    validator({"kind": "message", "message": "ready"})
+    validator({"kind": "count", "count": 2})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"message": 42})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"message": "ready"})
+    with pytest.raises(ValueError, match="incompatible with the output schema"):
+        validator({"count": "two"})
+
+
+def test_step_cannot_report_partial_data_incompatible_with_output_schema() -> None:
+    handler = container_step_for_installed_manifest(
+        InvalidPartialResultStep(),
+        installed_step=_installed_step(
+            "acme.plugin.invalid-partial",
+            _echo_input_schema(),
+            output_schema=_declared(PartialResultOutput.model_json_schema()),
+            step_class=InvalidPartialResultStep,
+        ),
+    )
+    emitted: list[object] = []
+    invocation = _invocation("acme.plugin.invalid-partial")
+    object.__setattr__(
+        invocation,
+        "_partial_result_reporter",
+        _new_partial_result_reporter(
+            invocation.invocation_id,
+            lambda event: emitted.append(event),
+        ),
+    )
+
+    with pytest.raises(ContainerInvocationError):
+        handler(invocation)
+
+    assert emitted == []
+
+
+def test_partial_result_validates_and_emits_the_same_json_snapshot() -> None:
+    source = {"status": "running"}
+    emitted: list[Any] = []
+    reporter = _new_partial_result_reporter(
+        "invocation-1",
+        lambda event: emitted.append(event),
+    )
+
+    def mutate_source_after_validation(snapshot: Mapping[str, Any]) -> None:
+        assert snapshot == {"status": "running"}
+        source["status"] = 42
+
+    reporter.set_validator(mutate_source_after_validation)
+    reporter(source)
+
+    assert json.loads(emitted[0].progress.partial_result.data_json) == {
+        "status": "running"
+    }
+
+
+def test_closed_partial_reporter_ignores_late_validator_configuration() -> None:
+    emitted: list[Any] = []
+    reporter = _new_partial_result_reporter(
+        "invocation-1",
+        lambda event: emitted.append(event),
+    )
+    reporter.close()
+
+    reporter.set_validator(lambda _snapshot: None)
+    reporter({"status": "running"})
+
+    assert emitted == []
 
 
 def test_container_handler_uses_the_public_runtime_invoke(monkeypatch: pytest.MonkeyPatch) -> None:

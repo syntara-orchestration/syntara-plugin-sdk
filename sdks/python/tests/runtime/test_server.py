@@ -186,7 +186,7 @@ def _schema_digests(input_schema: Mapping[str, Any] | None = None) -> dict[str, 
 def write_runtime_config(
     tmp_path: Path,
     *,
-    abi: str = "syntara.container/v1alpha1",
+    abi: str = "syntara.container/v1alpha2",
     adapter: object | None = None,
 ) -> Path:
     document = {
@@ -222,7 +222,7 @@ def resolved_file(tmp_path: Path, step_class: type[BaseStep[EchoInput, EchoOutpu
         "stepIdentity": identities[step_class],
         "runtimeKind": "platform-runner",
         "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
-        "abi": "syntara.container/v1alpha1",
+        "abi": "syntara.container/v1alpha2",
         "schemaDigests": _schema_digests(),
     }]}), encoding="utf-8")
     return path
@@ -277,7 +277,7 @@ async def _service_events(
     request = container_pb2.ExecuteRequest(
         invocation_id=invocation.invocation_id,
         step_revision_id=invocation.step_revision_id,
-        runtime_abi="syntara.container/v1alpha1",
+        runtime_abi="syntara.container/v1alpha2",
         inputs_json=json.dumps({"message": invocation.inputs["message"]}).encode(),
         timeout_seconds=invocation.timeout_seconds,
     )
@@ -289,6 +289,44 @@ async def _service_events(
     if release is not None:
         release.set()
     return events
+
+
+def test_async_runtime_service_streams_partial_results_before_completion() -> None:
+    payload = {"job_id": "123", "job_url": "https://aap.example/jobs/123"}
+    reporters: list[Any] = []
+
+    def handler(invocation: ContainerInvocation) -> ContainerResult:
+        assert invocation._partial_result_reporter is not None
+        reporters.append(invocation._partial_result_reporter)
+        invocation._partial_result_reporter(payload)
+        invocation._partial_result_reporter({**payload, "status": "running"}, True)
+        return ContainerResult(REVISION, output={"completed": True})
+
+    service = AsyncContainerRuntimeService(StepRegistry({"example.step": handler}))
+    invocation = replace(_invocation(), step_revision_id="example.step")
+    try:
+        events = asyncio.run(_service_events(service, invocation))
+    finally:
+        service.shutdown()
+
+    assert len(events) == 3
+    assert events[0].progress.state == "progress"
+    assert events[0].progress.sequence == 1
+    assert events[0].progress.partial_result.is_last is False
+    assert json.loads(events[0].progress.partial_result.data_json) == payload
+    assert events[1].progress.state == "progress"
+    assert events[1].progress.sequence == 2
+    assert events[1].progress.partial_result.is_last is True
+    assert json.loads(events[1].progress.partial_result.data_json) == {
+        **payload,
+        "status": "running",
+    }
+    assert events[2].WhichOneof("event") == "result"
+    assert len(reporters) == 1
+    reporter = reporters[0]
+    assert reporter._closed
+    reporter({"late": True})
+    assert len(events) == 3
 
 
 def _run_openssl(*arguments: str) -> None:
@@ -524,7 +562,7 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
             request = container_pb2.ExecuteRequest(
                 invocation_id=invocation.invocation_id,
                 step_revision_id=invocation.step_revision_id,
-                runtime_abi="syntara.container/v1alpha1",
+                runtime_abi="syntara.container/v1alpha2",
                 inputs_json=json.dumps({"message": "disconnect"}).encode(),
                 timeout_seconds=30,
             )
@@ -583,7 +621,7 @@ def test_async_execute_propagates_unexpected_setup_errors() -> None:
     request = container_pb2.ExecuteRequest(
         invocation_id=invocation.invocation_id,
         step_revision_id=invocation.step_revision_id,
-        runtime_abi="syntara.container/v1alpha1",
+        runtime_abi="syntara.container/v1alpha2",
         inputs_json=json.dumps(invocation.inputs).encode(),
         timeout_seconds=invocation.timeout_seconds,
     )
@@ -1036,7 +1074,7 @@ def _resolved_record(kind: str = "custom-runner") -> dict[str, object]:
         "stepIdentity": "smoke.echo.v1",
         "runtimeKind": kind,
         "entryPoint": f"{__name__}:EchoStep",
-        "abi": "syntara.container/v1alpha1",
+        "abi": "syntara.container/v1alpha2",
         "schemaDigests": _schema_digests(),
     }
 
@@ -1057,7 +1095,7 @@ def _resolved_config(
             "steps": {REVISION: {
                 "stepIdentity": "smoke.echo.v1",
                 "entryPoint": f"{__name__}:EchoStep",
-                "abi": "syntara.container/v1alpha1",
+                "abi": "syntara.container/v1alpha2",
                 "schemaDigests": _schema_digests(),
             }},
         }

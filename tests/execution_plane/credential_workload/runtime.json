@@ -1,5 +1,5 @@
 {
-  "abi": "syntara.container/v1alpha1",
+  "abi": "syntara.container/v1alpha2",
   "adapter": {
     "bindingsFactory": "credential_steps.runtime:create_bindings"
   }

@@ -392,7 +392,7 @@ def test_resolved_execution_schema_is_strict() -> None:
                 "stepIdentity": "acme.plugin.step",
                 "runtimeKind": "platform-runner",
                 "entryPoint": "acme_plugin.steps:CreateIssue",
-                "abi": "syntara.container/v1alpha1",
+                "abi": "syntara.container/v1alpha2",
                 "schemaDigests": {
                     "input": "sha256:" + "a" * 64,
                     "output": "sha256:" + "b" * 64,
@@ -804,7 +804,7 @@ def _resolved_execution(entry_point: str) -> dict[str, Any]:
                 "stepIdentity": "acme.records.normalize-records",
                 "runtimeKind": "custom-runner",
                 "entryPoint": entry_point,
-                "abi": "syntara.container/v1alpha1",
+                "abi": "syntara.container/v1alpha2",
                 "schemaDigests": {"input": f"sha256:{'b' * 64}", "output": f"sha256:{'c' * 64}"},
             }
         ]
@@ -936,7 +936,7 @@ def test_contracts_reject_legacy_images_and_unsafe_asset_paths() -> None:
         "kind": "Action",
         "metadata": _metadata(),
         "spec": {
-            "runtime": {"kind": "platform-runner", "abi": "syntara.container/v1alpha1"},
+            "runtime": {"kind": "platform-runner", "abi": "syntara.container/v1alpha2"},
             "input": {"kind": "asset", "path": "../secret.json"},
             "output": {"kind": "inline", "value": {}},
         },

@@ -1,0 +1,8 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerProgress",
+  "invocationId": "invoke-1",
+  "sequence": 1,
+  "state": "heartbeat",
+  "partialResult": {"isLast": false, "data": {"job_id": "123"}}
+}

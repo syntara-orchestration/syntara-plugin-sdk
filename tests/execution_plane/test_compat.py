@@ -55,8 +55,13 @@ class CompatWorkloadCredentialResolver(WorkloadCredentialResolver):
         work_item_id: uuid.UUID,
         attempt_id: str,
         step_revision_id: str,
+        runtime_context: Mapping[str, object],
     ) -> dict[str, str]:
-        """Return the synthetic document for the approved binding only."""
+        """Return the synthetic document for the approved binding only.
+
+        ``runtime_context`` matches the Execution Plane resolver interface; this
+        test resolver deliberately does not use caller context for authorization.
+        """
         if (
             credential_recipe_id != self._recipe_id
             or credential_ref != self._credential_ref
@@ -272,6 +277,7 @@ async def test_compat_workload_credential_resolver_refuses_unexpected_requests()
         work_item_id=uuid.uuid4(),
         attempt_id="attempt",
         step_revision_id="revision",
+        runtime_context={},
     )
     assert approved == document
 
@@ -282,6 +288,7 @@ async def test_compat_workload_credential_resolver_refuses_unexpected_requests()
             work_item_id=uuid.uuid4(),
             attempt_id="attempt",
             step_revision_id="revision",
+            runtime_context={},
         )
     with pytest.raises(CredentialResolutionError):
         await resolver.resolve_workload(
@@ -290,6 +297,7 @@ async def test_compat_workload_credential_resolver_refuses_unexpected_requests()
             work_item_id=uuid.uuid4(),
             attempt_id="attempt",
             step_revision_id="revision",
+            runtime_context={},
         )
     with pytest.raises(CredentialResolutionError):
         await resolver.resolve_workload(
@@ -298,4 +306,5 @@ async def test_compat_workload_credential_resolver_refuses_unexpected_requests()
             work_item_id=uuid.UUID(int=0),
             attempt_id="attempt",
             step_revision_id="revision",
+            runtime_context={},
         )

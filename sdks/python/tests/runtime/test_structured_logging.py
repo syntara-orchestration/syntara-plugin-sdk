@@ -19,6 +19,7 @@ from syntara_plugin.runtime import (
 from syntara_plugin.runtime.container import (
     ContainerClient,
     _container_log_batch,
+    _new_partial_result_reporter,
     _run_sync_step,
     _valid_log_batch,
 )
@@ -181,7 +182,13 @@ def test_cancel_flushes_existing_logs_and_closes_collector() -> None:
         provider._public_toolbox.log("WARN", "before cancellation")
         outgoing: asyncio.Queue[Any] = asyncio.Queue()
         service = AsyncContainerRuntimeService(StepRegistry({"step": lambda _: None}))
-        service._register_invocation("invocation", cancellation, provider, outgoing)
+        service._register_invocation(
+            "invocation",
+            cancellation,
+            provider,
+            outgoing,
+            _new_partial_result_reporter("invocation", lambda _event: None),
+        )
         response = await service.Cancel(
             container_pb2.CancelRequest(invocation_id="invocation"), None
         )
