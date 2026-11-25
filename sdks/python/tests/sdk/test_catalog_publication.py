@@ -370,8 +370,9 @@ def test_registry_credentials_preserve_construction_equality_and_immutability() 
 def test_registry_credentials_reject_invalid_values_for_authorization(
     username: str, password: str
 ) -> None:
+    credentials = RegistryCredentials(username, password)
     with pytest.raises(CatalogIndexPublicationError, match="REGISTRY_CREDENTIALS_INVALID"):
-        RegistryCredentials(username, password).authorization_header()
+        credentials.authorization_header()
 
 
 def test_publication_failure_output_omits_credentials() -> None:
@@ -387,11 +388,10 @@ def test_publication_failure_output_omits_credentials() -> None:
     )
     credentials = RegistryCredentials("publisher", "not-represented")
     encoded_pair = base64.b64encode(b"publisher:not-represented").decode("ascii")
+    publisher = CatalogIndexPublisher(_target(), credentials=credentials, transport=transport)
 
     with pytest.raises(CatalogIndexPublicationError) as information:
-        CatalogIndexPublisher(_target(), credentials=credentials, transport=transport).publish(
-            artifact
-        )
+        publisher.publish(artifact)
 
     failure = str(information.value)
     assert failure == "OCI artifact publication failed: REGISTRY_TOKEN_EXCHANGE_FAILED"
