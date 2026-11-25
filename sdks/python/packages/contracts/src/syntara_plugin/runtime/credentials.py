@@ -233,6 +233,11 @@ def _scalar_fingerprint(value: Any) -> bytes | None:
     return None
 
 
+def _budget_stopped(budget: list[int]) -> bool:
+    """True once an abandoned cancellation scan appended its stop marker."""
+    return len(budget) > 2
+
+
 def _enqueue_children(value: Any, pending: list[Any], remaining: int) -> bool | None:
     """Queue container members; return true if the traversal budget is exceeded."""
 
@@ -444,7 +449,10 @@ def _declared_child_schema(
 class _ScopedCredentialProvider:
     """Restrict provider reads and track every successful read in the scope."""
 
-    __slots__ = ("__allowed", "__provider", "__record", "__active", "__read_name", "__lock")
+    __slots__ = (
+        "__allowed", "__provider", "__record", "__active", "__read_name", "__lock", "__in_flight",
+        "__failed",
+    )
 
     def __init__(
         self,
@@ -460,6 +468,8 @@ class _ScopedCredentialProvider:
         self.__active = True
         self.__read_name = read_name
         self.__lock = lock
+        self.__in_flight = 0
+        self.__failed = False
 
     def __repr__(self) -> str:
         return "ScopedCredentialProvider(<opaque>)"
@@ -480,31 +490,50 @@ class _ScopedCredentialProvider:
             record = self.__record
             if provider is None or record is None:
                 raise CredentialAccessError("expired")
-        # Providers call on_read before exposing the document. Attribute only
-        # callbacks in this read's context; any other read keeps every key secret.
-        token = self.__read_name.set(name)
+            # Until this read finishes, its fingerprints may be missing from
+            # the scope; revocation treats the set as incomplete meanwhile.
+            self.__in_flight += 1
         try:
-            value = provider.read(name)
-            if not isinstance(value, Mapping):
-                raise ValueError
-            encoded = canonical_json_bytes(dict(value))
-            if len(encoded) > _MAX_CREDENTIAL_BYTES:
-                raise ValueError
-            document: dict[str, Any] = json.loads(encoded)
-        except CredentialAccessError as error:
-            raise CredentialAccessError(error.reason) from None
-        except Exception:
-            raise CredentialAccessError("unavailable") from None
+            # Providers call on_read before exposing the document. Attribute only
+            # callbacks in this read's context; any other read keeps every key secret.
+            token = self.__read_name.set(name)
+            try:
+                value = provider.read(name)
+                if not isinstance(value, Mapping):
+                    raise ValueError
+                encoded = canonical_json_bytes(dict(value))
+                if len(encoded) > _MAX_CREDENTIAL_BYTES:
+                    raise ValueError
+                document: dict[str, Any] = json.loads(encoded)
+            except CredentialAccessError as error:
+                raise CredentialAccessError(error.reason) from None
+            except Exception:
+                raise CredentialAccessError("unavailable") from None
+            finally:
+                self.__read_name.reset(token)
+            with self.__lock:
+                if not self.__active:
+                    raise CredentialAccessError("expired")
+                return document
+        except BaseException:
+            with self.__lock:
+                self.__failed = True
+            raise
         finally:
-            self.__read_name.reset(token)
-        with self.__lock:
-            if not self.__active:
-                raise CredentialAccessError("expired")
-            return document
+            with self.__lock:
+                self.__in_flight -= 1
 
     def _revoke(self) -> None:
         """Revoke the view while the scope's shared lock is held."""
         self.__active = False
+
+    def _reads_in_flight(self) -> bool:
+        """True while a read has started but not finished; caller holds the lock."""
+        return self.__in_flight > 0
+
+    def _reads_failed(self) -> bool:
+        """True once a started read ended without a document; caller holds the lock."""
+        return self.__failed
 
     def close(self) -> None:
         with self.__lock:
@@ -526,6 +555,7 @@ class _CredentialScope:
         "_allowed", "_provider", "_active", "_strings", "_scalars",
         "_fingerprint_count", "_overflow", "_has_read", "_restriction_failed", "__weakref__",
         "_schemas", "_read_name", "_record_lock", "_log_budget", "_log_closed",
+        "_log_scanner",
     )
 
     def __init__(
@@ -545,6 +575,7 @@ class _CredentialScope:
         self._record_lock = Lock()
         self._log_budget = [_MAX_SCAN_WORK, _MAX_OUTPUT_NODES]
         self._log_closed = False
+        self._log_scanner: _LogFingerprintScanner | None = None
         self._provider: _ScopedCredentialProvider | None = None
         if provider is not None:
             scope_ref = weakref.ref(self)
@@ -720,6 +751,51 @@ class _CredentialScope:
                 return False
             return self._scan_active(value, self._log_budget) is _CredentialScanStatus.CLEAN
 
+    def _freeze_log_fingerprints(self) -> _LogFingerprintScanner:
+        """Revoke reads and detach the final fingerprints for a cancellation scan.
+
+        Holding the record lock orders this against every read: a read either
+        records its fingerprints before the detach or fails as expired before
+        its document reaches step code. The detached scanner belongs to the
+        caller, so a concurrent scope teardown cannot clear it mid-scan.
+        """
+        with self._record_lock:
+            self._active = False
+            if self._provider is not None:
+                self._provider._revoke()
+                # Termination can cut a read off at any point, including just
+                # before this freeze: a failed read may have been one of them.
+                self._fail_closed_if_reading(self._provider, include_failed=True)
+            return self._detach_log_fingerprints()
+
+    def _fail_closed_if_reading(
+        self, provider: _ScopedCredentialProvider, *, include_failed: bool = False,
+    ) -> None:
+        """Mark the fingerprint set incomplete if a read may have been cut off.
+
+        The caller holds the record lock and has revoked reads. A read that had
+        started but not finished fails, so its document never reaches step
+        code, but its value was never fingerprinted and a queued record may
+        already contain it. Treat the set like an overflow: every log scan then
+        drops its record.
+        """
+        if provider._reads_in_flight() or (include_failed and provider._reads_failed()):
+            self._overflow = True
+
+    def _detach_log_fingerprints(self) -> _LogFingerprintScanner:
+        """Detach fingerprints once; every later caller shares that scanner.
+
+        The caller holds the record lock. Scope teardown and cancellation can
+        both detach; a second independent detach would see an empty scope and
+        accept every record, so it returns the first scanner instead. Without
+        one, a closed scope cannot show completeness and fails closed.
+        """
+        if self._log_scanner is None:
+            if self._log_closed:
+                raise CredentialAccessError("expired")
+            self._log_scanner = _LogFingerprintScanner(self)
+        return self._log_scanner
+
     def _scan_active(self, value: Any, budget: list[int] | None = None) -> _CredentialScanStatus:
         if self._overflow:
             return _CredentialScanStatus.LIMIT_EXCEEDED
@@ -731,7 +807,7 @@ class _CredentialScope:
         while pending:
             current = pending.pop()
             budget[1] -= 1
-            if budget[1] < 0:
+            if budget[1] < 0 or _budget_stopped(budget):
                 return _CredentialScanStatus.LIMIT_EXCEEDED
             queued = _enqueue_children(current, pending, budget[1])
             if queued is True:
@@ -769,7 +845,7 @@ class _CredentialScope:
             # Initial window construction and every following hash are linear
             # in the output length, independent of the credential length.
             work = length + windows
-            if work > budget[0]:
+            if work > budget[0] or _budget_stopped(budget):
                 return _CredentialScanStatus.LIMIT_EXCEEDED
             budget[0] -= work
             rolling = _rolling_hash(value[:length])
@@ -788,6 +864,7 @@ class _CredentialScope:
     def close(
         self, *, finalize_logs: Callable[[], None] | None = None,
         prepare_logs: Callable[[], None] | None = None,
+        terminating: Callable[[], bool] | None = None,
     ) -> None:
         with self._record_lock:
             self._active = False
@@ -795,6 +872,11 @@ class _CredentialScope:
             self._provider = None
             if provider is not None:
                 provider._revoke()
+                # When the invocation is being cancelled or timed out, a failed
+                # read may have been cut off by it, exactly as at the freeze.
+                self._fail_closed_if_reading(
+                    provider, include_failed=terminating is not None and terminating(),
+                )
             if prepare_logs is not None:
                 prepare_logs()
         # The provider may wait for a callback; do not hold the record lock.
@@ -825,7 +907,18 @@ class _LogFingerprintScanner:
         self._overflow = scope._overflow
         self._log_budget = scope._log_budget
 
+    def stop(self) -> None:
+        """End an abandoned scan promptly; its records are already discarded.
+
+        Appending is atomic, unlike rewriting a budget counter that the scan
+        thread may be decrementing concurrently.
+        """
+        self._log_budget.append(-1)
+
     def scan_log(self, value: Any) -> bool:
+        # One caller at a time: the toolbox hands its scanner to exactly one
+        # finalizer, and a shared detached scanner reaches cancellation only
+        # when it was never installed on the toolbox.
         return self._scan_active(value, self._log_budget) is _CredentialScanStatus.CLEAN
 
 

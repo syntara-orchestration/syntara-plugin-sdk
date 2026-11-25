@@ -25,7 +25,6 @@ from .credentials import (
     _CredentialScanStatus,
     _CredentialScope,
     _DeferredLogProvider,
-    _LogFingerprintScanner,
 )
 from .outcome import (
     ErrorCategory,
@@ -361,9 +360,15 @@ def _invoke_with_error_schema(
             return wrapper, executor.last_error_schema_digest
         finally:
             if deferred_logs:
-                scope.close(prepare_logs=lambda: _prepare_deferred_logs(context, scope))
+                scope.close(
+                    prepare_logs=lambda: _prepare_deferred_logs(context, scope),
+                    terminating=context.cancellation.is_set,
+                )
             else:
-                scope.close(finalize_logs=lambda: _finalize_toolbox(context))
+                scope.close(
+                    finalize_logs=lambda: _finalize_toolbox(context),
+                    terminating=context.cancellation.is_set,
+                )
     finally:
         if not deferred_logs:
             _finalize_toolbox(context)
@@ -371,7 +376,8 @@ def _invoke_with_error_schema(
 
 def _prepare_deferred_logs(context: ExecutionContext, scope: _CredentialScope) -> None:
     try:
-        scanner = _LogFingerprintScanner(scope)
+        # Runs under the scope's record lock (inside scope.close).
+        scanner = scope._detach_log_fingerprints()
         _set_log_scanner(context.toolbox, scanner.scan_log)
     except Exception:
         try:

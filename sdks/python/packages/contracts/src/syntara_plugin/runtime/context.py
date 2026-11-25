@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import InitVar, dataclass, field
 from enum import Enum
 from threading import Event
@@ -99,8 +99,15 @@ class ExecutionContext:
             current = scope_ref()
             return current is not None and current.scan_log(value)
 
+        def freeze() -> Callable[[Any], bool]:
+            current = scope_ref()
+            if current is None:
+                # Without the scope, completeness cannot be shown; fail closed.
+                raise CredentialAccessError("expired")
+            return current._freeze_log_fingerprints().scan_log
+
         try:
-            _set_log_scanner(context.toolbox, scan)
+            _set_log_scanner(context.toolbox, scan, freeze)
         except Exception:
             # If the scanner cannot be bound, no queued record is safe to emit.
             try:

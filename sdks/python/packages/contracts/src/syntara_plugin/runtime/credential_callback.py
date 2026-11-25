@@ -16,7 +16,7 @@ from syntara_plugin.contracts import canonical_json_bytes
 from ._toolbox import _ContainerToolbox, _InvocationRequestContext
 from .credentials import CredentialAccessError, ScopedCredentialProvider, _DeferredLogProvider
 from .protocol import container_pb2
-from .toolbox import _close_toolbox, _discard_toolbox, _new_toolbox
+from .toolbox import _cancel_toolbox, _close_toolbox, _discard_toolbox, _new_toolbox
 
 _MAX_PENDING = 16
 _READ_TIMEOUT = 30.0
@@ -159,7 +159,10 @@ class CallbackCredentialProvider(_DeferredLogProvider):
         )
         self._public_toolbox = _new_toolbox(cancellation, invocation_id)
         self._defer_log_finalization = False
-        # Protected by the sync service's terminal lock.
+        # One terminal event per invocation. The step's worker prepares its
+        # event before log finalization; every terminal path claims through
+        # the gate, so a prepared outcome wins over cancellation or timeout.
+        self._gate_lock = Lock()
         self._prepared_event: container_pb2.ExecutionEvent | None = None
         self._terminal_committed = False
 
@@ -224,6 +227,41 @@ class CallbackCredentialProvider(_DeferredLogProvider):
     def close_credentials(self) -> None:
         """Stop reads when the client half-closes without ending logging."""
         self._toolbox._close()
+
+    def _prepare_terminal(self, event: container_pb2.ExecutionEvent) -> bool:
+        """Record the step's own outcome; false once another path committed."""
+        with self._gate_lock:
+            if self._terminal_committed:
+                return False
+            if self._prepared_event is None:
+                self._prepared_event = event
+            return True
+
+    def _claim_terminal(
+        self, fallback: Callable[[], container_pb2.ExecutionEvent]
+    ) -> container_pb2.ExecutionEvent | None:
+        """Claim the single terminal event: the prepared outcome, else ``fallback()``.
+
+        The claim happens before ``fallback`` runs, so an outcome prepared after
+        another path started committing cannot replace that path's event.
+        """
+        with self._gate_lock:
+            if self._terminal_committed:
+                return None
+            self._terminal_committed = True
+            prepared = self._prepared_event
+        return prepared if prepared is not None else fallback()
+
+    def cancel_logs(self) -> None:
+        """Stop reads, then screen queued records instead of discarding them."""
+        self.close_credentials()
+        try:
+            _cancel_toolbox(self._public_toolbox)
+        except Exception:
+            try:
+                _discard_toolbox(self._public_toolbox, force=True)
+            except Exception:
+                pass
 
     def close(self, *, discard_logs: bool = False) -> None:
         self.close_credentials()

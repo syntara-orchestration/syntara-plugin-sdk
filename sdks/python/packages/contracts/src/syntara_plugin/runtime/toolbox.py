@@ -8,7 +8,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from threading import Event, RLock
+from threading import Event, RLock, Thread
 from typing import TYPE_CHECKING, Any
 from weakref import finalize
 
@@ -20,6 +20,10 @@ _NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 _MAX_BATCH_BYTES = 262_144
 _MAX_EVENTS = 128
 _MAX_DROPPED = 4_294_967_295
+# Wall-clock limit for screening on cancellation or timeout. The work budget
+# bounds CPU, not latency; the terminal event must stay well inside the host's
+# delivery grace, so records not screened in time are discarded and counted.
+_CANCEL_SCAN_SECONDS = 1.0
 
 
 class _JsonSnapshotter:
@@ -211,6 +215,8 @@ class _ToolboxState:
         self.dropped = 0
         self.sent = False
         self.scan: Callable[[Any], bool] | None = None
+        # Revokes credential reads and returns a scanner over the final fingerprints.
+        self.freeze: Callable[[], Callable[[Any], bool]] | None = None
         self.scan_done = Event()
         self.discarded = False
         self.finalized = False
@@ -263,10 +269,23 @@ def _close_toolbox(toolbox: ContainerToolbox) -> None:
     if events is None:
         state.scan_done.wait()
         return
+    _scan_records(toolbox, state, scan, events)
+
+
+def _scan_records(
+    toolbox: ContainerToolbox,
+    state: _ToolboxState,
+    scan: Callable[[Any], bool],
+    events: list[_LogRecord],
+) -> None:
+    """Keep records whose scan completes cleanly; count every other record."""
     try:
         retained: list[_LogRecord] = []
         dropped = 0
         for event in events:
+            if state.discarded:
+                # Abandoned (for example after the cancellation time limit).
+                break
             try:
                 safe = scan([event.severity, event.message, event.event_name,
                              json.loads(event.attributes_json)])
@@ -288,6 +307,73 @@ def _close_toolbox(toolbox: ContainerToolbox) -> None:
         state.scan_done.set()
 
 
+def _cancel_toolbox(toolbox: ContainerToolbox) -> None:
+    """Finalize records on cancellation without waiting for another thread's scan.
+
+    When no scan is in progress, credential reads are revoked first so the
+    scan sees every fingerprint the invocation can still record. A scan
+    already running elsewhere, or a failed revocation, discards the records.
+    """
+    try:
+        state = _toolbox_state(toolbox)
+    except Exception:
+        return
+    with state.lock:
+        if state.finalized:
+            return
+        in_progress = state.closed.is_set()
+        if not in_progress:
+            state.closed.set()
+            scan, state.scan = state.scan, None
+            freeze, state.freeze = state.freeze, None
+            events = list(state.events)
+            if scan is None:
+                state.finalized = True
+                state.scan_done.set()
+                return
+    if in_progress:
+        _discard_toolbox(toolbox, force=True)
+        return
+    if freeze is not None:
+        try:
+            scan = freeze()
+        except Exception:
+            _discard_toolbox(toolbox, force=True)
+            return
+    worker = Thread(
+        target=_scan_records_quietly, args=(toolbox, state, scan, events),
+        name="syntara-cancel-log-scan", daemon=True,
+    )
+    try:
+        worker.start()
+    except Exception:
+        _discard_toolbox(toolbox, force=True)
+        return
+    if not state.scan_done.wait(_CANCEL_SCAN_SECONDS):
+        _discard_toolbox(toolbox, force=True)
+        # Stop the abandoned scan instead of letting it spend its remaining
+        # budget; its result is ignored because the records are discarded.
+        stop = getattr(getattr(scan, "__self__", None), "stop", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+
+
+def _scan_records_quietly(
+    toolbox: ContainerToolbox,
+    state: _ToolboxState,
+    scan: Callable[[Any], bool],
+    events: list[_LogRecord],
+) -> None:
+    """Background screening; failures discard records without any report."""
+    try:
+        _scan_records(toolbox, state, scan, events)
+    except Exception:
+        pass
+
+
 def _discard_toolbox(toolbox: ContainerToolbox, *, force: bool = False) -> None:
     """Discard unfinished records without waiting, or force discard after a fault."""
     try:
@@ -304,18 +390,28 @@ def _discard_toolbox(toolbox: ContainerToolbox, *, force: bool = False) -> None:
             return
         state.closed.set()
         state.scan = None
+        state.freeze = None
         state.discarded = True
         state.dropped = min(_MAX_DROPPED, state.dropped + len(state.events))
         state.events = []
         state.scan_done.set()
 
 
-def _set_log_scanner(toolbox: ContainerToolbox, scan: Callable[[Any], bool]) -> None:
-    """Install an invocation's bounded, fingerprint-only credential check."""
+def _set_log_scanner(
+    toolbox: ContainerToolbox,
+    scan: Callable[[Any], bool],
+    freeze: Callable[[], Callable[[Any], bool]] | None = None,
+) -> None:
+    """Install an invocation's bounded, fingerprint-only credential check.
+
+    ``freeze`` revokes further credential reads and returns a scanner bound to
+    the final fingerprints; cancellation uses it to scan instead of discard.
+    """
     state = _toolbox_state(toolbox)
     with state.lock:
         if not state.closed.is_set():
             state.scan = scan
+            state.freeze = freeze
 
 
 def _take_log_batch(toolbox: ContainerToolbox, invocation_id: str) -> container_pb2.LogBatch | None:

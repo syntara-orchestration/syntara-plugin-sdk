@@ -8,9 +8,10 @@ import json
 import os
 import signal
 import weakref
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from queue import Empty, Queue
 from threading import BoundedSemaphore, Event, Lock, Thread
@@ -30,18 +31,18 @@ from .bindings import (
     validate_executable_step_binding,
 )
 from .container import (
-    INCOMPLETE_STEP_MESSAGE,
     ContainerInvocation,
     ContainerResult,
     ContainerStepHandler,
     StepRegistry,
+    _cancelled_event,
+    _failure_for,
     _log_notification,
     failure_event,
     invocation_from_request,
     terminal_execution_event,
 )
 from .credential_callback import CallbackCredentialProvider
-from .execution import StepExecutionError
 from .metadata import probe_runtime_components
 from .protocol import container_pb2, container_pb2_grpc
 from .step import BaseStep
@@ -57,6 +58,8 @@ _TLS_CLIENT_CA = "SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA"
 _DEFAULT_ADDRESS = "127.0.0.1:50051"
 _DEFAULT_MAX_CONCURRENT_STEPS = 8
 _CANCELLED_STEP_MESSAGE = "The step was cancelled."
+# Strong references keep claimed terminal deliveries alive until queued.
+_TERMINAL_TASKS: set[asyncio.Task[None]] = set()
 _StepWorkItem = tuple[Future[ContainerResult], ContainerStepHandler, ContainerInvocation] | None
 
 
@@ -296,6 +299,59 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             pass
 
     @staticmethod
+    async def _deliver_terminal(
+        provider: CallbackCredentialProvider,
+        invocation_id: str,
+        outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None],
+        event: container_pb2.ExecutionEvent,
+        *,
+        scan_logs: bool,
+    ) -> None:
+        """Finalize logs off the event loop, then queue batch, event and terminator.
+
+        The work runs in a shielded task, so cancelling the awaiting coroutine
+        after the terminal was claimed cannot strand the stream.
+        """
+
+        def finalize() -> container_pb2.ExecuteServerMessage | None:
+            if scan_logs:
+                provider.cancel_logs()
+            else:
+                provider.close(discard_logs=True)
+            return _log_notification(provider, invocation_id)
+
+        async def finish() -> None:
+            try:
+                log = await asyncio.to_thread(finalize)
+            except Exception:
+                log = None
+            if log is not None:
+                outgoing.put_nowait(log)
+            outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
+            outgoing.put_nowait(None)
+
+        task = asyncio.ensure_future(finish())
+        _TERMINAL_TASKS.add(task)
+        task.add_done_callback(_TERMINAL_TASKS.discard)
+        await asyncio.shield(task)
+
+    @staticmethod
+    async def _commit_cancellation(
+        invocation_id: str,
+        cancellation: Event,
+        provider: CallbackCredentialProvider,
+        outgoing: asyncio.Queue[container_pb2.ExecuteServerMessage | None],
+    ) -> None:
+        """Deliver the prepared outcome if one exists, otherwise CANCELLED."""
+        event = provider._claim_terminal(lambda: _cancelled_event(invocation_id))
+        if event is None:
+            return
+        cancellation.set()
+        await AsyncContainerRuntimeService._deliver_terminal(
+            provider, invocation_id, outgoing, event, scan_logs=True
+        )
+
+    @staticmethod
     async def _receive_responses(
         requests: AsyncIterator[container_pb2.ExecuteClientMessage],
         provider: CallbackCredentialProvider,
@@ -305,15 +361,9 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         try:
             async for message in requests:
                 if message.WhichOneof("message") != "credential_response":
-                    invocation.cancellation.set()
-                    provider.close(discard_logs=True)
-                    AsyncContainerRuntimeService._queue_log(provider, invocation.invocation_id, outgoing)
-                    outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
-                        invocation.invocation_id, ContainerInvocationError(
-                            FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-                        )
-                    )))
-                    outgoing.put_nowait(None)
+                    await AsyncContainerRuntimeService._commit_cancellation(
+                        invocation.invocation_id, invocation.cancellation, provider, outgoing
+                    )
                     return
                 provider.receive(message.credential_response)
         finally:
@@ -330,38 +380,47 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         prepared: Future[ContainerResult] = Future()
 
         def run_and_close(invocation: ContainerInvocation) -> ContainerResult:
+            # A path that already claimed the terminal event owns log
+            # finalization; a step that lost the claim leaves the records alone.
+            owns_logs = True
             try:
-                result = handler(invocation)
-            except BaseException as error:
-                prepared.set_exception(error)
-                raise
-            else:
+                try:
+                    result = handler(invocation)
+                except BaseException as error:
+                    prepared.set_exception(error)
+                    if isinstance(error, Exception):
+                        owns_logs = provider._prepare_terminal(
+                            _failure_for(invocation.invocation_id, error)
+                        )
+                    raise
                 prepared.set_result(result)
+                # Prepare before the potentially slow log scan so cancellation
+                # delivers this outcome instead of replacing it.
+                try:
+                    event = terminal_execution_event(invocation, result)
+                except Exception as error:
+                    event = _failure_for(invocation.invocation_id, error)
+                owns_logs = provider._prepare_terminal(event)
                 return result
             finally:
-                provider.close()
+                if owns_logs:
+                    provider.close()
 
         try:
-            result = await self._execute_step(
-                run_and_close, invocation, prepared=prepared,
-                on_prepared_timeout=lambda: provider.close(discard_logs=True),
-            )
+            result = await self._execute_step(run_and_close, invocation, prepared=prepared)
             event = terminal_execution_event(invocation, result)
-        except StepExecutionError as error:
-            event = failure_event(invocation.invocation_id, ContainerInvocationError(
-                error.failure_code, error.safe_message, outcome=error.outcome
-            ))
-        except ContainerInvocationError as error:
-            event = failure_event(invocation.invocation_id, error)
-        except Exception:
-            event = failure_event(invocation.invocation_id, ContainerInvocationError(
-                FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
-            ))
-        finally:
+        except Exception as error:
+            event = _failure_for(invocation.invocation_id, error)
+        except BaseException:
             provider.close(discard_logs=True)
-        self._queue_log(provider, invocation.invocation_id, outgoing)
-        outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
-        outgoing.put_nowait(None)
+            raise
+        claimed = provider._claim_terminal(lambda: event)
+        if claimed is None:
+            return
+        # A timed-out step may still hold queued records: screen, do not discard.
+        await self._deliver_terminal(
+            provider, invocation.invocation_id, outgoing, claimed, scan_logs=True
+        )
 
     async def Cancel(
         self, request: container_pb2.CancelRequest, context: grpc.aio.ServicerContext,
@@ -370,15 +429,7 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         if active is None:
             return container_pb2.CancelResponse(accepted=False)
         cancellation, provider, outgoing = active
-        cancellation.set()
-        provider.close(discard_logs=True)
-        self._queue_log(provider, request.invocation_id, outgoing)
-        outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
-            request.invocation_id, ContainerInvocationError(
-                FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-            )
-        )))
-        outgoing.put_nowait(None)
+        await self._commit_cancellation(request.invocation_id, cancellation, provider, outgoing)
         return container_pb2.CancelResponse(accepted=True)
 
     def shutdown(self) -> None:
@@ -387,14 +438,14 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             return
         self._shutdown = True
         for invocation_id, (cancellation, provider, outgoing) in self._active.copy().items():
+            event = provider._claim_terminal(partial(_cancelled_event, invocation_id))
+            if event is None:
+                continue
             cancellation.set()
+            # Shutdown discards unfinished logs instead of scanning each one.
             provider.close(discard_logs=True)
             self._queue_log(provider, invocation_id, outgoing)
-            outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=failure_event(
-                invocation_id, ContainerInvocationError(
-                    FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-                )
-            )))
+            outgoing.put_nowait(container_pb2.ExecuteServerMessage(event=event))
             outgoing.put_nowait(None)
         # Running Python code cannot be stopped safely. Daemon workers keep it
         # bounded without making interpreter shutdown wait for it to return.
@@ -432,7 +483,6 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     async def _execute_step(
         self, handler: ContainerStepHandler, invocation: ContainerInvocation,
         *, prepared: Future[ContainerResult] | None = None,
-        on_prepared_timeout: Callable[[], None] | None = None,
     ) -> ContainerResult:
         if self._shutdown:
             raise ContainerInvocationError(
@@ -461,8 +511,8 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             if task.done():
                 return task.result()
             if prepared is not None and prepared.done():
-                if on_prepared_timeout is not None:
-                    on_prepared_timeout()
+                # Log finalization follows the claim in _run_step: it screens
+                # off the loop, or discards if the worker's scan is running.
                 return prepared.result()
             invocation.cancellation.set()
             raise ContainerInvocationError(
