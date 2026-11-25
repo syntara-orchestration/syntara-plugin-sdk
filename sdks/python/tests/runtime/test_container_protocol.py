@@ -6,6 +6,7 @@ from typing import Any
 
 import grpc
 import pytest
+from syntara_plugin.contracts import canonical_json_bytes
 from syntara_plugin.runtime import (
     CONTAINER_ABI,
     ContainerClient,
@@ -24,13 +25,110 @@ ERROR_RESULT = {"category": "dependency", "code": "DEPENDENCY_FAILED", "message"
 
 
 def test_generated_protocol_package_matches_container_abi() -> None:
-    assert CONTAINER_ABI == "syntara.container/v1alpha1"
+    assert CONTAINER_ABI == "syntara.container/v1alpha2"
     assert container_pb2.DESCRIPTOR.package == CONTAINER_ABI.replace("/", ".")
     execute = container_pb2.DESCRIPTOR.services_by_name["ContainerService"].methods_by_name["Execute"]
     assert execute.client_streaming
     assert execute.server_streaming
     assert execute.input_type.name == "ExecuteClientMessage"
     assert execute.output_type.name == "ExecuteServerMessage"
+
+
+def test_progress_partial_result_requires_bounded_canonical_data() -> None:
+    from syntara_plugin.runtime.container import (
+        MAX_PARTIAL_RESULT_BYTES,
+        _progress_from_event,
+    )
+
+    valid = container_pb2.ExecutionEvent(
+        invocation_id="invocation-1",
+        progress=container_pb2.Progress(
+            sequence=1,
+            state="progress",
+            partial_result=container_pb2.PartialResult(
+                is_last=False,
+                data_json=b'{"job_id":"123"}',
+            ),
+        ),
+    )
+    progress = _progress_from_event(valid)
+    assert progress.partial_result is not None
+    assert progress.partial_result.is_last is False
+    assert progress.partial_result.data == {"job_id": "123"}
+    empty_final = _progress_from_event(
+        container_pb2.ExecutionEvent(
+            invocation_id="invocation-1",
+            progress=container_pb2.Progress(
+                sequence=2,
+                state="progress",
+                partial_result=container_pb2.PartialResult(is_last=True, data_json=b"{}"),
+            ),
+        )
+    )
+    assert empty_final.partial_result is not None
+    assert empty_final.partial_result.is_last is True
+    assert empty_final.partial_result.data == {}
+    status_only = _progress_from_event(
+        container_pb2.ExecutionEvent(
+            invocation_id="invocation-1",
+            progress=container_pb2.Progress(sequence=3, state="progress"),
+        )
+    )
+    assert status_only.partial_result is None
+    too_many_properties = canonical_json_bytes(
+        {f"key-{index}": index for index in range(33)}
+    )
+
+    invalid_events = (
+        container_pb2.ExecutionEvent(
+            invocation_id="invocation-1",
+            progress=container_pb2.Progress(sequence=1, state="early_result"),
+        ),
+        container_pb2.ExecutionEvent(
+            invocation_id="invocation-1",
+            progress=container_pb2.Progress(
+                sequence=1,
+                state="heartbeat",
+                partial_result=container_pb2.PartialResult(data_json=b'{"job_id":"123"}'),
+            ),
+        ),
+        container_pb2.ExecutionEvent(
+            invocation_id="invocation-1",
+            progress=container_pb2.Progress(
+                sequence=1,
+                state="progress",
+                partial_result=container_pb2.PartialResult(data_json=b'{"job_id": "123"}'),
+            ),
+        ),
+        container_pb2.ExecutionEvent(
+            invocation_id="invocation-1",
+            progress=container_pb2.Progress(
+                sequence=1, state="progress", partial_result=container_pb2.PartialResult()
+            ),
+        ),
+        container_pb2.ExecutionEvent(
+            invocation_id="invocation-1",
+            progress=container_pb2.Progress(
+                sequence=1,
+                state="progress",
+                partial_result=container_pb2.PartialResult(
+                    data_json=b'{"value":"' + b"x" * MAX_PARTIAL_RESULT_BYTES + b'"}'
+                ),
+            ),
+        ),
+        container_pb2.ExecutionEvent(
+            invocation_id="invocation-1",
+            progress=container_pb2.Progress(
+                sequence=1,
+                state="progress",
+                partial_result=container_pb2.PartialResult(data_json=too_many_properties),
+            ),
+        ),
+    )
+    for event in invalid_events:
+        with pytest.raises(ContainerRemoteError) as raised:
+            _progress_from_event(event)
+        assert raised.value.source == "protocol"
 
 
 @pytest.fixture
@@ -243,7 +341,7 @@ def test_execution_needs_no_workflow_or_caller_context(
     request = container_pb2.ExecuteRequest(
         invocation_id="invocation-1",
         step_revision_id="github.create-issue.v1",
-        runtime_abi="syntara.container/v1alpha1",
+        runtime_abi="syntara.container/v1alpha2",
         inputs_json=b"{}",
         timeout_seconds=30,
     )

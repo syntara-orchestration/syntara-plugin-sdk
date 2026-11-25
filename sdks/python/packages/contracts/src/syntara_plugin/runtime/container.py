@@ -48,6 +48,8 @@ from .toolbox import _take_log_batch
 _IDENTITY = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 _OUTPUT_SCHEMA_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 _MAX_JSON_BYTES = 1_048_576
+MAX_PARTIAL_RESULT_BYTES = 16_384
+MAX_PARTIAL_RESULT_PROPERTIES = 32
 _MAX_TIMEOUT_SECONDS = 86_400
 _RESULT_DELIVERY_GRACE_SECONDS = 5.0
 _MAX_STATUS_CODE = 4_294_967_295
@@ -98,6 +100,9 @@ class ContainerInvocation:
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
     credential_provider: CredentialProvider | None = field(default=None, compare=False, repr=False)
+    _partial_result_reporter: _PartialResultReporter | None = field(
+        default=None, compare=False, repr=False
+    )
 
     @property
     def cancelled(self) -> bool:
@@ -137,14 +142,23 @@ CredentialResolver = Callable[[CredentialRequestContext], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
+class ContainerPartialResult:
+    """One bounded snapshot and its no-more-updates marker."""
+
+    is_last: bool
+    data: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class ContainerProgress:
-    """A non-terminal, user-safe update emitted by a step."""
+    """A validated non-terminal update emitted by a step."""
 
     invocation_id: str
     sequence: int
     state: str
     message: str = ""
     percent: float | None = None
+    partial_result: ContainerPartialResult | None = None
 
 
 @dataclass(frozen=True)
@@ -480,11 +494,105 @@ def _queue_sync_log(provider: CallbackCredentialProvider, invocation_id: str, ou
         outgoing.put(message)
 
 
+def _encode_partial_result(value: Mapping[str, Any]) -> tuple[bytes, dict[str, Any]]:
+    """Snapshot and canonically encode one bounded partial-result data object."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("partial result data must be a JSON object")
+    try:
+        encoded = canonical_json_bytes(_thaw_json_document(value))
+        snapshot = json.loads(encoded)
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError("partial result data must contain JSON-compatible values") from None
+    if not isinstance(snapshot, dict):
+        raise ValueError("partial result data must be a JSON object")
+    if len(snapshot) > MAX_PARTIAL_RESULT_PROPERTIES:
+        raise ValueError("partial result exceeds the 32-property limit")
+    if len(encoded) > MAX_PARTIAL_RESULT_BYTES:
+        raise ValueError("partial result exceeds the 16384-byte limit")
+    return encoded, snapshot
+
+
+class _PartialResultReporter:
+    """Thread-safe bounded snapshot emitter that closes with its invocation."""
+
+    def __init__(
+        self,
+        invocation_id: str,
+        send: Callable[[container_pb2.ExecutionEvent], None],
+    ) -> None:
+        self._invocation_id = invocation_id
+        self._send = send
+        self._lock = Lock()
+        self._sequence = 0
+        self._closed = False
+        self._is_last = False
+        self._validator: Callable[[Mapping[str, Any]], None] | None = None
+
+    def set_validator(self, validator: Callable[[Mapping[str, Any]], None]) -> None:
+        """Attach the installed output-schema check before step execution."""
+
+        with self._lock:
+            if self._closed or self._sequence:
+                raise RuntimeError("partial-result validation must be configured before reporting")
+            self._validator = validator
+
+    def __call__(self, data: Mapping[str, Any], is_last: bool = False) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._is_last:
+                raise ValueError("partial results cannot be reported after is_last=True")
+            if not isinstance(is_last, bool):
+                raise TypeError("is_last must be a boolean")
+            encoded, snapshot = _encode_partial_result(data)
+            if self._validator is not None:
+                self._validator(snapshot)
+            self._sequence += 1
+            self._send(
+                container_pb2.ExecutionEvent(
+                    invocation_id=self._invocation_id,
+                    progress=container_pb2.Progress(
+                        sequence=self._sequence,
+                        state="progress",
+                        partial_result=container_pb2.PartialResult(
+                            is_last=is_last,
+                            data_json=encoded,
+                        ),
+                    ),
+                )
+            )
+            self._is_last = is_last
+
+    def close(self) -> None:
+        """Drop later reports after the invocation commits a terminal event."""
+
+        with self._lock:
+            self._closed = True
+
+
+def _new_partial_result_reporter(
+    invocation_id: str,
+    send: Callable[[container_pb2.ExecutionEvent], None],
+) -> _PartialResultReporter:
+    """Build a thread-safe reporter for ordered partial-result snapshots."""
+
+    return _PartialResultReporter(invocation_id, send)
+
+
+def _close_partial_result_reporter(invocation: ContainerInvocation) -> None:
+    reporter = invocation._partial_result_reporter
+    if reporter is not None:
+        reporter.close()
+
+
 def _close_sync_invocation(
     cancellation: Event,
     provider: CallbackCredentialProvider,
     outgoing: Queue[container_pb2.ExecuteServerMessage | None],
+    reporter: _PartialResultReporter,
 ) -> None:
+    reporter.close()
     cancellation.set()
     provider.close()
     outgoing.put(None)
@@ -500,6 +608,7 @@ def _receive_sync_responses(
     try:
         for message in requests:
             if message.WhichOneof("message") != "credential_response":
+                _close_partial_result_reporter(invocation)
                 with terminal_lock:
                     invocation.cancellation.set()
                     provider.close()
@@ -540,6 +649,7 @@ def _run_sync_step(
         ))
     finally:
         provider.close()
+    _close_partial_result_reporter(invocation)
     with terminal_lock:
         _queue_sync_log(provider, invocation.invocation_id, outgoing)
         outgoing.put(container_pb2.ExecuteServerMessage(event=event))
@@ -559,7 +669,16 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
     ) -> None:
         self._steps = steps
         self._runtime_components = tuple(dict(item) for item in runtime_components)
-        self._active: dict[str, tuple[Event, CallbackCredentialProvider, Queue[container_pb2.ExecuteServerMessage | None], LockType]] = {}
+        self._active: dict[
+            str,
+            tuple[
+                Event,
+                CallbackCredentialProvider,
+                Queue[container_pb2.ExecuteServerMessage | None],
+                LockType,
+                _PartialResultReporter,
+            ],
+        ] = {}
         self._active_lock = Lock()
         self._shutdown = Event()
         self._worker_threads: set[Thread] = set()
@@ -571,6 +690,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         invocation_id = ""
         cancellation: Event | None = None
         provider: CallbackCredentialProvider | None = None
+        partial_result_reporter: _PartialResultReporter | None = None
         outgoing: Queue[container_pb2.ExecuteServerMessage | None] = Queue()
         # Keep each terminal event adjacent to its stream terminator.
         terminal_lock = Lock()
@@ -590,10 +710,24 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 invocation.timeout_seconds,
             )
             object.__setattr__(invocation, "credential_provider", provider)
-            self._register_invocation(invocation_id, cancellation, provider, outgoing, terminal_lock)
+            partial_result_reporter = _new_partial_result_reporter(
+                invocation_id,
+                lambda event: outgoing.put(container_pb2.ExecuteServerMessage(event=event)),
+            )
+            object.__setattr__(
+                invocation,
+                "_partial_result_reporter",
+                partial_result_reporter,
+            )
+            self._register_invocation(
+                invocation_id, cancellation, provider, outgoing, terminal_lock,
+                partial_result_reporter,
+            )
 
             def close() -> None:
-                _close_sync_invocation(invocation.cancellation, provider, outgoing)
+                _close_sync_invocation(
+                    invocation.cancellation, provider, outgoing, partial_result_reporter
+                )
 
             if not context.add_callback(close):
                 close()
@@ -612,6 +746,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                         try:
                             message = outgoing.get_nowait()
                         except Empty:
+                            partial_result_reporter.close()
                             cancellation.set()
                             provider.close()
                             outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
@@ -630,14 +765,20 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
         except StopIteration:
             return
         except ContainerInvocationError as error:
+            if partial_result_reporter is not None:
+                partial_result_reporter.close()
             yield container_pb2.ExecuteServerMessage(event=failure_event(invocation_id, error))
         except Exception:
+            if partial_result_reporter is not None:
+                partial_result_reporter.close()
             yield container_pb2.ExecuteServerMessage(event=failure_event(
                 invocation_id, ContainerInvocationError(
                     FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
                 )
             ))
         finally:
+            if partial_result_reporter is not None:
+                partial_result_reporter.close()
             if cancellation is not None:
                 cancellation.set()
                 if provider is not None:
@@ -651,8 +792,9 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             active = self._active.get(request.invocation_id)
         if active is None:
             return container_pb2.CancelResponse(accepted=False)
-        cancellation, provider, outgoing, terminal_lock = active
+        cancellation, provider, outgoing, terminal_lock, reporter = active
         with terminal_lock:
+            reporter.close()
             cancellation.set()
             provider.close()
             _queue_sync_log(provider, request.invocation_id, outgoing)
@@ -676,8 +818,15 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             workers = tuple(self._worker_threads)
         with self._active_lock:
             active = list(self._active.items())
-        for invocation_id, (cancellation, provider, outgoing, terminal_lock) in active:
+        for invocation_id, (
+            cancellation,
+            provider,
+            outgoing,
+            terminal_lock,
+            reporter,
+        ) in active:
             with terminal_lock:
+                reporter.close()
                 cancellation.set()
                 provider.close()
                 _queue_sync_log(provider, invocation_id, outgoing)
@@ -784,7 +933,15 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             ],
         )
 
-    def _register_invocation(self, invocation_id: str, cancellation: Event, provider: CallbackCredentialProvider, outgoing: Queue[container_pb2.ExecuteServerMessage | None], terminal_lock: LockType) -> None:
+    def _register_invocation(
+        self,
+        invocation_id: str,
+        cancellation: Event,
+        provider: CallbackCredentialProvider,
+        outgoing: Queue[container_pb2.ExecuteServerMessage | None],
+        terminal_lock: LockType,
+        reporter: _PartialResultReporter,
+    ) -> None:
         with self._active_lock:
             if self._shutdown.is_set():
                 raise ContainerInvocationError(
@@ -806,7 +963,13 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                     retryable=True,
                     outcome="not_started",
                 )
-            self._active[invocation_id] = (cancellation, provider, outgoing, terminal_lock)
+            self._active[invocation_id] = (
+                cancellation,
+                provider,
+                outgoing,
+                terminal_lock,
+                reporter,
+            )
 
     def _unregister_invocation(self, invocation_id: str, cancellation: Event) -> None:
         with self._active_lock:
@@ -1267,6 +1430,7 @@ class ContainerClient:
             if callable(add_done_callback):
                 add_done_callback(lambda: bridge.close(cancelled=bridge.has_pending))
             saw_log_batch = False
+            saw_last_partial_result = False
             for message in call:
                 if message.WhichOneof("message") == "log_batch":
                     log_batch = self._read_log_batch(
@@ -1283,6 +1447,10 @@ class ContainerClient:
                     message, bridge, invocation.invocation_id, saw_terminal
                 )
                 if event is not None:
+                    if isinstance(event, ContainerProgress) and event.partial_result is not None:
+                        if saw_last_partial_result:
+                            raise _protocol_error()
+                        saw_last_partial_result = event.partial_result.is_last
                     yield event
         except grpc.RpcError as error:
             rpc_failure = _rpc_error(error)
@@ -1542,12 +1710,35 @@ def _progress_from_event(event: container_pb2.ExecutionEvent) -> ContainerProgre
         raise _protocol_error()
     if progress.has_percent and not 0 <= progress.percent <= 100:
         raise _protocol_error()
+    partial_result: ContainerPartialResult | None = None
+    if progress.HasField("partial_result"):
+        if progress.state != "progress":
+            raise _protocol_error()
+        if (
+            not progress.partial_result.data_json
+            or len(progress.partial_result.data_json) > MAX_PARTIAL_RESULT_BYTES
+        ):
+            raise _protocol_error()
+        try:
+            decoded = _decode_json_object(progress.partial_result.data_json, "partial result data")
+            if (
+                len(decoded) > MAX_PARTIAL_RESULT_PROPERTIES
+                or canonical_json_bytes(decoded) != progress.partial_result.data_json
+            ):
+                raise ValueError("partial result data must be canonical JSON with at most 32 properties")
+            partial_result = ContainerPartialResult(
+                is_last=progress.partial_result.is_last,
+                data=freeze_json(decoded),
+            )
+        except Exception:
+            raise _protocol_error() from None
     return ContainerProgress(
         invocation_id=event.invocation_id,
         sequence=progress.sequence,
         state=progress.state,
         message=progress.message,
         percent=progress.percent if progress.has_percent else None,
+        partial_result=partial_result,
     )
 
 

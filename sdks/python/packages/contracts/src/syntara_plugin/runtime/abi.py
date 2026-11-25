@@ -20,7 +20,7 @@ from .outcome import MAX_MESSAGE_LENGTH
 # identifier for a language-neutral runtime protocol, not the OCI image
 # architecture. Health compares this value but cannot distinguish the earlier
 # unary Execute protocol from the current bidirectional v1alpha1 protocol.
-CONTAINER_ABI = "syntara.container/v1alpha1"
+CONTAINER_ABI = "syntara.container/v1alpha2"
 PROVIDER_ABI = "syntara.provider/v1alpha1"
 
 

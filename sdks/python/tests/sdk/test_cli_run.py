@@ -3868,6 +3868,37 @@ def test_scalar_scrubbing_distinguishes_bool_int_and_float() -> None:
     assert _scrub_structure([True, [False]], (), (True,)) == ["***", [False]]
 
 
+def test_partial_result_progress_is_recursively_scrubbed() -> None:
+    from syntara_plugin.runtime import ContainerPartialResult, ContainerProgress
+    from syntara_plugin.sdk.runner import _scrubbing_progress
+
+    delivered: list[ContainerProgress] = []
+    wrapped = _scrubbing_progress(delivered.append, ("TOKEN-SECRET",), (123456,))
+    assert wrapped is not None
+    wrapped(
+        ContainerProgress(
+            invocation_id="invoke-1",
+            sequence=1,
+            state="progress",
+            partial_result=ContainerPartialResult(
+                is_last=True,
+                data={
+                    "credential": "TOKEN-SECRET",
+                    "nested": ["url contains TOKEN-SECRET", 123456],
+                },
+            ),
+        )
+    )
+
+    assert delivered[0].partial_result == ContainerPartialResult(
+        is_last=True,
+        data={
+        "credential": "***",
+        "nested": ["url contains ***", "***"],
+        },
+    )
+
+
 def test_a_pre_health_liveness_failure_is_scrubbed() -> None:
     """A container log captured before health cannot carry a credential."""
 

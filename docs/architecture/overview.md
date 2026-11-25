@@ -81,7 +81,7 @@ flowchart TB
 ```
 
 - [`contracts/`](../../contracts/) owns language-neutral JSON Schemas,
-  conformance fixtures, and the `syntara.container/v1alpha1` protobuf. The
+  conformance fixtures, and the `syntara.container/v1alpha2` protobuf. The
   Python contracts distribution packages the canonical bundle and generated
   bindings, shared validation, typed step execution, and the container runtime
   adapter. The generic workload-request hash is shared here as well.

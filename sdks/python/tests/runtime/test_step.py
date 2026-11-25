@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -73,6 +74,57 @@ def test_execution_context_reports_cooperative_cancellation() -> None:
     assert not context.cancelled
     context.cancellation.set()
     assert context.cancelled
+
+
+def test_partial_result_context_method_emits_ordered_snapshots() -> None:
+    from syntara_plugin.runtime.container import _new_partial_result_reporter
+    from syntara_plugin.runtime.protocol import container_pb2
+
+    events: list[container_pb2.ExecutionEvent] = []
+    context = ExecutionContext(
+        invocation_id="invoke-1",
+        _partial_result_reporter=_new_partial_result_reporter("invoke-1", events.append),
+    )
+    payload = {"job_id": "123", "details": {"url": "https://aap.example/jobs/123"}}
+
+    reporter_context = context._with_credentials(())
+    reporter_context.report_partial_result(payload)
+    reporter_context.report_partial_result({}, is_last=True)
+
+    assert len(events) == 2
+    assert events[0].progress.sequence == 1
+    assert events[0].progress.state == "progress"
+    assert events[0].progress.partial_result.is_last is False
+    assert json.loads(events[0].progress.partial_result.data_json) == payload
+    assert events[1].progress.sequence == 2
+    assert events[1].progress.state == "progress"
+    assert events[1].progress.partial_result.is_last is True
+    assert events[1].progress.partial_result.data_json == b"{}"
+    reporter = context._partial_result_reporter
+    assert reporter is not None
+    reporter.close()
+    reporter_context.report_partial_result({"job_id": "123"})
+    assert len(events) == 2
+    with pytest.raises(ValueError, match="16384-byte"):
+        _new_partial_result_reporter("oversized", lambda _event: None)(
+            {"value": "x" * 16_385}
+        )
+    with pytest.raises(ValueError, match="32-property"):
+        _new_partial_result_reporter("too-many", lambda _event: None)(
+            {f"key-{index}": index for index in range(33)}
+        )
+
+    final_reporter = _new_partial_result_reporter("final", lambda _event: None)
+    final_reporter({}, True)
+    with pytest.raises(ValueError, match="after is_last=True"):
+        final_reporter({"late": True})
+
+
+def test_partial_result_is_unavailable_outside_container_execution() -> None:
+    context = ExecutionContext(invocation_id="direct")
+
+    with pytest.raises(RuntimeError, match="unavailable"):
+        context.report_partial_result({"job_id": "123"})
 
 
 def test_all_category_classes_resolve_their_pydantic_models() -> None:

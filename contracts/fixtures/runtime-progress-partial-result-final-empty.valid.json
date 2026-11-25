@@ -1,0 +1,11 @@
+{
+  "apiVersion": "syntara.io/v1alpha1",
+  "kind": "ContainerProgress",
+  "invocationId": "invoke-no-partial-data",
+  "sequence": 1,
+  "state": "progress",
+  "partialResult": {
+    "isLast": true,
+    "data": {}
+  }
+}

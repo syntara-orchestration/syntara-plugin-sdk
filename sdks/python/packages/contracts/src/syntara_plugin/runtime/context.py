@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import InitVar, dataclass, field
 from enum import Enum
 from threading import Event
@@ -38,6 +38,7 @@ class ExecutionContext:
             cancelled to decide whether to stop work.
         credential_provider: Host-supplied credential access. Plugin code uses
             credential(name), scoped to the installed step's declared bindings.
+        partial_result_reporter: Runtime-provided transport-neutral event callback.
     """
 
     invocation_id: str
@@ -45,6 +46,9 @@ class ExecutionContext:
     cancellation: Event = field(default_factory=Event, compare=False, repr=False)
     credential_provider: InitVar[CredentialProvider | None | _NoCredentialProvider] = (
         _NoCredentialProvider.VALUE
+    )
+    _partial_result_reporter: Callable[[Mapping[str, Any], bool], None] | None = field(
+        default=None, compare=False, repr=False
     )
     _provider: CredentialProvider | None = field(
         default=None, init=False, compare=False, repr=False
@@ -88,12 +92,33 @@ class ExecutionContext:
             invocation_id=self.invocation_id,
             runtime_context=self.runtime_context,
             cancellation=self.cancellation,
+            _partial_result_reporter=self._partial_result_reporter,
         )
         object.__setattr__(context, "_toolbox", self._toolbox)
         object.__setattr__(
             context, "_credential_scope", _CredentialScope(names, self._provider, schemas)
         )
         return context
+
+    def report_partial_result(
+        self, data: Mapping[str, Any], *, is_last: bool = False
+    ) -> None:
+        """Emit a bounded snapshot and optionally mark it as the last update.
+
+        The event is best-effort and does not wait for host acknowledgement.
+        It does not complete the step. Container execution checks each partial
+        object against the step's output schema while allowing object fields
+        required only by the final output to be omitted. Included values must
+        still satisfy their declared schemas. Include any branch discriminator
+        when reporting fields under a conditional output schema. Partial objects
+        have at most 32 top-level properties and canonical representations of
+        at most 16384 bytes. Pass an empty object with ``is_last=True`` when no
+        partial data is available.
+        """
+
+        if self._partial_result_reporter is None:
+            raise RuntimeError("partial-result reporting is unavailable for this execution")
+        self._partial_result_reporter(data, is_last)
 
     @property
     def cancelled(self) -> bool:

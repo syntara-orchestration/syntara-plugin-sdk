@@ -559,10 +559,21 @@ Follow these rules in every implementation:
 The `context` argument is an `ExecutionContext`. It carries the
 `invocation_id`, bounded non-secret
 `runtime_context` data, and a `cancelled` flag for cooperative cancellation.
-It exposes no transport types. Any custom-runner step type can request its declared credential
-through `context.credential(name)`; see [credential access](runtime-and-oci.md#credential-access).
+It exposes no transport types. Any custom-runner step type can request its
+declared credential through `context.credential(name)`; see
+[credential access](runtime-and-oci.md#credential-access).
 For structured operational logs, use `context.toolbox.log("INFO", "Started")`;
 see [host services](runtime-and-oci.md#host-services).
+For a long-running step that can expose a partial output snapshot, call
+`context.report_partial_result(data)` while `run()` continues. You can send
+multiple updates; each is a fresh partial view that replaces the previous one.
+Fields omitted from a later update are not carried forward. Pass
+`is_last=True` with the final snapshot. If there is no partial data to publish,
+send `context.report_partial_result({}, is_last=True)` to mark that no updates
+will follow. These progress events are not the step's output, and the step must
+still return its declared output. The method is available during container
+execution. For delivery limits and payload bounds, see
+[partial-result progress events](runtime-and-oci.md#partial-result-progress-events).
 Check `context.cancelled`
 before a long or irreversible operation, and stop with a `CANCELLED` failure
 when it is `True`.
@@ -1216,7 +1227,7 @@ same single call to `run()`:
   [Minimal direct execution](runtime-and-oci.md#minimal-direct-execution).
 - **The container path** (`syntara-plugin run`, `invoke_step_in_container`,
   and the workload image) runs the same implementation behind the
-  `syntara.container/v1alpha1` gRPC protocol.
+  `syntara.container/v1alpha2` gRPC protocol.
 
 The two paths report outcomes differently:
 

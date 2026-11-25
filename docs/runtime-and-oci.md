@@ -40,7 +40,7 @@ The Python helper implementation is in
 [`container.py`](../sdks/python/packages/contracts/src/syntara_plugin/runtime/container.py).
 
 The Application Binary Interface (ABI) is the boundary between an Execution
-Plane launcher and a workload. The `syntara.container/v1alpha1` bidirectional
+Plane launcher and a workload. The `syntara.container/v1alpha2` bidirectional
 invocation stream carries non-secret inputs and business events. For a
 credential read, the workload sends the declared CredentialRecipe ID as a
 logical name. The Execution Plane resolves that name within the current
@@ -75,6 +75,48 @@ continues, but credential reads cannot complete after that closure. An invalid
 follow-up message processed before the terminal event is committed cancels the
 invocation and produces a cancellation failure. Later messages may be ignored.
 On shutdown, active invocations may finish during the server's grace period.
+
+### Partial-result progress events
+
+A step can publish a structured view of partial output while it continues
+working. Each update replaces the previous partial view; omitted fields are
+not carried forward:
+
+```python
+context.report_partial_result({"job_id": "123", "job_url": "https://aap.example/jobs/123"})
+context.report_partial_result(
+    {"job_id": "123", "job_url": "https://aap.example/jobs/123", "status": "running"},
+    is_last=True,
+)
+```
+
+The event is a `ContainerProgress` with `state: "progress"` and an optional
+`partialResult` object containing `isLast` and `data`. `data` is a fresh partial
+view and may omit fields required by the final output. It may be empty and must
+have at most 32 top-level members and fit within 16384 canonical UTF-8 bytes.
+The container runtime checks supplied object properties and values
+against the step's output schema, while allowing object properties to be
+omitted. For conditional output schemas, include the branch discriminator when
+sending branch-specific fields. Included arrays must satisfy their complete
+array schema. The final output is validated against the unmodified schema.
+`isLast: true` tells the host that no more partial-result updates will follow.
+Sequence numbers order updates; consumers should use the latest available view.
+Reporting does not wait for acknowledgement or stop the step. The step must
+still return its normal output or failure. `message` and `percent` remain
+optional on progress events.
+
+After reporting `is_last=True`, another partial-result report from that
+invocation is an error. If no partial data was available, send the empty final
+marker `context.report_partial_result({}, is_last=True)`.
+
+The `ContainerClient` accepts multiple partial-result updates, rejects more
+partial-result data after `isLast: true`, and rejects events after a terminal
+event. Delivery from the Execution Plane to its
+downstream callback is best-effort; consumers must tolerate missing, duplicate,
+or late snapshots. Do not include credentials or secret values; SDK progress
+callbacks scrub known input and credential values recursively.
+See [ADR 0015](../.sdlc/adrs/0015-partial-result-progress.md) for the
+compatibility and delivery decision.
 
 The generic `ContainerWorkloadRequest` carries its work item and policy
 snapshot without credential leases or secret file paths. Its work item contains
@@ -133,7 +175,7 @@ with all adapter-specific bootstrap details under `adapter`:
 
 ```json
 {
-  "abi": "syntara.container/v1alpha1",
+  "abi": "syntara.container/v1alpha2",
   "adapter": {
     "bindingsFactory": "acme_plugin.runtime:create_bindings"
   }
@@ -193,7 +235,7 @@ resolved execution data as a read-only JSON file, named by
     "stepIdentity": "acme.plugin.echo",
     "runtimeKind": "custom-runner",
     "entryPoint": "acme_plugin.steps:EchoStep",
-    "abi": "syntara.container/v1alpha1",
+    "abi": "syntara.container/v1alpha2",
     "schemaDigests": {
       "input": "sha256:<64 lowercase hex digits>",
       "output": "sha256:<64 lowercase hex digits>"
@@ -289,12 +331,13 @@ Execution Plane and a step type container use to exchange execution requests,
 progress, results, and cancellation. It is not a CPU ABI. The current contract
 is defined in
 [`container.proto`](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
-and identified as `syntara.container/v1alpha1`.
+and identified as `syntara.container/v1alpha2`.
 
 The `Result` protobuf uses the structured error-result fields defined by this
-release. Bidirectional Execute replaces the earlier unary-request protocol
-under the same `v1alpha1` identifier. Existing peers must be updated together;
-Health checks the identifier but cannot distinguish the two protocol shapes.
+release. The `v1alpha2` ABI extends the bidirectional `v1alpha1` protocol with
+optional structured partial-result progress data. It is incompatible with `v1alpha1`
+peers, so the host and workload must be updated together. Health reports the
+ABI and the client requires an exact match before execution.
 
 Final workload images, rather than a reusable SDK base layer, are the OCI
 artifacts published for deployment. They must record their immutable
@@ -343,7 +386,7 @@ written in another language ships its own server, which must:
   `entryPoint` to a handler by the image's own rule, and refuse to start on any
   mismatch or unknown entry point.
 - **Answer `Health`** with `ready`, `runtime_abi` set to
-  `syntara.container/v1alpha1`, and the bound step revision IDs.
+  `syntara.container/v1alpha2`, and the bound step revision IDs.
 - **Dispatch `Execute` by `step_revision_id`.** The first client message is
   `start`. An unknown revision is a `NOT_FOUND` failure and a different
   `runtime_abi` an `ABI_VIOLATION` failure, both with outcome `not_started`. A
