@@ -14,7 +14,7 @@ import base64
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any, Protocol, cast
 from urllib.error import HTTPError, URLError
@@ -156,7 +156,7 @@ class RegistryCredentials:
     """Ephemeral basic-auth input for a single SDK publication invocation."""
 
     username: str
-    password: str
+    password: str = field(repr=False)
 
     def authorization_header(self) -> str:
         """Encode Basic credentials only while building an in-memory request."""
