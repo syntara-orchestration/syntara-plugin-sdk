@@ -584,7 +584,7 @@ def test_mounted_tls_material_is_relabelled_for_both_engines(monkeypatch, tmp_pa
 
 
 def test_published_runtime_grants_the_container_only_a_restricted_group(
-    monkeypatch, tmp_path
+    monkeypatch,
 ) -> None:
     """The managed run delivers the server key through one supplemental group.
 
@@ -595,13 +595,7 @@ def test_published_runtime_grants_the_container_only_a_restricted_group(
     image declares, so no runtime-identity resolution is needed.
     """
 
-    material = container_engine._TlsMaterial(
-        client_ca=tmp_path / "ca.crt",
-        client_certificate=tmp_path / "client.crt",
-        client_key=tmp_path / "client.key",
-        server_certificate=tmp_path / "server.crt",
-        server_key=tmp_path / "server.key",
-    )
+    material = _fake_material()
     commands: list[list[str]] = []
 
     def fake_run(command, **_kwargs):
@@ -630,49 +624,31 @@ def test_published_runtime_grants_the_container_only_a_restricted_group(
             assert granted == expected, (command_name, rootless, sorted(granted))
 
 
-def test_rootless_detection_reads_the_engine_answer(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("answers", "expected"),
+    [
+        ({"podman": "true\n", "docker": "[name=seccomp,profile=builtin name=rootless]\n"}, True),
+        ({"podman": "false\n", "docker": "[name=seccomp,profile=builtin]\n"}, False),
+    ],
+)
+def test_rootless_detection_reads_the_engine_answer(
+    monkeypatch, answers: dict[str, str], expected: bool
+) -> None:
     """Podman answers a boolean; docker names rootless among its options."""
 
     def fake_run(command, **_kwargs):
-        if list(command[:3]) == ["podman", "info", "--format"]:
-            return SimpleNamespace(returncode=0, stdout="true\n", stderr="")
-        if list(command[:3]) == ["docker", "info", "--format"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="[name=seccomp,profile=builtin name=rootless]\n",
-                stderr="",
-            )
+        if list(command[:3]) == [command[0], "info", "--format"]:
+            return SimpleNamespace(returncode=0, stdout=answers[command[0]], stderr="")
         raise AssertionError(f"unexpected engine command: {command}")
 
     monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
     assert (
         container_engine._engine_is_rootless(container_engine.ContainerEngine("podman"))
-        is True
+        is expected
     )
     assert (
         container_engine._engine_is_rootless(container_engine.ContainerEngine("docker"))
-        is True
-    )
-
-
-def test_rootful_engines_are_detected_from_the_same_answers(monkeypatch) -> None:
-    def fake_run(command, **_kwargs):
-        if list(command[:3]) == ["podman", "info", "--format"]:
-            return SimpleNamespace(returncode=0, stdout="false\n", stderr="")
-        if list(command[:3]) == ["docker", "info", "--format"]:
-            return SimpleNamespace(
-                returncode=0, stdout="[name=seccomp,profile=builtin]\n", stderr=""
-            )
-        raise AssertionError(f"unexpected engine command: {command}")
-
-    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
-    assert (
-        container_engine._engine_is_rootless(container_engine.ContainerEngine("podman"))
-        is False
-    )
-    assert (
-        container_engine._engine_is_rootless(container_engine.ContainerEngine("docker"))
-        is False
+        is expected
     )
 
 

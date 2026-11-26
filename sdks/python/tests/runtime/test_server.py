@@ -1476,24 +1476,39 @@ def test_private_key_access_follows_symlinks_and_names_dangling_ones(
     assert str(dangling) in str(raised.value)
 
 
-def test_runtime_startup_reports_an_unreadable_tls_key(tmp_path: Path) -> None:
-    """The startup diagnostic names the path instead of a bare read failure."""
+def _tls_runtime_fixture(
+    tmp_path: Path,
+) -> tuple[RuntimeServerConfig, Path, Path, Path, Path, Path]:
+    """One free-port runtime config with generated mTLS material.
 
-    (
-        certificate,
-        key,
-        client_ca,
-        _client_certificate,
-        _client_key,
-    ) = _generate_tls_material(tmp_path)
-    key.chmod(0o000)
+    Shared by the transport-policy tests: the config's address is the connect
+    target, and the material is returned as (server certificate, server key,
+    client CA, client certificate, client key).
+    """
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    certificate, key, client_ca, client_certificate, client_key = (
+        _generate_tls_material(tmp_path)
+    )
     config = replace(
         _resolved_config(tmp_path, [_resolved_record()]),
-        address="localhost:50099",
+        address=f"localhost:{port}",
         tls_certificate=certificate,
         tls_key=key,
         tls_client_ca=client_ca,
     )
+    return config, certificate, key, client_ca, client_certificate, client_key
+
+
+def test_runtime_startup_reports_an_unreadable_tls_key(tmp_path: Path) -> None:
+    """The startup diagnostic names the path instead of a bare read failure."""
+
+    config, _certificate, key, _client_ca, _client_certificate, _client_key = (
+        _tls_runtime_fixture(tmp_path)
+    )
+    key.chmod(0o000)
 
     async def scenario() -> None:
         with pytest.raises(RuntimeServerError) as raised:
@@ -1510,27 +1525,13 @@ def test_runtime_startup_reports_an_unreadable_tls_key(tmp_path: Path) -> None:
 def test_runtime_server_tls_floor_accepts_tls_12_and_tls_13(tmp_path: Path) -> None:
     """The pinned grpcio floor is TLS 1.2: both live versions handshake."""
 
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    (
-        certificate,
-        key,
-        client_ca,
-        client_certificate,
-        client_key,
-    ) = _generate_tls_material(tmp_path)
+    config, _certificate, _key, client_ca, client_certificate, client_key = (
+        _tls_runtime_fixture(tmp_path)
+    )
+    address = config.address
 
     async def scenario() -> None:
-        server = create_runtime_server(
-            replace(
-                _resolved_config(tmp_path, [_resolved_record()]),
-                address=f"localhost:{port}",
-                tls_certificate=certificate,
-                tls_key=key,
-                tls_client_ca=client_ca,
-            )
-        )
+        server = create_runtime_server(config)
         await server.start()
         try:
             # The probes block, and the aio server shares this loop.
@@ -1538,7 +1539,7 @@ def test_runtime_server_tls_floor_accepts_tls_12_and_tls_13(tmp_path: Path) -> N
                 completed = await asyncio.to_thread(
                     subprocess.run,
                     [
-                        "openssl", "s_client", "-connect", f"localhost:{port}",
+                        "openssl", "s_client", "-connect", address,
                         tls_version, "-CAfile", str(client_ca),
                         "-cert", str(client_certificate), "-key", str(client_key),
                         "-brief",
@@ -1561,33 +1562,19 @@ def test_runtime_server_tls_floor_accepts_tls_12_and_tls_13(tmp_path: Path) -> N
 def test_runtime_server_tls_floor_refuses_tls_11(tmp_path: Path) -> None:
     """TLS 1.1 is below the supported floor and must not handshake."""
 
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    (
-        certificate,
-        key,
-        client_ca,
-        client_certificate,
-        client_key,
-    ) = _generate_tls_material(tmp_path)
+    config, _certificate, _key, client_ca, client_certificate, client_key = (
+        _tls_runtime_fixture(tmp_path)
+    )
+    address = config.address
 
     async def scenario() -> None:
-        server = create_runtime_server(
-            replace(
-                _resolved_config(tmp_path, [_resolved_record()]),
-                address=f"localhost:{port}",
-                tls_certificate=certificate,
-                tls_key=key,
-                tls_client_ca=client_ca,
-            )
-        )
+        server = create_runtime_server(config)
         await server.start()
         try:
             completed = await asyncio.to_thread(
                 subprocess.run,
                 [
-                    "openssl", "s_client", "-connect", f"localhost:{port}",
+                    "openssl", "s_client", "-connect", address,
                     "-tls1_1", "-cipher", "DEFAULT@SECLEVEL=0",
                     "-CAfile", str(client_ca),
                     "-cert", str(client_certificate), "-key", str(client_key),
@@ -1612,34 +1599,20 @@ def test_runtime_server_refuses_a_channel_without_a_client_certificate(
 ) -> None:
     """Mutual TLS stays mandatory: no client certificate, no runtime access."""
 
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    (
-        certificate,
-        key,
-        client_ca,
-        _client_certificate,
-        _client_key,
-    ) = _generate_tls_material(tmp_path)
+    config, _certificate, _key, client_ca, _client_certificate, _client_key = (
+        _tls_runtime_fixture(tmp_path)
+    )
+    address = config.address
 
     async def scenario() -> None:
-        server = create_runtime_server(
-            replace(
-                _resolved_config(tmp_path, [_resolved_record()]),
-                address=f"localhost:{port}",
-                tls_certificate=certificate,
-                tls_key=key,
-                tls_client_ca=client_ca,
-            )
-        )
+        server = create_runtime_server(config)
         await server.start()
         try:
             def probe_without_certificate() -> bool:
                 credentials = grpc.ssl_channel_credentials(
                     root_certificates=client_ca.read_bytes()
                 )
-                channel = grpc.secure_channel(f"localhost:{port}", credentials)
+                channel = grpc.secure_channel(address, credentials)
                 try:
                     grpc.channel_ready_future(channel).result(timeout=5)
                     try:
