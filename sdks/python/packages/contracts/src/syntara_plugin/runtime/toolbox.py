@@ -344,6 +344,16 @@ def _cancel_toolbox(toolbox: ContainerToolbox) -> None:
         except Exception:
             _discard_toolbox(toolbox, force=True)
             return
+    _run_cancel_scan(toolbox, state, scan, events)
+
+
+def _run_cancel_scan(
+    toolbox: ContainerToolbox,
+    state: _ToolboxState,
+    scan: Callable[[Any], bool],
+    events: list[_LogRecord],
+) -> None:
+    """Screen in the background; discard whatever is not screened in time."""
     worker = Thread(
         target=_scan_records_quietly, args=(toolbox, state, scan, events),
         name="syntara-cancel-log-scan", daemon=True,

@@ -325,7 +325,8 @@ def test_read_after_cancellation_never_reaches_the_step(asynchronous: bool) -> N
                     break
                 await asyncio.sleep(0.02)
             assert outcome.failure is FailureCode.CANCELLED
-            assert ProbeStep.observed and ProbeStep.observed[0] != "read"
+            assert ProbeStep.observed
+            assert ProbeStep.observed[0] != "read"
             _no_secret(outcome)
 
     asyncio.run(scenario())
@@ -401,6 +402,19 @@ def test_unexpected_client_message_during_post_step_scan_keeps_prepared_outcome(
     asyncio.run(scenario())
 
 
+async def _cancel_during_blocked_read(client: ContainerClient) -> _Outcome:
+    """Run one read_blocking invocation and cancel it once the step is running."""
+    outcome = _Outcome()
+    thread = Thread(target=_consume, args=(client, _invocation("read_blocking"), outcome))
+    thread.start()
+    await _wait(ProbeStep.started)
+    assert await asyncio.to_thread(client.cancel, "cancel-1")
+    await _wait(outcome.done)
+    ProbeStep.release.set()
+    thread.join(3)
+    return outcome
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 def test_cancel_scan_shares_the_invocation_log_budget(
     asynchronous: bool, monkeypatch: pytest.MonkeyPatch,
@@ -410,14 +424,7 @@ def test_cancel_scan_shares_the_invocation_log_budget(
 
     async def scenario() -> None:
         async with _runtime(asynchronous) as (client, _service, _channel):
-            outcome = _Outcome()
-            thread = Thread(target=_consume, args=(client, _invocation("read_blocking"), outcome))
-            thread.start()
-            await _wait(ProbeStep.started)
-            assert await asyncio.to_thread(client.cancel, "cancel-1")
-            await _wait(outcome.done)
-            ProbeStep.release.set()
-            thread.join(3)
+            outcome = await _cancel_during_blocked_read(client)
             assert outcome.failure is FailureCode.CANCELLED
             assert outcome.messages == ["safe before"]
             assert outcome.dropped == 2
@@ -439,14 +446,7 @@ def test_cancel_discards_when_reads_cannot_be_revoked(
 
     async def scenario() -> None:
         async with _runtime(asynchronous) as (client, _service, _channel):
-            outcome = _Outcome()
-            thread = Thread(target=_consume, args=(client, _invocation("read_blocking"), outcome))
-            thread.start()
-            await _wait(ProbeStep.started)
-            assert await asyncio.to_thread(client.cancel, "cancel-1")
-            await _wait(outcome.done)
-            ProbeStep.release.set()
-            thread.join(3)
+            outcome = await _cancel_during_blocked_read(client)
             assert outcome.failure is FailureCode.CANCELLED
             assert outcome.messages == []
             assert outcome.dropped == 3
@@ -653,7 +653,8 @@ def test_cancel_freeze_after_scope_teardown_still_screens_secrets(
             assert await asyncio.to_thread(client.cancel, "cancel-1")
             await _wait(outcome.done)
             thread.join(3)
-            assert hook_taken.is_set() and detached.is_set()
+            assert hook_taken.is_set()
+            assert detached.is_set()
             assert outcome.failure is FailureCode.CANCELLED
             _no_secret(outcome)
             assert outcome.messages == ["safe before", "safe after"]
