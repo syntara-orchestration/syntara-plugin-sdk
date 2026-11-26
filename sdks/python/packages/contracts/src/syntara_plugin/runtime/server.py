@@ -1,4 +1,4 @@
-"""Launch the in-container gRPC runtime from image-local step bindings."""
+"""Launch the in-container gRPC runtime from image-local step bindings, and construct synchronous runtime servers for host processes."""
 
 from __future__ import annotations
 
@@ -7,9 +7,10 @@ import importlib
 import json
 import os
 import signal
+import ssl
 import weakref
 from collections.abc import AsyncIterator, Mapping, Sequence
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
@@ -33,9 +34,11 @@ from .container import (
     INCOMPLETE_STEP_MESSAGE,
     ContainerInvocation,
     ContainerResult,
+    ContainerRuntimeService,
     ContainerStepHandler,
     StepRegistry,
     _log_notification,
+    add_container_runtime_service,
     failure_event,
     invocation_from_request,
     terminal_execution_event,
@@ -550,12 +553,19 @@ def _create_runtime_server(config: RuntimeServerConfig) -> tuple[grpc.aio.Server
     service = AsyncContainerRuntimeService(steps, runtime_components=runtime_components)
     container_pb2_grpc.add_ContainerServiceServicer_to_server(service, server)
     credentials = _server_credentials(config)
-    port = (
-        server.add_secure_port(config.address, credentials)
-        if credentials is not None
-        else server.add_insecure_port(config.address)
-    )
+    try:
+        port = (
+            server.add_secure_port(config.address, credentials)
+            if credentials is not None
+            else server.add_insecure_port(config.address)
+        )
+    except RuntimeError as error:
+        # Current grpc releases raise on a failed bind instead of returning 0.
+        _discard_failed_aio_listener(server, service)
+        message = f"could not bind the runtime gRPC listener: {config.address}"
+        raise RuntimeServerError(message) from error
     if port == 0:
+        _discard_failed_aio_listener(server, service)
         message = f"could not bind the runtime gRPC listener: {config.address}"
         raise RuntimeServerError(message)
     return server, service
@@ -752,6 +762,236 @@ def main() -> None:
     asyncio.run(serve_runtime(load_runtime_server_config()))
 
 
+@dataclass(frozen=True)
+class ContainerRuntimeServer:
+    """One synchronous runtime server, constructed and bound but not started.
+
+    Attributes:
+        server: The gRPC server; call ``server.start()`` to serve and
+            ``server.stop(grace)`` to stop it.
+        service: The registered synchronous runtime service; call
+            ``service.shutdown()`` during teardown to revoke callbacks and
+            release invocation workers.
+        address: The bound listener address, ``unix:<path>`` or ``host:port``.
+            A TCP ``:0`` request resolves to the actually bound port.
+    """
+
+    server: grpc.Server
+    service: ContainerRuntimeService
+    address: str
+
+
+def create_container_runtime_server(
+    steps: StepRegistry,
+    *,
+    address: str,
+    tls_certificate: Path | None = None,
+    tls_key: Path | None = None,
+    tls_client_ca: Path | None = None,
+    max_workers: int = 2,
+) -> ContainerRuntimeServer:
+    """Construct a synchronous runtime server on a listener this helper owns.
+
+    This is the supported construction path when a host process must build
+    the runtime synchronously: local tooling, embedders, and test rigs
+    outside a workload image. It creates the server, registers the container
+    runtime service, and adds exactly one listener; it never adds another,
+    and ports added afterwards to the returned server are the caller's own
+    unsupported bypass of these checks:
+
+    * ``address="unix:/abs/path"`` binds a Unix-domain socket. Plaintext is
+      acceptable there only because filesystem permissions gate access:
+      point it at a socket inside an owner-only private directory and remove
+      that directory when the server stops. An existing path is rejected
+      instead of silently replaced, so a second server cannot take the
+      address over. TLS material is rejected for this listener kind.
+    * ``address="host:port"`` binds a TCP listener and requires complete
+      mutual-TLS material (``tls_certificate``, ``tls_key``,
+      ``tls_client_ca``); clients must present a certificate the client CA
+      signed. Port ``0`` binds an ephemeral port and the bound address is
+      returned. Plaintext TCP is never a supported setup.
+
+    A failed bind stops the server, shuts the service down, and raises
+    :class:`RuntimeServerError`; no listener is left behind. The caller owns
+    the lifecycle after construction: start and stop ``server``, call
+    ``service.shutdown()`` during teardown, and remove a Unix socket's
+    directory yourself. gRPC removes the socket file when a started server
+    stops cleanly; a crash or a discarded, never-started server leaves it
+    behind, and the leftover path is rejected on the next construction.
+
+    ``max_workers`` sizes the server's thread pool. Each active invocation
+    holds one pool thread for the lifetime of its Execute stream, and Cancel
+    needs one too, so size it above the number of invocations that should run
+    concurrently; the default 2 suits the single-invocation local-tooling
+    pattern. The service separately bounds concurrent invocations
+    process-wide.
+
+    Workload images must not use this helper: they run the SDK runtime
+    server (:func:`serve_runtime`), which owns signal handling and the
+    image's single listener. No SIGTERM handler is installed here.
+    """
+
+    _validate_construction_options(max_workers, tls_certificate, tls_key, tls_client_ca)
+    kind, host = _classify_listener_address(address)
+    if kind == "unix" and os.path.lexists(_unix_socket_path(address)):
+        # gRPC would unlink and replace an existing socket file, silently
+        # taking the address over from a server that still listens on it.
+        raise RuntimeServerError(f"the unix socket path already exists: {address}")
+    # The TLS material is read before any resource exists: an unreadable or
+    # invalid path must fail as a configuration error, never as a bind failure.
+    credentials = _listener_tls_credentials(kind, tls_certificate, tls_key, tls_client_ca)
+    # grpc enables SO_REUSEPORT by default, which would let a second server
+    # silently share this address; one listener means one server.
+    server = grpc.server(
+        ThreadPoolExecutor(max_workers=max_workers),
+        options=[("grpc.so_reuseport", 0)],
+    )
+    service = add_container_runtime_service(server, steps, install_sigterm_shutdown=False)
+    try:
+        if kind == "unix":
+            bound = server.add_insecure_port(address)
+        else:
+            assert credentials is not None
+            bound = server.add_secure_port(address, credentials)
+    except RuntimeError as error:
+        # Current grpc releases raise on a failed bind instead of returning 0.
+        _discard_failed_listener(server, service)
+        raise RuntimeServerError(f"could not bind the runtime listener: {address}") from error
+    if bound == 0:
+        _discard_failed_listener(server, service)
+        raise RuntimeServerError(f"could not bind the runtime listener: {address}")
+    bound_address = address if kind == "unix" else _tcp_listener_address(host, bound)
+    return ContainerRuntimeServer(server, service, bound_address)
+
+
+def _discard_failed_listener(server: grpc.Server, service: ContainerRuntimeService) -> None:
+    """Stop an unstarted server and release its service after a failed bind."""
+
+    server.stop(None)
+    service.shutdown()
+
+
+def _discard_failed_aio_listener(
+    server: grpc.aio.Server, service: AsyncContainerRuntimeService
+) -> None:
+    """Release an unstarted aio server and its service after a failed bind.
+
+    ``grpc.aio`` refuses to build a server without a live loop context, so
+    one exists here. A block on the running loop is impossible: the stop is
+    scheduled there and completes on its next cycle, while a caller that
+    built the server on a current-but-not-running loop gets the stop
+    completed synchronously. The service shutdown is immediate in both cases.
+    """
+
+    service.shutdown()
+    stop = server.stop(None)
+    try:
+        asyncio.get_running_loop().create_task(stop)
+    except RuntimeError:
+        # No running loop here: the server was built on the caller's current
+        # loop, so completing the stop there is safe.
+        asyncio.get_event_loop().run_until_complete(stop)
+
+
+def _validate_construction_options(
+    max_workers: int,
+    tls_certificate: Path | None,
+    tls_key: Path | None,
+    tls_client_ca: Path | None,
+) -> None:
+    """Reject misused construction options before anything is created."""
+
+    if not isinstance(max_workers, int) or isinstance(max_workers, bool):
+        raise TypeError("max_workers must be an integer")
+    if max_workers < 1:
+        raise ValueError("max_workers must be positive")
+    for name, value in (
+        ("tls_certificate", tls_certificate),
+        ("tls_key", tls_key),
+        ("tls_client_ca", tls_client_ca),
+    ):
+        if value is not None and not isinstance(value, Path):
+            raise TypeError(f"{name} must be a Path or None")
+
+
+def _listener_tls_credentials(
+    kind: str,
+    tls_certificate: Path | None,
+    tls_key: Path | None,
+    tls_client_ca: Path | None,
+) -> grpc.ServerCredentials | None:
+    """Return the listener's server credentials, or None for a unix socket."""
+
+    supplied_tls = (tls_certificate, tls_key, tls_client_ca)
+    if kind == "unix":
+        if any(value is not None for value in supplied_tls):
+            raise RuntimeServerError(
+                "a unix socket listener does not use TLS;"
+                " omit the TLS material or bind a TCP listener instead"
+            )
+        return None
+    if any(value is not None for value in supplied_tls) and not all(
+        value is not None for value in supplied_tls
+    ):
+        raise RuntimeServerError("runtime gRPC TLS requires certificate, key, and client CA paths")
+    if tls_certificate is None:
+        raise RuntimeServerError("runtime gRPC TCP listeners require mutual TLS")
+    assert tls_key is not None
+    assert tls_client_ca is not None
+    return _ssl_server_credentials(tls_certificate, tls_key, tls_client_ca)
+
+
+# gRPC URI scheme names that a naive host:port split would misparse as a
+# hostname, silently binding a completely different listener kind.
+_GRPC_SCHEME_HOSTS = frozenset({"unix-abstract", "vsock", "ipv4", "ipv6", "dns"})
+_UNIX_LISTENER_PREFIX = "unix:"
+
+
+def _unix_socket_path(address: str) -> str:
+    """Return the path of one ``unix:`` listener address."""
+
+    return address.removeprefix(_UNIX_LISTENER_PREFIX)
+
+
+def _classify_listener_address(address: str) -> tuple[str, str]:
+    """Return the listener kind and host for one caller-supplied address."""
+
+    if not isinstance(address, str):
+        raise TypeError("address must be a string")
+    if any(character.isspace() or not character.isprintable() for character in address):
+        # Whitespace or control characters the caller cannot see must not
+        # surface later as a misleading bind failure or a truncated path.
+        raise RuntimeServerError(
+            "the listener address must be a host:port TCP address or a unix: socket path"
+        )
+    if address.startswith(_UNIX_LISTENER_PREFIX):
+        path = _unix_socket_path(address)
+        if not path.startswith("/"):
+            raise RuntimeServerError(
+                "a unix listener requires an absolute socket path: unix:/dir/runtime.sock"
+            )
+        return "unix", ""
+    host, port = _split_address(address)
+    if (
+        not host
+        or host in _GRPC_SCHEME_HOSTS
+        or not port.isdecimal()
+        or not 0 <= int(port) <= 65_535
+    ):
+        raise RuntimeServerError(
+            "the listener address must be a host:port TCP address or a unix: socket path"
+        )
+    return "tcp", host
+
+
+def _tcp_listener_address(host: str, port: int) -> str:
+    """Render one bound TCP address, bracketing an IPv6 literal."""
+
+    if ":" in host:
+        return f"[{host}]:{port}"
+    return f"{host}:{port}"
+
+
 def _runtime_document(
     environ: Mapping[str, str],
     config_path: Path | None,
@@ -840,16 +1080,31 @@ def _server_credentials(config: RuntimeServerConfig) -> grpc.ServerCredentials |
         return None
     assert config.tls_key is not None
     assert config.tls_client_ca is not None
+    return _ssl_server_credentials(config.tls_certificate, config.tls_key, config.tls_client_ca)
+
+
+def _ssl_server_credentials(
+    certificate: Path, key: Path, client_ca: Path
+) -> grpc.ServerCredentials:
     try:
-        certificate = config.tls_certificate.read_bytes()
-        key = config.tls_key.read_bytes()
-        client_ca = config.tls_client_ca.read_bytes()
+        certificate_bytes = certificate.read_bytes()
+        key_bytes = key.read_bytes()
+        client_ca_bytes = client_ca.read_bytes()
     except OSError as error:
         message = "could not read the runtime gRPC TLS material"
         raise RuntimeServerError(message) from error
+    try:
+        # Reject unreadable or mismatched material here, before it can
+        # surface later as a misleading bind failure.
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certificate, key)
+        context.load_verify_locations(cafile=client_ca)
+    except ssl.SSLError as error:
+        message = "the runtime gRPC TLS material is invalid"
+        raise RuntimeServerError(message) from error
     return grpc.ssl_server_credentials(
-        [(key, certificate)],
-        root_certificates=client_ca,
+        [(key_bytes, certificate_bytes)],
+        root_certificates=client_ca_bytes,
         require_client_auth=True,
     )
 
