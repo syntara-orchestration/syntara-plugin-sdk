@@ -6,7 +6,9 @@ import asyncio
 import importlib
 import json
 import os
+import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -42,6 +44,7 @@ from syntara_plugin.runtime.server import (
     RuntimeServerConfig,
     RuntimeServerError,
     _DaemonStepWorkerPool,
+    check_private_key_access,
     create_runtime_server,
     load_runtime_bindings,
     load_runtime_server_config,
@@ -1353,5 +1356,305 @@ def test_serve_runtime_waits_for_grace_before_revoking_invocations(monkeypatch: 
             stop_finished.set()
             await task
         assert revoked
+
+    asyncio.run(scenario())
+
+
+def test_private_key_access_accepts_owner_and_group_arrangements(tmp_path: Path) -> None:
+    """Owner-only and group-readable keys are the supported restricted layouts."""
+
+    owner_only = tmp_path / "owner.key"
+    owner_only.write_text("key", encoding="utf-8")
+    owner_only.chmod(0o600)
+    check_private_key_access(owner_only)
+
+    group = tmp_path / "group.key"
+    group.write_text("key", encoding="utf-8")
+    group.chmod(0o640)
+    check_private_key_access(group)
+
+
+def test_private_key_access_reports_unreadable_keys_without_contents(
+    tmp_path: Path,
+) -> None:
+    """A key the runtime cannot read fails startup with path, mode, and reason."""
+
+    key = tmp_path / "unreadable.key"
+    key.write_text("SENTINEL-KEY-MATERIAL", encoding="utf-8")
+    key.chmod(0o000)
+
+    with pytest.raises(RuntimeServerError) as raised:
+        check_private_key_access(key)
+
+    message = str(raised.value)
+    assert str(key) in message
+    assert "0000" in message
+    assert "SENTINEL-KEY-MATERIAL" not in message
+
+
+def test_private_key_access_rejects_needlessly_world_readable_keys(
+    tmp_path: Path,
+) -> None:
+    """World-readable is refused when a restricted arrangement already works."""
+
+    key = tmp_path / "broad.key"
+    key.write_text("key", encoding="utf-8")
+    key.chmod(0o644)
+
+    with pytest.raises(RuntimeServerError, match="world-readable"):
+        check_private_key_access(key)
+
+
+def test_private_key_access_accepts_projected_secret_layouts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A secret mount the runtime reads only through other-read stays usable.
+
+    Projected volumes deliver root-owned, world-readable files; an
+    unprivileged test cannot create one, so the process identity is faked to
+    a uid and gid that match neither the owner nor the group.
+    """
+
+    key = tmp_path / "projected.key"
+    key.write_text("key", encoding="utf-8")
+    key.chmod(0o644)
+    monkeypatch.setattr(os, "geteuid", lambda: 65534)
+    monkeypatch.setattr(os, "getegid", lambda: 65534)
+    monkeypatch.setattr(os, "getgroups", lambda: [65534])
+
+    check_private_key_access(key)
+
+
+def test_private_key_access_reports_an_unresolvable_key_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A path that cannot even be resolved is a bounded startup error."""
+
+    key = tmp_path / "unresolvable.key"
+    key.write_text("key", encoding="utf-8")
+
+    def unreachable(_path: object) -> str:
+        raise OSError("unresolvable")
+
+    monkeypatch.setattr(os.path, "realpath", unreachable)
+    with pytest.raises(RuntimeServerError, match="could not be resolved"):
+        check_private_key_access(key)
+
+
+def test_private_key_access_diagnostics_stay_single_line(tmp_path: Path) -> None:
+    """A deployer-controlled path cannot inject lines into the diagnostic."""
+
+    key = tmp_path / "injected\n  mode: 9999 fake.key"
+    key.write_text("key", encoding="utf-8")
+    key.chmod(0o000)
+
+    with pytest.raises(RuntimeServerError) as raised:
+        check_private_key_access(key)
+
+    message = str(raised.value)
+    assert "\n  mode: 9999" not in message
+    assert "\\n" in message
+    assert str(key).splitlines()[0] in message
+
+
+def test_private_key_access_follows_symlinks_and_names_dangling_ones(
+    tmp_path: Path,
+) -> None:
+    """Secret mounts often symlink; the check resolves and reports the path."""
+
+    real = tmp_path / "real.key"
+    real.write_text("key", encoding="utf-8")
+    real.chmod(0o600)
+    link = tmp_path / "link.key"
+    link.symlink_to(real)
+    check_private_key_access(link)
+
+    dangling = tmp_path / "dangling.key"
+    dangling.symlink_to(tmp_path / "missing.key")
+    with pytest.raises(RuntimeServerError) as raised:
+        check_private_key_access(dangling)
+    assert str(dangling) in str(raised.value)
+
+
+def test_runtime_startup_reports_an_unreadable_tls_key(tmp_path: Path) -> None:
+    """The startup diagnostic names the path instead of a bare read failure."""
+
+    (
+        certificate,
+        key,
+        client_ca,
+        _client_certificate,
+        _client_key,
+    ) = _generate_tls_material(tmp_path)
+    key.chmod(0o000)
+    config = replace(
+        _resolved_config(tmp_path, [_resolved_record()]),
+        address="localhost:50099",
+        tls_certificate=certificate,
+        tls_key=key,
+        tls_client_ca=client_ca,
+    )
+
+    async def scenario() -> None:
+        with pytest.raises(RuntimeServerError) as raised:
+            create_runtime_server(config)
+        assert str(key) in str(raised.value)
+
+    asyncio.run(scenario())
+    assert stat.S_IMODE(key.stat().st_mode) == 0o000
+
+
+@pytest.mark.skipif(
+    shutil.which("openssl") is None, reason="openssl is required for TLS floor probes"
+)
+def test_runtime_server_tls_floor_accepts_tls_12_and_tls_13(tmp_path: Path) -> None:
+    """The pinned grpcio floor is TLS 1.2: both live versions handshake."""
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    (
+        certificate,
+        key,
+        client_ca,
+        client_certificate,
+        client_key,
+    ) = _generate_tls_material(tmp_path)
+
+    async def scenario() -> None:
+        server = create_runtime_server(
+            replace(
+                _resolved_config(tmp_path, [_resolved_record()]),
+                address=f"localhost:{port}",
+                tls_certificate=certificate,
+                tls_key=key,
+                tls_client_ca=client_ca,
+            )
+        )
+        await server.start()
+        try:
+            # The probes block, and the aio server shares this loop.
+            for tls_version in ("-tls1_2", "-tls1_3"):
+                completed = await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        "openssl", "s_client", "-connect", f"localhost:{port}",
+                        tls_version, "-CAfile", str(client_ca),
+                        "-cert", str(client_certificate), "-key", str(client_key),
+                        "-brief",
+                    ],
+                    input="", capture_output=True, text=True,
+                    timeout=30, check=False,
+                )
+                output = f"{completed.stdout}\n{completed.stderr}"
+                assert "CONNECTION ESTABLISHED" in output, (tls_version, output)
+                assert "Verification: OK" in output, (tls_version, output)
+        finally:
+            await server.stop(grace=0)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(
+    shutil.which("openssl") is None, reason="openssl is required for TLS floor probes"
+)
+def test_runtime_server_tls_floor_refuses_tls_11(tmp_path: Path) -> None:
+    """TLS 1.1 is below the supported floor and must not handshake."""
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    (
+        certificate,
+        key,
+        client_ca,
+        client_certificate,
+        client_key,
+    ) = _generate_tls_material(tmp_path)
+
+    async def scenario() -> None:
+        server = create_runtime_server(
+            replace(
+                _resolved_config(tmp_path, [_resolved_record()]),
+                address=f"localhost:{port}",
+                tls_certificate=certificate,
+                tls_key=key,
+                tls_client_ca=client_ca,
+            )
+        )
+        await server.start()
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "openssl", "s_client", "-connect", f"localhost:{port}",
+                    "-tls1_1", "-cipher", "DEFAULT@SECLEVEL=0",
+                    "-CAfile", str(client_ca),
+                    "-cert", str(client_certificate), "-key", str(client_key),
+                    "-brief",
+                ],
+                input="", capture_output=True, text=True,
+                timeout=30, check=False,
+            )
+        finally:
+            await server.stop(grace=0)
+
+        output = f"{completed.stdout}\n{completed.stderr}"
+        if "no protocols available" in output:
+            pytest.skip("the local openssl build cannot offer TLS 1.1")
+        assert "CONNECTION ESTABLISHED" not in output, output
+
+    asyncio.run(scenario())
+
+
+def test_runtime_server_refuses_a_channel_without_a_client_certificate(
+    tmp_path: Path,
+) -> None:
+    """Mutual TLS stays mandatory: no client certificate, no runtime access."""
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    (
+        certificate,
+        key,
+        client_ca,
+        _client_certificate,
+        _client_key,
+    ) = _generate_tls_material(tmp_path)
+
+    async def scenario() -> None:
+        server = create_runtime_server(
+            replace(
+                _resolved_config(tmp_path, [_resolved_record()]),
+                address=f"localhost:{port}",
+                tls_certificate=certificate,
+                tls_key=key,
+                tls_client_ca=client_ca,
+            )
+        )
+        await server.start()
+        try:
+            def probe_without_certificate() -> bool:
+                credentials = grpc.ssl_channel_credentials(
+                    root_certificates=client_ca.read_bytes()
+                )
+                channel = grpc.secure_channel(f"localhost:{port}", credentials)
+                try:
+                    grpc.channel_ready_future(channel).result(timeout=5)
+                    try:
+                        ContainerClient(channel).health(timeout_seconds=3)
+                        return True
+                    except Exception:  # noqa: BLE001 - refusal is expected
+                        return False
+                except Exception:  # noqa: BLE001 - refusal is expected
+                    return False
+                finally:
+                    channel.close()
+
+            usable = await asyncio.to_thread(probe_without_certificate)
+            assert not usable, "the runtime served a client without a certificate"
+        finally:
+            await server.stop(grace=0)
 
     asyncio.run(scenario())

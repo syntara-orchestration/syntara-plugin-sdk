@@ -15,6 +15,7 @@ import grpc
 import pytest
 import yaml
 from syntara_plugin.runtime import ContainerClient, ContainerInvocation
+from syntara_plugin.sdk.container_engine import ContainerEngine, _engine_is_rootless
 
 pytestmark = [
     pytest.mark.integration,
@@ -57,6 +58,11 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
     certificate, key, client_ca, client_certificate, client_key = _generate_tls_material(tmp_path)
     _make_tls_material_readable(certificate, key, client_ca)
 
+    # The restricted key delivery, mirroring the managed run: gid 0 under
+    # rootless engines (the primary group appears as container gid 0), the
+    # primary gid under rootful engines.
+    engine = ContainerEngine("podman")
+    container_group = "0" if _engine_is_rootless(engine) else str(os.getgid())
     subprocess.run(
         [
             "podman",
@@ -65,6 +71,8 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
             "--detach",
             "--name",
             container_name,
+            "--group-add",
+            container_group,
             "--publish",
             f"127.0.0.1:{host_port}:50051",
             "--volume",
@@ -91,6 +99,24 @@ def test_ubi_python_image_serves_existing_step_plugin_over_grpc(tmp_path: Path) 
     try:
         client = ContainerClient(channel)
         health = _wait_for_health(client)
+        # A per-file bind mount bypasses the source directory's 0700 mode, so
+        # the file's own mode is the only guard: no other container uid may
+        # read it. This must run after the health wait: the probe's own :Z
+        # relabel would otherwise race the server's key open and revoke the
+        # running container's SELinux access to the shared file.
+        probe = subprocess.run(
+            [
+                "podman", "run", "--rm", "--user", "65534:65534",
+                "--entrypoint", "cat",
+                "--volume", f"{key}:/probe/server.key:ro,Z",
+                image_tag, "/probe/server.key",
+            ],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+        assert probe.returncode != 0, probe.stderr
+        # Pin the refusal reason so the assertion cannot pass vacuously
+        # through an unrelated probe-container failure.
+        assert "Permission denied" in probe.stderr, probe.stderr
         action = client.execute(
             _invocation(
                 revisions[_ACTION_IDENTITY],
@@ -462,8 +488,17 @@ def _generate_tls_material(
 
 
 def _make_tls_material_readable(certificate: Path, key: Path, client_ca: Path) -> None:
-    for path in (certificate, key, client_ca):
+    """Mirror the managed-run key policy: restricted group delivery.
+
+    Certificates are public material. The server key is group-readable for
+    the container's supplemental group (the invoking user's primary group,
+    which rootless engines present as container gid 0) and never
+    world-readable.
+    """
+    for path in (certificate, client_ca):
         path.chmod(0o644)
+    key.chmod(0o640)
+    os.chown(key, -1, os.getgid())
 
 
 def _run_openssl(*arguments: str) -> None:

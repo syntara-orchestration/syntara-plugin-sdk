@@ -278,6 +278,36 @@ TLS, including loopback. Supply all three of `SYNTARA_RUNTIME_GRPC_TLS_CERT`,
 TLS is enabled. These values are mounted file paths, never PEM data or private
 key contents.
 
+### Transport security policy
+
+The runtime server checks its TLS key at startup, before its listener is
+created. The key may be readable by its owner only (`0600`), by a group the
+runtime user belongs to (`0640` with that group), or through a mounted
+secret whose access flows through other-read because the runtime identity
+is neither the owner nor in the group, as projected volumes commonly
+deliver. A key that is world-readable while a restricted arrangement
+already works is refused: the startup diagnostic names the key path, its
+mode, and its owner, never key contents. Symlinks are resolved before
+inspection, so a secret mount that links to its real file is checked at the
+target.
+
+The supported transport floor is TLS 1.2. The pinned grpcio release bundles
+a BoringSSL that negotiates TLS 1.2 and 1.3 only; its Python API exposes no
+TLS version or cipher overrides, and the runtime deliberately passes none,
+because an unknown channel option would be silently ignored, not enforced.
+Cipher selection is the library default.
+
+Client authorization is scoped to the mounted CA: every certificate that
+chains to `SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA` is accepted. The runtime
+implements no application-level client authorization, no certificate
+revocation (no CRL or OCSP), and no SAN-based peer check; removing a client
+means regenerating the CA or the client material. Certificates generated
+for managed local runs are valid for one day, are created fresh for every
+invocation, and are removed with their temporary directory when the run
+ends, so restarts never reuse or renew material. Deployments that mount
+long-lived material own its renewal themselves: an expired certificate
+fails at handshake after startup, so validity must be monitored externally.
+
 `syntara-plugin run --mode image` is a supported client for such a runtime: it
 connects through the SDK's `ContainerClient`, verifies the ABI and advertised
 type identities over `Health`, executes one invocation, and prints the result.
