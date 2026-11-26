@@ -52,6 +52,7 @@ from .runner import RunExecutionError, RunTarget, TlsOptions
 
 _ENGINE_COMMANDS = ("podman", "docker")
 _SELF_MANAGED_NEXT_STEP = "or start the runtime yourself and pass --address HOST:PORT"
+_START_ENGINE_NEXT_STEP = "start the engine and rerun"
 _VERSION_TIMEOUT_SECONDS = 10
 _ROOTLESS_TIMEOUT_SECONDS = 10
 _INSPECT_TIMEOUT_SECONDS = 30
@@ -499,7 +500,7 @@ def _engine_is_rootless(engine: ContainerEngine) -> bool:
         raise RunExecutionError(
             f"could not determine whether {engine.command} runs rootless",
             detail=(str(error),),
-            next_steps=("start the engine and rerun", _SELF_MANAGED_NEXT_STEP),
+            next_steps=(_START_ENGINE_NEXT_STEP, _SELF_MANAGED_NEXT_STEP),
         ) from error
     if completed.returncode != 0:
         raise RunExecutionError(
@@ -1154,7 +1155,7 @@ def _image_available(engine: ContainerEngine, image: str) -> bool:
         raise RunExecutionError(
             f"{engine.command} is installed but not usable",
             detail=(str(error),),
-            next_steps=("start the engine and rerun", "or pass --address HOST:PORT"),
+            next_steps=(_START_ENGINE_NEXT_STEP, "or pass --address HOST:PORT"),
         ) from error
     if completed.returncode == 0:
         return True
@@ -1185,7 +1186,7 @@ def _image_available(engine: ContainerEngine, image: str) -> bool:
         raise RunExecutionError(
             f"{engine.command} is installed but not usable",
             detail=_stderr_tail(completed.stderr),
-            next_steps=("start the engine and rerun", "or pass --address HOST:PORT"),
+            next_steps=(_START_ENGINE_NEXT_STEP, "or pass --address HOST:PORT"),
         )
     return False
 

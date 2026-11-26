@@ -876,8 +876,9 @@ def check_private_key_access(path: Path) -> None:
         ) from error
     mode = stat.S_IMODE(status.st_mode)
     try:
-        with resolved.open("rb"):
-            pass
+        # Opening the key is the effective-access verification. The bytes
+        # are deliberately never read, so no key material enters memory.
+        key_handle = resolved.open("rb")
     except OSError as error:
         raise RuntimeServerError(
             "this process cannot read its TLS private key "
@@ -888,6 +889,7 @@ def check_private_key_access(path: Path) -> None:
             f"  process: euid {os.geteuid()}, egid {os.getegid()}, "
             f"groups {sorted(os.getgroups())}"
         ) from error
+    key_handle.close()
     if not mode & 0o004:
         return
     owner_read = status.st_uid == os.geteuid() and bool(mode & 0o400)
