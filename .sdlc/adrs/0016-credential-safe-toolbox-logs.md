@@ -22,9 +22,15 @@ execution, scope teardown transfers only fingerprints and the remaining log
 budget to a detached scanner, then clears the scope before terminal result
 construction. An unavailable bound
 scanner fails closed; a collector with no credential scope does not require a
-scanner. Log scans share a separate invocation-wide budget of 10,000
+scanner. Binding a scanner to an already finalized collector is also a
+binding failure: the collector is discarded, and records later submitted to
+a finalized collector are counted as dropped instead of vanishing without a
+count, so a reused execution context cannot lose a whole invocation's logs
+silently. Log scans share a separate invocation-wide budget of 10,000
 nodes and 4,000,000 scan-work units, independent of wrapper output scanning.
-Late credential reads therefore also cover records queued earlier.
+Late credential reads therefore also cover records queued earlier. Faults
+while stopping credential reads are contained the same way as log
+finalization faults: the claimed terminal event is still delivered.
 
 Logging remains best effort. Collection, scan, or serialization failures must
 not replace or prevent a prepared terminal result/failure. A batch containing

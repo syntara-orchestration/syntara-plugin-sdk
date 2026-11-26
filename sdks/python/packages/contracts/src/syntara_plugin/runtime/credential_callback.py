@@ -260,7 +260,12 @@ class CallbackCredentialProvider(_DeferredLogProvider):
 
     def cancel_logs(self) -> None:
         """Stop reads, then screen queued records instead of discarding them."""
-        self.close_credentials()
+        try:
+            self.close_credentials()
+        except Exception:
+            # The terminal is already claimed and the scan's freeze revokes
+            # reads; a stuck transport read ends on its own deadline.
+            pass
         try:
             _cancel_toolbox(self._public_toolbox)
         except Exception:
@@ -270,7 +275,11 @@ class CallbackCredentialProvider(_DeferredLogProvider):
                 pass
 
     def close(self, *, discard_logs: bool = False) -> None:
-        self.close_credentials()
+        try:
+            self.close_credentials()
+        except Exception:
+            # The invocation outcome must not depend on stopping reads.
+            pass
         try:
             if discard_logs:
                 _discard_toolbox(self._public_toolbox)

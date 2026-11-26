@@ -576,7 +576,10 @@ def _receive_sync_responses(
     except Exception:
         pass
     finally:
-        provider.close_credentials()
+        try:
+            provider.close_credentials()
+        except Exception:
+            pass
 
 
 def _run_sync_step(

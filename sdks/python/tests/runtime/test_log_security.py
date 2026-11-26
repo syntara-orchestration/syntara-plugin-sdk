@@ -557,6 +557,33 @@ def test_sync_log_scan_cannot_turn_prepared_outcome_into_timeout(failure: bool) 
         service.shutdown()
 
 
+def test_second_scope_on_a_finalized_collector_counts_dropped_records(tmp_path: Path) -> None:
+    path = tmp_path / "credential.json"
+    path.write_text(json.dumps({"token": _SECRET}))
+    parent = ExecutionContext(
+        "invocation",
+        credential_provider=FileCredentialProvider({_NAME: str(path)}, local_directory=tmp_path),
+    )
+    first = parent._with_credentials((_NAME,))
+    first.toolbox.log("INFO", "first invocation record")
+    _close_toolbox(first.toolbox)
+    assert first._credential_scope is not None
+    first._credential_scope.close()
+
+    # A second scope on the finalized collector cannot bind a scanner; the
+    # binding fails closed and every rejected record is counted, not lost.
+    second = parent._with_credentials((_NAME,))
+    second.toolbox.log("INFO", "second invocation record")
+    _close_toolbox(second.toolbox)
+    assert second._credential_scope is not None
+    second._credential_scope.close()
+
+    batch = _take_log_batch(parent.toolbox, "invocation")
+    assert batch is not None
+    assert not batch.events
+    assert batch.dropped_count == 2
+
+
 def test_detached_fingerprints_invalidate_the_old_scanner(tmp_path: Path) -> None:
     from syntara_plugin.runtime.credentials import _LogFingerprintScanner
 

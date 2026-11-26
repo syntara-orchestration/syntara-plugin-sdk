@@ -154,7 +154,12 @@ class ContainerToolbox:
         except Exception:
             return
         with state.lock:
-            if state.closed.is_set() or state.cancellation.is_set():
+            if state.closed.is_set():
+                # A finalized collector can never deliver the record; count the
+                # rejection so the loss is visible in dropped_count.
+                state.dropped = min(_MAX_DROPPED, state.dropped + 1)
+                return
+            if state.cancellation.is_set():
                 return
             try:
                 attrs = {} if attributes is None else attributes
@@ -415,17 +420,26 @@ def _set_log_scanner(
     toolbox: ContainerToolbox,
     scan: Callable[[Any], bool],
     freeze: Callable[[], Callable[[Any], bool]] | None = None,
+    *,
+    required: bool = False,
 ) -> None:
     """Install an invocation's bounded, fingerprint-only credential check.
 
     ``freeze`` revokes further credential reads and returns a scanner bound to
     the final fingerprints; cancellation uses it to scan instead of discard.
+    With ``required``, a finalized collector is a binding failure, so the
+    caller fails closed instead of silently losing every record; the deferred
+    rebind during teardown keeps its quiet no-op because another finalizer
+    already owns the records.
     """
     state = _toolbox_state(toolbox)
     with state.lock:
-        if not state.closed.is_set():
-            state.scan = scan
-            state.freeze = freeze
+        if state.closed.is_set():
+            if required:
+                raise RuntimeError("the log collector is already finalized")
+            return
+        state.scan = scan
+        state.freeze = freeze
 
 
 def _take_log_batch(toolbox: ContainerToolbox, invocation_id: str) -> container_pb2.LogBatch | None:

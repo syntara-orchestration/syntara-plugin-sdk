@@ -375,7 +375,10 @@ class AsyncContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                     return
                 provider.receive(message.credential_response)
         finally:
-            provider.close_credentials()
+            try:
+                provider.close_credentials()
+            except Exception:
+                pass
 
     async def _run_step(
         self,

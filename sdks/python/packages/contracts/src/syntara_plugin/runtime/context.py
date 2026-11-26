@@ -107,7 +107,7 @@ class ExecutionContext:
             return current._freeze_log_fingerprints().scan_log
 
         try:
-            _set_log_scanner(context.toolbox, scan, freeze)
+            _set_log_scanner(context.toolbox, scan, freeze, required=True)
         except Exception:
             # If the scanner cannot be bound, no queued record is safe to emit.
             try:

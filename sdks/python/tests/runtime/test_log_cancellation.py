@@ -707,6 +707,43 @@ def test_cancellation_scan_is_bounded_in_wall_clock_time(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_terminal_survives_a_credential_close_failure(
+    asynchronous: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from syntara_plugin.runtime.credential_callback import CallbackCredentialProvider
+
+    # A fault while stopping credential reads must not lose the claimed
+    # terminal event: the invocation outcome still arrives exactly once.
+    original = CallbackCredentialProvider.close_credentials
+    fired: list[bool] = []
+
+    def exploding(self: Any) -> None:
+        if self._terminal_committed and not fired:
+            fired.append(True)
+            raise RuntimeError("injected credential close failure")
+        original(self)
+
+    monkeypatch.setattr(CallbackCredentialProvider, "close_credentials", exploding)
+
+    async def scenario() -> None:
+        async with _runtime(asynchronous) as (client, _service, _channel):
+            outcome = _Outcome()
+            thread = Thread(target=_consume, args=(client, _invocation("read_blocking"), outcome))
+            thread.start()
+            await _wait(ProbeStep.started)
+            assert await asyncio.to_thread(client.cancel, "cancel-1")
+            await _wait(outcome.done)
+            ProbeStep.release.set()
+            thread.join(3)
+            assert fired
+            assert outcome.failure is FailureCode.CANCELLED
+            assert outcome.source == "workload"
+            _no_secret(outcome)
+
+    asyncio.run(scenario())
+
+
 def test_stopped_log_scanner_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / "credential.json"
     path.write_text(json.dumps({"token": _SECRET}))

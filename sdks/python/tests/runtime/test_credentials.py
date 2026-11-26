@@ -1680,7 +1680,7 @@ def test_scanner_setup_failure_discards_logs_without_failing_invocation(
     )
     context.toolbox.log("INFO", _SECRET)
 
-    def fail(*args: Any) -> None:
+    def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError(_SECRET)
 
     monkeypatch.setattr(context_module, "_set_log_scanner", fail)
@@ -1693,6 +1693,28 @@ def test_scanner_setup_failure_discards_logs_without_failing_invocation(
     assert CredentialStep.saved is not None
     with pytest.raises(CredentialAccessError, match="expired"):
         CredentialStep.saved.read()
+
+
+def test_reused_execution_context_counts_lost_log_records(tmp_path: Path) -> None:
+    from syntara_plugin.runtime.toolbox import _take_log_batch
+
+    path = tmp_path / "credential"
+    path.write_text(json.dumps({"token": _SECRET}))
+    context = build_execution_context(
+        credential_file_paths={_NAME: str(path)}, credential_directory=tmp_path,
+    )
+    assert invoke(_binding(), {"mode": "structured_log"}, context).status_code == 0
+    # The collector was finalized by the first invocation. A second scope on
+    # the same context cannot bind a scanner and must not lose the records
+    # silently: the rejection is visible in dropped_count.
+    assert invoke(_binding(), {"mode": "structured_log"}, context).status_code == 0
+    batch = _take_log_batch(context.toolbox, context.invocation_id)
+    assert batch is not None
+    assert not batch.events
+    # First invocation: one secret-bearing record dropped, two retained. The
+    # reuse discards those two and counts the second invocation's three
+    # rejected records: 1 + 2 + 3.
+    assert batch.dropped_count == 6
 
 
 def test_async_typed_result_survives_slow_log_finalization(
