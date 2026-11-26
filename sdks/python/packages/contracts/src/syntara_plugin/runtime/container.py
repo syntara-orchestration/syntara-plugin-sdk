@@ -16,6 +16,7 @@ from _thread import LockType
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from queue import Empty, Queue
 from threading import BoundedSemaphore, Event, Lock, Thread, current_thread
 from time import monotonic
@@ -470,14 +471,79 @@ class StepRegistry:
 
 
 def _log_notification(provider: CallbackCredentialProvider, invocation_id: str) -> container_pb2.ExecuteServerMessage | None:
-    batch = _take_log_batch(provider._public_toolbox, invocation_id)
-    return container_pb2.ExecuteServerMessage(log_batch=batch) if batch is not None else None
+    try:
+        batch = _take_log_batch(provider._public_toolbox, invocation_id)
+        return container_pb2.ExecuteServerMessage(log_batch=batch) if batch is not None else None
+    except Exception:
+        # Operational logging is best effort; never expose rejected record details.
+        return None
 
 
 def _queue_sync_log(provider: CallbackCredentialProvider, invocation_id: str, outgoing: Queue[container_pb2.ExecuteServerMessage | None]) -> None:
-    message = _log_notification(provider, invocation_id)
-    if message is not None:
-        outgoing.put(message)
+    try:
+        message = _log_notification(provider, invocation_id)
+        if message is not None:
+            outgoing.put(message)
+    except Exception:
+        pass
+
+
+def _failure_for(invocation_id: str, error: Exception) -> container_pb2.ExecutionEvent:
+    """Map a step's exception to its terminal failure without exposing details."""
+    if isinstance(error, StepExecutionError):
+        return failure_event(invocation_id, ContainerInvocationError(
+            error.failure_code, error.safe_message, outcome=error.outcome
+        ))
+    if isinstance(error, ContainerInvocationError):
+        return failure_event(invocation_id, error)
+    return failure_event(invocation_id, ContainerInvocationError(
+        FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
+    ))
+
+
+def _outcome_event(
+    invocation: ContainerInvocation, run: Callable[[], ContainerResult]
+) -> container_pb2.ExecutionEvent:
+    """Run the step and build its terminal event; ``BaseException`` propagates."""
+    try:
+        return terminal_execution_event(invocation, run())
+    except Exception as error:
+        return _failure_for(invocation.invocation_id, error)
+
+
+def _cancelled_event(invocation_id: str) -> container_pb2.ExecutionEvent:
+    return failure_event(invocation_id, ContainerInvocationError(
+        FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
+    ))
+
+
+def _commit_sync_terminal(
+    provider: CallbackCredentialProvider,
+    invocation_id: str,
+    outgoing: Queue[container_pb2.ExecuteServerMessage | None],
+    cancellation: Event,
+    fallback: Callable[[], container_pb2.ExecutionEvent],
+    *,
+    scan_logs: bool,
+) -> bool:
+    """Queue the single terminal event; the caller holds the terminal lock.
+
+    A prepared step outcome wins over ``fallback``. With ``scan_logs``, queued
+    records are screened after reads are revoked instead of being discarded;
+    the scan is bounded by the invocation's log budget.
+    """
+    event = provider._claim_terminal(fallback)
+    if event is None:
+        return False
+    cancellation.set()
+    if scan_logs:
+        provider.cancel_logs()
+    else:
+        provider.close(discard_logs=True)
+    _queue_sync_log(provider, invocation_id, outgoing)
+    outgoing.put(container_pb2.ExecuteServerMessage(event=event))
+    outgoing.put(None)
+    return True
 
 
 def _close_sync_invocation(
@@ -486,7 +552,7 @@ def _close_sync_invocation(
     outgoing: Queue[container_pb2.ExecuteServerMessage | None],
 ) -> None:
     cancellation.set()
-    provider.close()
+    provider.close(discard_logs=True)
     outgoing.put(None)
 
 
@@ -501,21 +567,19 @@ def _receive_sync_responses(
         for message in requests:
             if message.WhichOneof("message") != "credential_response":
                 with terminal_lock:
-                    invocation.cancellation.set()
-                    provider.close()
-                    _queue_sync_log(provider, invocation.invocation_id, outgoing)
-                    outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
-                        invocation.invocation_id, ContainerInvocationError(
-                            FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-                        )
-                    )))
-                    outgoing.put(None)
+                    _commit_sync_terminal(
+                        provider, invocation.invocation_id, outgoing, invocation.cancellation,
+                        lambda: _cancelled_event(invocation.invocation_id), scan_logs=True,
+                    )
                 return
             provider.receive(message.credential_response)
     except Exception:
         pass
     finally:
-        provider.close_credentials()
+        try:
+            provider.close_credentials()
+        except Exception:
+            pass
 
 
 def _run_sync_step(
@@ -526,23 +590,23 @@ def _run_sync_step(
     terminal_lock: LockType,
 ) -> None:
     try:
-        result = handler(invocation)
-        event = terminal_execution_event(invocation, result)
-    except StepExecutionError as error:
-        event = failure_event(invocation.invocation_id, ContainerInvocationError(
-            error.failure_code, error.safe_message, outcome=error.outcome
-        ))
-    except ContainerInvocationError as error:
-        event = failure_event(invocation.invocation_id, error)
-    except Exception:
-        event = failure_event(invocation.invocation_id, ContainerInvocationError(
-            FailureCode.OUTCOME_UNKNOWN, INCOMPLETE_STEP_MESSAGE, outcome="unknown"
-        ))
-    finally:
-        provider.close()
+        event = _outcome_event(invocation, lambda: handler(invocation))
+    except BaseException:
+        provider.close(discard_logs=True)
+        raise
+    # Prepare before the potentially slow log scan so cancellation or the
+    # deadline delivers this outcome instead of replacing it. A path that
+    # already claimed the terminal event owns log finalization; do not touch
+    # the records here or that path's screening would find them discarded.
+    if not provider._prepare_terminal(event):
+        return
+    provider.close()
     with terminal_lock:
+        claimed = provider._claim_terminal(lambda: event)
+        if claimed is None:
+            return
         _queue_sync_log(provider, invocation.invocation_id, outgoing)
-        outgoing.put(container_pb2.ExecuteServerMessage(event=event))
+        outgoing.put(container_pb2.ExecuteServerMessage(event=claimed))
         outgoing.put(None)
 
 
@@ -589,6 +653,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                 cancellation,
                 invocation.timeout_seconds,
             )
+            provider._defer_log_finalization = True
             object.__setattr__(invocation, "credential_provider", provider)
             self._register_invocation(invocation_id, cancellation, provider, outgoing, terminal_lock)
 
@@ -612,17 +677,16 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
                         try:
                             message = outgoing.get_nowait()
                         except Empty:
-                            cancellation.set()
-                            provider.close()
-                            outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
-                                invocation_id, ContainerInvocationError(
+                            _commit_sync_terminal(
+                                provider, invocation_id, outgoing, cancellation,
+                                lambda: failure_event(invocation_id, ContainerInvocationError(
                                     FailureCode.TIMEOUT,
                                     "The step exceeded its execution timeout.",
                                     retryable=True,
                                     outcome="not_completed",
-                                )
-                            )))
-                            outgoing.put(None)
+                                )),
+                                scan_logs=True,
+                            )
                             message = outgoing.get_nowait()
                 if message is None:
                     break
@@ -641,7 +705,7 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             if cancellation is not None:
                 cancellation.set()
                 if provider is not None:
-                    provider.close()
+                    provider.close(discard_logs=True)
                 self._unregister_invocation(invocation_id, cancellation)
 
     def Cancel(
@@ -653,15 +717,10 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             return container_pb2.CancelResponse(accepted=False)
         cancellation, provider, outgoing, terminal_lock = active
         with terminal_lock:
-            cancellation.set()
-            provider.close()
-            _queue_sync_log(provider, request.invocation_id, outgoing)
-            outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
-                request.invocation_id, ContainerInvocationError(
-                    FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-                )
-            )))
-            outgoing.put(None)
+            _commit_sync_terminal(
+                provider, request.invocation_id, outgoing, cancellation,
+                lambda: _cancelled_event(request.invocation_id), scan_logs=True,
+            )
         return container_pb2.CancelResponse(accepted=True)
 
     def shutdown(self) -> None:
@@ -678,15 +737,12 @@ class ContainerRuntimeService(container_pb2_grpc.ContainerServiceServicer):
             active = list(self._active.items())
         for invocation_id, (cancellation, provider, outgoing, terminal_lock) in active:
             with terminal_lock:
-                cancellation.set()
-                provider.close()
-                _queue_sync_log(provider, invocation_id, outgoing)
-                outgoing.put(container_pb2.ExecuteServerMessage(event=failure_event(
-                    invocation_id, ContainerInvocationError(
-                        FailureCode.CANCELLED, _CANCELLED_STEP_MESSAGE, outcome="not_completed"
-                    )
-                )))
-                outgoing.put(None)
+                # Shutdown discards unfinished logs: one bounded scan per
+                # active invocation would exceed the shutdown join budget.
+                _commit_sync_terminal(
+                    provider, invocation_id, outgoing, cancellation,
+                    partial(_cancelled_event, invocation_id), scan_logs=False,
+                )
         deadline = monotonic() + 1.0
         for worker in workers:
             if worker is not current_thread() and worker.ident is not None:

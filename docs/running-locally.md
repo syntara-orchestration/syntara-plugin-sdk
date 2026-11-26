@@ -269,8 +269,11 @@ boolean is masked too. They are scrubbed from the
 report, `--json`, errors, hints, progress, step output, and tracebacks
 exactly as a sensitive input is. Structured records submitted through
 `context.toolbox.log` are also scrubbed when rendered as JSON lines to the
-local diagnostic stderr stream. The SDK does not alter the corresponding wire
-`LogBatch`; never log credential values or other secrets.
+local diagnostic stderr stream. Rendering does not change the wire
+`LogBatch`; before delivery, the runtime drops records that match credentials
+read during the invocation or whose bounded scan cannot finish (see
+[ADR 0016](../.sdlc/adrs/0016-credential-safe-toolbox-logs.md)). That screening
+is best effort; never log credential values or other secrets.
 
 `--credential` cannot be combined with `--address` or the `--tls-*` options:
 the CLI only supplies credentials to a runtime it starts and authenticates.

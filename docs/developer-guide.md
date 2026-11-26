@@ -131,15 +131,15 @@ scans the JUnit results and every collected log file for the sentinel in
 its exit trap, on success and failure alike (worker-pod output is
 collected regardless of status; the remaining diagnostics only on
 failure), fails the run if it appears anywhere, and redacts the value
-from the collected files before they are uploaded as artifacts. Two
-container-side surfaces are only partially covered, by platform
-behavior: the Execution Plane deletes completed workload pods during
-dispatch, so exit-time pod collection only sees pods that outlive the
-run, and the Execution Plane discards the runtime's structured log
-batches today (log export is not implemented there), so those records
-reach no scanned file either. Until the Execution Plane exports
-workload logs, the reliably scanned surfaces are the JUnit results, the
-persisted work-item results, and the Execution Plane API log.
+from the collected files before they are uploaded as artifacts. Pod collection
+is partial: EP deletes completed workload pods during dispatch, so exit-time
+collection only sees pods that outlive the run. EP revisions implementing
+operational-log forwarding can also export structured batches to OpenTelemetry
+when enabled. The SDK screens Toolbox records before delivery, but this harness
+does not collect a remote OTEL collector's storage and does not establish its
+redaction policy. The reliably scanned surfaces are the JUnit results,
+persisted work-item results, collected pod logs, and EP API log. Check the
+resolved EP revision and collector configuration when interpreting coverage.
 
 The fixture step implementations also run without a cluster:
 

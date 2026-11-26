@@ -7,16 +7,22 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from threading import Event, Lock, RLock
+from threading import Event, Lock
 from typing import Any, NoReturn
 from weakref import finalize
 
 from syntara_plugin.contracts import canonical_json_bytes
 
 from ._toolbox import _ContainerToolbox, _InvocationRequestContext
-from .credentials import CredentialAccessError, ScopedCredentialProvider
+from .credentials import CredentialAccessError, ScopedCredentialProvider, _DeferredLogProvider
 from .protocol import container_pb2
-from .toolbox import _close_toolbox, _new_toolbox
+from .toolbox import (
+    _cancel_toolbox,
+    _close_toolbox,
+    _discard_toolbox,
+    _new_toolbox,
+    _states_lock,
+)
 
 _MAX_PENDING = 16
 _READ_TIMEOUT = 30.0
@@ -140,7 +146,7 @@ class _CredentialCallbackTransport:
             self._pending.clear()
 
 
-class CallbackCredentialProvider:
+class CallbackCredentialProvider(_DeferredLogProvider):
     """One invocation's revocable credential provider."""
 
     def __init__(
@@ -158,6 +164,13 @@ class CallbackCredentialProvider:
             self._context, _CredentialCallbackTransport(send, self._scope)
         )
         self._public_toolbox = _new_toolbox(cancellation, invocation_id)
+        self._defer_log_finalization = False
+        # One terminal event per invocation. The step's worker prepares its
+        # event before log finalization; every terminal path claims through
+        # the gate, so a prepared outcome wins over cancellation or timeout.
+        self._gate_lock = Lock()
+        self._prepared_event: container_pb2.ExecutionEvent | None = None
+        self._terminal_committed = False
 
     def restrict(
         self, names: frozenset[str], on_read: Callable[[Mapping[str, Any]], None]
@@ -221,9 +234,63 @@ class CallbackCredentialProvider:
         """Stop reads when the client half-closes without ending logging."""
         self._toolbox._close()
 
-    def close(self) -> None:
-        self.close_credentials()
-        _close_toolbox(self._public_toolbox)
+    def _prepare_terminal(self, event: container_pb2.ExecutionEvent) -> bool:
+        """Record the step's own outcome; false once another path committed."""
+        with self._gate_lock:
+            if self._terminal_committed:
+                return False
+            if self._prepared_event is None:
+                self._prepared_event = event
+            return True
+
+    def _claim_terminal(
+        self, fallback: Callable[[], container_pb2.ExecutionEvent]
+    ) -> container_pb2.ExecutionEvent | None:
+        """Claim the single terminal event: the prepared outcome, else ``fallback()``.
+
+        The claim happens before ``fallback`` runs, so an outcome prepared after
+        another path started committing cannot replace that path's event.
+        """
+        with self._gate_lock:
+            if self._terminal_committed:
+                return None
+            self._terminal_committed = True
+            prepared = self._prepared_event
+        return prepared if prepared is not None else fallback()
+
+    def cancel_logs(self) -> None:
+        """Stop reads, then screen queued records instead of discarding them."""
+        try:
+            self.close_credentials()
+        except Exception:
+            # The terminal is already claimed and the scan's freeze revokes
+            # reads; a stuck transport read ends on its own deadline.
+            pass
+        try:
+            _cancel_toolbox(self._public_toolbox)
+        except Exception:
+            try:
+                _discard_toolbox(self._public_toolbox, force=True)
+            except Exception:
+                pass
+
+    def close(self, *, discard_logs: bool = False) -> None:
+        try:
+            self.close_credentials()
+        except Exception:
+            # The invocation outcome must not depend on stopping reads.
+            pass
+        try:
+            if discard_logs:
+                _discard_toolbox(self._public_toolbox)
+            else:
+                _close_toolbox(self._public_toolbox)
+        except Exception:
+            # Log finalization must not replace the invocation outcome.
+            try:
+                _discard_toolbox(self._public_toolbox, force=True)
+            except Exception:
+                pass
 
 
 class _ScopedCallbackState:
@@ -243,7 +310,8 @@ class _ScopedCallbackState:
 # provider off the view's direct attribute path so ordinary view reads record
 # their documents. This is not a sandbox for arbitrary in-process introspection.
 _callback_states: dict[int, _ScopedCallbackState] = {}
-_callback_states_lock = RLock()
+# The toolbox registry's lock: see toolbox._states_lock for why it is shared.
+_callback_states_lock = _states_lock
 
 
 def _callback_state(view: _ScopedCallback) -> _ScopedCallbackState:
@@ -293,6 +361,6 @@ class _ScopedCallback:
             state.names = frozenset()
             if state.provider is not None:
                 try:
-                    state.provider.close()
+                    state.provider.close_credentials()
                 finally:
                     state.provider = None

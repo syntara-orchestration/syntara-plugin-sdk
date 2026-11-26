@@ -73,7 +73,9 @@ exiting.
 A host may close its send stream while awaiting the terminal event. The step
 continues, but credential reads cannot complete after that closure. An invalid
 follow-up message processed before the terminal event is committed cancels the
-invocation and produces a cancellation failure. Later messages may be ignored.
+invocation and produces a cancellation failure, unless the step's result or
+handled failure was already prepared; that outcome is delivered instead. Later
+messages may be ignored.
 On shutdown, active invocations may finish during the server's grace period.
 
 The generic `ContainerWorkloadRequest` carries its work item and policy
@@ -420,10 +422,27 @@ streaming and delivery is not guaranteed if the workload cannot send that
 outcome. The local runner writes the same records as JSON lines through its
 scrubbed diagnostic stderr channel.
 
-The helper does not inspect, redact, or scrub log records. Do not put
-credentials, secrets, or sensitive provider responses in messages or attributes.
+Before delivery, the invocation boundary drops entire records whose severity,
+message, event name, or attribute keys/values match credentials read during that
+invocation, including records queued before the read. It also drops records
+whose scan fails or cannot complete within the invocation-wide log budget
+(10,000 nodes and 4,000,000 scan-work units). Dropped records increment the
+existing `dropped_count`; safe records retain their order and values. A logging
+failure does not change the step outcome, although batch construction failure
+can prevent delivery of the logs. Cancellation and timeout stop further
+credential reads, then screen queued records the same way, for at most one
+second so the terminal event is not delayed. Records are discarded and counted
+only when a scan is already in progress, revocation fails, that time limit
+expires, or the runtime shuts down. If a credential read was cut off (still in
+flight, or failed once the invocation is cancelled or timed out), its value was
+never fingerprinted, so every queued record is dropped. A step outcome prepared before cancellation,
+timeout, or shutdown is delivered instead of the cancellation failure.
+The scan is best effort, uses exact matching,
+and does not prevent deliberate transformation of a secret. EP and AO must
+still screen captured records before persistence or export. Do not put
+credentials, secrets, or sensitive provider responses in any logs.
 Credential access remains `context.credential(name).read()` and is separate
-from Toolbox. See [ADR 0013](../.sdlc/adrs/0013-toolbox-logging.md) and the
+from Toolbox. See [ADR 0016](../.sdlc/adrs/0016-credential-safe-toolbox-logs.md) and the
 [protobuf contract](../contracts/proto/syntara_plugin/runtime/protocol/container.proto)
 for the exact limits.
 
@@ -522,8 +541,10 @@ fingerprints. Schema traversal has a separate 10,000-unit work budget, including
 the lengths of patterns and keys examined; output scans are limited to 10,000
 nodes and 4,000,000 scan-work units. If a scan cannot finish within those bounds, the SDK reports
 `CREDENTIAL_SCAN_LIMIT`, distinct from a detected leak. Reduce credential document
-size or output complexity to stay within the limits. The SDK cannot redact logs
-emitted by step code, so step authors must not log returned values. The SDK
+size or output complexity to stay within the limits. The SDK screens structured
+Toolbox records separately before delivery, but cannot intercept arbitrary
+console output or independently configured loggers. Step authors must not log
+returned values. The SDK
 does not resolve production credential IDs or implement a vault. A Python step is not sandboxed by this
 accessor; the host must authorize each invocation and enforce process isolation.
 
