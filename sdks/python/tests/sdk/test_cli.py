@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from syntara_plugin.sdk import RegistryCredentials
+from syntara_plugin.sdk import CatalogIndexPublicationError, RegistryCredentials
 from syntara_plugin.sdk.cli import (
     _build_runtime_binding_images,
     _catalog_entry,
@@ -893,6 +893,57 @@ def test_publish_reports_immutable_reference(tmp_path: Path, capsys, monkeypatch
     assert payload["ok"] is True
     assert payload["immutableReference"] == f"acme/status-tools@{payload['artifactDigest']}"
     assert published["credentials"].password == "not-printed"
+
+
+def test_publish_command_error_output_omits_the_credential_password(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A failed publication prints its classification code and never the password."""
+    workspace = tmp_path / "status-tools"
+    assert main(["init", str(workspace)]) == 0
+    capsys.readouterr()
+    archive = tmp_path / "status-tools.oci.tar"
+    assert main(["build", str(workspace / "plugin.yaml"), "--output", str(archive)]) == 0
+    capsys.readouterr()
+
+    class Publisher:
+        def __init__(self, target, *, credentials) -> None:
+            self.credentials = credentials
+
+        def publish(self, artifact, **kwargs):
+            raise CatalogIndexPublicationError("REGISTRY_TOKEN_EXCHANGE_FAILED")
+
+    monkeypatch.setattr("syntara_plugin.sdk.cli.PluginArtifactPublisher", Publisher)
+    monkeypatch.setattr("sys.stdin.read", lambda: "not-represented\n")
+
+    assert (
+        main(
+            [
+                "publish",
+                str(archive),
+                "--registry-origin",
+                "https://registry.example.test",
+                "--repository",
+                "acme/status-tools",
+                "--channel",
+                "0.1.0",
+                "--username",
+                "publisher",
+                "--password-stdin",
+                "--no-update-catalog",
+                "--json",
+            ]
+        )
+        == 1
+    )
+    captured = capsys.readouterr()
+    encoded_pair = base64.b64encode(b"publisher:not-represented").decode("ascii")
+    encoded_password = base64.b64encode(b"not-represented").decode("ascii")
+    assert "error: OCI artifact publication failed: REGISTRY_TOKEN_EXCHANGE_FAILED" in captured.err
+    assert "not-represented" not in captured.err
+    assert encoded_pair not in captured.err
+    assert encoded_password not in captured.err
+    assert "not-represented" not in captured.out
 
 
 def test_build_discovers_cwd_settings_and_command_line_overrides_its_output(

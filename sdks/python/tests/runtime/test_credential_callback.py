@@ -375,20 +375,26 @@ def test_repeated_timeouts_bound_blocked_sync_step_workers() -> None:
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     client = ContainerClient(channel)
+
+    def remote_error(invocation_id: str) -> ContainerRemoteError:
+        invocation = replace(_invocation(), invocation_id=invocation_id)
+        with pytest.raises(ContainerRemoteError) as error:
+            client.execute(invocation, timeout_seconds=2)
+        return error.value
+
     try:
-        for index in range(24):
-            invocation = replace(_invocation(), invocation_id=f"invocation-{index}")
-            with pytest.raises(ContainerRemoteError) as error:
-                client.execute(invocation, timeout_seconds=0.05)
-            if index < 16:
-                assert error.value.code is FailureCode.TIMEOUT
-                expected_count = index + 1
-                with started_condition:
-                    assert started_condition.wait_for(
-                        lambda count=expected_count: len(started) >= count, timeout=1
-                    )
-            else:
-                assert error.value.code is FailureCode.RATE_LIMITED
+        # The client deadline must outlast the runtime's dispatch: a deadline
+        # that expires before the server reads the call cancels it, so its
+        # handler never starts and never holds a slot. Fill the slots
+        # concurrently so the generous deadline costs one wait, not sixteen.
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            fill_calls = [pool.submit(remote_error, f"invocation-{index}") for index in range(16)]
+            fill_errors = [call.result(timeout=10) for call in fill_calls]
+        assert all(error.code is FailureCode.TIMEOUT for error in fill_errors)
+        with started_condition:
+            assert started_condition.wait_for(lambda: len(started) == 16, timeout=5)
+        for index in range(16, 24):
+            assert remote_error(f"invocation-{index}").code is FailureCode.RATE_LIMITED
         assert len(started) == 16
 
         with service._worker_threads_lock:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections import deque
 from collections.abc import Mapping
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -322,6 +324,83 @@ def test_publisher_rejects_a_bearer_token_realm_outside_the_configured_registry(
             credentials=RegistryCredentials("publisher", "not-persisted"),
             transport=transport,
         ).publish(artifact)
+
+
+def test_registry_credentials_repr_hides_the_password() -> None:
+    credentials = RegistryCredentials("publisher", "not-represented")
+    escapable_password = "quote'\"back\\slash"
+    escapable = RegistryCredentials("publisher", escapable_password)
+    encoded_pair = base64.b64encode(b"publisher:not-represented").decode("ascii")
+    encoded_password = base64.b64encode(b"not-represented").decode("ascii")
+    for representation in (repr(credentials), str(credentials)):
+        assert "not-represented" not in representation
+        assert encoded_pair not in representation
+        assert encoded_password not in representation
+        assert "publisher" in representation
+    for representation in (repr(escapable), str(escapable)):
+        assert escapable_password not in representation
+        assert repr(escapable_password) not in representation
+
+
+def test_registry_credentials_preserve_construction_equality_and_immutability() -> None:
+    positional = RegistryCredentials("publisher", "not-represented")
+    keyword = RegistryCredentials(username="publisher", password="not-represented")
+    assert positional == keyword
+    assert positional != RegistryCredentials("publisher", "different-secret")
+    assert positional != RegistryCredentials("other-publisher", "not-represented")
+    with pytest.raises(FrozenInstanceError):
+        positional.password = "mutated-secret"
+    assert replace(positional, password="replaced-secret").password == "replaced-secret"
+    assert positional.password == "not-represented"
+    encoded = base64.b64encode(b"publisher:not-represented").decode("ascii")
+    assert positional.authorization_header() == f"Basic {encoded}"
+
+
+@pytest.mark.parametrize(
+    "username, password",
+    [
+        ("", "not-represented"),
+        ("publisher", ""),
+        ("pub\rlisher", "not-represented"),
+        ("pub\nlisher", "not-represented"),
+        ("publisher", "not-repre\nsented"),
+        ("publisher", "not-repre\rsented"),
+    ],
+)
+def test_registry_credentials_reject_invalid_values_for_authorization(
+    username: str, password: str
+) -> None:
+    credentials = RegistryCredentials(username, password)
+    with pytest.raises(CatalogIndexPublicationError, match="REGISTRY_CREDENTIALS_INVALID"):
+        credentials.authorization_header()
+
+
+def test_publication_failure_output_omits_credentials() -> None:
+    artifact = _artifact()
+    transport = _Transport(
+        [
+            OciRegistryResponse(
+                401,
+                {"WWW-Authenticate": 'Bearer realm="http://localhost:8443/token",service="local"'},
+            ),
+            OciRegistryResponse(403, {}),
+        ]
+    )
+    credentials = RegistryCredentials("publisher", "not-represented")
+    encoded_pair = base64.b64encode(b"publisher:not-represented").decode("ascii")
+    publisher = CatalogIndexPublisher(_target(), credentials=credentials, transport=transport)
+
+    with pytest.raises(CatalogIndexPublicationError) as information:
+        publisher.publish(artifact)
+
+    failure = str(information.value)
+    assert failure == "OCI artifact publication failed: REGISTRY_TOKEN_EXCHANGE_FAILED"
+    assert "not-represented" not in failure
+    assert encoded_pair not in failure
+    token_request = transport.requests[1]
+    assert token_request[0] == "GET"
+    assert token_request[2]["Authorization"] == credentials.authorization_header()
+    assert token_request[2]["Authorization"] == f"Basic {encoded_pair}"
 
 
 def test_plugin_publisher_uploads_all_plugin_payload_blobs_before_advancing_channel(
