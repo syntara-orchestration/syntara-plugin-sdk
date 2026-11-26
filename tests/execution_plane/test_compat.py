@@ -55,8 +55,15 @@ class CompatWorkloadCredentialResolver(WorkloadCredentialResolver):
         work_item_id: uuid.UUID,
         attempt_id: str,
         step_revision_id: str,
+        runtime_context: Mapping[str, object] | None = None,
     ) -> dict[str, str]:
-        """Return the synthetic document for the approved binding only."""
+        """Return the synthetic document for the approved binding only.
+
+        Execution Plane passes the work item's ``runtime_context`` for
+        loop-aware correlation; it carries no authorization, so the stand-in
+        accepts it and ignores it. The default keeps older ``ep-ref``
+        revisions, which do not send it, working.
+        """
         if (
             credential_recipe_id != self._recipe_id
             or credential_ref != self._credential_ref
