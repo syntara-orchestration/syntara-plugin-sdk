@@ -347,22 +347,23 @@ Image:          python-steps-workload
 
 The managed container publishes an ephemeral loopback port secured with
 mutual TLS generated for this invocation (one throwaway CA plus server and
-client certificates, removed afterwards); the published-port mechanism works
-everywhere such ports do, including Docker Desktop. openssl is required for
-the managed path: there is deliberately no cleartext fallback, because a
-fixed-port unauthenticated listener would let any local process impersonate
-the runtime.
+client certificates, removed afterwards). The managed path requires a Linux
+container engine (podman or docker) and openssl: there is deliberately no
+cleartext fallback, because a fixed-port unauthenticated listener would let
+any local process impersonate the runtime.
 The generated private keys stay restricted: the CA and client keys are
 owner-only on the host, and the server key is group-readable in your
 primary group, which the managed run grants to the container as a
 supplemental group (gid 0 under rootless engines, your group id under
 rootful ones). No other local identity can read the server key through its
-bind mount. The restricted delivery is verified on Linux rootless Podman;
-the rootful group id is chosen by the same code path and covered by the
-managed run's tests. If your engine presents bind mounts with an identity
-the runtime user cannot match, the runtime's startup diagnostic names the
-key path and mode, and the self-managed `--address` path below remains
-available.
+bind mount. That group mapping is only defined where the engine sees the
+host's uid and gid semantics, so engines behind a VM boundary (Docker
+Desktop, podman machine on macOS) present bind mounts with ownership the
+grant cannot match; the managed run refuses on those hosts instead of
+shipping a key the runtime cannot read. The restricted delivery is verified
+on Linux rootless Podman; the rootful group id is chosen by the same code
+path and covered by the managed run's tests. On any other host, use the
+self-managed `--address` path below.
 The managed path never builds or pulls images: a missing image is an error
 with the fix, not a side effect, because building requires the author-owned
 Containerfile and bindings factory the CLI cannot infer. Build the release

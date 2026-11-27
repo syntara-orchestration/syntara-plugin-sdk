@@ -7,9 +7,8 @@ runs it, waits for its gRPC health endpoint, and removes it afterwards.
 
 The container publishes an ephemeral loopback host port secured with mutual
 TLS generated for this invocation (one throwaway CA plus server and client
-certificates, removed afterwards); the published-port mechanism works
-everywhere such ports do, including Docker Desktop. The managed path
-requires openssl and never falls
+certificates, removed afterwards). The managed path requires a Linux
+container engine and openssl, and never falls
 back to an unauthenticated listener: a fixed-port cleartext runtime would let
 any local process impersonate the container and capture inputs. The author
 can always opt out by running the runtime themselves and passing
@@ -412,12 +411,33 @@ def managed_runtime(
     deliberately no unauthenticated fallback: a fixed-port cleartext listener
     would let any local process impersonate the runtime and capture inputs.
 
+    The restricted key delivery grants the container the invoking user's
+    primary group, a mapping that is only defined where the engine sees the
+    host's uid and gid semantics directly. Engines behind a VM boundary
+    (Docker Desktop, podman machine on macOS) present bind mounts with their
+    own ownership, which no host-side group grant can match, so the managed
+    path requires a Linux container engine and refuses elsewhere instead of
+    shipping a key the runtime cannot read.
+
     The container is started without ``--rm`` and removed only after the
     block, so a container that exits early keeps its exit status and log
     readable for the liveness probe and for post-mortem inspection.
 
     """
 
+    if sys.platform != "linux":
+        raise RunExecutionError(
+            "the managed workload container requires a Linux container engine",
+            detail=(
+                "the restricted TLS key delivery maps the invoking user's"
+                " primary group into the container, which is only defined"
+                " where the engine sees this host's uid and gid semantics",
+            ),
+            next_steps=(
+                "run the command on Linux with podman or docker",
+                _SELF_MANAGED_NEXT_STEP,
+            ),
+        )
     engine = _select_engine(image)
     name = f"syntara-run-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory(prefix="syntara-run-tls-") as temporary:

@@ -185,6 +185,40 @@ def test_managed_runtime_requires_openssl_instead_of_falling_back(
     assert "openssl is required" in raised.value.message
 
 
+def test_a_non_linux_host_fails_fast_instead_of_guessing_the_group_mapping(
+    monkeypatch,
+) -> None:
+    """VM-backed engines present mounts with ownership we cannot map.
+
+    Docker Desktop and podman machine run the engine inside a VM that
+    presents bind mounts with its own ownership (typically root:root), so
+    the host-side primary-group grant cannot match and the runtime would
+    die reading a 0640 key the old 0644 mode let it read. The managed run
+    refuses up front instead of guessing a mapping.
+    """
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="container-id", stderr="")
+
+    monkeypatch.setattr(container_engine.sys, "platform", "darwin")
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        container_engine, "detect_engines", lambda: [container_engine.ContainerEngine("podman")]
+    )
+
+    with pytest.raises(RunExecutionError) as raised:
+        with container_engine.managed_runtime("some-image"):
+            pass
+
+    assert "requires a Linux container engine" in raised.value.message
+    assert any("--address" in step for step in raised.value.next_steps)
+    # The refusal happens before any engine command: no container, no probe.
+    assert commands == []
+
+
 def test_published_runtime_never_pulls_and_never_uses_the_host_network(
     monkeypatch, tmp_path
 ) -> None:

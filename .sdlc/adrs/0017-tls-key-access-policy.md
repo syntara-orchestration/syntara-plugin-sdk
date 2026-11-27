@@ -50,7 +50,11 @@ world-readable mode can now be refused at startup, and an engine that
 cannot report its rootless mode fails the managed run fast instead of
 starting a container that cannot read its key. The restricted delivery is
 verified on Linux rootless Podman; the rootful group id is chosen by the
-same code path and covered by unit tests. The Execution
+same code path and covered by unit tests. Hosts whose engines run behind a
+VM boundary (Docker Desktop, podman machine on macOS) present bind mounts
+with their own ownership, which no host-side group grant can match, so the
+managed run refuses on non-Linux hosts until that presentation is
+verified and a correct grant is designed. The Execution
 Plane and any deployment that mounts its own TLS material should deliver
 the key through its owner, its group, or a projected secret, and must
 monitor long-lived certificate validity externally: the runtime performs no
