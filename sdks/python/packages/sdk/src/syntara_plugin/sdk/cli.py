@@ -2267,7 +2267,24 @@ def _run_tls_options(arguments: argparse.Namespace) -> TlsOptions | None:
     assert arguments.tls_ca is not None
     assert arguments.tls_cert is not None
     assert arguments.tls_key is not None
+    _warn_world_readable_key(arguments.tls_key)
     return TlsOptions(ca=arguments.tls_ca, certificate=arguments.tls_cert, key=arguments.tls_key)
+
+
+def _warn_world_readable_key(path: Path) -> None:
+    """Name the risk of a client key readable beyond its owner; never refuse.
+
+    Permissions on author-supplied material are the author's call, mirroring
+    the credential-file warning: the run continues, the risk is still worth
+    naming on stderr.
+    """
+
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return
+    if mode & 0o044:
+        print(f"warning: {path} is readable by other local users", file=sys.stderr)
 
 
 def _progress_printer(arguments: argparse.Namespace) -> Callable[[Any], None] | None:

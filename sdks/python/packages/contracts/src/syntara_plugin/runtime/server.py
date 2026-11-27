@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import signal
+import stat
 import weakref
 from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import Future
@@ -923,11 +924,84 @@ def _optional_path(value: str | None) -> Path | None:
     return Path(value).expanduser()
 
 
+def _diagnostic_path_text(path: Path | str) -> str:
+    """One-line text for a deployer-controlled path inside bounded errors.
+
+    The TLS key path comes from the deployment environment; a newline in it
+    must not inject lines into a startup diagnostic.
+    """
+
+    return str(path).replace("\r", "\\r").replace("\n", "\\n")
+
+
+def check_private_key_access(path: Path) -> None:
+    """Verify this process can read its TLS private key without needless exposure.
+
+    Every restricted arrangement the transport policy documents is accepted:
+    an owner-only key, a group-readable key for a group this process belongs
+    to, and a secret-mount or projected layout whose access flows through
+    other-read because the runtime identity is neither the owner nor in the
+    group. A world-readable key is refused only when a restricted
+    arrangement already works for this process, because the broader mode
+    grants read access to every local identity for no benefit. Symlinks are
+    resolved, so a mounted secret that links to its real file is inspected
+    at the target. Diagnostics name paths, modes, and owners, never key
+    contents. Raises :class:`RuntimeServerError` on every refusal.
+    """
+
+    try:
+        resolved = Path(os.path.realpath(path))
+    except OSError as error:
+        raise RuntimeServerError(
+            f"the TLS private key path {_diagnostic_path_text(path)} could not be resolved"
+        ) from error
+    try:
+        status = resolved.stat()
+    except OSError as error:
+        raise RuntimeServerError(
+            f"the TLS private key {_diagnostic_path_text(path)} is not present at "
+            f"{_diagnostic_path_text(resolved)}"
+        ) from error
+    mode = stat.S_IMODE(status.st_mode)
+    try:
+        # Opening the key is the effective-access verification. The bytes
+        # are deliberately never read, so no key material enters memory.
+        key_handle = resolved.open("rb")
+    except OSError as error:
+        raise RuntimeServerError(
+            "this process cannot read its TLS private key "
+            f"({error.strerror or error})\n"
+            f"  key path: {_diagnostic_path_text(path)}\n"
+            f"  resolved: {_diagnostic_path_text(resolved)}\n"
+            f"  mode: {mode:04o}, owner {status.st_uid}, group {status.st_gid}\n"
+            f"  process: euid {os.geteuid()}, egid {os.getegid()}, "
+            f"groups {sorted(os.getgroups())}"
+        ) from error
+    key_handle.close()
+    if not mode & 0o004:
+        return
+    owner_read = status.st_uid == os.geteuid() and bool(mode & 0o400)
+    group_read = bool(mode & 0o040) and (
+        status.st_gid == os.getegid() or status.st_gid in os.getgroups()
+    )
+    if owner_read or group_read:
+        raise RuntimeServerError(
+            "the TLS private key is world-readable although a restricted "
+            "arrangement already works for this process\n"
+            f"  key path: {_diagnostic_path_text(path)}\n"
+            f"  resolved: {_diagnostic_path_text(resolved)}\n"
+            f"  mode: {mode:04o}, owner {status.st_uid}, group {status.st_gid}\n"
+            "  restrict the key to its owner (chmod 0600) or to the runtime "
+            "group (chmod 0640 with that group)"
+        )
+
+
 def _server_credentials(config: RuntimeServerConfig) -> grpc.ServerCredentials | None:
     if config.tls_certificate is None:
         return None
     assert config.tls_key is not None
     assert config.tls_client_ca is not None
+    check_private_key_access(config.tls_key)
     try:
         certificate = config.tls_certificate.read_bytes()
         key = config.tls_key.read_bytes()

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,8 +38,8 @@ def test_free_port_returns_a_bindable_loopback_port() -> None:
         probe.bind(("127.0.0.1", port))
 
 
-def test_generated_tls_material_is_complete_and_readable(tmp_path: Path) -> None:
-    """The ephemeral CA and certificates exist and the container user can read them."""
+def test_generated_tls_material_is_complete_and_restricted(tmp_path: Path) -> None:
+    """Keys stay restricted; the container reads its key through the group."""
 
     if shutil.which("openssl") is None:
         pytest.skip("openssl is required for TLS generation")
@@ -52,7 +54,20 @@ def test_generated_tls_material_is_complete_and_readable(tmp_path: Path) -> None
         material.server_key,
     ):
         assert path.is_file()
-        assert path.stat().st_mode & 0o044
+    # Host-only private material never becomes readable beyond its owner:
+    # the CA and client keys are owner-only and stay on the host side.
+    assert stat.S_IMODE((tmp_path / "ca.key").stat().st_mode) == 0o600
+    assert stat.S_IMODE(material.client_key.stat().st_mode) == 0o600
+    for certificate in (
+        material.client_ca,
+        material.client_certificate,
+        material.server_certificate,
+    ):
+        assert stat.S_IMODE(certificate.stat().st_mode) == 0o644
+    # The server key is the only key the workload reads. It is group-readable
+    # for the container's supplemental group, and never world-readable.
+    assert stat.S_IMODE(material.server_key.stat().st_mode) == 0o640
+    assert material.server_key.stat().st_gid == os.getgid()
 
 
 def test_generate_tls_material_returns_none_without_openssl(
@@ -168,6 +183,40 @@ def test_managed_runtime_requires_openssl_instead_of_falling_back(
             pass
 
     assert "openssl is required" in raised.value.message
+
+
+def test_a_non_linux_host_fails_fast_instead_of_guessing_the_group_mapping(
+    monkeypatch,
+) -> None:
+    """VM-backed engines present mounts with ownership we cannot map.
+
+    Docker Desktop and podman machine run the engine inside a VM that
+    presents bind mounts with its own ownership (typically root:root), so
+    the host-side primary-group grant cannot match and the runtime would
+    die reading a 0640 key the old 0644 mode let it read. The managed run
+    refuses up front instead of guessing a mapping.
+    """
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="container-id", stderr="")
+
+    monkeypatch.setattr(container_engine.sys, "platform", "darwin")
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        container_engine, "detect_engines", lambda: [container_engine.ContainerEngine("podman")]
+    )
+
+    with pytest.raises(RunExecutionError) as raised:
+        with container_engine.managed_runtime("some-image"):
+            pass
+
+    assert "requires a Linux container engine" in raised.value.message
+    assert any("--address" in step for step in raised.value.next_steps)
+    # The refusal happens before any engine command: no container, no probe.
+    assert commands == []
 
 
 def test_published_runtime_never_pulls_and_never_uses_the_host_network(
@@ -561,10 +610,96 @@ def test_mounted_tls_material_is_relabelled_for_both_engines(monkeypatch, tmp_pa
         container_engine._published_runtime(
             container_engine.ContainerEngine(command_name), "some-image", "a-name", material
         )
-        volumes = [part for part in commands[0] if ":/run/secrets/" in str(part)]
+        run_command = next(command for command in commands if command[1] == "run")
+        volumes = [part for part in run_command if ":/run/secrets/" in str(part)]
         assert volumes, command_name
         for volume in volumes:
             assert volume.endswith(":ro,Z"), (command_name, volume)
+
+
+def test_published_runtime_grants_the_container_only_a_restricted_group(
+    monkeypatch,
+) -> None:
+    """The managed run delivers the server key through one supplemental group.
+
+    Rootless engines present the invoking user's primary group as container
+    gid 0; rootful engines map group ids unchanged. An unmapped id would
+    make the engine refuse to start the container at all, so exactly one id
+    is granted per mode. The flag applies to whatever user the selected
+    image declares, so no runtime-identity resolution is needed.
+    """
+
+    material = _fake_material()
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(list(command))
+        return SimpleNamespace(returncode=0, stdout="container-id", stderr="")
+
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+
+    for rootless, expected in ((True, {"0"}), (False, {str(os.getgid())})):
+        monkeypatch.setattr(
+            container_engine,
+            "_engine_is_rootless",
+            lambda engine, rootless=rootless: rootless,
+        )
+        for command_name in ("podman", "docker"):
+            commands.clear()
+            container_engine._published_runtime(
+                container_engine.ContainerEngine(command_name), "some-image", "a-name", material
+            )
+            run_command = next(command for command in commands if command[1] == "run")
+            granted = {
+                run_command[index + 1]
+                for index, argument in enumerate(run_command)
+                if argument == "--group-add"
+            }
+            assert granted == expected, (command_name, rootless, sorted(granted))
+
+
+@pytest.mark.parametrize(
+    ("answers", "expected"),
+    [
+        ({"podman": "true\n", "docker": "[name=seccomp,profile=builtin name=rootless]\n"}, True),
+        ({"podman": "false\n", "docker": "[name=seccomp,profile=builtin]\n"}, False),
+    ],
+)
+def test_rootless_detection_reads_the_engine_answer(
+    monkeypatch, answers: dict[str, str], expected: bool
+) -> None:
+    """Podman answers a boolean; docker names rootless among its options."""
+
+    def fake_run(command, **_kwargs):
+        if list(command[:3]) == [command[0], "info", "--format"]:
+            return SimpleNamespace(returncode=0, stdout=answers[command[0]], stderr="")
+        raise AssertionError(f"unexpected engine command: {command}")
+
+    monkeypatch.setattr(container_engine.subprocess, "run", fake_run)
+    assert (
+        container_engine._engine_is_rootless(container_engine.ContainerEngine("podman"))
+        is expected
+    )
+    assert (
+        container_engine._engine_is_rootless(container_engine.ContainerEngine("docker"))
+        is expected
+    )
+
+
+def test_rootless_detection_fails_fast_when_the_engine_cannot_answer(monkeypatch) -> None:
+    """A stumped engine is an error with guidance, never a guessed mapping."""
+
+    monkeypatch.setattr(
+        container_engine.subprocess,
+        "run",
+        lambda command, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="engine exploded"
+        ),
+    )
+    with pytest.raises(RunExecutionError) as raised:
+        container_engine._engine_is_rootless(container_engine.ContainerEngine("podman"))
+
+    assert "could not determine whether podman runs rootless" in raised.value.message
 
 
 def test_engine_fallback_tries_docker_when_podman_is_unusable(monkeypatch) -> None:

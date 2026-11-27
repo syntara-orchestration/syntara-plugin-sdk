@@ -7,12 +7,16 @@ runs it, waits for its gRPC health endpoint, and removes it afterwards.
 
 The container publishes an ephemeral loopback host port secured with mutual
 TLS generated for this invocation (one throwaway CA plus server and client
-certificates, removed afterwards), which works everywhere published ports do,
-including Docker Desktop. The managed path requires openssl and never falls
+certificates, removed afterwards). The managed path requires a Linux
+container engine and openssl, and never falls
 back to an unauthenticated listener: a fixed-port cleartext runtime would let
 any local process impersonate the container and capture inputs. The author
 can always opt out by running the runtime themselves and passing
 ``--address`` (and ``--tls-*``) explicitly.
+Private keys never become world-readable: the CA and client keys stay
+owner-only on the host, and the server key is delivered to the container
+through a restricted supplemental group instead of a broad file mode, so no
+other local identity can read it through the per-file bind mount.
 A container whose process exits before its runtime becomes healthy is
 reported fast: the health retry loop consults a liveness probe that reads
 the container's exit status and its last log lines, so the author sees why
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import shutil
 import signal
@@ -46,7 +51,9 @@ from .runner import RunExecutionError, RunTarget, TlsOptions
 
 _ENGINE_COMMANDS = ("podman", "docker")
 _SELF_MANAGED_NEXT_STEP = "or start the runtime yourself and pass --address HOST:PORT"
+_START_ENGINE_NEXT_STEP = "start the engine and rerun"
 _VERSION_TIMEOUT_SECONDS = 10
+_ROOTLESS_TIMEOUT_SECONDS = 10
 _INSPECT_TIMEOUT_SECONDS = 30
 _DIGEST_PREFIX = "sha256:"
 _RUN_TIMEOUT_SECONDS = 60
@@ -404,12 +411,33 @@ def managed_runtime(
     deliberately no unauthenticated fallback: a fixed-port cleartext listener
     would let any local process impersonate the runtime and capture inputs.
 
+    The restricted key delivery grants the container the invoking user's
+    primary group, a mapping that is only defined where the engine sees the
+    host's uid and gid semantics directly. Engines behind a VM boundary
+    (Docker Desktop, podman machine on macOS) present bind mounts with their
+    own ownership, which no host-side group grant can match, so the managed
+    path requires a Linux container engine and refuses elsewhere instead of
+    shipping a key the runtime cannot read.
+
     The container is started without ``--rm`` and removed only after the
     block, so a container that exits early keeps its exit status and log
     readable for the liveness probe and for post-mortem inspection.
 
     """
 
+    if sys.platform != "linux":
+        raise RunExecutionError(
+            "the managed workload container requires a Linux container engine",
+            detail=(
+                "the restricted TLS key delivery maps the invoking user's"
+                " primary group into the container, which is only defined"
+                " where the engine sees this host's uid and gid semantics",
+            ),
+            next_steps=(
+                "run the command on Linux with podman or docker",
+                _SELF_MANAGED_NEXT_STEP,
+            ),
+        )
     engine = _select_engine(image)
     name = f"syntara-run-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory(prefix="syntara-run-tls-") as temporary:
@@ -465,6 +493,46 @@ def managed_runtime(
                 _remove_probe_network(engine, name)
 
 
+def _engine_is_rootless(engine: ContainerEngine) -> bool:
+    """Whether the engine runs its containers inside a user namespace.
+
+    Rootless engines present the invoking user's primary group as container
+    gid 0; rootful engines map group ids unchanged. The restricted
+    server-key delivery needs exactly that container-side group id, and an
+    unmapped id makes the engine refuse to start the container at all, so
+    the question cannot be guessed. Fails with guidance when the engine
+    cannot answer.
+    """
+
+    if engine.command == "podman":
+        command = [engine.command, "info", "--format", "{{.Host.Security.Rootless}}"]
+    else:
+        command = [engine.command, "info", "--format", "{{.SecurityOptions}}"]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=_ROOTLESS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RunExecutionError(
+            f"could not determine whether {engine.command} runs rootless",
+            detail=(str(error),),
+            next_steps=(_START_ENGINE_NEXT_STEP, _SELF_MANAGED_NEXT_STEP),
+        ) from error
+    if completed.returncode != 0:
+        raise RunExecutionError(
+            f"could not determine whether {engine.command} runs rootless",
+            detail=_stderr_tail(completed.stderr),
+            next_steps=("check the engine error above and rerun", _SELF_MANAGED_NEXT_STEP),
+        )
+    if engine.command == "podman":
+        return completed.stdout.strip().lower() == "true"
+    return "rootless" in completed.stdout.lower()
+
+
 def _published_runtime(
     engine: ContainerEngine,
     image: str,
@@ -475,7 +543,12 @@ def _published_runtime(
     probe_network: str | None = None,
     probe_only: bool = False,
 ) -> ManagedRuntime:
-    """Run the container on a published loopback port with generated mTLS."""
+    """Run the container on a published loopback port with generated mTLS.
+
+    The run grants the container the invoking user's primary group as a
+    supplemental group, which is how the group-readable server key reaches
+    the workload without a world-readable mode.
+    """
 
     port = _free_port()
     use_podman_machine_tunnel = (
@@ -499,6 +572,14 @@ def _published_runtime(
                 # Never resolve the image from a registry: the local check above
                 # is the authority, and a pull would run unrequested content.
                 "--pull=never",
+                # Restricted server-key delivery: the server key is 0640 in
+                # the invoking user's primary group, and the run grants the
+                # container exactly that group's container-side id. Rootless
+                # engines present it as gid 0; rootful engines map group ids
+                # unchanged. The flag applies to whatever user the selected
+                # image declares, so no runtime-identity resolution is needed.
+                "--group-add",
+                "0" if _engine_is_rootless(engine) else str(os.getgid()),
                 *(
                     []
                     if use_podman_machine_tunnel
@@ -1025,15 +1106,18 @@ def _generate_tls_material(directory: Path) -> _TlsMaterial | None:
         if role == "server":
             command.extend(("-extfile", str(extensions)))
         _run_openssl(*command)
-    # The container's runtime user must be able to read the mounted material.
-    for path in (
-        ca_certificate,
-        server_certificate,
-        server_key,
-        client_certificate,
-        client_key,
-    ):
-        path.chmod(0o644)
+    # Private keys never become world-readable. openssl already writes them
+    # owner-only; the CA and client keys stay that way because they never
+    # leave the host. The server key is the only key the workload reads: it
+    # is group-readable in the invoking user's primary group, and the run
+    # grants the container that group, so the per-file bind mount exposes it
+    # to the workload without granting read access to any other identity.
+    for host_only_key in (ca_key, client_key):
+        host_only_key.chmod(0o600)
+    os.chown(server_key, -1, os.getgid())
+    server_key.chmod(0o640)
+    for certificate in (ca_certificate, server_certificate, client_certificate):
+        certificate.chmod(0o644)
     return _TlsMaterial(
         client_ca=ca_certificate,
         client_certificate=client_certificate,
@@ -1091,7 +1175,7 @@ def _image_available(engine: ContainerEngine, image: str) -> bool:
         raise RunExecutionError(
             f"{engine.command} is installed but not usable",
             detail=(str(error),),
-            next_steps=("start the engine and rerun", "or pass --address HOST:PORT"),
+            next_steps=(_START_ENGINE_NEXT_STEP, "or pass --address HOST:PORT"),
         ) from error
     if completed.returncode == 0:
         return True
@@ -1122,7 +1206,7 @@ def _image_available(engine: ContainerEngine, image: str) -> bool:
         raise RunExecutionError(
             f"{engine.command} is installed but not usable",
             detail=_stderr_tail(completed.stderr),
-            next_steps=("start the engine and rerun", "or pass --address HOST:PORT"),
+            next_steps=(_START_ENGINE_NEXT_STEP, "or pass --address HOST:PORT"),
         )
     return False
 

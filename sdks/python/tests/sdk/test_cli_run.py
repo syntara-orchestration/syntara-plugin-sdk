@@ -4878,3 +4878,71 @@ def test_import_failure_scrubs_credential_values(monkeypatch, capsys, tmp_path):
     with pytest.raises(runner.RunExecutionError) as raised:
         runner.run_source(tmp_path / "plugin.yaml", target, {}, "test", credentials=(credential,))
     assert "credential-secret" not in str(raised.value) + str(raised.value.detail) + capsys.readouterr().err
+
+
+def _write_world_readable_tls_material(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """User-supplied TLS files whose key is deliberately world-readable."""
+
+    material = tmp_path / "material"
+    material.mkdir()
+    for name in ("ca.crt", "client.crt", "client.key"):
+        (material / name).write_text("material", encoding="utf-8")
+    (material / "client.key").chmod(0o644)
+    return material / "ca.crt", material / "client.crt", material / "client.key"
+
+
+def _run_image_with_captured_tls(
+    monkeypatch, workspace: Path, tls: tuple[Path, Path, Path], *extra: str
+) -> int:
+    """Run image mode against a failing run_image; return the exit status."""
+
+    import syntara_plugin.sdk.runner as runner_module
+
+    ca, certificate, key = tls
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        raise runner_module.RunExecutionError("captured invocation")
+
+    monkeypatch.setattr(runner_module, "run_image", capture)
+    return main([
+        "run", "--manifest", str(workspace / "plugin.yaml"), "--mode", "image",
+        "--address", "127.0.0.1:50051",
+        "--tls-ca", str(ca), "--tls-cert", str(certificate), "--tls-key", str(key),
+        "--input", '{"title": "x"}', *extra,
+    ])
+
+
+def test_a_world_readable_client_key_warns_without_refusing(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The client key is the author's own material; the risk is still named."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    tls = _write_world_readable_tls_material(tmp_path)
+
+    status = _run_image_with_captured_tls(monkeypatch, workspace, tls)
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "captured invocation" in captured.err
+    assert (
+        f"warning: {tls[2]} is readable by other local users"
+        in captured.err
+    )
+
+
+def test_a_client_key_warning_reaches_stderr_under_json(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """stdout owes a --json consumer one document; the warning is on stderr."""
+
+    workspace = _write_echo_workspace(tmp_path / "ws")
+    tls = _write_world_readable_tls_material(tmp_path)
+
+    status = _run_image_with_captured_tls(monkeypatch, workspace, tls, "--json")
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "readable by other local users" in captured.err
+    # stdout stays exactly one parseable document.
+    json.loads(captured.out)
