@@ -141,9 +141,20 @@ def installed_action_bindings(
                 },
                 "input": {
                     "kind": "inline",
-                    "value": input_schema if input_schema is not None else {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()},
+                    "value": input_schema
+                    if input_schema is not None
+                    else {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        **EchoInput.model_json_schema(),
+                    },
                 },
-                "output": {"kind": "inline", "value": {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}},
+                "output": {
+                    "kind": "inline",
+                    "value": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        **EchoOutput.model_json_schema(),
+                    },
+                },
             },
         },
         {},
@@ -178,8 +189,19 @@ def create_uncancellable_timeout_bindings() -> StepBindings:
 
 def _schema_digests(input_schema: Mapping[str, Any] | None = None) -> dict[str, str]:
     return {
-        "input": canonical_json_digest(input_schema or {"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoInput.model_json_schema()}),
-        "output": canonical_json_digest({"$schema": "https://json-schema.org/draft/2020-12/schema", **EchoOutput.model_json_schema()}),
+        "input": canonical_json_digest(
+            input_schema
+            or {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                **EchoInput.model_json_schema(),
+            }
+        ),
+        "output": canonical_json_digest(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                **EchoOutput.model_json_schema(),
+            }
+        ),
     }
 
 
@@ -217,14 +239,23 @@ def resolved_file(tmp_path: Path, step_class: type[BaseStep[EchoInput, EchoOutpu
         CancellationStep: "smoke.cancellation.v1",
     }
     path = tmp_path / "resolved.json"
-    path.write_text(json.dumps({"bindings": [{
-        "stepRevisionId": REVISION,
-        "stepIdentity": identities[step_class],
-        "runtimeKind": "platform-runner",
-        "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
-        "abi": "syntara.container/v1alpha1",
-        "schemaDigests": _schema_digests(),
-    }]}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "bindings": [
+                    {
+                        "stepRevisionId": REVISION,
+                        "stepIdentity": identities[step_class],
+                        "runtimeKind": "platform-runner",
+                        "entryPoint": f"{step_class.__module__}:{step_class.__qualname__}",
+                        "abi": "syntara.container/v1alpha1",
+                        "schemaDigests": _schema_digests(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -281,6 +312,7 @@ async def _service_events(
         inputs_json=json.dumps({"message": invocation.inputs["message"]}).encode(),
         timeout_seconds=invocation.timeout_seconds,
     )
+
     async def requests():
         yield container_pb2.ExecuteClientMessage(start=request)
         await asyncio.Event().wait()
@@ -378,16 +410,21 @@ def test_runtime_server_serves_health_and_executes_a_bound_step(tmp_path: Path) 
     async def scenario() -> None:
         server = create_runtime_server(
             replace(
-                _resolved_config(tmp_path, [_resolved_record()]), address=f"localhost:{port}",
-                tls_certificate=certificate, tls_key=key, tls_client_ca=client_ca,
+                _resolved_config(tmp_path, [_resolved_record()]),
+                address=f"localhost:{port}",
+                tls_certificate=certificate,
+                tls_key=key,
+                tls_client_ca=client_ca,
             )
         )
         await server.start()
         channel = grpc.secure_channel(
-            f"localhost:{port}", grpc.ssl_channel_credentials(
+            f"localhost:{port}",
+            grpc.ssl_channel_credentials(
                 root_certificates=client_ca.read_bytes(),
-                private_key=client_key.read_bytes(), certificate_chain=client_certificate.read_bytes(),
-            )
+                private_key=client_key.read_bytes(),
+                certificate_chain=client_certificate.read_bytes(),
+            ),
         )
         try:
             client = ContainerClient(channel)
@@ -396,9 +433,7 @@ def test_runtime_server_serves_health_and_executes_a_bound_step(tmp_path: Path) 
 
             assert health == (REVISION,)
             assert result.output == {"message": "hello"}
-            unknown_invocation = replace(
-                _invocation(), step_revision_id="sha256:" + "c" * 64
-            )
+            unknown_invocation = replace(_invocation(), step_revision_id="sha256:" + "c" * 64)
             with pytest.raises(ContainerRemoteError) as raised:
                 await asyncio.to_thread(client.execute, unknown_invocation)
             assert raised.value.code is FailureCode.NOT_FOUND
@@ -422,15 +457,19 @@ def test_runtime_server_executes_steps_concurrently(tmp_path: Path) -> None:
                 bindings_factory=f"{__name__}:create_barrier_bindings",
                 resolved_execution_path=resolved_file(tmp_path, BarrierStep),
                 address=f"localhost:{port}",
-                tls_certificate=certificate, tls_key=key, tls_client_ca=client_ca,
+                tls_certificate=certificate,
+                tls_key=key,
+                tls_client_ca=client_ca,
             )
         )
         await server.start()
         channel = grpc.secure_channel(
-            f"localhost:{port}", grpc.ssl_channel_credentials(
+            f"localhost:{port}",
+            grpc.ssl_channel_credentials(
                 root_certificates=client_ca.read_bytes(),
-                private_key=client_key.read_bytes(), certificate_chain=client_certificate.read_bytes(),
-            )
+                private_key=client_key.read_bytes(),
+                certificate_chain=client_certificate.read_bytes(),
+            ),
         )
         try:
             client = ContainerClient(channel)
@@ -463,15 +502,19 @@ def test_runtime_server_cancels_an_active_step(tmp_path: Path) -> None:
                 bindings_factory=f"{__name__}:create_cancellation_bindings",
                 resolved_execution_path=resolved_file(tmp_path, CancellationStep),
                 address=f"localhost:{port}",
-                tls_certificate=certificate, tls_key=key, tls_client_ca=client_ca,
+                tls_certificate=certificate,
+                tls_key=key,
+                tls_client_ca=client_ca,
             )
         )
         await server.start()
         channel = grpc.secure_channel(
-            f"localhost:{port}", grpc.ssl_channel_credentials(
+            f"localhost:{port}",
+            grpc.ssl_channel_credentials(
                 root_certificates=client_ca.read_bytes(),
-                private_key=client_key.read_bytes(), certificate_chain=client_certificate.read_bytes(),
-            )
+                private_key=client_key.read_bytes(),
+                certificate_chain=client_certificate.read_bytes(),
+            ),
         )
         try:
             client = ContainerClient(channel)
@@ -508,15 +551,19 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
                 bindings_factory=f"{__name__}:create_cancellation_bindings",
                 resolved_execution_path=resolved_file(tmp_path, CancellationStep),
                 address=f"localhost:{port}",
-                tls_certificate=certificate, tls_key=key, tls_client_ca=client_ca,
+                tls_certificate=certificate,
+                tls_key=key,
+                tls_client_ca=client_ca,
             )
         )
         await server.start()
         channel = grpc.secure_channel(
-            f"localhost:{port}", grpc.ssl_channel_credentials(
+            f"localhost:{port}",
+            grpc.ssl_channel_credentials(
                 root_certificates=client_ca.read_bytes(),
-                private_key=client_key.read_bytes(), certificate_chain=client_certificate.read_bytes(),
-            )
+                private_key=client_key.read_bytes(),
+                certificate_chain=client_certificate.read_bytes(),
+            ),
         )
         try:
             stub = container_pb2_grpc.ContainerServiceStub(channel)
@@ -528,6 +575,7 @@ def test_runtime_server_cancels_step_when_client_disconnects(tmp_path: Path) -> 
                 inputs_json=json.dumps({"message": "disconnect"}).encode(),
                 timeout_seconds=30,
             )
+
             def requests():
                 yield container_pb2.ExecuteClientMessage(start=request)
                 CancellationStep.cancelled.wait(10)
@@ -714,7 +762,9 @@ def test_daemon_worker_pool_shutdown_wait_after_partial_thread_start_failure(
     pool.shutdown(wait=True)
 
     assert joined_threads == started_threads
-    assert all(thread.ident is None for thread in pool._threads if thread.name not in started_threads)
+    assert all(
+        thread.ident is None for thread in pool._threads if thread.name not in started_threads
+    )
     assert all(not thread.is_alive() for thread in pool._threads if thread.name in started_threads)
 
 
@@ -747,7 +797,9 @@ def test_async_runtime_bounds_workers_after_repeated_timeouts() -> None:
     async def scenario() -> None:
         tasks = [
             asyncio.create_task(
-                service._execute_step(handler, replace(invocation, invocation_id=f"invocation-{index}"))
+                service._execute_step(
+                    handler, replace(invocation, invocation_id=f"invocation-{index}")
+                )
             )
             for index in range(worker_limit)
         ]
@@ -762,13 +814,16 @@ def test_async_runtime_bounds_workers_after_repeated_timeouts() -> None:
             assert started_count == worker_limit
             assert finished_count == 0
 
-            rejected = await asyncio.gather(*[
-                service._execute_step(
-                    handler,
-                    replace(invocation, invocation_id=f"rejected-{index}", timeout_seconds=2),
-                )
-                for index in range(worker_limit)
-            ], return_exceptions=True)
+            rejected = await asyncio.gather(
+                *[
+                    service._execute_step(
+                        handler,
+                        replace(invocation, invocation_id=f"rejected-{index}", timeout_seconds=2),
+                    )
+                    for index in range(worker_limit)
+                ],
+                return_exceptions=True,
+            )
             assert all(
                 isinstance(outcome, ContainerInvocationError)
                 and outcome.code is FailureCode.RATE_LIMITED
@@ -791,7 +846,9 @@ def test_async_runtime_bounds_workers_after_repeated_timeouts() -> None:
                     if error.code is not FailureCode.RATE_LIMITED:
                         raise
                     if asyncio.get_running_loop().time() >= deadline:
-                        raise AssertionError("worker capacity did not recover after handlers returned") from error
+                        raise AssertionError(
+                            "worker capacity did not recover after handlers returned"
+                        ) from error
                     await asyncio.sleep(0.01)
             assert result.output == {"ok": True}
             assert started_count == worker_limit + 1
@@ -810,10 +867,12 @@ def test_async_runtime_shutdown_does_not_wait_for_blocked_handlers() -> None:
         repository_root / "sdks/python/packages/sdk/src",
     )
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = os.pathsep.join((
-        *(str(path) for path in source_paths),
-        environment.get("PYTHONPATH", ""),
-    ))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (
+            *(str(path) for path in source_paths),
+            environment.get("PYTHONPATH", ""),
+        )
+    )
     script = """\
 import asyncio
 import threading
@@ -1054,12 +1113,14 @@ def _resolved_config(
             "plugin_revision_id": "sha256:" + "b" * 64,
             "sdkVersion": "0.1.0",
             "workload": "plugin-workload",
-            "steps": {REVISION: {
-                "stepIdentity": "smoke.echo.v1",
-                "entryPoint": f"{__name__}:EchoStep",
-                "abi": "syntara.container/v1alpha1",
-                "schemaDigests": _schema_digests(),
-            }},
+            "steps": {
+                REVISION: {
+                    "stepIdentity": "smoke.echo.v1",
+                    "entryPoint": f"{__name__}:EchoStep",
+                    "abi": "syntara.container/v1alpha1",
+                    "schemaDigests": _schema_digests(),
+                }
+            },
         }
     registration.write_text(json.dumps(manifest), encoding="utf-8")
     return RuntimeServerConfig(
@@ -1100,7 +1161,7 @@ def test_server_requires_resolved_execution_data() -> None:
 
 
 @pytest.mark.parametrize(
-        ("changes", "message"),
+    ("changes", "message"),
     [
         ({"stepRevisionId": "smoke.echo.v1"}, "contract"),
         ({"runtimeKind": "other"}, "contract"),
@@ -1214,7 +1275,8 @@ def test_shared_class_uses_the_selected_binding_schemas(tmp_path: Path) -> None:
     other_revision = "sha256:" + "c" * 64
     records = [
         _resolved_record("platform-runner"),
-        _resolved_record("platform-runner") | {
+        _resolved_record("platform-runner")
+        | {
             "stepRevisionId": other_revision,
             "stepIdentity": "another.identity",
             "schemaDigests": _schema_digests(
@@ -1263,17 +1325,22 @@ def test_resolved_schema_digests_must_match_the_installed_binding(tmp_path: Path
 def test_tcp_runtime_listener_requires_mutual_tls(address: str, tmp_path: Path) -> None:
     config_path = write_runtime_config(tmp_path)
     with pytest.raises(RuntimeServerError, match="mutual TLS"):
-        load_runtime_server_config({
-            "SYNTARA_RUNTIME_CONFIG": str(config_path),
-            "SYNTARA_RUNTIME_GRPC_ADDRESS": address,
-        })
+        load_runtime_server_config(
+            {
+                "SYNTARA_RUNTIME_CONFIG": str(config_path),
+                "SYNTARA_RUNTIME_GRPC_ADDRESS": address,
+            }
+        )
 
 
 def test_direct_runtime_config_rejects_plaintext_tcp(tmp_path: Path) -> None:
     async def scenario() -> None:
-        config = replace(_resolved_config(tmp_path, [_resolved_record()]), address="127.0.0.1:50051")
+        config = replace(
+            _resolved_config(tmp_path, [_resolved_record()]), address="127.0.0.1:50051"
+        )
         with pytest.raises(RuntimeServerError, match="mutual TLS"):
             create_runtime_server(config)
+
     asyncio.run(scenario())
 
 
@@ -1288,6 +1355,7 @@ def test_async_shutdown_emits_cancelled_event() -> None:
             return None
 
         from syntara_plugin.runtime import StepRegistry
+
         service = AsyncContainerRuntimeService(StepRegistry({"example.step": handler}))
         invocation = replace(_invocation(), step_revision_id="example.step")
         from syntara_plugin.runtime.container import _request_from_invocation
@@ -1309,6 +1377,7 @@ def test_async_shutdown_emits_cancelled_event() -> None:
             assert messages[0].event.failure.outcome == "not_completed"
         finally:
             release.set()
+
     asyncio.run(scenario())
 
 
@@ -1341,7 +1410,9 @@ def test_serve_runtime_waits_for_grace_before_revoking_invocations(monkeypatch: 
 
         loop = asyncio.get_running_loop()
         monkeypatch.setattr(loop, "add_signal_handler", add_signal_handler)
-        monkeypatch.setattr(runtime_server, "_create_runtime_server", lambda _config: (Server(), Service()))
+        monkeypatch.setattr(
+            runtime_server, "_create_runtime_server", lambda _config: (Server(), Service())
+        )
         task = asyncio.create_task(runtime_server.serve_runtime(None))
         await asyncio.sleep(0)
         assert stopping is not None
@@ -1355,3 +1426,117 @@ def test_serve_runtime_waits_for_grace_before_revoking_invocations(monkeypatch: 
         assert revoked
 
     asyncio.run(scenario())
+
+
+def _occupied_runtime_config(tmp_path: Path) -> tuple[RuntimeServerConfig, socket.socket]:
+    """One runtime config whose TCP listener address another socket holds.
+
+    The caller must close the returned blocker, which stays bound for the
+    duration of the failed construction under test.
+    """
+    certificate, key, client_ca, _client_certificate, _client_key = _generate_tls_material(tmp_path)
+    blocker = socket.socket()
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    config = RuntimeServerConfig(
+        bindings_factory=f"{__name__}:create_bindings",
+        resolved_execution_path=resolved_file(tmp_path, EchoStep),
+        address=f"127.0.0.1:{port}",
+        tls_certificate=certificate,
+        tls_key=key,
+        tls_client_ca=client_ca,
+    )
+    return config, blocker
+
+
+def test_runtime_server_bind_failure_is_reported_as_server_error(
+    tmp_path: Path,
+) -> None:
+    # Current grpc releases raise a raw RuntimeError from add_secure_port on a
+    # failed bind; the hardened path promises RuntimeServerError.
+    config, blocker = _occupied_runtime_config(tmp_path)
+    try:
+
+        async def scenario() -> None:
+            with pytest.raises(RuntimeServerError, match="could not bind"):
+                create_runtime_server(config)
+
+        asyncio.run(scenario())
+    finally:
+        blocker.close()
+
+
+def _record_aio_discard(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool], list[object]]:
+    """Record AsyncContainerRuntimeService.shutdown and server.stop calls.
+
+    ``grpc.aio.Server`` is only the abstract interface; the concrete server
+    comes from the ``grpc.aio.server`` factory, so each created instance's
+    ``stop`` is wrapped at the instance level.
+    """
+
+    shutdown_calls: list[bool] = []
+    stop_calls: list[object] = []
+    original_shutdown = AsyncContainerRuntimeService.shutdown
+    original_server_factory = grpc.aio.server
+
+    def shutdown(self) -> None:
+        original_shutdown(self)
+        shutdown_calls.append(True)
+
+    def recording_server(*args, **kwargs):
+        server = original_server_factory(*args, **kwargs)
+        original_stop = server.stop
+
+        async def stop(grace=None) -> None:
+            stop_calls.append(grace)
+            await original_stop(grace)
+
+        server.stop = stop
+        return server
+
+    monkeypatch.setattr(AsyncContainerRuntimeService, "shutdown", shutdown)
+    monkeypatch.setattr(grpc.aio, "server", recording_server)
+    return shutdown_calls, stop_calls
+
+
+def test_runtime_server_bind_failure_stops_the_server_and_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shutdown_calls, stop_calls = _record_aio_discard(monkeypatch)
+    config, blocker = _occupied_runtime_config(tmp_path)
+    try:
+
+        async def scenario() -> None:
+            with pytest.raises(RuntimeServerError, match="could not bind"):
+                create_runtime_server(config)
+            # Let the stop scheduled on the running loop complete.
+            await asyncio.sleep(0)
+
+        asyncio.run(scenario())
+    finally:
+        blocker.close()
+    assert shutdown_calls, "the failed construction must shut the service down"
+    assert stop_calls, "the failed construction must stop the server"
+
+
+def test_runtime_server_bind_failure_stops_the_server_from_sync_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shutdown_calls, stop_calls = _record_aio_discard(monkeypatch)
+    config, blocker = _occupied_runtime_config(tmp_path)
+    loop = asyncio.new_event_loop()
+    try:
+        # A sync caller builds the server on a current, not-running loop.
+        asyncio.set_event_loop(loop)
+        with pytest.raises(RuntimeServerError, match="could not bind"):
+            create_runtime_server(config)
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+        blocker.close()
+    assert shutdown_calls, "the failed construction must shut the service down"
+    assert stop_calls, "the failed construction must stop the server"

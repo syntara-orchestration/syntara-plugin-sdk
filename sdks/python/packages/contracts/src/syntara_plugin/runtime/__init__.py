@@ -120,11 +120,13 @@ if TYPE_CHECKING:
         add_container_runtime_service,
         standard_output_from_container_result,
     )
+    from .server import ContainerRuntimeServer, create_container_runtime_server
 
 # Transport exports whose defining module imports gRPC/protobuf. They are loaded
 # on first attribute access so importing this package stays transport-free.
 _CONTAINER_MODULE = ".container"
 _ADAPTER_MODULE = ".adapter"
+_SERVER_MODULE = ".server"
 
 _LAZY_EXPORTS = {
     "ContainerClient": _CONTAINER_MODULE,
@@ -135,6 +137,7 @@ _LAZY_EXPORTS = {
     "ContainerProgress": _CONTAINER_MODULE,
     "ContainerRemoteError": _CONTAINER_MODULE,
     "ContainerResult": _CONTAINER_MODULE,
+    "ContainerRuntimeServer": _SERVER_MODULE,
     "ContainerRuntimeService": _CONTAINER_MODULE,
     "ContainerStepHandler": _CONTAINER_MODULE,
     "RuntimeComponentInfo": _CONTAINER_MODULE,
@@ -142,6 +145,7 @@ _LAZY_EXPORTS = {
     "CredentialResolver": _CONTAINER_MODULE,
     "StepRegistry": _CONTAINER_MODULE,
     "add_container_runtime_service": _CONTAINER_MODULE,
+    "create_container_runtime_server": _SERVER_MODULE,
     "standard_output_from_container_result": _CONTAINER_MODULE,
     "ResultObjectStore": _ADAPTER_MODULE,
     "container_step_for_installed_manifest": _ADAPTER_MODULE,
@@ -182,6 +186,7 @@ __all__ = [
     "ContainerProgress",
     "ContainerRemoteError",
     "ContainerResult",
+    "ContainerRuntimeServer",
     "ContainerRuntimeService",
     "ContainerStepHandler",
     "RuntimeComponentInfo",
@@ -251,6 +256,7 @@ __all__ = [
     "check_step_contract",
     "check_target_binding",
     "compare_model_to_schema",
+    "create_container_runtime_server",
     "container_step_for_installed_manifest",
     "container_step_for_binding",
     "container_step_for_bindings",

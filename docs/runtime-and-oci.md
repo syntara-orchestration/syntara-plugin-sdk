@@ -254,7 +254,11 @@ A Python workload image starts the SDK runtime server as its entry point:
 python -m syntara_plugin.runtime.server
 ```
 
-The `syntara-plugin-runtime-server` console script runs the same `main()`. The
+The `syntara-plugin-runtime-server` console script runs the same `main()`.
+`serve_runtime`, which that entry point runs, and `create_runtime_server`,
+which constructs and binds the same server without starting it, are the
+supported production entry points for the runtime transport: the SDK owns the
+image's single listener, its validation, and its TLS. The
 server reads its runtime config from `SYNTARA_RUNTIME_CONFIG` and its listener
 settings from the `SYNTARA_RUNTIME_GRPC_*` variables. Python authors never
 write or start their own gRPC server: the SDK runtime server is the only
@@ -279,6 +283,96 @@ TLS, including loopback. Supply all three of `SYNTARA_RUNTIME_GRPC_TLS_CERT`,
 `SYNTARA_RUNTIME_GRPC_TLS_KEY`, and `SYNTARA_RUNTIME_GRPC_TLS_CLIENT_CA` when
 TLS is enabled. These values are mounted file paths, never PEM data or private
 key contents.
+
+A host process that must build the runtime synchronously (local tooling, an
+embedder, a test rig outside a workload image) uses
+`create_container_runtime_server` from `syntara_plugin.runtime`. It creates
+the server, registers the runtime service, and adds exactly one listener
+itself: it never adds another, and ports added afterwards to the returned
+server are the caller's own unsupported bypass of these checks. A failed
+bind stops the server and shuts the service down before raising. TCP
+requires the same mutual-TLS material as the image server, with clients
+presenting a certificate the client CA signed. A TCP port of `0` binds an
+ephemeral port, and the bound address is returned:
+
+```python
+from pathlib import Path
+
+import grpc
+from syntara_plugin.runtime import ContainerClient, create_container_runtime_server
+
+runtime = create_container_runtime_server(
+    registry,  # a StepRegistry built by the caller
+    address="10.2.3.4:50051",
+    tls_certificate=Path("/etc/syntara/tls/server.crt"),
+    tls_key=Path("/etc/syntara/tls/server.key"),
+    tls_client_ca=Path("/etc/syntara/tls/client-ca.crt"),
+)
+runtime.server.start()
+# The client verifies the server against the server CA and presents a
+# certificate signed by the server's configured client CA.
+channel = grpc.secure_channel(
+    runtime.address,
+    grpc.ssl_channel_credentials(
+        root_certificates=Path("/etc/syntara/tls/server-ca.crt").read_bytes(),
+        private_key=Path("/etc/syntara/tls/client.key").read_bytes(),
+        certificate_chain=Path("/etc/syntara/tls/client.crt").read_bytes(),
+    ),
+)
+try:
+    client = ContainerClient(channel)
+    # ... health checks and invocations; a client without a valid
+    # certificate is refused by the listener ...
+finally:
+    channel.close()
+    runtime.server.stop(5)
+    runtime.service.shutdown()
+```
+
+For private local IPC, bind a Unix-domain socket instead. Plaintext is
+acceptable there only because filesystem permissions gate access: create an
+owner-only private directory, keep the socket inside it, and remove the
+directory when the server stops. TLS material is rejected for this listener
+kind, and an existing socket path is rejected rather than silently
+replaced:
+
+```python
+import shutil
+import tempfile
+from pathlib import Path
+
+import grpc
+from syntara_plugin.runtime import ContainerClient, create_container_runtime_server
+
+directory = Path(tempfile.mkdtemp(prefix="syntara-runtime-"))  # owner-only
+runtime = create_container_runtime_server(
+    registry, address=f"unix:{directory / 'runtime.sock'}"
+)
+runtime.server.start()
+channel = grpc.insecure_channel(runtime.address)
+try:
+    client = ContainerClient(channel)
+    # ... health checks and invocations ...
+finally:
+    channel.close()
+    runtime.server.stop(None)
+    runtime.service.shutdown()
+    shutil.rmtree(directory, ignore_errors=True)
+```
+
+The `max_workers` parameter sizes the server's thread pool: each active
+invocation holds one pool thread for its Execute stream, and Cancel needs one
+too, so size it above the expected number of concurrent invocations. The
+default 2 suits the single-invocation local-tooling pattern.
+
+`add_container_runtime_service` is the low-level registration API underneath
+these paths: it attaches the runtime service to a gRPC server you already
+own. The caller owns every listener's authentication and lifecycle, and
+registration cannot reliably detect or restrict ports the server already has
+or will later add, including plaintext TCP; a hand-added insecure port beside
+the service is the caller's responsibility, never a supported setup. Use
+`serve_runtime` or `create_container_runtime_server` when the SDK should own
+the listener.
 
 `syntara-plugin run --mode image` is a supported client for such a runtime: it
 connects through the SDK's `ContainerClient`, verifies the ABI and advertised

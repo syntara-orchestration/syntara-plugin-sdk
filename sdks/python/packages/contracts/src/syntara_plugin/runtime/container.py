@@ -911,6 +911,17 @@ def add_container_runtime_service(
 ) -> ContainerRuntimeService:
     """Register the generic runtime service on a plugin workload gRPC server.
 
+    This is a low-level registration API. It attaches the service to
+    ``server`` and does not create, inspect, or secure any listener: the
+    caller owns every listener's authentication and lifecycle, and
+    registration cannot reliably detect or restrict ports the server already
+    has or will later add, including plaintext TCP ports. Let the SDK own
+    the listener instead: ``serve_runtime`` (``python -m
+    syntara_plugin.runtime.server``) for workload images, or
+    ``create_container_runtime_server`` for synchronous host-process setups.
+    Both require client-authenticated TLS on TCP and check the bind
+    themselves.
+
     Workload images built with this helper usually run their Python process
     as PID 1 in the container. The kernel ignores unhandled signals for
     PID 1, and CPython installs no SIGTERM handler, so without an explicit
